@@ -1,19 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
-    pub url: String,
-    pub title: String,
-    pub scroll_pos: (f64, f64),
-}
-
 /// Engine-agnostic snapshot of a tab. Cookies/localStorage/IndexedDB are
 /// intentionally excluded: they live inside each engine's own storage
-/// backend and do not transfer across an engine swap.
+/// backend and do not transfer across an engine swap. A full navigable
+/// history list is excluded too — CEF and WebKitGTK's embedding APIs (and
+/// Servo's, going by the pinned 0.5.0 `WebView`) only expose *relative*
+/// back/forward navigation plus can-go-back/can-go-forward flags, not an
+/// enumerable/indexable entry list, so there is nothing to snapshot beyond
+/// the current URL. See `HostToEngine::GoBack`/`GoForward`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TabState {
     pub url: String,
-    pub history: Vec<HistoryEntry>,
     pub zoom: f64,
 }
 
@@ -39,7 +36,8 @@ pub enum InputEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostToEngine {
     Navigate { url: String, referrer: Option<String> },
-    LoadHistoryEntry { index: usize },
+    GoBack,
+    GoForward,
     Resize { width: u32, height: u32, dpi_scale: f64 },
     Input(InputEvent),
     SetZoom { factor: f64 },
