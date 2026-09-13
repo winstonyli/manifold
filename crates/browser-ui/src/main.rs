@@ -107,6 +107,30 @@ fn engine_label(kind: EngineKind) -> &'static str {
     }
 }
 
+/// A distinct color per engine (loosely nodding to each project's own
+/// branding — Servo orange, Chromium/Blink blue, Safari/WebKit teal) used
+/// as a small identifying dot/badge wherever a tab's engine matters at a
+/// glance: the tab strip, the graph node's engine badge. Deliberately
+/// separate from `ACCENT` (which means "focused"/"selected", a different
+/// axis of meaning) so the two never get confused for one another.
+fn engine_color(kind: EngineKind) -> egui::Color32 {
+    match kind {
+        EngineKind::Servo => egui::Color32::from_rgb(255, 138, 80),
+        EngineKind::Cef => egui::Color32::from_rgb(66, 133, 244),
+        EngineKind::Webkit => egui::Color32::from_rgb(26, 188, 156),
+    }
+}
+
+/// A small filled circle identifying a tab's engine at a glance — used
+/// inline in a `ui.horizontal` layout (the tab strip, the engine picker's
+/// own dropdown rows), so it allocates its own space rather than being a
+/// raw `painter()` call positioned by hand.
+fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
+    let (rect, _response) = ui.allocate_exact_size(egui::vec2(diameter, diameter), egui::Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Graph,
@@ -513,6 +537,8 @@ impl App {
                     } else {
                         node.title.as_str()
                     };
+                    let kind = node.tab.kind;
+                    engine_dot(ui, kind, 8.0);
                     if node.loading {
                         ui.add(egui::Spinner::new().size(12.0));
                     } else if let Some(tex_id) =
@@ -551,16 +577,25 @@ impl App {
                     }
 
                     let combo_label = current_kind.map(engine_label).unwrap_or("?");
+                    let combo_text = match current_kind {
+                        Some(kind) => egui::RichText::new(combo_label).color(engine_color(kind)),
+                        None => egui::RichText::new(combo_label),
+                    };
                     egui::ComboBox::from_id_salt("engine_picker")
-                        .selected_text(combo_label)
+                        .selected_text(combo_text)
                         .show_ui(ui, |ui| {
                             for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit] {
                                 let selected = current_kind == Some(kind);
-                                if ui.selectable_label(selected, engine_label(kind)).clicked()
-                                    && !selected
-                                {
-                                    swap_to = Some(kind);
-                                }
+                                ui.horizontal(|ui| {
+                                    engine_dot(ui, kind, 8.0);
+                                    if ui
+                                        .selectable_label(selected, engine_label(kind))
+                                        .clicked()
+                                        && !selected
+                                    {
+                                        swap_to = Some(kind);
+                                    }
+                                });
                             }
                         });
 
@@ -760,12 +795,36 @@ impl App {
                         } else {
                             node.title.as_str()
                         };
+                        // A flat scrim behind the title strip so it stays
+                        // legible over a busy/light thumbnail — most real
+                        // pages are light-background, and plain text on top
+                        // of one was unreadable without this.
+                        let title_strip = egui::Rect::from_min_max(
+                            egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0),
+                            thumb_rect.right_bottom(),
+                        );
+                        ui.painter().rect_filled(
+                            title_strip,
+                            0.0,
+                            egui::Color32::from_black_alpha(160),
+                        );
+                        // Engine identity as a small colored dot rather than
+                        // repeating the "[Servo]"-style bracket text on every
+                        // single node — the dot alone is enough once you've
+                        // learned the color coding (also used in the tab
+                        // strip and engine picker), and reads faster at this
+                        // node's small size than another word would.
+                        ui.painter().circle_filled(
+                            egui::Pos2::new(title_strip.left() + 8.0, title_strip.center().y),
+                            4.0,
+                            engine_color(node.tab.kind),
+                        );
                         ui.painter().text(
-                            egui::Pos2::new(rect.center().x, rect.bottom() - 4.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            format!("{label} [{}]", engine_label(node.tab.kind)),
+                            egui::Pos2::new(title_strip.left() + 16.0, title_strip.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
                             egui::FontId::default(),
-                            ui.visuals().text_color(),
+                            egui::Color32::WHITE,
                         );
                     }
                     if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
