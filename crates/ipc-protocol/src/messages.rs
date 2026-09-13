@@ -41,6 +41,12 @@ pub enum HostToEngine {
     Resize { width: u32, height: u32, dpi_scale: f64 },
     Input(InputEvent),
     SetZoom { factor: f64 },
+    /// M5: background (non-focused) tabs stay alive but stop capturing and
+    /// sending frames — only the currently focused tab is ever `true`. The
+    /// engine's own event/message-loop pump keeps running regardless (the
+    /// page keeps executing, title/url keep updating), only the final
+    /// capture-and-send step is gated on this.
+    SetVisible(bool),
     GetState,
     Shutdown,
 }
