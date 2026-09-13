@@ -218,8 +218,10 @@ impl App {
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
     /// if `parent` is `None`), spawned invisible — it stays in Graph view
     /// rather than auto-focusing (see plan's M5 scope decision 5), and
-    /// background tabs render nothing until focused anyway.
-    fn spawn_new_tab(&mut self, parent: Option<String>) {
+    /// background tabs render nothing until focused anyway. Also used for
+    /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
+    /// that request's URL instead of `INITIAL_URL`.
+    fn spawn_new_tab(&mut self, parent: Option<String>, url: &str) {
         let id = self.alloc_tab_id();
         let parent_pos = parent
             .as_ref()
@@ -227,7 +229,7 @@ impl App {
             .map(|n| n.pos)
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
-        match process_manager::spawn_tab(STARTING_ENGINE, &id, INITIAL_URL) {
+        match process_manager::spawn_tab(STARTING_ENGINE, &id, url) {
             Ok(mut tab) => {
                 tab.set_visible(false);
                 self.tabs.insert(
@@ -235,7 +237,7 @@ impl App {
                     TabNode {
                         tab,
                         parent,
-                        url: INITIAL_URL.to_string(),
+                        url: url.to_string(),
                         title: String::new(),
                         can_go_back: false,
                         can_go_forward: false,
@@ -530,7 +532,7 @@ impl App {
                 ui.label("No tabs. Click \"+ New Tab\" to start browsing.");
             });
             if let Some(parent) = new_tab_parent {
-                self.spawn_new_tab(parent);
+                self.spawn_new_tab(parent, INITIAL_URL);
             }
             return;
         }
@@ -716,7 +718,7 @@ impl App {
         }
 
         if let Some(parent) = new_tab_parent {
-            self.spawn_new_tab(parent);
+            self.spawn_new_tab(parent, INITIAL_URL);
         }
         if let Some(id) = close_requested {
             self.close_tab(&id);
@@ -930,6 +932,7 @@ impl App {
         let mut frame_updates: Vec<FrameUpdate> = Vec::new();
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
+        let mut open_tab_requests: Vec<(String, String)> = Vec::new();
 
         for tab_id in &tab_ids {
             let Some(node) = self.tabs.get_mut(tab_id) else {
@@ -972,6 +975,9 @@ impl App {
                     EngineToHost::Crashed { reason } => {
                         crashes.push((tab_id.clone(), reason));
                     }
+                    EngineToHost::OpenTabRequested { url } => {
+                        open_tab_requests.push((tab_id.clone(), url));
+                    }
                     _ => {}
                 }
             }
@@ -996,6 +1002,15 @@ impl App {
 
         for (tab_id, target, url) in swap_finishes {
             self.finish_swap(&tab_id, target, url);
+        }
+
+        // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
+        // intercepted by CEF/WebKit - see EngineToHost::OpenTabRequested's
+        // doc comment): a child of whichever tab requested it, staying in
+        // the current view rather than auto-focusing, same as an explicit
+        // "+ New Tab" click.
+        for (requesting_tab_id, url) in open_tab_requests {
+            self.spawn_new_tab(Some(requesting_tab_id), &url);
         }
 
         for update in frame_updates {
