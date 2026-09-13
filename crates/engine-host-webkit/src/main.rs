@@ -7,6 +7,8 @@ use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use webkit2gtk::{URIRequestExt, WebView, WebViewExt};
 
+use gtk::cairo::{Format, ImageSurface};
+
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
 
@@ -85,6 +87,22 @@ fn main() {
                 *pending_open_tab.borrow_mut() = Some(uri.to_string());
             }
             None
+        });
+    }
+
+    // Favicon: WebKitGTK only tells us it changed (a GObject property
+    // notify, not a poll-friendly value) — stash the decoded pixels here
+    // and drain them in the main loop below, same pattern as
+    // `pending_open_tab` above.
+    let pending_favicon: Rc<RefCell<Option<(Vec<u8>, u32, u32)>>> = Rc::new(RefCell::new(None));
+    {
+        let pending_favicon = pending_favicon.clone();
+        webview.connect_favicon_notify(move |webview| {
+            if let Some(surface) = webview.favicon() {
+                if let Some(rgba) = favicon_to_rgba(&surface) {
+                    *pending_favicon.borrow_mut() = Some(rgba);
+                }
+            }
         });
     }
 
@@ -212,6 +230,10 @@ fn main() {
             let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
         }
 
+        if let Some((rgba, width, height)) = pending_favicon.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::FaviconChanged { rgba, width, height });
+        }
+
         if visible {
             if let Some(pixbuf) = offscreen.pixbuf() {
                 if pixbuf.width() as u32 == width && pixbuf.height() as u32 == height {
@@ -230,6 +252,48 @@ fn main() {
 
         std::thread::sleep(Duration::from_millis(16));
     }
+}
+
+/// `WebView::favicon()` hands over a cairo `Surface`, not a `GdkPixbuf` —
+/// downcast to `ImageSurface` (the only variant with CPU-readable pixel
+/// data) and convert its native `ARgb32`/`Rgb24` format to tightly-packed
+/// RGBA. `ARgb32`'s pixels are alpha-*premultiplied* 32-bit words in
+/// native-endian order, which on this x86-64 target means byte order
+/// B,G,R,A in memory — both the channel swap and the alpha-unmultiply are
+/// needed, unlike `tightly_packed_rgba`'s pixbuf source which is neither
+/// premultiplied nor channel-swapped. Returns `None` for any other format
+/// (favicons only ever come back as one of these two in practice) or if
+/// the surface can't be downcast/borrowed.
+fn favicon_to_rgba(surface: &gtk::cairo::Surface) -> Option<(Vec<u8>, u32, u32)> {
+    let mut image = ImageSurface::try_from(surface.clone()).ok()?;
+    let format = image.format();
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let stride = image.stride() as usize;
+    let data = image.data().ok()?;
+
+    let mut out = vec![0u8; width * height * 4];
+    for y in 0..height {
+        let src_row = &data[y * stride..y * stride + width * 4];
+        let dst_row = &mut out[y * width * 4..(y + 1) * width * 4];
+        for x in 0..width {
+            let b = src_row[x * 4] as u32;
+            let g = src_row[x * 4 + 1] as u32;
+            let r = src_row[x * 4 + 2] as u32;
+            let a = src_row[x * 4 + 3] as u32;
+            let (r, g, b, a) = match format {
+                Format::ARgb32 if a > 0 => (r * 255 / a, g * 255 / a, b * 255 / a, a),
+                Format::ARgb32 => (0, 0, 0, 0),
+                Format::Rgb24 => (r, g, b, 255),
+                _ => return None,
+            };
+            dst_row[x * 4] = r as u8;
+            dst_row[x * 4 + 1] = g as u8;
+            dst_row[x * 4 + 2] = b as u8;
+            dst_row[x * 4 + 3] = a as u8;
+        }
+    }
+    Some((out, width as u32, height as u32))
 }
 
 /// `GdkPixbuf` rows can be padded to a stride wider than `width * 4` for

@@ -35,6 +35,7 @@ const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 32.0;
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
+const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
 
 fn engine_label(kind: EngineKind) -> &'static str {
     match kind {
@@ -443,6 +444,12 @@ impl App {
                     } else {
                         label.to_string()
                     };
+                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id)) {
+                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                            tex_id,
+                            FAVICON_SIZE,
+                        )));
+                    }
                     ui.add(egui::Label::new(text).truncate());
                 });
             });
@@ -643,6 +650,16 @@ impl App {
                     format!("{label} [{}]", engine_label(node.tab.kind)),
                     egui::FontId::default(),
                     ui.visuals().text_color(),
+                );
+            }
+            if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
+                let favicon_rect =
+                    egui::Rect::from_min_size(rect.left_top() + egui::vec2(4.0, 4.0), FAVICON_SIZE);
+                ui.painter().image(
+                    tex_id,
+                    favicon_rect,
+                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                    egui::Color32::WHITE,
                 );
             }
 
@@ -933,6 +950,7 @@ impl App {
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
+        let mut favicon_updates: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
 
         for tab_id in &tab_ids {
             let Some(node) = self.tabs.get_mut(tab_id) else {
@@ -978,6 +996,9 @@ impl App {
                     EngineToHost::OpenTabRequested { url } => {
                         open_tab_requests.push((tab_id.clone(), url));
                     }
+                    EngineToHost::FaviconChanged { rgba, width, height } => {
+                        favicon_updates.push((tab_id.clone(), rgba, width, height));
+                    }
                     _ => {}
                 }
             }
@@ -1011,6 +1032,12 @@ impl App {
         // "+ New Tab" click.
         for (requesting_tab_id, url) in open_tab_requests {
             self.spawn_new_tab(Some(requesting_tab_id), &url);
+        }
+
+        for (tab_id, rgba, width, height) in favicon_updates {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.upload_favicon(&tab_id, &rgba, width, height);
+            }
         }
 
         for update in frame_updates {

@@ -117,7 +117,17 @@ pub enum EngineToHost {
         can_go_forward: bool,
         loading: bool,
     },
-    FaviconChanged { bytes: Vec<u8> },
+    /// Raw pixels, like `FrameReady` — not encoded image bytes. Servo's
+    /// `WebView::favicon()` and WebKitGTK's `WebView::favicon()` both hand
+    /// over already-decoded pixels, so there's nothing to decode on this
+    /// end; only CEF's `DisplayHandler::on_favicon_urlchange` gives a URL
+    /// instead of pixels (would need an HTTP fetch + image decode to turn
+    /// into this shape), so only Servo and WebKit send this for now.
+    FaviconChanged {
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     StateSnapshot(TabState),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,

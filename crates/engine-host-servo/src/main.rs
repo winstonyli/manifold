@@ -46,6 +46,9 @@ struct NavState {
 struct Delegate {
     frame_ready: RefCell<bool>,
     nav: RefCell<NavState>,
+    /// Set by `notify_favicon_changed`, polled and drained by the main
+    /// loop the same way `nav`/`frame_ready` are — `(rgba, width, height)`.
+    favicon: RefCell<Option<(Vec<u8>, u32, u32)>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -76,6 +79,39 @@ impl WebViewDelegate for Delegate {
         nav.can_go_back = current > 0;
         nav.can_go_forward = current + 1 < entries.len();
         nav.dirty = true;
+    }
+
+    fn notify_favicon_changed(&self, webview: WebView) {
+        if let Some(image) = webview.favicon() {
+            *self.favicon.borrow_mut() =
+                Some((to_rgba(image.data(), image.format), image.width, image.height));
+        }
+    }
+}
+
+/// Servo's favicon can arrive in any of several pixel formats depending on
+/// the source image; `EngineToHost::FaviconChanged` is always plain RGBA8
+/// (matching `FrameReady`'s convention), so normalize here rather than
+/// pushing format-awareness onto browser-ui.
+fn to_rgba(data: &[u8], format: servo::PixelFormat) -> Vec<u8> {
+    match format {
+        servo::PixelFormat::RGBA8 => data.to_vec(),
+        servo::PixelFormat::BGRA8 => {
+            let mut out = data.to_vec();
+            for px in out.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            out
+        }
+        servo::PixelFormat::RGB8 => data
+            .chunks_exact(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect(),
+        servo::PixelFormat::KA8 => data
+            .chunks_exact(2)
+            .flat_map(|ka| [ka[0], ka[0], ka[0], ka[1]])
+            .collect(),
+        servo::PixelFormat::K8 => data.iter().flat_map(|&k| [k, k, k, 255]).collect(),
     }
 }
 
@@ -143,6 +179,7 @@ fn main() {
             url: initial_url.clone(),
             ..Default::default()
         }),
+        favicon: RefCell::new(None),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -231,6 +268,10 @@ fn main() {
                     loading: nav.loading,
                 });
             }
+        }
+
+        if let Some((rgba, width, height)) = delegate.favicon.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::FaviconChanged { rgba, width, height });
         }
 
         if visible && *delegate.frame_ready.borrow() {

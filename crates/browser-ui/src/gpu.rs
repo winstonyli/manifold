@@ -70,6 +70,7 @@ pub struct GpuState {
     sampler: wgpu::Sampler,
     tab_texture: Option<TabTexture>,
     thumbnails: HashMap<String, ThumbTexture>,
+    favicons: HashMap<String, ThumbTexture>,
     egui_renderer: egui_wgpu::Renderer,
 }
 
@@ -202,6 +203,7 @@ impl GpuState {
             sampler,
             tab_texture: None,
             thumbnails: HashMap::new(),
+            favicons: HashMap::new(),
             egui_renderer,
         }
     }
@@ -344,6 +346,65 @@ impl GpuState {
     pub fn free_tab_thumbnail(&mut self, tab_id: &str) {
         if let Some(thumb) = self.thumbnails.remove(tab_id) {
             self.egui_renderer.free_texture(&thumb.egui_id);
+        }
+        self.free_tab_favicon(tab_id);
+    }
+
+    /// `rgba` is already tightly-packed RGBA (both Servo's and WebKit's
+    /// favicon paths hand over decoded pixels, no channel swap needed
+    /// unlike `upload_frame`'s CEF case) — registered the same way as a
+    /// thumbnail, in its own map since a tab's favicon and its content
+    /// thumbnail are unrelated sizes and update independently.
+    pub fn upload_favicon(&mut self, tab_id: &str, rgba: &[u8], width: u32, height: u32) {
+        let texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("tab favicon texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            rgba,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Some(existing) = self.favicons.get(tab_id) {
+            self.egui_renderer.update_egui_texture_from_wgpu_texture(
+                &self.device,
+                &view,
+                wgpu::FilterMode::Linear,
+                existing.egui_id,
+            );
+        } else {
+            let egui_id =
+                self.egui_renderer
+                    .register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
+            self.favicons
+                .insert(tab_id.to_string(), ThumbTexture { egui_id });
+        }
+    }
+
+    /// The `egui::TextureId` for a tab's cached favicon, if it has sent one
+    /// — for the tab strip and graph nodes to draw next to the title.
+    pub fn favicon_id(&self, tab_id: &str) -> Option<egui::TextureId> {
+        self.favicons.get(tab_id).map(|t| t.egui_id)
+    }
+
+    /// Same leak concern as `free_tab_thumbnail` — called from there on tab
+    /// close, kept separate since a favicon can also change size (new
+    /// texture registered in place is fine; only close needs an explicit
+    /// free).
+    pub fn free_tab_favicon(&mut self, tab_id: &str) {
+        if let Some(favicon) = self.favicons.remove(tab_id) {
+            self.egui_renderer.free_texture(&favicon.egui_id);
         }
     }
 
