@@ -82,6 +82,6 @@ Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`
 ## Known limitations
 
 - Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only the URL carries over.
-- WebKit tab input (mouse/keyboard) is not wired up yet — rendering only. Servo and CEF handle mouse; keyboard input isn't wired up on any engine yet.
+- **WebKit tab input is not wired up at all — rendering only.** Mouse and keyboard both work for Servo and CEF tabs. A synthetic-GDK-event approach for WebKit was attempted and reverted: sending synthetic keyboard events reliably caused GTK/WebKitGTK to keep generating more pending events faster than they drain, pegging CPU at ~100% and stalling rendering indefinitely. Root cause not identified — see project memory before re-attempting.
 - New tabs only via the explicit "+ New Tab" action — no page-triggered new tabs (ctrl+click, `target=_blank`, `window.open`).
 - A suspended tab's cached thumbnail is a full content-resolution RGBA buffer retained per background tab (not downscaled) — fine for tens of tabs, a real scaling limit past that.
