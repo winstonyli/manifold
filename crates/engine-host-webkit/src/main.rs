@@ -116,8 +116,6 @@ fn main() {
         });
     }
 
-    let mut width = DEFAULT_WIDTH as u32;
-    let mut height = DEFAULT_HEIGHT as u32;
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
@@ -172,8 +170,6 @@ fn main() {
                     height: h,
                     ..
                 } => {
-                    width = w;
-                    height = h;
                     webview.set_size_request(w as i32, h as i32);
                     offscreen.resize(w as i32, h as i32);
                 }
@@ -237,14 +233,33 @@ fn main() {
         }
 
         if visible {
+            // Send whatever size the offscreen widget's pixbuf actually is
+            // — not gated on it matching the last `Resize` message's
+            // width/height. Found live: after a tab is respawned (engine
+            // swap or crash recovery, as opposed to the very first spawn),
+            // `offscreen.resize()`/`webview.set_size_request()` below never
+            // actually change `GtkOffscreenWindow`'s real backing surface
+            // size away from its `set_default_size` at construction —
+            // `pixbuf.width()/height()` stayed at `DEFAULT_WIDTH`/
+            // `DEFAULT_HEIGHT` forever in testing, regardless of how many
+            // `Resize` messages arrived, so gating on an exact match meant
+            // *zero* frames were ever sent post-respawn (confirmed via
+            // debug logging: `frame_id` stuck at 0 indefinitely). Sending
+            // the pixbuf's own real dimensions sidesteps needing to
+            // understand or fix GTK's offscreen-resize negotiation at all
+            // — browser-ui's reader already takes width/height from each
+            // `FrameReady` message directly (no separate shared-memory
+            // sizing contract for this RemoteTransport-based engine-host),
+            // so there is no requirement that it match what was requested.
             if let Some(pixbuf) = offscreen.pixbuf() {
-                if pixbuf.width() as u32 == width && pixbuf.height() as u32 == height {
+                let (pw, ph) = (pixbuf.width() as u32, pixbuf.height() as u32);
+                if pw > 0 && ph > 0 {
                     let pixels = tightly_packed_rgba(&pixbuf);
                     frame_id += 1;
                     let _ = to_host.send(&EngineToHost::FrameReady {
                         frame_id,
-                        width,
-                        height,
+                        width: pw,
+                        height: ph,
                         damage: None,
                         pixels: Some(pixels),
                     });
