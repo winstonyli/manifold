@@ -4,12 +4,15 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dpi::PhysicalSize;
-use ipc_protocol::{EngineToHost, HostToEngine, InputEvent as HostInputEvent, SharedFrameBuffer};
+use ipc_protocol::{
+    modifiers as host_modifiers, EngineToHost, HostToEngine, InputEvent as HostInputEvent,
+    KeyCode as HostKeyCode, SharedFrameBuffer,
+};
 use servo::{
-    EventLoopWaker, InputEvent as ServoInputEvent, MouseButton as ServoMouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, ServoBuilder,
-    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta,
-    WheelEvent, WheelMode,
+    Code, EventLoopWaker, InputEvent as ServoInputEvent, Key, KeyState, KeyboardEvent, Location,
+    Modifiers, MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent,
+    MouseMoveEvent, NamedKey, RenderingContext, ServoBuilder, SoftwareRenderingContext, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
 use url::Url;
 use webrender_api::units::DevicePoint;
@@ -285,14 +288,188 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
             },
             webview_point(x, y),
         ))),
-        // TODO(M1 follow-up): keyboard input needs mapping into Servo's
-        // KeyboardEvent (wraps a keyboard-types::KeyEvent), which needs a
-        // real keycode/modifier translation table from winit's key enum —
-        // out of scope for M1's mouse+scroll verification.
-        HostInputEvent::KeyDown { .. }
-        | HostInputEvent::KeyUp { .. }
-        | HostInputEvent::Char { .. } => None,
+        HostInputEvent::KeyDown { key, modifiers } => Some(ServoInputEvent::Keyboard(
+            KeyboardEvent::new_without_event(
+                KeyState::Down,
+                key_to_servo_key(key),
+                key_to_servo_code(key),
+                Location::Standard,
+                translate_modifiers(modifiers),
+                false,
+                false,
+            ),
+        )),
+        HostInputEvent::KeyUp { key, modifiers } => Some(ServoInputEvent::Keyboard(
+            KeyboardEvent::new_without_event(
+                KeyState::Up,
+                key_to_servo_key(key),
+                key_to_servo_code(key),
+                Location::Standard,
+                translate_modifiers(modifiers),
+                false,
+                false,
+            ),
+        )),
+        // Text insertion drives off `Key::Character`, which is what a page's
+        // `<input>`/`<textarea>` actually reads — not `KeyDown`'s `code`
+        // (see `key_to_servo_key`'s doc comment on why that's a best-effort
+        // guess and not the real produced text for most keys).
+        HostInputEvent::Char { codepoint } => {
+            let ch = char::from_u32(codepoint)?;
+            Some(ServoInputEvent::Keyboard(
+                KeyboardEvent::from_state_and_key(KeyState::Down, Key::Character(ch.to_string())),
+            ))
+        }
     }
+}
+
+/// The *logical* key (what a DOM `KeyboardEvent.key` would read) for a
+/// `KeyDown`/`KeyUp` — used for arrow/enter/backspace/etc. shortcut
+/// handling, where the physical key's identity is what matters. Letters,
+/// digits, and space map to `Key::Named(NamedKey::Unidentified)` rather
+/// than a guessed `Key::Character` — the *correct* produced text arrives
+/// separately via `InputEvent::Char` (see `translate_input_event`'s `Char`
+/// arm), and sending a guessed character here too double-inserts text
+/// (confirmed by hand: typing showed up doubled, e.g. "Hello" as
+/// "hHeellllooo", before this was `Unidentified`). Shortcuts mostly key
+/// off `code` anyway, not `key`, so `Unidentified` here costs nothing real.
+fn key_to_servo_key(key: HostKeyCode) -> Key {
+    match key {
+        HostKeyCode::KeyA => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyB => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyC => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyD => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyE => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyF => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyG => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyH => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyI => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyJ => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyK => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyL => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyM => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyN => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyO => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyP => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyQ => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyR => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyS => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyT => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyU => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyV => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyW => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyX => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyY => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::KeyZ => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit0 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit1 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit2 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit3 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit4 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit5 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit6 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit7 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit8 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Digit9 => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Space => Key::Named(NamedKey::Unidentified),
+        HostKeyCode::Enter => Key::Named(NamedKey::Enter),
+        HostKeyCode::Backspace => Key::Named(NamedKey::Backspace),
+        HostKeyCode::Tab => Key::Named(NamedKey::Tab),
+        HostKeyCode::Escape => Key::Named(NamedKey::Escape),
+        HostKeyCode::Delete => Key::Named(NamedKey::Delete),
+        HostKeyCode::ArrowLeft => Key::Named(NamedKey::ArrowLeft),
+        HostKeyCode::ArrowRight => Key::Named(NamedKey::ArrowRight),
+        HostKeyCode::ArrowUp => Key::Named(NamedKey::ArrowUp),
+        HostKeyCode::ArrowDown => Key::Named(NamedKey::ArrowDown),
+        HostKeyCode::Home => Key::Named(NamedKey::Home),
+        HostKeyCode::End => Key::Named(NamedKey::End),
+        HostKeyCode::PageUp => Key::Named(NamedKey::PageUp),
+        HostKeyCode::PageDown => Key::Named(NamedKey::PageDown),
+        HostKeyCode::ShiftLeft | HostKeyCode::ShiftRight => Key::Named(NamedKey::Shift),
+        HostKeyCode::ControlLeft | HostKeyCode::ControlRight => Key::Named(NamedKey::Control),
+        HostKeyCode::AltLeft | HostKeyCode::AltRight => Key::Named(NamedKey::Alt),
+    }
+}
+
+fn key_to_servo_code(key: HostKeyCode) -> Code {
+    match key {
+        HostKeyCode::KeyA => Code::KeyA,
+        HostKeyCode::KeyB => Code::KeyB,
+        HostKeyCode::KeyC => Code::KeyC,
+        HostKeyCode::KeyD => Code::KeyD,
+        HostKeyCode::KeyE => Code::KeyE,
+        HostKeyCode::KeyF => Code::KeyF,
+        HostKeyCode::KeyG => Code::KeyG,
+        HostKeyCode::KeyH => Code::KeyH,
+        HostKeyCode::KeyI => Code::KeyI,
+        HostKeyCode::KeyJ => Code::KeyJ,
+        HostKeyCode::KeyK => Code::KeyK,
+        HostKeyCode::KeyL => Code::KeyL,
+        HostKeyCode::KeyM => Code::KeyM,
+        HostKeyCode::KeyN => Code::KeyN,
+        HostKeyCode::KeyO => Code::KeyO,
+        HostKeyCode::KeyP => Code::KeyP,
+        HostKeyCode::KeyQ => Code::KeyQ,
+        HostKeyCode::KeyR => Code::KeyR,
+        HostKeyCode::KeyS => Code::KeyS,
+        HostKeyCode::KeyT => Code::KeyT,
+        HostKeyCode::KeyU => Code::KeyU,
+        HostKeyCode::KeyV => Code::KeyV,
+        HostKeyCode::KeyW => Code::KeyW,
+        HostKeyCode::KeyX => Code::KeyX,
+        HostKeyCode::KeyY => Code::KeyY,
+        HostKeyCode::KeyZ => Code::KeyZ,
+        HostKeyCode::Digit0 => Code::Digit0,
+        HostKeyCode::Digit1 => Code::Digit1,
+        HostKeyCode::Digit2 => Code::Digit2,
+        HostKeyCode::Digit3 => Code::Digit3,
+        HostKeyCode::Digit4 => Code::Digit4,
+        HostKeyCode::Digit5 => Code::Digit5,
+        HostKeyCode::Digit6 => Code::Digit6,
+        HostKeyCode::Digit7 => Code::Digit7,
+        HostKeyCode::Digit8 => Code::Digit8,
+        HostKeyCode::Digit9 => Code::Digit9,
+        HostKeyCode::Enter => Code::Enter,
+        HostKeyCode::Backspace => Code::Backspace,
+        HostKeyCode::Tab => Code::Tab,
+        HostKeyCode::Space => Code::Space,
+        HostKeyCode::Escape => Code::Escape,
+        HostKeyCode::Delete => Code::Delete,
+        HostKeyCode::ArrowLeft => Code::ArrowLeft,
+        HostKeyCode::ArrowRight => Code::ArrowRight,
+        HostKeyCode::ArrowUp => Code::ArrowUp,
+        HostKeyCode::ArrowDown => Code::ArrowDown,
+        HostKeyCode::Home => Code::Home,
+        HostKeyCode::End => Code::End,
+        HostKeyCode::PageUp => Code::PageUp,
+        HostKeyCode::PageDown => Code::PageDown,
+        HostKeyCode::ShiftLeft => Code::ShiftLeft,
+        HostKeyCode::ShiftRight => Code::ShiftRight,
+        HostKeyCode::ControlLeft => Code::ControlLeft,
+        HostKeyCode::ControlRight => Code::ControlRight,
+        HostKeyCode::AltLeft => Code::AltLeft,
+        HostKeyCode::AltRight => Code::AltRight,
+    }
+}
+
+fn translate_modifiers(bits: u8) -> Modifiers {
+    let mut modifiers = Modifiers::empty();
+    if bits & host_modifiers::SHIFT != 0 {
+        modifiers |= Modifiers::SHIFT;
+    }
+    if bits & host_modifiers::CONTROL != 0 {
+        modifiers |= Modifiers::CONTROL;
+    }
+    if bits & host_modifiers::ALT != 0 {
+        modifiers |= Modifiers::ALT;
+    }
+    if bits & host_modifiers::SUPER != 0 {
+        // `Modifiers::SUPER` is deprecated in `keyboard_types` (legacy name
+        // from an earlier draft of the UI Events spec) in favor of `META`,
+        // which is what the DOM's `KeyboardEvent.metaKey` actually checks.
+        modifiers |= Modifiers::META;
+    }
+    modifiers
 }
 
 fn webview_point(x: f64, y: f64) -> WebViewPoint {
