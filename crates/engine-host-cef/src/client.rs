@@ -3,7 +3,7 @@ use cef::{rc::Rc, *};
 use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedPendingOpenTab};
 use crate::nav_handler::{
     DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder,
-    SharedNavState,
+    SharedFaviconUrl, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
 
@@ -39,10 +39,11 @@ impl ClientBuilder {
         render_handler: EngineRenderHandler,
         nav_state: SharedNavState,
         pending_open_tab: SharedPendingOpenTab,
+        favicon_url: SharedFaviconUrl,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
-            DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
+            DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone(), favicon_url)),
             LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab)),
         )

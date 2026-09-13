@@ -37,14 +37,26 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     std::rc::Rc::new(RefCell::new(NavState::new(initial_url)))
 }
 
+/// The most recently reported favicon URL, drained once by the main loop
+/// (which does the actual HTTP fetch + decode — see
+/// `EngineToHost::FaviconChanged`'s doc comment for why CEF alone among
+/// the three engines needs this extra step: `on_favicon_urlchange` only
+/// ever hands over a URL, never pixels).
+pub type SharedFaviconUrl = std::rc::Rc<RefCell<Option<String>>>;
+
+pub fn new_shared_favicon_url() -> SharedFaviconUrl {
+    std::rc::Rc::new(RefCell::new(None))
+}
+
 #[derive(Clone)]
 pub struct EngineDisplayHandler {
     state: SharedNavState,
+    favicon_url: SharedFaviconUrl,
 }
 
 impl EngineDisplayHandler {
-    pub fn new(state: SharedNavState) -> Self {
-        Self { state }
+    pub fn new(state: SharedNavState, favicon_url: SharedFaviconUrl) -> Self {
+        Self { state, favicon_url }
     }
 }
 
@@ -71,6 +83,31 @@ wrap_display_handler! {
             let mut state = self.handler.state.borrow_mut();
             state.title = title.map(|t| t.to_string()).unwrap_or_default();
             state.dirty = true;
+        }
+
+        // CEF's own favicon plumbing only ever hands over a URL, never
+        // decoded pixels (unlike Servo/WebKit's `favicon()` getters) —
+        // take the first (an arbitrary but consistent choice; the list's
+        // ordering isn't documented as size-sorted) and let the main loop
+        // fetch+decode it, since that needs blocking I/O this handler
+        // can't do.
+        //
+        // Confirmed via debug logging that this callback does fire (twice
+        // per navigation, once for the initial load and once for the real
+        // page) with a real, non-null `icon_urls` list — but that list's
+        // *contents* were empty both times, for multiple real pages with
+        // real favicons (github.com, iana.org). CEF/Chromium's windowless
+        // (offscreen) rendering mode may just never populate favicon
+        // candidates the way a normal windowed browser does — not
+        // isolated further; see project memory before re-attempting.
+        fn on_favicon_urlchange(
+            &self,
+            _browser: Option<&mut Browser>,
+            icon_urls: Option<&mut CefStringList>,
+        ) {
+            if let Some(url) = icon_urls.and_then(|l| l.clone().into_iter().next()) {
+                *self.handler.favicon_url.borrow_mut() = Some(url);
+            }
         }
     }
 }

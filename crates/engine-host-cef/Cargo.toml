@@ -5,5 +5,7 @@ edition.workspace = true
 
 [dependencies]
 cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+ureq = "3"
 url = "2.5.8"
