@@ -52,7 +52,6 @@ impl ToEngine {
 /// owns spawning, tearing down, and (from M2 on) swapping the engine
 /// backing a tab.
 pub struct EngineTab {
-    pub tab_id: String,
     pub kind: EngineKind,
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
@@ -64,6 +63,12 @@ impl EngineTab {
         // A dead/crashed engine-host makes this an inert no-op for now;
         // crash detection + auto-restart is M4 (`Crashed` handling).
         self.to_engine.send(msg);
+    }
+
+    /// M5: at most one tab is ever visible (actively capturing/sending
+    /// frames) at a time — see `HostToEngine::SetVisible`'s doc comment.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.send(&HostToEngine::SetVisible(visible));
     }
 }
 
@@ -258,7 +263,6 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
     Ok(EngineTab {
-        tab_id: tab_id.to_string(),
         kind,
         to_engine: ToEngine::Local(to_engine),
         events_rx,
@@ -317,7 +321,6 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Remote(from_engine));
 
     Ok(EngineTab {
-        tab_id: tab_id.to_string(),
         kind: EngineKind::Webkit,
         to_engine: ToEngine::Remote(to_engine),
         events_rx,
