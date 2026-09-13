@@ -1,3 +1,5 @@
+mod input;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -69,6 +71,14 @@ fn main() {
     offscreen.add(&webview);
     offscreen.set_default_size(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     offscreen.show_all();
+
+    // Round 2 on synthetic input (see input.rs's doc comment and project
+    // memory for round 1's revert): resolved once here, not per-event —
+    // the offscreen widget's default seat's keyboard/pointer devices are
+    // attached to every synthetic event `input::send_input` builds.
+    let seat = webview.display().default_seat();
+    let keyboard_device = seat.as_ref().and_then(|s| s.keyboard());
+    let pointer_device = seat.as_ref().and_then(|s| s.pointer());
 
     // Page-triggered new tabs (target=_blank/window.open()/ctrl+click):
     // "create" is WebKitGTK's popup-interception signal, handed the
@@ -167,21 +177,13 @@ fn main() {
                     webview.set_size_request(w as i32, h as i32);
                     offscreen.resize(w as i32, h as i32);
                 }
-                HostToEngine::Input(_event) => {
-                    // TODO: mouse/keyboard input isn't wired up here. A
-                    // synthetic-GDK-event approach (constructing raw
-                    // GdkEventKey/EventButton/EventMotion structs by hand
-                    // via gdk::Event::new + gdk::Event::put, since the
-                    // offscreen widget gets no real X11/Wayland input of
-                    // its own) was attempted and reverted: sending
-                    // synthetic keyboard events reliably triggered a
-                    // runaway CPU loop in GTK's event pump (frame capture
-                    // and message draining stalled indefinitely; capping
-                    // the `gtk::events_pending()` pump loop's iteration
-                    // count did not fix it, only confirmed something keeps
-                    // regenerating pending events faster than they drain).
-                    // Root cause not identified — see project memory
-                    // before re-attempting this.
+                HostToEngine::Input(event) => {
+                    input::send_input(
+                        &webview,
+                        event,
+                        keyboard_device.as_ref(),
+                        pointer_device.as_ref(),
+                    );
                 }
                 HostToEngine::SetZoom { factor } => {
                     webview.set_zoom_level(factor);
