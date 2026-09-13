@@ -88,8 +88,18 @@ fn main() {
     );
 
     loop {
-        while gtk::events_pending() {
+        // Capped, not `while gtk::events_pending()` unconditionally: an
+        // earlier attempt at synthesizing input here (see project memory)
+        // found that *something* can make GTK/WebKitGTK keep generating
+        // more pending events faster than they drain, pegging CPU and
+        // starving message draining/frame capture below indefinitely. A
+        // hard cap guarantees this loop always reaches those every tick
+        // regardless of how many GTK events are actually pending, even
+        // though it didn't fully explain or fix that specific case.
+        let mut pumped = 0;
+        while pumped < 200 && gtk::events_pending() {
             gtk::main_iteration_do(false);
+            pumped += 1;
         }
 
         while let Ok(msg) = rx.try_recv() {
@@ -118,11 +128,20 @@ fn main() {
                     offscreen.resize(w as i32, h as i32);
                 }
                 HostToEngine::Input(_event) => {
-                    // TODO(M3 follow-up): map ipc_protocol::InputEvent onto
-                    // GTK/GDK synthetic events — deferred until the core
-                    // render pipeline itself is verified working, matching
-                    // how engine-host-servo and engine-host-cef were built
-                    // up (render first, then input).
+                    // TODO: mouse/keyboard input isn't wired up here. A
+                    // synthetic-GDK-event approach (constructing raw
+                    // GdkEventKey/EventButton/EventMotion structs by hand
+                    // via gdk::Event::new + gdk::Event::put, since the
+                    // offscreen widget gets no real X11/Wayland input of
+                    // its own) was attempted and reverted: sending
+                    // synthetic keyboard events reliably triggered a
+                    // runaway CPU loop in GTK's event pump (frame capture
+                    // and message draining stalled indefinitely; capping
+                    // the `gtk::events_pending()` pump loop's iteration
+                    // count did not fix it, only confirmed something keeps
+                    // regenerating pending events faster than they drain).
+                    // Root cause not identified — see project memory
+                    // before re-attempting this.
                 }
                 HostToEngine::SetZoom { factor } => {
                     webview.set_zoom_level(factor);
