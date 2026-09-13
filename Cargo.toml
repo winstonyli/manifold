@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ipc-protocol",
+    "crates/browser-ui",
+    "crates/engine-host-servo",
+    "crates/engine-host-cef",
+    "crates/engine-host-webkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+# Full debug info produces multi-hundred-MB PDBs for the Servo/CEF-linked
+# binaries specifically (SpiderMonkey/Chromium bring enormous debug info),
+# which has repeatedly filled this machine's disk mid-build and caused
+# `LNK1318` linker failures. We debug via prints, not a debugger, so line
+# tables (enough for panic backtraces) are all we actually use.
+[profile.dev]
+debug = "line-tables-only"

@@ -1,0 +1,4 @@
+/target
+/target-linux
+*.log
+webkit_swap_test.png
