@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
-use webkit2gtk::{URIRequestExt, WebView, WebViewExt};
+use webkit2gtk::{URIRequestExt, WebContextExt, WebView, WebViewExt};
 
 use gtk::cairo::{Format, ImageSurface};
 
@@ -62,6 +62,23 @@ fn main() {
     });
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
+
+    // WebKitGTK doesn't track favicons at all — `connect_favicon_notify`
+    // never fires, on any page — until a `WebContext` has a favicon
+    // database directory explicitly set (confirmed live: without this,
+    // silent, no error, just never fires — no signal ever arrives).
+    // `WebView::new()` uses the default context, so this must happen
+    // before it. This alone is necessary but not sufficient, though: with
+    // it, the database file is created and the signal handler is wired,
+    // but in testing under this WSL2/Xvfb setup, real favicons (e.g.
+    // github.com's) still never actually get fetched/stored — the
+    // underlying cause wasn't found (see project memory before spending
+    // more time on this; may be specific to running under Xvfb with no
+    // real GPU/network stack quirk, not yet isolated).
+    if let Some(context) = webkit2gtk::WebContext::default() {
+        let dir = std::env::temp_dir().join("multiengine-browser-favicons");
+        context.set_favicon_database_directory(dir.to_str());
+    }
 
     let webview = WebView::new();
     webview.set_size_request(DEFAULT_WIDTH, DEFAULT_HEIGHT);
