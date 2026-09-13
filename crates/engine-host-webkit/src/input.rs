@@ -99,55 +99,64 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
     state
 }
 
-/// Physical-key keyval only (e.g. `KeyCode::KeyA` -> lowercase `a`) — Shift
-/// is conveyed via `state`/`ModifierType::SHIFT_MASK`, same as a real X11
-/// keyboard driver would report; the actually-typed character (already
-/// case-corrected) arrives separately via `InputEvent::Char`, matching how
-/// `engine-host-cef`/`engine-host-servo` already split "physical key" from
-/// "produced text" — see `ipc_protocol::InputEvent::Char`'s doc comment.
+/// Letters/digits/space deliberately do *not* map to their own real keyval
+/// here (`GDK_KEY_a` etc.) — GTK's input-method handling reads a
+/// `GdkEventKey`'s keyval directly to decide what text to insert, so a
+/// real letter keyval on `KeyDown` inserts text *in addition to* the
+/// separate `InputEvent::Char` pair below (double-insert, the same class
+/// of bug Servo hit — see project memory). Worse, in testing this left
+/// WebKitGTK's input-method context in a state where it silently dropped
+/// every keystroke after the first. `GDK_KEY_VoidSymbol` (X11's "this key
+/// has no keysym" placeholder) is GDK's nearest equivalent to Servo's fix
+/// (`Key::Named(NamedKey::Unidentified)`) — a valid key event for
+/// shortcut-matching purposes (which key off `KeyCode` on the browser-ui
+/// side, never a keyval) that produces no text of its own, leaving
+/// `InputEvent::Char`'s `send_char_event` as the only thing that ever
+/// inserts real text, mirroring how CEF/Servo already split "physical key"
+/// from "produced text".
 fn key_to_gdk_keyval(key: KeyCode) -> Option<u32> {
     use gdk::ffi::*;
     let keyval = match key {
-        KeyCode::KeyA => GDK_KEY_a,
-        KeyCode::KeyB => GDK_KEY_b,
-        KeyCode::KeyC => GDK_KEY_c,
-        KeyCode::KeyD => GDK_KEY_d,
-        KeyCode::KeyE => GDK_KEY_e,
-        KeyCode::KeyF => GDK_KEY_f,
-        KeyCode::KeyG => GDK_KEY_g,
-        KeyCode::KeyH => GDK_KEY_h,
-        KeyCode::KeyI => GDK_KEY_i,
-        KeyCode::KeyJ => GDK_KEY_j,
-        KeyCode::KeyK => GDK_KEY_k,
-        KeyCode::KeyL => GDK_KEY_l,
-        KeyCode::KeyM => GDK_KEY_m,
-        KeyCode::KeyN => GDK_KEY_n,
-        KeyCode::KeyO => GDK_KEY_o,
-        KeyCode::KeyP => GDK_KEY_p,
-        KeyCode::KeyQ => GDK_KEY_q,
-        KeyCode::KeyR => GDK_KEY_r,
-        KeyCode::KeyS => GDK_KEY_s,
-        KeyCode::KeyT => GDK_KEY_t,
-        KeyCode::KeyU => GDK_KEY_u,
-        KeyCode::KeyV => GDK_KEY_v,
-        KeyCode::KeyW => GDK_KEY_w,
-        KeyCode::KeyX => GDK_KEY_x,
-        KeyCode::KeyY => GDK_KEY_y,
-        KeyCode::KeyZ => GDK_KEY_z,
-        KeyCode::Digit0 => GDK_KEY_0,
-        KeyCode::Digit1 => GDK_KEY_1,
-        KeyCode::Digit2 => GDK_KEY_2,
-        KeyCode::Digit3 => GDK_KEY_3,
-        KeyCode::Digit4 => GDK_KEY_4,
-        KeyCode::Digit5 => GDK_KEY_5,
-        KeyCode::Digit6 => GDK_KEY_6,
-        KeyCode::Digit7 => GDK_KEY_7,
-        KeyCode::Digit8 => GDK_KEY_8,
-        KeyCode::Digit9 => GDK_KEY_9,
+        KeyCode::KeyA
+        | KeyCode::KeyB
+        | KeyCode::KeyC
+        | KeyCode::KeyD
+        | KeyCode::KeyE
+        | KeyCode::KeyF
+        | KeyCode::KeyG
+        | KeyCode::KeyH
+        | KeyCode::KeyI
+        | KeyCode::KeyJ
+        | KeyCode::KeyK
+        | KeyCode::KeyL
+        | KeyCode::KeyM
+        | KeyCode::KeyN
+        | KeyCode::KeyO
+        | KeyCode::KeyP
+        | KeyCode::KeyQ
+        | KeyCode::KeyR
+        | KeyCode::KeyS
+        | KeyCode::KeyT
+        | KeyCode::KeyU
+        | KeyCode::KeyV
+        | KeyCode::KeyW
+        | KeyCode::KeyX
+        | KeyCode::KeyY
+        | KeyCode::KeyZ
+        | KeyCode::Digit0
+        | KeyCode::Digit1
+        | KeyCode::Digit2
+        | KeyCode::Digit3
+        | KeyCode::Digit4
+        | KeyCode::Digit5
+        | KeyCode::Digit6
+        | KeyCode::Digit7
+        | KeyCode::Digit8
+        | KeyCode::Digit9
+        | KeyCode::Space => GDK_KEY_VoidSymbol,
         KeyCode::Enter => GDK_KEY_Return,
         KeyCode::Backspace => GDK_KEY_BackSpace,
         KeyCode::Tab => GDK_KEY_Tab,
-        KeyCode::Space => GDK_KEY_space,
         KeyCode::Escape => GDK_KEY_Escape,
         KeyCode::Delete => GDK_KEY_Delete,
         KeyCode::ArrowLeft => GDK_KEY_Left,
@@ -294,8 +303,10 @@ fn send_key_event(
 /// is delivered as a `GDK_KEY_PRESS`+`GDK_KEY_RELEASE` pair carrying the
 /// Unicode codepoint's own keyval — `gdk_unicode_to_keyval` maps a
 /// codepoint to the matching X11 keysym (identity for ASCII, `0x1000000 |
-/// codepoint` for anything above the direct-mapped Latin-1/keysym range),
-/// which is what WebKitGTK's input handling actually reads text from.
+/// codepoint` for anything above the direct-mapped Latin-1/keysym range).
+/// This is the *only* thing that inserts text on WebKit (see
+/// `key_to_gdk_keyval`'s doc comment) — `KeyDown`/`KeyUp` deliberately
+/// don't, for letters/digits/space.
 fn send_char_event(window: &gdk::Window, device: Option<&gdk::Device>, codepoint: u32) {
     use gdk::glib::translate::{IntoGlib, ToGlibPtr, ToGlibPtrMut};
 
@@ -320,3 +331,4 @@ fn send_char_event(window: &gdk::Window, device: Option<&gdk::Device>, codepoint
         ev.put();
     }
 }
+
