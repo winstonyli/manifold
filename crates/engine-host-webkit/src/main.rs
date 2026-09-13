@@ -69,6 +69,9 @@ fn main() {
     let mut width = DEFAULT_WIDTH as u32;
     let mut height = DEFAULT_HEIGHT as u32;
     let mut frame_id: u64 = 0;
+    // M5: background tabs stay alive but stop sending frames; see
+    // HostToEngine::SetVisible's doc comment.
+    let mut visible = true;
     // Last-sent NavigationStateChanged fields, compared each tick against
     // the WebView's live properties (`webview.uri()`/`title()`/
     // `is_loading()`/`can_go_back()`/`can_go_forward()`) rather than
@@ -124,6 +127,9 @@ fn main() {
                 HostToEngine::SetZoom { factor } => {
                     webview.set_zoom_level(factor);
                 }
+                HostToEngine::SetVisible(v) => {
+                    visible = v;
+                }
                 HostToEngine::GetState => {
                     let url = webview
                         .uri()
@@ -161,17 +167,19 @@ fn main() {
             });
         }
 
-        if let Some(pixbuf) = offscreen.pixbuf() {
-            if pixbuf.width() as u32 == width && pixbuf.height() as u32 == height {
-                let pixels = tightly_packed_rgba(&pixbuf);
-                frame_id += 1;
-                let _ = to_host.send(&EngineToHost::FrameReady {
-                    frame_id,
-                    width,
-                    height,
-                    damage: None,
-                    pixels: Some(pixels),
-                });
+        if visible {
+            if let Some(pixbuf) = offscreen.pixbuf() {
+                if pixbuf.width() as u32 == width && pixbuf.height() as u32 == height {
+                    let pixels = tightly_packed_rgba(&pixbuf);
+                    frame_id += 1;
+                    let _ = to_host.send(&EngineToHost::FrameReady {
+                        frame_id,
+                        width,
+                        height,
+                        damage: None,
+                        pixels: Some(pixels),
+                    });
+                }
             }
         }
 

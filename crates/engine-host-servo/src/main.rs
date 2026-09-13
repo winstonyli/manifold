@@ -152,6 +152,11 @@ fn main() {
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
+    // M5: background tabs stay alive but stop sending frames; browser-ui
+    // defaults every newly spawned tab to visible and explicitly turns it
+    // off right after if it isn't the focused one, so `true` here matches
+    // pre-M5 single-tab behavior for any caller that never sends this.
+    let mut visible = true;
 
     loop {
         servo.spin_event_loop();
@@ -196,6 +201,9 @@ fn main() {
                     // TODO(M4): WebView doesn't expose a direct zoom setter in
                     // this API surface yet; revisit once tab UI needs it.
                 }
+                HostToEngine::SetVisible(v) => {
+                    visible = v;
+                }
                 HostToEngine::GetState => {
                     // Zoom still deferred (see the SetZoom TODO above) — url
                     // is the only piece M2's swap sequence actually replays.
@@ -222,7 +230,7 @@ fn main() {
             }
         }
 
-        if *delegate.frame_ready.borrow() {
+        if visible && *delegate.frame_ready.borrow() {
             *delegate.frame_ready.borrow_mut() = false;
             webview.paint();
             let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));

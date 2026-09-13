@@ -116,6 +116,9 @@ fn main() {
     let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&tab_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
         .expect("create shared frame buffer");
     let mut frame_id: u64 = 0;
+    // M5: background tabs stay alive but stop sending frames; see
+    // HostToEngine::SetVisible's doc comment.
+    let mut visible = true;
 
     loop {
         do_message_loop_work();
@@ -162,6 +165,9 @@ fn main() {
                     // matching engine-host-servo's original M1 sequencing.
                 }
                 HostToEngine::SetZoom { .. } => {}
+                HostToEngine::SetVisible(v) => {
+                    visible = v;
+                }
                 HostToEngine::GetState => {
                     let _ = control.send(&EngineToHost::StateSnapshot(TabState {
                         url: nav_state.borrow().url.clone(),
@@ -189,23 +195,28 @@ fn main() {
             }
         }
 
-        if let Some(frame) = latest_frame.borrow_mut().take() {
-            if buffer_size != (frame.width, frame.height) {
-                drop(frame_buffer);
-                frame_buffer =
-                    ipc_protocol::SharedFrameBuffer::create(&tab_id, frame.width, frame.height)
-                        .expect("recreate shared frame buffer to match painted frame size");
-                buffer_size = (frame.width, frame.height);
+        if visible {
+            if let Some(frame) = latest_frame.borrow_mut().take() {
+                if buffer_size != (frame.width, frame.height) {
+                    drop(frame_buffer);
+                    frame_buffer = ipc_protocol::SharedFrameBuffer::create(
+                        &tab_id,
+                        frame.width,
+                        frame.height,
+                    )
+                    .expect("recreate shared frame buffer to match painted frame size");
+                    buffer_size = (frame.width, frame.height);
+                }
+                frame_buffer.write_frame(&frame.bgra);
+                frame_id += 1;
+                let _ = control.send(&EngineToHost::FrameReady {
+                    frame_id,
+                    width: frame.width,
+                    height: frame.height,
+                    damage: None,
+                    pixels: None,
+                });
             }
-            frame_buffer.write_frame(&frame.bgra);
-            frame_id += 1;
-            let _ = control.send(&EngineToHost::FrameReady {
-                frame_id,
-                width: frame.width,
-                height: frame.height,
-                damage: None,
-                pixels: None,
-            });
         }
 
         std::thread::sleep(Duration::from_millis(8));
