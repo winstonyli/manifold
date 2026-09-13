@@ -193,21 +193,34 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     Ok((stdout_file, stderr_file))
 }
 
+/// Synthesizes `EngineToHost::Crashed` when the connection to an
+/// engine-host drops, since a hard-killed/panicked process cannot send a
+/// message about its own death. Also fires on an *intentional* teardown
+/// (a swap's old tab getting dropped, which sends `Shutdown` then kills
+/// the child) — harmless there: `tx`'s paired `rx` was owned by that same
+/// now-dropped `EngineTab`, so the `send` below simply fails and is
+/// ignored; only a tab that's still the *current* one has a live `rx` to
+/// actually receive this.
 fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver<EngineToHost> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || loop {
-        let msg = match &mut from_engine {
-            RemoteOrLocalReceiver::Local(t) => t.recv::<EngineToHost>(),
-            RemoteOrLocalReceiver::Remote(t) => t.recv::<EngineToHost>(),
-        };
-        match msg {
-            Ok(msg) => {
-                if tx.send(msg).is_err() {
-                    break;
+    std::thread::spawn(move || {
+        loop {
+            let msg = match &mut from_engine {
+                RemoteOrLocalReceiver::Local(t) => t.recv::<EngineToHost>(),
+                RemoteOrLocalReceiver::Remote(t) => t.recv::<EngineToHost>(),
+            };
+            match msg {
+                Ok(msg) => {
+                    if tx.send(msg).is_err() {
+                        return;
+                    }
                 }
+                Err(_) => break,
             }
-            Err(_) => break,
         }
+        let _ = tx.send(EngineToHost::Crashed {
+            reason: "engine-host connection lost".to_string(),
+        });
     });
     rx
 }
