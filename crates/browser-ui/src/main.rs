@@ -48,8 +48,55 @@ const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(1600.0, 1100.0);
 const GRAPH_ZOOM_MIN: f32 = 0.15;
 const GRAPH_ZOOM_MAX: f32 = 3.0;
 
+/// Distinct fills for the two stacked chrome bars (see `CHROME_HEIGHT_POINTS`'
+/// doc comment) so they read as two separate strips rather than one flat
+/// slab — the tab strip a shade darker (background-like), the toolbar a
+/// shade lighter (surface-like), both distinct from the graph/content area
+/// below.
+const TAB_STRIP_FILL: egui::Color32 = egui::Color32::from_rgb(20, 21, 25);
+const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(30, 31, 36);
+
 fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
+}
+
+/// A single accent color used throughout — selection highlights, hyperlinks,
+/// the focused-tab-strip fill, the focused graph node's border — so the
+/// whole chrome reads as one coherent theme rather than egui's flat default
+/// dark gray-on-gray.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
+
+/// Applied once at startup (see `Default for App`). Bumps corner rounding
+/// and spacing up from egui's fairly tight defaults (which read as "plain
+/// tool window" rather than "app chrome") and threads `ACCENT` through
+/// selection/hyperlink/focus colors.
+fn apply_style(ctx: &egui::Context) {
+    // `all_styles_mut` (not `style`/`set_style`, egui 0.36 keeps separate
+    // dark/light styles internally) applies the same tweaks regardless of
+    // which theme the OS/window ends up reporting — this app's chrome is
+    // dark-only in practice, but there's no "just style whatever's active"
+    // entry point, so set both identically.
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+
+        let corner_radius: egui::CornerRadius = 6u8.into();
+        for widgets in [
+            &mut style.visuals.widgets.noninteractive,
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+            &mut style.visuals.widgets.open,
+        ] {
+            widgets.corner_radius = corner_radius;
+        }
+        style.visuals.window_corner_radius = 8u8.into();
+        style.visuals.menu_corner_radius = 8u8.into();
+
+        style.visuals.selection.bg_fill = ACCENT;
+        style.visuals.selection.stroke.color = egui::Color32::WHITE;
+        style.visuals.hyperlink_color = ACCENT;
+    });
 }
 
 fn engine_label(kind: EngineKind) -> &'static str {
@@ -126,6 +173,8 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
+        let egui_ctx = egui::Context::default();
+        apply_style(&egui_ctx);
         Self {
             window: None,
             gpu: None,
@@ -136,7 +185,7 @@ impl Default for App {
             next_tab_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
-            egui_ctx: egui::Context::default(),
+            egui_ctx,
             egui_state: None,
             address_bar_text: INITIAL_URL.to_string(),
             address_bar_focused: false,
@@ -448,6 +497,11 @@ impl App {
 
         egui::Panel::top("tab_strip")
             .exact_size(TAB_STRIP_HEIGHT_POINTS)
+            .frame(
+                egui::Frame::default()
+                    .fill(TAB_STRIP_FILL)
+                    .inner_margin(egui::Margin::symmetric(12, 0)),
+            )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     if ui.button("Graph").clicked() {
@@ -459,23 +513,27 @@ impl App {
                     } else {
                         node.title.as_str()
                     };
-                    let text = if node.loading {
-                        format!("(loading) {label}")
-                    } else {
-                        label.to_string()
-                    };
-                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id)) {
+                    if node.loading {
+                        ui.add(egui::Spinner::new().size(12.0));
+                    } else if let Some(tex_id) =
+                        self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id))
+                    {
                         ui.add(egui::Image::new(egui::load::SizedTexture::new(
                             tex_id,
                             FAVICON_SIZE,
                         )));
                     }
-                    ui.add(egui::Label::new(text).truncate());
+                    ui.add(egui::Label::new(label).truncate());
                 });
             });
 
         egui::Panel::top("toolbar")
             .exact_size(TOOLBAR_HEIGHT_POINTS)
+            .frame(
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
+            )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     let node = &self.tabs[&focused_id];
@@ -547,6 +605,11 @@ impl App {
         let mut reset_view = false;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
+            .frame(
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
+            )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     if ui.button("+ New Tab").clicked() {
@@ -653,15 +716,25 @@ impl App {
                     );
 
                     let is_focused = self.focused.as_deref() == Some(id.as_str());
-                    ui.painter()
-                        .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                    let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+
+                    let card_fill = if is_hovered {
+                        ui.visuals().extreme_bg_color.gamma_multiply(1.35)
+                    } else {
+                        ui.visuals().extreme_bg_color
+                    };
+                    ui.painter().rect_filled(rect, 6.0, card_fill);
+                    let (border_width, border_color) = if is_focused {
+                        (2.5, ACCENT)
+                    } else if is_hovered {
+                        (1.5, ui.visuals().text_color())
+                    } else {
+                        (1.0, ui.visuals().weak_text_color())
+                    };
                     ui.painter().rect_stroke(
                         rect,
                         6.0,
-                        egui::Stroke::new(
-                            if is_focused { 2.5 } else { 1.0 },
-                            ui.visuals().text_color(),
-                        ),
+                        egui::Stroke::new(border_width, border_color),
                         egui::StrokeKind::Inside,
                     );
 
@@ -675,12 +748,9 @@ impl App {
                             egui::Color32::WHITE,
                         );
                     } else {
-                        ui.painter().text(
-                            thumb_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "loading...",
-                            egui::FontId::default(),
-                            ui.visuals().weak_text_color(),
+                        ui.put(
+                            egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0)),
+                            egui::Spinner::new().size(24.0),
                         );
                     }
 
@@ -714,25 +784,40 @@ impl App {
                     // Close button: a small square just outside the node's own
                     // top-right corner, given its own interact() id so it doesn't
                     // compete with the node's own click/drag sense over the same
-                    // pixels.
-                    let close_rect =
-                        egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
-                    let close_response = ui.interact(
-                        close_rect,
-                        egui::Id::new(("graph_node_close", id.as_str())),
-                        egui::Sense::click(),
-                    );
-                    ui.painter()
-                        .rect_filled(close_rect, 3.0, ui.visuals().extreme_bg_color);
-                    ui.painter().text(
-                        close_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "x",
-                        egui::FontId::default(),
-                        ui.visuals().text_color(),
-                    );
-                    if close_response.clicked() {
-                        close_requested = Some(id.clone());
+                    // pixels. Only shown while the node is hovered — decluttering
+                    // the graph at a glance was worth the tiny risk of "hover,
+                    // then move a few px to reach the button" (same tradeoff
+                    // real browser tab strips make for their own close buttons).
+                    if is_hovered {
+                        let close_rect =
+                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
+                        let close_response = ui.interact(
+                            close_rect,
+                            egui::Id::new(("graph_node_close", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let close_fill = if close_response.hovered() {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                        ui.painter().rect_stroke(
+                            close_rect,
+                            4.0,
+                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            close_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "x",
+                            egui::FontId::default(),
+                            ui.visuals().text_color(),
+                        );
+                        if close_response.clicked() {
+                            close_requested = Some(id.clone());
+                        }
                     }
 
                     if response.dragged() {
@@ -784,7 +869,7 @@ impl App {
                         ui.painter().rect_stroke(
                             rect,
                             6.0,
-                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            egui::Stroke::new(1.5, ACCENT),
                             egui::StrokeKind::Inside,
                         );
                     }
