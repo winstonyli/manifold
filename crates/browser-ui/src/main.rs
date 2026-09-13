@@ -6,11 +6,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpu::GpuState;
-use ipc_protocol::{frame_path, EngineToHost, HostToEngine, InputEvent, MouseButton, SharedFrameBuffer};
+use ipc_protocol::{
+    frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton,
+    SharedFrameBuffer,
+};
 use process_manager::{EngineKind, EngineTab};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton as WinitMouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const INITIAL_URL: &str = "https://example.com";
@@ -82,6 +86,11 @@ struct App {
     view_mode: ViewMode,
     next_tab_id: u64,
     cursor_pos: (f64, f64),
+    /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
+    /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
+    /// carries the modifier state at the time of that key, not just the
+    /// currently-pressed key itself.
+    key_modifiers: u8,
 
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
@@ -106,6 +115,7 @@ impl Default for App {
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
             cursor_pos: (0.0, 0.0),
+            key_modifiers: 0,
             egui_ctx: egui::Context::default(),
             egui_state: None,
             address_bar_text: INITIAL_URL.to_string(),
@@ -820,6 +830,44 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(new_modifiers) => {
+                self.key_modifiers = winit_modifiers_to_bits(new_modifiers.state());
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if in_tab_view && !consumed_by_egui {
+                    if let Some(id) = self.focused.clone() {
+                        if let Some(node) = self.tabs.get_mut(&id) {
+                            if let Some(key) = translate_key_code(event.physical_key) {
+                                let input = match event.state {
+                                    ElementState::Pressed => InputEvent::KeyDown {
+                                        key,
+                                        modifiers: self.key_modifiers,
+                                    },
+                                    ElementState::Released => InputEvent::KeyUp {
+                                        key,
+                                        modifiers: self.key_modifiers,
+                                    },
+                                };
+                                node.tab.send(&HostToEngine::Input(input));
+                            }
+                            // The produced text (after layout/shift/dead-key
+                            // processing) is separate from the physical key
+                            // above — a page's text field wants this, a
+                            // shortcut wants the key. winit only reports
+                            // `text` on the press, not the release.
+                            if event.state == ElementState::Pressed {
+                                if let Some(text) = &event.text {
+                                    for ch in text.chars() {
+                                        node.tab.send(&HostToEngine::Input(InputEvent::Char {
+                                            codepoint: ch as u32,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.drain_tab_events();
 
@@ -988,6 +1036,93 @@ fn translate_mouse_button(button: WinitMouseButton) -> Option<MouseButton> {
         WinitMouseButton::Middle => Some(MouseButton::Middle),
         _ => None,
     }
+}
+
+fn winit_modifiers_to_bits(state: ModifiersState) -> u8 {
+    let mut bits = 0u8;
+    if state.shift_key() {
+        bits |= modifiers::SHIFT;
+    }
+    if state.control_key() {
+        bits |= modifiers::CONTROL;
+    }
+    if state.alt_key() {
+        bits |= modifiers::ALT;
+    }
+    if state.super_key() {
+        bits |= modifiers::SUPER;
+    }
+    bits
+}
+
+/// Translates winit's cross-platform physical key into our own
+/// engine-agnostic `ipc_protocol::KeyCode` — deliberately not forwarding
+/// winit's `KeyCode` directly over IPC (not meant to be a stable wire
+/// format across winit versions); see that type's own doc comment. Common
+/// keys only, matching `KeyCode`'s own scope.
+fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
+    let PhysicalKey::Code(code) = key else {
+        return None;
+    };
+    Some(match code {
+        WinitKeyCode::KeyA => KeyCode::KeyA,
+        WinitKeyCode::KeyB => KeyCode::KeyB,
+        WinitKeyCode::KeyC => KeyCode::KeyC,
+        WinitKeyCode::KeyD => KeyCode::KeyD,
+        WinitKeyCode::KeyE => KeyCode::KeyE,
+        WinitKeyCode::KeyF => KeyCode::KeyF,
+        WinitKeyCode::KeyG => KeyCode::KeyG,
+        WinitKeyCode::KeyH => KeyCode::KeyH,
+        WinitKeyCode::KeyI => KeyCode::KeyI,
+        WinitKeyCode::KeyJ => KeyCode::KeyJ,
+        WinitKeyCode::KeyK => KeyCode::KeyK,
+        WinitKeyCode::KeyL => KeyCode::KeyL,
+        WinitKeyCode::KeyM => KeyCode::KeyM,
+        WinitKeyCode::KeyN => KeyCode::KeyN,
+        WinitKeyCode::KeyO => KeyCode::KeyO,
+        WinitKeyCode::KeyP => KeyCode::KeyP,
+        WinitKeyCode::KeyQ => KeyCode::KeyQ,
+        WinitKeyCode::KeyR => KeyCode::KeyR,
+        WinitKeyCode::KeyS => KeyCode::KeyS,
+        WinitKeyCode::KeyT => KeyCode::KeyT,
+        WinitKeyCode::KeyU => KeyCode::KeyU,
+        WinitKeyCode::KeyV => KeyCode::KeyV,
+        WinitKeyCode::KeyW => KeyCode::KeyW,
+        WinitKeyCode::KeyX => KeyCode::KeyX,
+        WinitKeyCode::KeyY => KeyCode::KeyY,
+        WinitKeyCode::KeyZ => KeyCode::KeyZ,
+        WinitKeyCode::Digit0 => KeyCode::Digit0,
+        WinitKeyCode::Digit1 => KeyCode::Digit1,
+        WinitKeyCode::Digit2 => KeyCode::Digit2,
+        WinitKeyCode::Digit3 => KeyCode::Digit3,
+        WinitKeyCode::Digit4 => KeyCode::Digit4,
+        WinitKeyCode::Digit5 => KeyCode::Digit5,
+        WinitKeyCode::Digit6 => KeyCode::Digit6,
+        WinitKeyCode::Digit7 => KeyCode::Digit7,
+        WinitKeyCode::Digit8 => KeyCode::Digit8,
+        WinitKeyCode::Digit9 => KeyCode::Digit9,
+        WinitKeyCode::Enter => KeyCode::Enter,
+        WinitKeyCode::Backspace => KeyCode::Backspace,
+        WinitKeyCode::Tab => KeyCode::Tab,
+        WinitKeyCode::Space => KeyCode::Space,
+        WinitKeyCode::Escape => KeyCode::Escape,
+        WinitKeyCode::Delete => KeyCode::Delete,
+        WinitKeyCode::ArrowLeft => KeyCode::ArrowLeft,
+        WinitKeyCode::ArrowRight => KeyCode::ArrowRight,
+        WinitKeyCode::ArrowUp => KeyCode::ArrowUp,
+        WinitKeyCode::ArrowDown => KeyCode::ArrowDown,
+        WinitKeyCode::Home => KeyCode::Home,
+        WinitKeyCode::End => KeyCode::End,
+        WinitKeyCode::PageUp => KeyCode::PageUp,
+        WinitKeyCode::PageDown => KeyCode::PageDown,
+        WinitKeyCode::ShiftLeft => KeyCode::ShiftLeft,
+        WinitKeyCode::ShiftRight => KeyCode::ShiftRight,
+        WinitKeyCode::ControlLeft => KeyCode::ControlLeft,
+        WinitKeyCode::ControlRight => KeyCode::ControlRight,
+        WinitKeyCode::AltLeft => KeyCode::AltLeft,
+        WinitKeyCode::AltRight => KeyCode::AltRight,
+        _ => return None,
+    })
 }
 
 fn main() {
