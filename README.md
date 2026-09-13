@@ -2,7 +2,7 @@
 
 A browser where each tab can run on a different rendering engine — Blink (via CEF), Servo, or WebKit (via WebKitGTK) — and the engine backing a tab can be swapped live without closing it.
 
-Status: M0–M4 complete — single-engine tabs on all three engines, live engine swap, a real chrome (address bar, back/forward, engine picker), and crash recovery, all verified end-to-end. Full milestone plan: `C:\Users\Winston Li\.claude\plans\stateless-napping-sunset.md`.
+Status: M0–M5 complete — single-engine tabs on all three engines, live engine swap, a real chrome, crash recovery, and multiple tabs shown as a force-directed graph (peek to preview, click to focus), all verified end-to-end. Full milestone plan: `C:\Users\Winston Li\.claude\plans\stateless-napping-sunset.md`.
 
 ## Architecture
 
@@ -72,7 +72,7 @@ D="target/debug"
 HASH_DIR=$(ls -dt "$D"/build/mozangle-*/out | head -1)
 cmp "$HASH_DIR/libEGL.dll" "$D/libEGL.dll" || echo "stale, recopy needed"
 ```
-A rebuild also tends to leave the *previous* hash's directory behind alongside the new one (Cargo doesn't clean up an old fingerprint just because it's no longer used) — these accumulate across sessions and are a repeat cause of this project filling the disk. Prune anything under `target/debug/build/{mozangle,cef-dll-sys}-*` except the newest of each once you've confirmed the copies are up to date.
+A rebuild also tends to leave the *previous* hash's directory behind alongside the new one (Cargo doesn't clean up an old fingerprint just because it's no longer used) — these accumulate across sessions and are a repeat cause of this project filling the disk. Prune anything under `target/debug/build/{mozangle,cef-dll-sys}-*` except the newest of each once you've confirmed the copies are up to date — but verify *which* directory is actually current (e.g. by `cmp`ing its output against the top-level copy) rather than trusting `ls -dt`/mtime ordering to pick it for you: a build touches every candidate directory's own fingerprint bookkeeping regardless of whether it recompiled anything, which can leave several of them with near-identical timestamps and make "newest" ambiguous. Getting this wrong just means the next build regenerates whatever you deleted — not silent breakage — but it's still wasted rebuild time.
 
 ## Running
 
@@ -80,14 +80,22 @@ A rebuild also tends to leave the *previous* hash's directory behind alongside t
 target/debug/browser-ui.exe
 ```
 
-Starts a single tab in Servo, loading `https://example.com`. The top strip is the tab (title/loading indicator); below it, the toolbar has back/forward buttons, an engine-picker dropdown (swaps the tab live between Servo/CEF/WebKit), and an address bar (type a URL, press Enter). The URL carries over on an engine swap; other state (cookies, scroll position, etc.) does not — a known v1 limitation, not a bug.
+Starts on the **graph view**, with one tab (Servo, loading `https://example.com`) shown as a node. This is the primary view for managing multiple tabs:
 
-If an engine-host process dies (crashes, or is killed), the tab automatically respawns the same engine at its last-known URL — you don't need to do anything.
+- **Graph view**: every tab is a node (its last frame as a thumbnail, title, current engine) connected by an edge to the tab it was opened from. Hover a node to peek an enlarged preview without changing focus; click a node to focus it (switches to Tab view); drag a node to reposition it (a force-directed layout otherwise keeps nodes spread out and settles on its own); the small "x" at a node's corner closes that tab, reparenting its children to its own parent. "+ New Tab" opens a child of whichever tab is currently focused (or a new root if none is).
+- **Tab view**: today's chrome for whichever tab is focused — address bar (type a URL, press Enter), back/forward, an engine-picker dropdown (swaps the tab live between Servo/CEF/WebKit). The "Graph" button (or Escape) returns to the graph.
+
+Only the focused tab ever actually renders — every other tab's engine-host process stays alive (so its page keeps running, JS timers and all) but stops producing frames until it's focused again; its node just shows the last frame it produced. New tabs are only ever created via "+ New Tab" — a page's own `target=_blank`/`window.open`/ctrl+click does not spawn a node (not implemented).
+
+If an engine-host process dies (crashes, or is killed) — focused or not — the tab automatically respawns the same engine at its last-known URL, keeping its place in the graph.
+
+The URL carries over on an engine swap; other state (cookies, scroll position, etc.) does not — a known v1 limitation, not a bug.
 
 Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`.
 
 ## Known limitations
 
-- Single tab only (M5 — multi-tab — not started).
 - Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only the URL carries over.
 - WebKit tab input (mouse/keyboard) is not wired up yet — rendering only. Servo and CEF handle mouse; keyboard input isn't wired up on any engine yet.
+- New tabs only via the explicit "+ New Tab" action — no page-triggered new tabs (ctrl+click, `target=_blank`, `window.open`).
+- A suspended tab's cached thumbnail is a full content-resolution RGBA buffer retained per background tab (not downscaled) — fine for tens of tabs, a real scaling limit past that.
