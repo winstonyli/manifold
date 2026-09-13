@@ -1,9 +1,11 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
-use webkit2gtk::{WebView, WebViewExt};
+use webkit2gtk::{URIRequestExt, WebView, WebViewExt};
 
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
@@ -65,6 +67,26 @@ fn main() {
     offscreen.add(&webview);
     offscreen.set_default_size(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     offscreen.show_all();
+
+    // Page-triggered new tabs (target=_blank/window.open()/ctrl+click):
+    // "create" is WebKitGTK's popup-interception signal, handed the
+    // request's URL *before* anything is created - grab it and always
+    // return None (never actually create the popup webview; browser-ui
+    // spawns a real child tab for `url` instead, once drained below).
+    let pending_open_tab: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    {
+        let pending_open_tab = pending_open_tab.clone();
+        // Fully-qualified: `connect_create` also exists on gtk::atk's
+        // AtkWindowExt (an unrelated accessibility signal) via the same
+        // glob-imported gtk::prelude::*, and plain method-call syntax
+        // can't disambiguate which trait's version to use here.
+        <WebView as webkit2gtk::WebViewExt>::connect_create(&webview, move |_webview, nav_action| {
+            if let Some(uri) = nav_action.request().and_then(|r| r.uri()) {
+                *pending_open_tab.borrow_mut() = Some(uri.to_string());
+            }
+            None
+        });
+    }
 
     let mut width = DEFAULT_WIDTH as u32;
     let mut height = DEFAULT_HEIGHT as u32;
@@ -184,6 +206,10 @@ fn main() {
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
             });
+        }
+
+        if let Some(url) = pending_open_tab.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
         }
 
         if visible {

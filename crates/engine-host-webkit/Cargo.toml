@@ -7,4 +7,4 @@ edition.workspace = true
 gtk = "0.18"
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 url = "2.5.8"
-webkit2gtk = "2.0.2"
+webkit2gtk = { version = "2.0.2", features = ["v2_6"] }
