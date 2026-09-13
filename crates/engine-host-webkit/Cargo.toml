@@ -1,0 +1,10 @@
+[package]
+name = "engine-host-webkit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gtk = "0.18"
+ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+url = "2.5.8"
+webkit2gtk = "2.0.2"
