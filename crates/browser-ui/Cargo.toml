@@ -1,0 +1,10 @@
+[package]
+name = "browser-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+pollster = "1.0.1"
+wgpu = "30.0.1"
+winit = "0.30.13"

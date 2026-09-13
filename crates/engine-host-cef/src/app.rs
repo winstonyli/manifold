@@ -1,0 +1,88 @@
+use cef::{
+    self, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, rc::Rc, *,
+};
+use std::cell::RefCell;
+
+/// Top-level CEF app callbacks. Mirrors tauri-apps/cef-rs's `examples/osr`
+/// reference: append the switches that make windowless (OSR) rendering
+/// behave in a headless-friendly way (no crash-restore UI, no error
+/// dialogs — this process has no window at all).
+#[derive(Clone)]
+pub struct EngineApp {}
+
+impl EngineApp {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+wrap_app! {
+    pub struct AppBuilder {
+        app: EngineApp,
+    }
+
+    impl App {
+        fn on_before_command_line_processing(
+            &self,
+            _process_type: Option<&cef::CefStringUtf16>,
+            command_line: Option<&mut cef::CommandLine>,
+        ) {
+            let Some(command_line) = command_line else {
+                return;
+            };
+            command_line.append_switch(Some(&"no-sandbox".into()));
+            command_line.append_switch(Some(&"no-startup-window".into()));
+            command_line.append_switch(Some(&"noerrdialogs".into()));
+            command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
+            command_line.append_switch(Some(&"use-mock-keychain".into()));
+            command_line.append_switch_with_value(
+                Some(&"enable-logging".into()),
+                Some(&"stderr".into()),
+            );
+            command_line.append_switch_with_value(Some(&"v".into()), Some(&"1".into()));
+        }
+
+        fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
+            Some(BrowserProcessHandlerBuilder::build(
+                EngineBrowserProcessHandler::new(),
+            ))
+        }
+    }
+}
+
+impl AppBuilder {
+    pub fn build(app: EngineApp) -> cef::App {
+        Self::new(app)
+    }
+}
+
+#[derive(Clone)]
+pub struct EngineBrowserProcessHandler {
+    is_cef_ready: RefCell<bool>,
+}
+
+impl EngineBrowserProcessHandler {
+    pub fn new() -> Self {
+        Self {
+            is_cef_ready: RefCell::new(false),
+        }
+    }
+}
+
+wrap_browser_process_handler! {
+    pub struct BrowserProcessHandlerBuilder {
+        handler: EngineBrowserProcessHandler,
+    }
+
+    impl BrowserProcessHandler {
+        fn on_context_initialized(&self) {
+            *self.handler.is_cef_ready.borrow_mut() = true;
+        }
+    }
+}
+
+impl BrowserProcessHandlerBuilder {
+    pub fn build(handler: EngineBrowserProcessHandler) -> BrowserProcessHandler {
+        Self::new(handler)
+    }
+}
