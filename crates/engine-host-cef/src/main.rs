@@ -1,6 +1,7 @@
 mod app;
 mod client;
 mod input;
+mod life_span_handler;
 mod nav_handler;
 mod render_handler;
 
@@ -13,6 +14,7 @@ use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
+use life_span_handler::new_shared_pending_open_tab;
 use nav_handler::new_shared_nav_state;
 use render_handler::EngineRenderHandler;
 
@@ -93,6 +95,7 @@ fn main() {
     let (render_handler, size, latest_frame) =
         EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let nav_state = new_shared_nav_state(initial_url.clone());
+    let pending_open_tab = new_shared_pending_open_tab();
 
     let window_info = WindowInfo {
         windowless_rendering_enabled: true as _,
@@ -105,7 +108,11 @@ fn main() {
     };
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
-        Some(&mut ClientBuilder::build(render_handler, nav_state.clone())),
+        Some(&mut ClientBuilder::build(
+            render_handler,
+            nav_state.clone(),
+            pending_open_tab.clone(),
+        )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
         None,
@@ -190,6 +197,10 @@ fn main() {
                     loading: nav.loading,
                 });
             }
+        }
+
+        if let Some(url) = pending_open_tab.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::OpenTabRequested { url });
         }
 
         if visible {
