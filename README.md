@@ -46,33 +46,19 @@ wsl.exe -d Ubuntu -- bash -c 'cd "/mnt/c/Users/<you>/Documents/GitHub/multiengin
 
 Adjust the path for wherever this repo actually lives on your machine (WSL2 sees your Windows drives under `/mnt/c/...`).
 
-### Manual runtime-file placement (required after every build)
+### Runtime-file placement (required after every build)
 
-This step is not automated yet — see the `TODO` in `crates/browser-ui/src/process_manager.rs`. Both CEF and Servo need extra files placed by hand after each build, because they'd otherwise collide (both ship an ANGLE `libEGL.dll`/`libGLESv2.dll` under the same filenames, and Windows resolves an implicit DLL dependency from the loading EXE's own directory first — whichever copy landed there last silently wins for *both* engines).
+Cargo doesn't do this itself — see the `TODO` in `crates/browser-ui/src/process_manager.rs`'s `engine_binary_path`. Both CEF and Servo need extra files placed next to their binaries after each build, because they'd otherwise collide (both ship an ANGLE `libEGL.dll`/`libGLESv2.dll` under the same filenames, and Windows resolves an implicit DLL dependency from the loading EXE's own directory first — whichever copy landed there last silently wins for *both* engines).
 
-1. **Servo's ANGLE DLLs** — copy into `target/debug/` (next to `engine-host-servo.exe`):
-   ```bash
-   D="target/debug"
-   HASH_DIR=$(ls -dt "$D"/build/mozangle-*/out | head -1)
-   cp "$HASH_DIR/libEGL.dll" "$HASH_DIR/libGLESv2.dll" "$D/"
-   ```
-
-2. **CEF's full runtime**, isolated in its own subdirectory so it can't collide with Servo's copies above:
-   ```bash
-   D="target/debug"
-   mkdir -p "$D/cef-runtime"
-   HASH_DIR=$(ls -dt "$D"/build/cef-dll-sys-*/out/cef_windows_x86_64 | head -1)
-   cp -r "$HASH_DIR"/* "$D/cef-runtime/"
-   cp "$D/engine-host-cef.exe" "$D/cef-runtime/engine-host-cef.exe"
-   ```
-
-Re-run both steps after **any** rebuild — not just an obvious trigger like `cargo clean` or a `Cargo.toml` edit. In practice, Cargo has regenerated these fingerprint hashes (a new `mozangle-<hash>`/`cef-dll-sys-<hash>` directory) even for a rebuild that changed neither `Cargo.toml` nor `Cargo.lock`, leaving the manually-placed copies pointing at stale, orphaned build output. The old copies keep working right up until they silently don't (Servo: panics with `egl function was not loaded`; CEF: silently runs stale code). Don't trust file timestamps to tell you they're stale, either — `cmp` the placed copy against the current hash directory's output directly:
+Run this after every build that touches `engine-host-servo` or `engine-host-cef`:
 ```bash
-D="target/debug"
-HASH_DIR=$(ls -dt "$D"/build/mozangle-*/out | head -1)
-cmp "$HASH_DIR/libEGL.dll" "$D/libEGL.dll" || echo "stale, recopy needed"
+bash scripts/sync-runtime-deps.sh
 ```
-A rebuild also tends to leave the *previous* hash's directory behind alongside the new one (Cargo doesn't clean up an old fingerprint just because it's no longer used) — these accumulate across sessions and are a repeat cause of this project filling the disk. Prune anything under `target/debug/build/{mozangle,cef-dll-sys}-*` except the newest of each once you've confirmed the copies are up to date — but verify *which* directory is actually current (e.g. by `cmp`ing its output against the top-level copy) rather than trusting `ls -dt`/mtime ordering to pick it for you: a build touches every candidate directory's own fingerprint bookkeeping regardless of whether it recompiled anything, which can leave several of them with near-identical timestamps and make "newest" ambiguous. Getting this wrong just means the next build regenerates whatever you deleted — not silent breakage — but it's still wasted rebuild time.
+It finds Servo's ANGLE DLLs and CEF's runtime under `target/debug/build/{mozangle,cef-dll-sys}-*/`, `cmp`s each against the copy already in place, and only recopies what's actually stale (safe to run any time — a no-op if nothing changed). Not a build.rs: a build script only sees its own crate's `OUT_DIR`, not a sibling crate's, and there's no reliable cross-crate coordination here without those upstream crates cooperating (they don't) — a plain script is simpler and more honest than fighting Cargo's model.
+
+Why this needs a script at all rather than a one-time manual copy: Cargo has regenerated the `mozangle-<hash>`/`cef-dll-sys-<hash>` fingerprint directory these live under even on a rebuild that touched neither `Cargo.toml` nor `Cargo.lock`, leaving a stale copy in place that keeps working right up until it silently doesn't (Servo: panics with `egl function was not loaded`; CEF: silently runs stale code). The script picks the candidate whose own output *file* has the newest mtime, not the containing directory's — a build touches every candidate directory's own fingerprint bookkeeping on every invocation regardless of whether it actually recompiled that crate, which can leave several near-identical timestamps and make directory-mtime-based "newest" ambiguous.
+
+A rebuild also tends to leave the *previous* hash's directory behind alongside the new one (Cargo doesn't clean up an old fingerprint just because it's no longer used) — these accumulate across sessions and are a repeat cause of this project filling the disk. Safe to prune anything under `target/debug/build/{mozangle,cef-dll-sys}-*` except whichever one `scripts/sync-runtime-deps.sh` just used — re-run the script afterward to confirm nothing needed recopying. Getting this wrong (deleting the wrong one) just means the next build regenerates whatever's missing, not silent breakage — but it's wasted rebuild time.
 
 ## Running
 
