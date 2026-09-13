@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+egui-winit = "0.36.2"
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 pollster = "1.0.1"
 wgpu = "30.0.1"

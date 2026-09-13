@@ -48,6 +48,7 @@ pub struct GpuState {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     tab_texture: Option<TabTexture>,
+    egui_renderer: egui_wgpu::Renderer,
 }
 
 impl GpuState {
@@ -163,6 +164,12 @@ impl GpuState {
             cache: None,
         });
 
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &device,
+            config.format,
+            egui_wgpu::RendererOptions::default(),
+        );
+
         Self {
             surface,
             device,
@@ -172,6 +179,7 @@ impl GpuState {
             bind_group_layout,
             sampler,
             tab_texture: None,
+            egui_renderer,
         }
     }
 
@@ -232,7 +240,16 @@ impl GpuState {
         self.tab_texture = Some(TabTexture { bind_group });
     }
 
-    pub fn render(&mut self) {
+    /// `content_top_px` reserves the top strip of the window (in physical
+    /// pixels) for chrome — the content quad only draws below it — so the
+    /// tab strip/toolbar egui paints there never fights the tab's own
+    /// full-bleed texture for the same pixels. `egui` is `None` on the very
+    /// first frames before egui has produced any output yet.
+    pub fn render(
+        &mut self,
+        content_top_px: u32,
+        egui_output: Option<(&egui::Context, egui::FullOutput)>,
+    ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Timeout/Occluded/Outdated/Lost/Validation: skip this frame and
@@ -247,6 +264,8 @@ impl GpuState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("tab render encoder"),
             });
+
+        let content_top = content_top_px.min(self.config.height);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("tab render pass"),
@@ -265,12 +284,84 @@ impl GpuState {
                 multiview_mask: None,
             });
             if let Some(tab_texture) = &self.tab_texture {
+                pass.set_viewport(
+                    0.0,
+                    content_top as f32,
+                    self.config.width as f32,
+                    (self.config.height - content_top) as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &tab_texture.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let mut extra_command_buffers = Vec::new();
+        if let Some((ctx, mut full_output)) = egui_output {
+            for (id, deltas) in &full_output.textures_delta.set {
+                for delta in deltas {
+                    self.egui_renderer
+                        .update_texture(&self.device, &self.queue, *id, delta);
+                }
+            }
+            let clipped_primitives =
+                ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [self.config.width, self.config.height],
+                pixels_per_point: full_output.pixels_per_point,
+            };
+            extra_command_buffers = self.egui_renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &clipped_primitives,
+                &screen_descriptor,
+            );
+            {
+                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                // egui_wgpu::Renderer::render requires a 'static render pass;
+                // forget_lifetime() is the documented way to get one from a
+                // pass that in practice never outlives this function.
+                self.egui_renderer.render(
+                    &mut pass.forget_lifetime(),
+                    &clipped_primitives,
+                    &screen_descriptor,
+                );
+            }
+            for id in &full_output.textures_delta.free {
+                self.egui_renderer.free_texture(id);
+            }
+            // `TexturesDelta` asserts on `Drop` that it was actually
+            // consumed (not just borrowed-and-ignored) — the loops above
+            // only read `.set`/`.free` by reference, so without this the
+            // very first frame with any texture delta (egui's font atlas,
+            // uploaded on frame one) panics as soon as `full_output` goes
+            // out of scope at the end of this block.
+            full_output.textures_delta.clear();
+        }
+
+        self.queue.submit(
+            extra_command_buffers
+                .into_iter()
+                .chain(std::iter::once(encoder.finish())),
+        );
         self.queue.present(frame);
     }
 }
