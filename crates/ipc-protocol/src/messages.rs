@@ -120,4 +120,15 @@ pub enum EngineToHost {
     FaviconChanged { bytes: Vec<u8> },
     StateSnapshot(TabState),
     Crashed { reason: String },
+    /// The page asked to open a new tab (`target=_blank`, `window.open()`,
+    /// ctrl+click) and the engine-host intercepted and cancelled it in
+    /// place — `browser-ui` spawns a real child tab for `url` instead.
+    /// Only CEF and WebKit send this: their popup-interception APIs hand
+    /// over the target URL before creating anything. Servo's equivalent
+    /// (`WebViewDelegate::request_create_new`) doesn't expose a URL until
+    /// you've already constructed a same-process auxiliary `WebView` —
+    /// doesn't fit this project's one-process-per-tab architecture, so
+    /// Servo tabs don't send this (page-triggered popups fall back to
+    /// whatever Servo's own unhandled-request default behavior is).
+    OpenTabRequested { url: String },
 }
