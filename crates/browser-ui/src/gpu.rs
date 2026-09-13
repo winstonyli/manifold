@@ -34,6 +34,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Graph-view thumbnails never need to exceed roughly `GRAPH_NODE_SIZE`
+/// (see `main.rs`) on screen — cap well above that so it still looks sharp
+/// at the enlarged peek-preview size too, without paying full content
+/// resolution.
+const THUMBNAIL_MAX_SIZE: (u32, u32) = (256, 192);
+
 /// Holds the currently focused tab's frame as a GPU texture for the
 /// hand-rolled content pipeline. Recreated on every uploaded frame — no
 /// dirty-tracking, see `upload_frame`. Since only the focused tab ever
@@ -237,6 +243,57 @@ impl GpuState {
         }
     }
 
+    /// Box-downsamples an RGBA buffer to at most `max_size` on each axis
+    /// (never upscales — a tab smaller than the cap is left as-is), so a
+    /// background tab's graph-view thumbnail costs a few hundred KB of GPU
+    /// memory instead of a few MB at full content resolution. Only the
+    /// thumbnail texture goes through this — `upload_frame`'s hand-rolled
+    /// content-pipeline texture (Tab view) stays full resolution.
+    fn downscale_rgba(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        max_size: (u32, u32),
+    ) -> (Vec<u8>, u32, u32) {
+        let (max_w, max_h) = max_size;
+        if width <= max_w && height <= max_h {
+            return (pixels.to_vec(), width, height);
+        }
+        let scale = (max_w as f32 / width as f32).min(max_h as f32 / height as f32);
+        let out_w = ((width as f32 * scale).round() as u32).max(1);
+        let out_h = ((height as f32 * scale).round() as u32).max(1);
+
+        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+        for oy in 0..out_h {
+            // Source row range this output row box-averages over — computed
+            // from output-row boundaries (not just a single sample point)
+            // so every source row contributes to some output row.
+            let src_y0 = (oy * height / out_h).min(height - 1);
+            let src_y1 = (((oy + 1) * height).div_ceil(out_h)).clamp(src_y0 + 1, height);
+            for ox in 0..out_w {
+                let src_x0 = (ox * width / out_w).min(width - 1);
+                let src_x1 = (((ox + 1) * width).div_ceil(out_w)).clamp(src_x0 + 1, width);
+
+                let mut sum = [0u32; 4];
+                let mut count = 0u32;
+                for sy in src_y0..src_y1 {
+                    for sx in src_x0..src_x1 {
+                        let idx = ((sy * width + sx) * 4) as usize;
+                        for c in 0..4 {
+                            sum[c] += pixels[idx + c] as u32;
+                        }
+                        count += 1;
+                    }
+                }
+                let dst_idx = ((oy * out_w + ox) * 4) as usize;
+                for c in 0..4 {
+                    out[dst_idx + c] = (sum[c] / count.max(1)) as u8;
+                }
+            }
+        }
+        (out, out_w, out_h)
+    }
+
     /// `pixels` must be exactly `width * height * 4` bytes in whatever pixel
     /// order `format` names — Servo's `read_to_image()` produces RGBA8
     /// (`Rgba8UnormSrgb`), CEF's OSR `on_paint` produces BGRA8
@@ -294,13 +351,15 @@ impl GpuState {
         });
 
         let thumb_pixels = Self::to_thumbnail_rgba(pixels, format);
+        let (thumb_pixels, thumb_width, thumb_height) =
+            Self::downscale_rgba(&thumb_pixels, width, height, THUMBNAIL_MAX_SIZE);
         let thumb_texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("tab thumbnail texture"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: thumb_width,
+                    height: thumb_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
