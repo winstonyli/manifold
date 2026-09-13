@@ -21,14 +21,56 @@ pub enum MouseButton {
     Middle,
 }
 
+/// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
+/// (not guaranteed FFI/serialization-stable across winit versions) or any
+/// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
+/// for WebKitGTK, `keyboard_types::Code` for Servo). `browser-ui` translates
+/// winit's key into this; each engine-host translates this into whatever
+/// its own embedding API wants — see each engine-host's own translation
+/// table, kept local to that crate the same way `MouseButton` translation
+/// already is.
+///
+/// Deliberately not exhaustive — common keys only (letters, digits,
+/// navigation, the usual modifiers and editing keys) covers real usage
+/// (typing into a page's form fields, basic shortcuts) without trying to
+/// enumerate every key on every keyboard layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyCode {
+    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
+    KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+    Enter, Backspace, Tab, Space, Escape, Delete,
+    ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
+    Home, End, PageUp, PageDown,
+    ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight,
+}
+
+/// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
+/// modifier keys held *at the time of* this key event, not the event's own
+/// key (a `Shift` keypress itself also arrives as a normal `KeyDown` with
+/// `Self::SHIFT` set). Combine with `|`; `browser-ui` is the only producer
+/// (tracked from winit's `WindowEvent::ModifiersChanged`).
+pub mod modifiers {
+    pub const SHIFT: u8 = 1 << 0;
+    pub const CONTROL: u8 = 1 << 1;
+    pub const ALT: u8 = 1 << 2;
+    pub const SUPER: u8 = 1 << 3;
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum InputEvent {
     MouseMove { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: MouseButton },
     MouseUp { x: f64, y: f64, button: MouseButton },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
-    KeyDown { keycode: u32, modifiers: u8 },
-    KeyUp { keycode: u32, modifiers: u8 },
+    KeyDown { key: KeyCode, modifiers: u8 },
+    KeyUp { key: KeyCode, modifiers: u8 },
+    /// The actual text a keypress produced (after layout/shift/dead-key
+    /// processing) — what a page's text field should actually insert.
+    /// Sent alongside `KeyDown`, not instead of it: shortcuts need the
+    /// physical key, typing needs the produced character, and they don't
+    /// always correspond 1:1 (e.g. Shift+A produces one `KeyDown{KeyA}`
+    /// plus one `Char{'A'}`, not two key events).
     Char { codepoint: u32 },
 }
 

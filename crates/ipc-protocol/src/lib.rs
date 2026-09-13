@@ -5,7 +5,7 @@ pub mod transport;
 
 pub use channel::MessageChannel;
 pub use frame_buffer::{frame_path, SharedFrameBuffer};
-pub use messages::{EngineToHost, HostToEngine, InputEvent, MouseButton, TabState};
+pub use messages::{modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, TabState};
 pub use transport::{LocalTransport, RemoteTransport};
 
 #[cfg(test)]
