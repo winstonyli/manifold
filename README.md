@@ -2,7 +2,7 @@
 
 A browser where each tab can run on a different rendering engine — Blink (via CEF), Servo, or WebKit (via WebKitGTK) — and the engine backing a tab can be swapped live without closing it.
 
-Status: M0–M3 complete (single-engine tabs on all three engines, live swap between them, verified end-to-end). No tab UI yet — see [Running](#running) for the current test-only controls. Full milestone plan: `C:\Users\Winston Li\.claude\plans\stateless-napping-sunset.md`.
+Status: M0–M4 complete — single-engine tabs on all three engines, live engine swap, a real chrome (address bar, back/forward, engine picker), and crash recovery, all verified end-to-end. Full milestone plan: `C:\Users\Winston Li\.claude\plans\stateless-napping-sunset.md`.
 
 ## Architecture
 
@@ -66,7 +66,13 @@ This step is not automated yet — see the `TODO` in `crates/browser-ui/src/proc
    cp "$D/engine-host-cef.exe" "$D/cef-runtime/engine-host-cef.exe"
    ```
 
-Re-run both steps after any rebuild that could regenerate these dependencies with a new Cargo fingerprint hash (a `cargo clean`, a `Cargo.toml` change like a profile setting, a dependency bump) — the old copies keep working right up until they silently don't (Servo: panics with `egl function was not loaded`; CEF: silently runs stale code). Compare `stat` timestamps between the fresh `build/<crate>-<hash>/out/` directory and the manually-placed copy if anything looks wrong after a rebuild.
+Re-run both steps after **any** rebuild — not just an obvious trigger like `cargo clean` or a `Cargo.toml` edit. In practice, Cargo has regenerated these fingerprint hashes (a new `mozangle-<hash>`/`cef-dll-sys-<hash>` directory) even for a rebuild that changed neither `Cargo.toml` nor `Cargo.lock`, leaving the manually-placed copies pointing at stale, orphaned build output. The old copies keep working right up until they silently don't (Servo: panics with `egl function was not loaded`; CEF: silently runs stale code). Don't trust file timestamps to tell you they're stale, either — `cmp` the placed copy against the current hash directory's output directly:
+```bash
+D="target/debug"
+HASH_DIR=$(ls -dt "$D"/build/mozangle-*/out | head -1)
+cmp "$HASH_DIR/libEGL.dll" "$D/libEGL.dll" || echo "stale, recopy needed"
+```
+A rebuild also tends to leave the *previous* hash's directory behind alongside the new one (Cargo doesn't clean up an old fingerprint just because it's no longer used) — these accumulate across sessions and are a repeat cause of this project filling the disk. Prune anything under `target/debug/build/{mozangle,cef-dll-sys}-*` except the newest of each once you've confirmed the copies are up to date.
 
 ## Running
 
@@ -74,13 +80,14 @@ Re-run both steps after any rebuild that could regenerate these dependencies wit
 target/debug/browser-ui.exe
 ```
 
-Starts a single tab in Servo, loading `https://example.com`. Press **S** to cycle the tab's engine: Servo → CEF → WebKit → Servo. The URL carries over on each swap; other state (cookies, scroll position, etc.) does not — this is a known v1 limitation, not a bug.
+Starts a single tab in Servo, loading `https://example.com`. The top strip is the tab (title/loading indicator); below it, the toolbar has back/forward buttons, an engine-picker dropdown (swaps the tab live between Servo/CEF/WebKit), and an address bar (type a URL, press Enter). The URL carries over on an engine swap; other state (cookies, scroll position, etc.) does not — a known v1 limitation, not a bug.
 
-There is no tab UI, address bar, or crash recovery yet (M4). Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`.
+If an engine-host process dies (crashes, or is killed), the tab automatically respawns the same engine at its last-known URL — you don't need to do anything.
+
+Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`.
 
 ## Known limitations
 
 - Single tab only (M5 — multi-tab — not started).
-- No crash recovery: if an engine-host dies, the tab does not auto-restart (M4).
-- Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only URL, history, and zoom are carried over, and history/zoom replay is itself still a stub (`TODO(M4)` in each engine-host).
-- WebKit tab input (mouse/keyboard) is not wired up yet — rendering only.
+- Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only the URL carries over.
+- WebKit tab input (mouse/keyboard) is not wired up yet — rendering only. Servo and CEF handle mouse; keyboard input isn't wired up on any engine yet.
