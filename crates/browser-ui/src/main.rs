@@ -36,6 +36,21 @@ const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
 const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+/// The graph's world-space center that the physics centering force pulls
+/// toward — independent of screen/window coordinates now that the graph is
+/// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
+/// positions doubled as screen coordinates directly.
+const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
+/// Initial visible world-space rect for the graph's `egui::Scene`, before
+/// any user panning/zooming — generous enough to show a handful of settled
+/// nodes around `GRAPH_WORLD_CENTER` at 1:1 zoom.
+const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(1600.0, 1100.0);
+const GRAPH_ZOOM_MIN: f32 = 0.15;
+const GRAPH_ZOOM_MAX: f32 = 3.0;
+
+fn default_graph_scene_rect() -> egui::Rect {
+    egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
+}
 
 fn engine_label(kind: EngineKind) -> &'static str {
     match kind {
@@ -103,6 +118,10 @@ struct App {
     /// currently hovered (drives the peek-preview popup).
     dragging: Option<String>,
     hovered: Option<String>,
+    /// The graph view's current pan/zoom state (visible world-space rect),
+    /// persisted across frames per `egui::Scene::show`'s own contract —
+    /// mutated by the user dragging (pan) or scrolling (zoom).
+    graph_scene_rect: egui::Rect,
 }
 
 impl Default for App {
@@ -123,6 +142,7 @@ impl Default for App {
             address_bar_focused: false,
             dragging: None,
             hovered: None,
+            graph_scene_rect: default_graph_scene_rect(),
         }
     }
 }
@@ -524,6 +544,7 @@ impl App {
         let mut clicked_focus: Option<String> = None;
         let mut close_requested: Option<String> = None;
 
+        let mut reset_view = false;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .show(ui, |ui| {
@@ -531,8 +552,14 @@ impl App {
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
                     }
+                    if ui.button("Reset View").clicked() {
+                        reset_view = true;
+                    }
                 });
             });
+        if reset_view {
+            self.graph_scene_rect = default_graph_scene_rect();
+        }
 
         if self.tabs.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -544,12 +571,10 @@ impl App {
             return;
         }
 
-        let canvas_rect = ui.available_rect_before_wrap();
-        let center = egui::Vec2::new(canvas_rect.center().x, canvas_rect.center().y);
-
         // One force-directed layout tick. Real measured dt (clamped so a
         // hitch — e.g. spawning a new engine-host takes real wall time —
-        // can't destabilize the spring math with a huge single step).
+        // can't destabilize the spring math with a huge single step). Pure
+        // world-space math, independent of the pan/zoom view below.
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         {
             let mut positions: HashMap<String, egui::Vec2> =
@@ -565,7 +590,14 @@ impl App {
             if let Some(d) = &self.dragging {
                 pinned.insert(d.clone());
             }
-            graph_layout::step(&mut positions, &mut velocities, &edges, &pinned, center, dt);
+            graph_layout::step(
+                &mut positions,
+                &mut velocities,
+                &edges,
+                &pinned,
+                GRAPH_WORLD_CENTER,
+                dt,
+            );
             for (id, node) in self.tabs.iter_mut() {
                 if let Some(p) = positions.get(id) {
                     node.pos = *p;
@@ -576,163 +608,189 @@ impl App {
             }
         }
 
-        // Edges first so node cards paint on top of the lines feeding them.
-        for (id, node) in &self.tabs {
-            let Some(parent_id) = &node.parent else {
-                continue;
-            };
-            let Some(parent) = self.tabs.get(parent_id) else {
-                continue;
-            };
-            let _ = id;
-            ui.painter().line_segment(
-                [
-                    egui::Pos2::new(parent.pos.x, parent.pos.y),
-                    egui::Pos2::new(node.pos.x, node.pos.y),
-                ],
-                egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
-            );
-        }
-
-        for id in self.tab_order.clone() {
-            let Some(node_pos) = self.tabs.get(&id).map(|n| n.pos) else {
-                continue;
-            };
-            let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
-            let rect = egui::Rect::from_center_size(center_pos, GRAPH_NODE_SIZE);
-            let response = ui.interact(
-                rect,
-                egui::Id::new(("graph_node", id.as_str())),
-                egui::Sense::click_and_drag(),
-            );
-
-            let is_focused = self.focused.as_deref() == Some(id.as_str());
-            ui.painter()
-                .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-            ui.painter().rect_stroke(
-                rect,
-                6.0,
-                egui::Stroke::new(
-                    if is_focused { 2.5 } else { 1.0 },
-                    ui.visuals().text_color(),
-                ),
-                egui::StrokeKind::Inside,
-            );
-
-            let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
-            let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
-            if let Some(tex_id) = thumb_id {
-                ui.painter().image(
-                    tex_id,
-                    thumb_rect,
-                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            } else {
-                ui.painter().text(
-                    thumb_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "loading...",
-                    egui::FontId::default(),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-
-            if let Some(node) = self.tabs.get(&id) {
-                let label = if node.title.is_empty() {
-                    node.url.as_str()
-                } else {
-                    node.title.as_str()
-                };
-                ui.painter().text(
-                    egui::Pos2::new(rect.center().x, rect.bottom() - 4.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    format!("{label} [{}]", engine_label(node.tab.kind)),
-                    egui::FontId::default(),
-                    ui.visuals().text_color(),
-                );
-            }
-            if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
-                let favicon_rect =
-                    egui::Rect::from_min_size(rect.left_top() + egui::vec2(4.0, 4.0), FAVICON_SIZE);
-                ui.painter().image(
-                    tex_id,
-                    favicon_rect,
-                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
-
-            // Close button: a small square just outside the node's own
-            // top-right corner, given its own interact() id so it doesn't
-            // compete with the node's own click/drag sense over the same
-            // pixels.
-            let close_rect = egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
-            let close_response = ui.interact(
-                close_rect,
-                egui::Id::new(("graph_node_close", id.as_str())),
-                egui::Sense::click(),
-            );
-            ui.painter()
-                .rect_filled(close_rect, 3.0, ui.visuals().extreme_bg_color);
-            ui.painter().text(
-                close_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "x",
-                egui::FontId::default(),
-                ui.visuals().text_color(),
-            );
-            if close_response.clicked() {
-                close_requested = Some(id.clone());
-            }
-
-            if response.dragged() {
-                self.dragging = Some(id.clone());
-                if let Some(node) = self.tabs.get_mut(&id) {
-                    node.pos += response.drag_delta();
+        // Pan (drag empty background) + zoom (scroll wheel, centered on the
+        // cursor) via egui's built-in `Scene` container — everything drawn
+        // inside `add_contents` below is in the same world-space coordinates
+        // `node.pos` already uses; egui's transform layer handles converting
+        // to/from screen space (including for nested widgets' own
+        // hover/click/drag responses, e.g. a node's own drag below), so none
+        // of that logic needs to know pan/zoom exists at all. `scene_rect`
+        // must live outside `self` while the closure below also borrows
+        // `self` mutably, so it's round-tripped through a local instead of
+        // borrowed from `self.graph_scene_rect` directly.
+        let mut scene_rect = self.graph_scene_rect;
+        egui::Scene::new()
+            .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
+            .show(ui, &mut scene_rect, |ui| {
+                // Edges first so node cards paint on top of the lines feeding them.
+                for (id, node) in &self.tabs {
+                    let Some(parent_id) = &node.parent else {
+                        continue;
+                    };
+                    let Some(parent) = self.tabs.get(parent_id) else {
+                        continue;
+                    };
+                    let _ = id;
+                    ui.painter().line_segment(
+                        [
+                            egui::Pos2::new(parent.pos.x, parent.pos.y),
+                            egui::Pos2::new(node.pos.x, node.pos.y),
+                        ],
+                        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                    );
                 }
-            } else if self.dragging.as_deref() == Some(id.as_str()) {
-                self.dragging = None;
-            }
-            if response.hovered() {
-                self.hovered = Some(id.clone());
-            } else if self.hovered.as_deref() == Some(id.as_str()) {
-                self.hovered = None;
-            }
-            if response.clicked() {
-                clicked_focus = Some(id.clone());
-            }
-        }
 
-        // Peek preview: an enlarged view of the hovered node's cached
-        // thumbnail, floating near it, without changing focus.
-        if let Some(hovered_id) = self.hovered.clone() {
-            let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
-            let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
-            if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
-                let anchor = egui::Pos2::new(
-                    node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
-                    node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
-                );
-                egui::Area::new(egui::Id::new("graph_peek_preview"))
-                    .fixed_pos(anchor)
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            let (rect, _) =
-                                ui.allocate_exact_size(GRAPH_PEEK_SIZE, egui::Sense::hover());
-                            ui.painter().image(
-                                tex_id,
-                                rect,
-                                egui::Rect::from_min_max(
-                                    egui::Pos2::new(0.0, 0.0),
-                                    egui::Pos2::new(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
-                            );
-                        });
-                    });
-            }
-        }
+                for id in self.tab_order.clone() {
+                    let Some(node_pos) = self.tabs.get(&id).map(|n| n.pos) else {
+                        continue;
+                    };
+                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                    let rect = egui::Rect::from_center_size(center_pos, GRAPH_NODE_SIZE);
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_node", id.as_str())),
+                        egui::Sense::click_and_drag(),
+                    );
+
+                    let is_focused = self.focused.as_deref() == Some(id.as_str());
+                    ui.painter()
+                        .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0,
+                        egui::Stroke::new(
+                            if is_focused { 2.5 } else { 1.0 },
+                            ui.visuals().text_color(),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
+                    let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
+                    if let Some(tex_id) = thumb_id {
+                        ui.painter().image(
+                            tex_id,
+                            thumb_rect,
+                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    } else {
+                        ui.painter().text(
+                            thumb_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "loading...",
+                            egui::FontId::default(),
+                            ui.visuals().weak_text_color(),
+                        );
+                    }
+
+                    if let Some(node) = self.tabs.get(&id) {
+                        let label = if node.title.is_empty() {
+                            node.url.as_str()
+                        } else {
+                            node.title.as_str()
+                        };
+                        ui.painter().text(
+                            egui::Pos2::new(rect.center().x, rect.bottom() - 4.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            format!("{label} [{}]", engine_label(node.tab.kind)),
+                            egui::FontId::default(),
+                            ui.visuals().text_color(),
+                        );
+                    }
+                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
+                        let favicon_rect = egui::Rect::from_min_size(
+                            rect.left_top() + egui::vec2(4.0, 4.0),
+                            FAVICON_SIZE,
+                        );
+                        ui.painter().image(
+                            tex_id,
+                            favicon_rect,
+                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+
+                    // Close button: a small square just outside the node's own
+                    // top-right corner, given its own interact() id so it doesn't
+                    // compete with the node's own click/drag sense over the same
+                    // pixels.
+                    let close_rect =
+                        egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
+                    let close_response = ui.interact(
+                        close_rect,
+                        egui::Id::new(("graph_node_close", id.as_str())),
+                        egui::Sense::click(),
+                    );
+                    ui.painter()
+                        .rect_filled(close_rect, 3.0, ui.visuals().extreme_bg_color);
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "x",
+                        egui::FontId::default(),
+                        ui.visuals().text_color(),
+                    );
+                    if close_response.clicked() {
+                        close_requested = Some(id.clone());
+                    }
+
+                    if response.dragged() {
+                        self.dragging = Some(id.clone());
+                        if let Some(node) = self.tabs.get_mut(&id) {
+                            node.pos += response.drag_delta();
+                        }
+                    } else if self.dragging.as_deref() == Some(id.as_str()) {
+                        self.dragging = None;
+                    }
+                    if response.hovered() {
+                        self.hovered = Some(id.clone());
+                    } else if self.hovered.as_deref() == Some(id.as_str()) {
+                        self.hovered = None;
+                    }
+                    if response.clicked() {
+                        clicked_focus = Some(id.clone());
+                    }
+                }
+
+                // Peek preview: an enlarged view of the hovered node's cached
+                // thumbnail, floating near it, without changing focus. Painted
+                // directly in this same world-space layer (not a separate
+                // `egui::Area`, which would paint in un-transformed screen
+                // space) so it pans/zooms together with its node and simply
+                // ends up on top by paint order, drawn after every node above.
+                if let Some(hovered_id) = self.hovered.clone() {
+                    let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
+                    let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
+                    if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
+                        let rect = egui::Rect::from_min_size(
+                            egui::Pos2::new(
+                                node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
+                                node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
+                            ),
+                            GRAPH_PEEK_SIZE,
+                        );
+                        ui.painter()
+                            .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                        ui.painter().image(
+                            tex_id,
+                            rect,
+                            egui::Rect::from_min_max(
+                                egui::Pos2::new(0.0, 0.0),
+                                egui::Pos2::new(1.0, 1.0),
+                            ),
+                            egui::Color32::WHITE,
+                        );
+                        ui.painter().rect_stroke(
+                            rect,
+                            6.0,
+                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            });
+        self.graph_scene_rect = scene_rect;
 
         if let Some(parent) = new_tab_parent {
             self.spawn_new_tab(parent, INITIAL_URL);
@@ -999,7 +1057,6 @@ impl App {
                     EngineToHost::FaviconChanged { rgba, width, height } => {
                         favicon_updates.push((tab_id.clone(), rgba, width, height));
                     }
-                    _ => {}
                 }
             }
         }
