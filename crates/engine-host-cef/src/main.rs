@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod nav_handler;
 mod render_handler;
 
 use std::sync::mpsc;
@@ -11,6 +12,7 @@ use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
+use nav_handler::new_shared_nav_state;
 use render_handler::EngineRenderHandler;
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -89,6 +91,7 @@ fn main() {
 
     let (render_handler, size, latest_frame) =
         EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    let nav_state = new_shared_nav_state(initial_url.clone());
 
     let window_info = WindowInfo {
         windowless_rendering_enabled: true as _,
@@ -101,7 +104,7 @@ fn main() {
     };
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
-        Some(&mut ClientBuilder::build(render_handler)),
+        Some(&mut ClientBuilder::build(render_handler, nav_state.clone())),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
         None,
@@ -109,7 +112,6 @@ fn main() {
     )
     .expect("create CEF browser");
 
-    let mut current_url = initial_url;
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&tab_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
         .expect("create shared frame buffer");
@@ -123,13 +125,17 @@ fn main() {
                 HostToEngine::Navigate { url, .. } => {
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
-                        current_url = url;
                     }
                 }
-                HostToEngine::LoadHistoryEntry { index } => {
-                    // TODO(M4): same deferral as engine-host-servo — Browser
-                    // only exposes relative go_back/go_forward here.
-                    let _ = index;
+                HostToEngine::GoBack => {
+                    if browser.can_go_back() != 0 {
+                        browser.go_back();
+                    }
+                }
+                HostToEngine::GoForward => {
+                    if browser.can_go_forward() != 0 {
+                        browser.go_forward();
+                    }
                 }
                 HostToEngine::Resize {
                     width: w,
@@ -158,8 +164,7 @@ fn main() {
                 HostToEngine::SetZoom { .. } => {}
                 HostToEngine::GetState => {
                     let _ = control.send(&EngineToHost::StateSnapshot(TabState {
-                        url: current_url.clone(),
-                        history: vec![],
+                        url: nav_state.borrow().url.clone(),
                         zoom: 1.0,
                     }));
                 }
@@ -167,6 +172,20 @@ fn main() {
                     cef::shutdown();
                     return;
                 }
+            }
+        }
+
+        {
+            let mut nav = nav_state.borrow_mut();
+            if nav.dirty {
+                nav.dirty = false;
+                let _ = control.send(&EngineToHost::NavigationStateChanged {
+                    url: nav.url.clone(),
+                    title: nav.title.clone(),
+                    can_go_back: nav.can_go_back,
+                    can_go_forward: nav.can_go_forward,
+                    loading: nav.loading,
+                });
             }
         }
 

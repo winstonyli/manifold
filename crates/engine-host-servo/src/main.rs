@@ -30,13 +30,49 @@ impl EventLoopWaker for NoopWaker {
     fn wake(&self) {}
 }
 
+#[derive(Default)]
+struct NavState {
+    url: String,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    loading: bool,
+    dirty: bool,
+}
+
 struct Delegate {
     frame_ready: RefCell<bool>,
+    nav: RefCell<NavState>,
 }
 
 impl WebViewDelegate for Delegate {
     fn notify_new_frame_ready(&self, _webview: WebView) {
         *self.frame_ready.borrow_mut() = true;
+    }
+
+    fn notify_url_changed(&self, _webview: WebView, url: Url) {
+        let mut nav = self.nav.borrow_mut();
+        nav.url = url.to_string();
+        nav.dirty = true;
+    }
+
+    fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
+        let mut nav = self.nav.borrow_mut();
+        nav.title = title.unwrap_or_default();
+        nav.dirty = true;
+    }
+
+    fn notify_load_status_changed(&self, _webview: WebView, status: servo::LoadStatus) {
+        let mut nav = self.nav.borrow_mut();
+        nav.loading = !matches!(status, servo::LoadStatus::Complete);
+        nav.dirty = true;
+    }
+
+    fn notify_history_changed(&self, _webview: WebView, entries: Vec<Url>, current: usize) {
+        let mut nav = self.nav.borrow_mut();
+        nav.can_go_back = current > 0;
+        nav.can_go_forward = current + 1 < entries.len();
+        nav.dirty = true;
     }
 }
 
@@ -100,6 +136,10 @@ fn main() {
 
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),
+        nav: RefCell::new(NavState {
+            url: initial_url.clone(),
+            ..Default::default()
+        }),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -112,7 +152,6 @@ fn main() {
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
-    let mut current_url = initial_url;
 
     loop {
         servo.spin_event_loop();
@@ -122,15 +161,13 @@ fn main() {
                 HostToEngine::Navigate { url, .. } => {
                     if let Ok(parsed) = Url::parse(&url) {
                         webview.load(parsed);
-                        current_url = url;
                     }
                 }
-                HostToEngine::LoadHistoryEntry { index } => {
-                    // Positive amount = forward, negative = backward; Servo's
-                    // WebView only exposes relative go_back/go_forward, so
-                    // absolute-index history replay is deferred to M4 when
-                    // TabState round-tripping is wired up end to end.
-                    let _ = index;
+                HostToEngine::GoBack => {
+                    webview.go_back(1);
+                }
+                HostToEngine::GoForward => {
+                    webview.go_forward(1);
                 }
                 HostToEngine::Resize {
                     width: w,
@@ -160,16 +197,28 @@ fn main() {
                     // this API surface yet; revisit once tab UI needs it.
                 }
                 HostToEngine::GetState => {
-                    // History/zoom still deferred to M4 (see the
-                    // LoadHistoryEntry/SetZoom TODOs above) — url is the
-                    // only piece M2's swap sequence actually replays.
+                    // Zoom still deferred (see the SetZoom TODO above) — url
+                    // is the only piece M2's swap sequence actually replays.
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState {
-                        url: current_url.clone(),
-                        history: vec![],
+                        url: delegate.nav.borrow().url.clone(),
                         zoom: 1.0,
                     }));
                 }
                 HostToEngine::Shutdown => return,
+            }
+        }
+
+        {
+            let mut nav = delegate.nav.borrow_mut();
+            if nav.dirty {
+                nav.dirty = false;
+                let _ = control.send(&EngineToHost::NavigationStateChanged {
+                    url: nav.url.clone(),
+                    title: nav.title.clone(),
+                    can_go_back: nav.can_go_back,
+                    can_go_forward: nav.can_go_forward,
+                    loading: nav.loading,
+                });
             }
         }
 

@@ -66,10 +66,23 @@ fn main() {
     offscreen.set_default_size(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     offscreen.show_all();
 
-    let mut current_url = initial_url;
     let mut width = DEFAULT_WIDTH as u32;
     let mut height = DEFAULT_HEIGHT as u32;
     let mut frame_id: u64 = 0;
+    // Last-sent NavigationStateChanged fields, compared each tick against
+    // the WebView's live properties (`webview.uri()`/`title()`/
+    // `is_loading()`/`can_go_back()`/`can_go_forward()`) rather than
+    // hooking GObject "notify::" signals — WebKitGTK has no natural poll
+    // point other than the same main-loop tick already driving frame
+    // capture, so diffing here reuses that instead of adding signal
+    // plumbing for what's still just a once-per-16ms check.
+    let mut last_nav = (
+        initial_url,
+        String::new(),
+        false,
+        false,
+        false, // (url, title, can_go_back, can_go_forward, loading)
+    );
 
     loop {
         while gtk::events_pending() {
@@ -80,11 +93,16 @@ fn main() {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
                     webview.load_uri(&url);
-                    current_url = url;
                 }
-                HostToEngine::LoadHistoryEntry { index } => {
-                    // TODO(M4): same deferral as the other engine-hosts.
-                    let _ = index;
+                HostToEngine::GoBack => {
+                    if webview.can_go_back() {
+                        webview.go_back();
+                    }
+                }
+                HostToEngine::GoForward => {
+                    if webview.can_go_forward() {
+                        webview.go_forward();
+                    }
                 }
                 HostToEngine::Resize {
                     width: w,
@@ -107,9 +125,12 @@ fn main() {
                     webview.set_zoom_level(factor);
                 }
                 HostToEngine::GetState => {
+                    let url = webview
+                        .uri()
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| last_nav.0.clone());
                     let _ = to_host.send(&EngineToHost::StateSnapshot(TabState {
-                        url: current_url.clone(),
-                        history: vec![],
+                        url,
                         zoom: webview.zoom_level(),
                     }));
                 }
@@ -117,6 +138,27 @@ fn main() {
                     return;
                 }
             }
+        }
+
+        let nav_now = (
+            webview
+                .uri()
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| last_nav.0.clone()),
+            webview.title().map(|t| t.to_string()).unwrap_or_default(),
+            webview.can_go_back(),
+            webview.can_go_forward(),
+            webview.is_loading(),
+        );
+        if nav_now != last_nav {
+            last_nav = nav_now.clone();
+            let _ = to_host.send(&EngineToHost::NavigationStateChanged {
+                url: nav_now.0,
+                title: nav_now.1,
+                can_go_back: nav_now.2,
+                can_go_forward: nav_now.3,
+                loading: nav_now.4,
+            });
         }
 
         if let Some(pixbuf) = offscreen.pixbuf() {
