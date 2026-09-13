@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod input;
 mod nav_handler;
 mod render_handler;
 
@@ -157,12 +158,8 @@ fn main() {
                     // painted frame's own reported dimensions, which is the
                     // only way to avoid writing/reporting mismatched sizes.
                 }
-                HostToEngine::Input(_event) => {
-                    // TODO(M2 follow-up): map ipc_protocol::InputEvent to
-                    // CEF's send_mouse_move_event/send_mouse_click_event/
-                    // send_mouse_wheel_event on browser.host() — deferred
-                    // until the swap sequence itself is verified working,
-                    // matching engine-host-servo's original M1 sequencing.
+                HostToEngine::Input(event) => {
+                    input::send_input(&browser, event);
                 }
                 HostToEngine::SetZoom { .. } => {}
                 HostToEngine::SetVisible(v) => {
