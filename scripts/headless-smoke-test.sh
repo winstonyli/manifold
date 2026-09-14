@@ -7,7 +7,16 @@
 # produced or comes back suspiciously small) rather than verifying exact
 # pixels. Exercises the address-bar autocomplete flow end to end: launch,
 # type a query, screenshot the suggestion dropdown, click a suggestion,
-# screenshot the result, quit.
+# screenshot the result; arrow-key highlight + Enter-accept; Escape
+# dismissing the dropdown without leaving Tab view; quit.
+#
+# Deliberately NOT covered: clicking an open-tab suggestion (accepting it
+# focuses another tab). That needs a second tab, which needs clicking a
+# graph-view node — and a node's on-screen position depends on the
+# force-directed layout's physics settling, not a fixed coordinate the way
+# chrome buttons are. There's no position-query debug command yet to make
+# that click reliable, so it's left to manual verification for now (see
+# project memory for the one-off manual pass that confirmed it works).
 #
 # Run after `cargo build -p browser-ui`. Exits 0 if every check passed.
 set -uo pipefail # not -e: a failed check should still let later checks run
@@ -106,6 +115,34 @@ sleep 3 # navigation + first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
 sleep 1
 check_screenshot "$out_dir/after_click.png" "post-click navigation"
+
+# Arrow-key highlight + Enter-accept: two ARROWDOWNs should land on the
+# 3rd suggestion row, and ENTER should navigate to *that* row's query, not
+# the literally-typed text — no coordinates involved, fully deterministic.
+send "ADDRESSBAR sourdough bread"
+sleep 3
+send "ARROWDOWN"
+sleep 1
+send "ARROWDOWN"
+sleep 1
+send "ENTER"
+sleep 3
+send "SCREENSHOT $out_dir_win\\arrow_nav.png"
+sleep 1
+check_screenshot "$out_dir/arrow_nav.png" "arrow-key navigation"
+
+# Escape dismisses the dropdown without leaving Tab view (as opposed to a
+# second Escape / one with no dropdown showing, which leaves to Graph
+# view) — just confirms no crash and a reasonable frame, same limitation
+# as every other check here (no state-query command to assert the
+# dropdown is actually gone, or that view_mode is still Tab).
+send "ADDRESSBAR pancake recipe"
+sleep 3
+send "ESCAPE"
+sleep 1
+send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
+sleep 1
+check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
 
 send "QUIT"
 if wait "$browser_pid"; then
