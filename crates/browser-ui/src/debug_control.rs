@@ -4,6 +4,8 @@ use ipc_protocol::KeyCode;
 use winit::event::MouseButton;
 use winit::event_loop::EventLoopProxy;
 
+use crate::UserEvent;
+
 /// A headless-mode automation command, one per stdin line (see `parse_line`
 /// for the text grammar). Exists so live GUI testing on this project can
 /// stop fighting Windows' foreground-lock/focus contention (see the M3/M5
@@ -214,17 +216,17 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
 /// real event loop like any other event). Stdin EOF (the driving script/
 /// process closed its write end) sends `Quit` so a headless run driven by a
 /// piped script exits cleanly instead of hanging forever.
-pub fn spawn_stdin_reader(proxy: EventLoopProxy<DebugCommand>) {
+pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let Ok(line) = line else { break };
             if let Some(cmd) = parse_line(&line) {
-                if proxy.send_event(cmd).is_err() {
+                if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
                     break;
                 }
             }
         }
-        let _ = proxy.send_event(DebugCommand::Quit);
+        let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
     });
 }

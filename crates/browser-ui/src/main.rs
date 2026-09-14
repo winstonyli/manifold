@@ -21,7 +21,7 @@ use settings::{SearchEngine, Settings};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{DeviceId, ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Window, WindowId};
@@ -189,6 +189,48 @@ struct TabNode {
     vel: egui::Vec2,
 }
 
+/// The event loop's real user-event type: headless debug commands, plus
+/// `TabSpawned` — see its own doc comment for why engine-host spawning needs
+/// to be async in the first place.
+enum UserEvent {
+    Debug(DebugCommand),
+    TabSpawned(TabSpawnOutcome),
+}
+
+/// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
+/// this to know what to do once the (now-async) `process_manager::spawn_tab`
+/// call finishes, mirroring what `spawn_root_tab`/`spawn_new_tab`/
+/// `respawn_tab` used to do inline before the spawn was made async.
+enum SpawnPurpose {
+    /// The very first tab at startup: becomes focused, switches to Tab view.
+    Root,
+    /// Graph view's "+ New Tab" (or a page-triggered new tab): spawned
+    /// invisible, no focus change.
+    New,
+    /// Engine swap finishing, or crash recovery: visibility/focus depend on
+    /// whether `tab_id` is still the focused tab by the time the spawn
+    /// actually completes (checked at handling time, not capture time).
+    Respawn,
+}
+
+/// A pending `process_manager::spawn_tab` call's outcome, carried back to
+/// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
+/// for why this exists: spawning WebKit's engine-host blocks on a cold WSL2
+/// boot + Xvfb + WebKitGTK init (confirmed live to take several real seconds
+/// on first use, occasionally much longer — see `process_manager::
+/// spawn_webkit_tab`'s own doc comment), which would otherwise freeze the
+/// whole app (redraw, input, headless stdin) for that entire duration if run
+/// on this thread.
+struct TabSpawnOutcome {
+    id: String,
+    parent: Option<String>,
+    url: String,
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+    purpose: SpawnPurpose,
+    result: std::io::Result<EngineTab>,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
@@ -314,6 +356,13 @@ struct App {
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
     transition: Option<Transition>,
+
+    /// Set right after `App::default()` in `main`, before `run_app` — needed
+    /// by `spawn_tab_async` (called from `resumed`'s `spawn_root_tab`, which
+    /// runs before any other opportunity to set it) to hand a background
+    /// spawn thread a way to report back. `None` only in the brief window
+    /// before `main` sets it; every real spawn happens after that.
+    event_proxy: Option<EventLoopProxy<UserEvent>>,
 }
 
 impl Default for App {
@@ -354,6 +403,7 @@ impl Default for App {
             settings,
             settings_open: false,
             transition: None,
+            event_proxy: None,
         }
     }
 }
@@ -593,34 +643,106 @@ impl App {
         let id = self.alloc_tab_id();
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
-        match process_manager::spawn_tab(self.settings.default_starting_engine, &id, &home_page) {
+        let kind = self.settings.default_starting_engine;
+        self.spawn_tab_async(id, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
+    }
+
+    /// Runs `process_manager::spawn_tab` on a background thread and posts
+    /// its result back via `event_proxy` as `UserEvent::TabSpawned` — see
+    /// `TabSpawnOutcome`'s doc comment for why this can't run inline on the
+    /// main/event-loop thread. `handle_tab_spawn_result` does what the old
+    /// synchronous `Ok`/`Err` branches used to do, once the result actually
+    /// arrives.
+    fn spawn_tab_async(
+        &mut self,
+        id: String,
+        parent: Option<String>,
+        url: String,
+        pos: egui::Vec2,
+        vel: egui::Vec2,
+        purpose: SpawnPurpose,
+        kind: EngineKind,
+    ) {
+        let proxy = self
+            .event_proxy
+            .clone()
+            .expect("event_proxy set in main before any tab spawn");
+        std::thread::spawn(move || {
+            let result = process_manager::spawn_tab(kind, &id, &url);
+            let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome {
+                id,
+                parent,
+                url,
+                pos,
+                vel,
+                purpose,
+                result,
+            }));
+        });
+    }
+
+    /// Applies a finished `spawn_tab_async` call — inserts the new tab node
+    /// (or records `tab_spawn_error`), with per-`SpawnPurpose` follow-up
+    /// matching what `spawn_root_tab`/`spawn_new_tab`/`respawn_tab` used to
+    /// do synchronously right after `process_manager::spawn_tab` returned.
+    /// Focus/visibility for `Respawn` is decided here, at completion time —
+    /// same moment the old inline code decided it, just later in wall time.
+    fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
+        let TabSpawnOutcome { id, parent, url, pos, vel, purpose, result } = outcome;
+        match result {
             Ok(mut tab) => {
-                tab.set_visible(true);
+                let is_focused = match purpose {
+                    SpawnPurpose::Root => true,
+                    SpawnPurpose::New => false,
+                    SpawnPurpose::Respawn => self.focused.as_deref() == Some(id.as_str()),
+                };
+                tab.set_visible(is_focused);
                 self.tabs.insert(
                     id.clone(),
                     TabNode {
                         tab,
-                        parent: None,
-                        url: home_page.clone(),
+                        parent,
+                        url: url.clone(),
                         title: String::new(),
                         can_go_back: false,
                         can_go_forward: false,
                         loading: false,
                         swap_target: None,
-                        pos: egui::Vec2::ZERO,
-                        vel: egui::Vec2::ZERO,
+                        pos,
+                        vel,
                     },
                 );
-                self.tab_order.push(id.clone());
-                self.focused = Some(id.clone());
-                self.view_mode = ViewMode::Graph;
-                self.address_bar_text = home_page;
-                self.send_resize_to(&id);
-                self.send_zoom_to(&id);
+                if !self.tab_order.iter().any(|t| t == &id) {
+                    self.tab_order.push(id.clone());
+                }
+                match purpose {
+                    SpawnPurpose::Root => {
+                        self.focused = Some(id.clone());
+                        self.view_mode = ViewMode::Graph;
+                        self.address_bar_text = url;
+                        self.send_resize_to(&id);
+                        self.send_zoom_to(&id);
+                    }
+                    SpawnPurpose::New => {
+                        self.send_zoom_to(&id);
+                    }
+                    SpawnPurpose::Respawn => {
+                        if is_focused {
+                            if !self.address_bar_focused && !self.debug_address_bar_pin {
+                                self.address_bar_text = url;
+                            }
+                            self.send_resize_to(&id);
+                        }
+                    }
+                }
             }
             Err(err) => {
-                eprintln!("spawn root tab failed: {err}");
-                self.tab_spawn_error = Some(format!("Couldn't start a browser tab: {err}"));
+                eprintln!("spawn tab failed for {id}: {err}");
+                self.tab_spawn_error = Some(match purpose {
+                    SpawnPurpose::Root => format!("Couldn't start a browser tab: {err}"),
+                    SpawnPurpose::New => format!("Couldn't start a new tab: {err}"),
+                    SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
+                });
             }
         }
     }
@@ -646,32 +768,8 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        match process_manager::spawn_tab(self.settings.default_starting_engine, &id, url) {
-            Ok(mut tab) => {
-                tab.set_visible(false);
-                self.tabs.insert(
-                    id.clone(),
-                    TabNode {
-                        tab,
-                        parent,
-                        url: url.to_string(),
-                        title: String::new(),
-                        can_go_back: false,
-                        can_go_forward: false,
-                        loading: false,
-                        swap_target: None,
-                        pos,
-                        vel: egui::Vec2::ZERO,
-                    },
-                );
-                self.tab_order.push(id.clone());
-                self.send_zoom_to(&id);
-            }
-            Err(err) => {
-                eprintln!("spawn new tab failed: {err}");
-                self.tab_spawn_error = Some(format!("Couldn't start a new tab: {err}"));
-            }
-        }
+        let kind = self.settings.default_starting_engine;
+        self.spawn_tab_async(id, parent, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
     }
 
     /// Peek-click commits focus: the tab losing focus (if any, and if
@@ -921,39 +1019,7 @@ impl App {
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
-        match process_manager::spawn_tab(kind, tab_id, &url) {
-            Ok(mut tab) => {
-                let is_focused = self.focused.as_deref() == Some(tab_id);
-                tab.set_visible(is_focused);
-                self.tabs.insert(
-                    tab_id.to_string(),
-                    TabNode {
-                        tab,
-                        parent,
-                        url: url.clone(),
-                        title: String::new(),
-                        can_go_back: false,
-                        can_go_forward: false,
-                        loading: false,
-                        swap_target: None,
-                        pos,
-                        vel,
-                    },
-                );
-                if !self.tab_order.iter().any(|t| t == tab_id) {
-                    self.tab_order.push(tab_id.to_string());
-                }
-                if is_focused {
-                    if !self.address_bar_focused && !self.debug_address_bar_pin {
-                        self.address_bar_text = url;
-                    }
-                    self.send_resize_to(tab_id);
-                }
-            }
-            Err(err) => {
-                eprintln!("respawn {kind:?} for {tab_id} failed: {err}");
-            }
-        }
+        self.spawn_tab_async(tab_id.to_string(), parent, url, pos, vel, SpawnPurpose::Respawn, kind);
     }
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
@@ -1641,7 +1707,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<DebugCommand> for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -1680,8 +1746,11 @@ impl ApplicationHandler<DebugCommand> for App {
         self.spawn_root_tab();
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: DebugCommand) {
-        self.handle_debug_command(event_loop, event);
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Debug(cmd) => self.handle_debug_command(event_loop, cmd),
+            UserEvent::TabSpawned(outcome) => self.handle_tab_spawn_result(outcome),
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -2341,13 +2410,17 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 fn main() {
     let headless = std::env::args().any(|arg| arg == "--headless");
 
-    let event_loop = EventLoop::<DebugCommand>::with_user_event()
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::default();
     app.headless = headless;
+    // Must be set before `run_app` — `resumed()` calls `spawn_root_tab`,
+    // which needs this to hand its background spawn thread a way to report
+    // back (see `TabSpawnOutcome`'s doc comment).
+    app.event_proxy = Some(event_loop.create_proxy());
     if headless {
         debug_control::spawn_stdin_reader(event_loop.create_proxy());
     }
