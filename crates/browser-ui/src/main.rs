@@ -50,7 +50,7 @@ const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
 /// Initial visible world-space rect for the graph's `egui::Scene`, before
 /// any user panning/zooming — generous enough to show a handful of settled
 /// nodes around `GRAPH_WORLD_CENTER` at 1:1 zoom.
-const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(1600.0, 1100.0);
+const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(900.0, 620.0);
 const GRAPH_ZOOM_MIN: f32 = 0.15;
 const GRAPH_ZOOM_MAX: f32 = 3.0;
 
@@ -142,6 +142,31 @@ enum ViewMode {
     Graph,
     Tab,
 }
+
+/// Which way a shrink/expand transition (see `App::transition`) is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransitionKind {
+    /// Tab view's full-screen content quad shrinks down into `tab_id`'s
+    /// graph-node thumbnail spot.
+    ToGraph,
+    /// `tab_id`'s graph-node thumbnail spot grows to fill the screen as
+    /// Tab view's own content quad.
+    ToTab,
+}
+
+/// An in-progress shrink/expand animation between Tab view and Graph view
+/// for one specific tab. While this is `Some`, `build_ui` renders Graph
+/// view's node layout as the backdrop (for *either* direction — it's the
+/// one screen both endpoints have a coherent position in) with `tab_id`'s
+/// live content quad drawn on top at an interpolated rect, rather than
+/// switching `view_mode` instantly. See `App::content_rect_for_frame`.
+struct Transition {
+    tab_id: String,
+    kind: TransitionKind,
+    start: std::time::Instant,
+}
+
+const TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 
 /// One tab: its engine-host process/IPC handle, the "opened from" edge
 /// (`parent`) that makes the tab collection a forest for the M5 graph view,
@@ -275,6 +300,10 @@ struct App {
     /// view never show chrome simultaneously.
     settings: Settings,
     settings_open: bool,
+
+    /// The in-progress Tab↔Graph shrink/expand animation, if any — see
+    /// `Transition`'s own doc comment.
+    transition: Option<Transition>,
 }
 
 impl Default for App {
@@ -313,6 +342,7 @@ impl Default for App {
             tab_spawn_error: None,
             settings,
             settings_open: false,
+            transition: None,
         }
     }
 }
@@ -656,18 +686,155 @@ impl App {
         self.send_resize_to(id);
     }
 
-    /// Leaves Tab view for Graph view: the focused tab stops rendering
-    /// (nothing is visible while in Graph view — its node just shows its
-    /// last frame as a thumbnail) but keeps running.
+    /// Leaves Tab view for Graph view: starts a shrink animation (see
+    /// `Transition`) rather than switching instantly. The tab keeps
+    /// rendering (`set_visible(true)`, unchanged) for the animation's
+    /// whole duration, so the thumbnail it shrinks into shows real,
+    /// current content instead of whatever frame happened to be on screen
+    /// when the animation started — only actually suspended once the
+    /// animation finishes (`finish_transition_if_done`).
     fn leave_to_graph(&mut self) {
-        if let Some(id) = &self.focused {
-            if let Some(node) = self.tabs.get_mut(id) {
-                node.tab.set_visible(false);
+        match self.focused.clone() {
+            Some(id) => {
+                self.transition = Some(Transition {
+                    tab_id: id,
+                    kind: TransitionKind::ToGraph,
+                    start: std::time::Instant::now(),
+                });
             }
+            // No focused tab at all (shouldn't normally happen — Tab view
+            // always has one — but nothing to animate either way).
+            None => self.view_mode = ViewMode::Graph,
         }
-        self.view_mode = ViewMode::Graph;
         self.debug_address_bar_pin = false;
         self.dropdown_highlighted = None;
+    }
+
+    /// Graph view's node-click equivalent of `focus_tab` — starts an
+    /// expand animation instead of switching instantly. Deliberately a
+    /// separate method rather than folding this into `focus_tab` itself:
+    /// `focus_tab` is also used for a same-view tab switch (accepting an
+    /// open-tab autocomplete suggestion, already in Tab view), where an
+    /// expand-from-a-graph-node animation wouldn't make sense.
+    fn start_transition_to_tab(&mut self, id: &str) {
+        self.focus_tab(id);
+        // `focus_tab` already set `view_mode = Tab`, but `build_ui` renders
+        // Graph view as the backdrop for as long as `self.transition` is
+        // `Some` regardless of `view_mode` (see its own doc comment) —
+        // `finish_transition_if_done` is what actually matters once the
+        // animation completes.
+        self.transition = Some(Transition {
+            tab_id: id.to_string(),
+            kind: TransitionKind::ToTab,
+            start: std::time::Instant::now(),
+        });
+    }
+
+    /// Checked once per frame, before rendering: once a `Transition`'s
+    /// duration has elapsed, applies whatever `focus_tab`/`leave_to_graph`
+    /// would have done instantly (the view-mode switch, and — for
+    /// `ToGraph` specifically — finally suspending the tab now that its
+    /// last real frame has been captured into the thumbnail it just
+    /// shrank into).
+    fn finish_transition_if_done(&mut self) {
+        let Some(transition) = &self.transition else {
+            return;
+        };
+        if transition.start.elapsed() < TRANSITION_DURATION {
+            return;
+        }
+        let tab_id = transition.tab_id.clone();
+        let kind = transition.kind;
+        self.transition = None;
+        match kind {
+            TransitionKind::ToGraph => {
+                self.view_mode = ViewMode::Graph;
+                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                    node.tab.set_visible(false);
+                }
+            }
+            TransitionKind::ToTab => {
+                self.view_mode = ViewMode::Tab;
+            }
+        }
+    }
+
+    /// Replicates `egui::Scene`'s own internal `fit_to_rect_in_scene`
+    /// (private to egui, not part of its public API) — needed to compute
+    /// where a graph node actually lands on screen *outside* the `Scene`
+    /// widget's own closure, for the shrink/expand animation's target
+    /// rect. `(scale, translation)` such that
+    /// `screen = translation + scale * world`, matching `Scene`'s own
+    /// "fit the visible scene rect into the available screen area,
+    /// preserving aspect ratio, clamped to the configured zoom range"
+    /// behavior exactly (using the *same* `self.graph_scene_rect` `Scene`
+    /// itself reads/writes) — verified live by screenshotting a
+    /// mid-animation frame and confirming the content quad visually lines
+    /// up with the target node's real on-screen position.
+    fn graph_world_to_screen_transform(&self, scene_outer_rect: egui::Rect) -> (f32, egui::Vec2) {
+        let scale = (scene_outer_rect.size() / self.graph_scene_rect.size())
+            .min_elem()
+            .clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        let translation =
+            scene_outer_rect.center().to_vec2() - scale * self.graph_scene_rect.center().to_vec2();
+        (scale, translation)
+    }
+
+    /// The rect (in egui points, screen space) a `Transition` should draw
+    /// its tab's live content quad at *this frame* — eased interpolation
+    /// between Tab view's full content area and the tab's graph-node
+    /// thumbnail spot, direction depending on `transition.kind`.
+    fn transition_content_rect_points(&self, transition: &Transition) -> egui::Rect {
+        let screen = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+        let screen_points = egui::vec2(screen.width as f32 / ppp, screen.height as f32 / ppp);
+
+        let full_content_rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, CHROME_HEIGHT_POINTS),
+            egui::vec2(screen_points.x, (screen_points.y - CHROME_HEIGHT_POINTS).max(0.0)),
+        );
+
+        let node_rect = self
+            .tabs
+            .get(&transition.tab_id)
+            .map(|node| {
+                let scene_outer_rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
+                    egui::vec2(screen_points.x, (screen_points.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+                );
+                let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+                let world_rect =
+                    egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE)
+                        .shrink(GRAPH_THUMB_MARGIN);
+                egui::Rect::from_min_max(
+                    egui::pos2(
+                        world_rect.min.x * scale + translation.x,
+                        world_rect.min.y * scale + translation.y,
+                    ),
+                    egui::pos2(
+                        world_rect.max.x * scale + translation.x,
+                        world_rect.max.y * scale + translation.y,
+                    ),
+                )
+            })
+            .unwrap_or(full_content_rect);
+
+        let (from, to) = match transition.kind {
+            TransitionKind::ToGraph => (full_content_rect, node_rect),
+            TransitionKind::ToTab => (node_rect, full_content_rect),
+        };
+        let t = (transition.start.elapsed().as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        // Smoothstep: eases in and out, rather than the constant-velocity
+        // (and slightly mechanical-looking) feel of plain linear `lerp`.
+        let eased = t * t * (3.0 - 2.0 * t);
+        egui::Rect::from_min_max(
+            from.min + (to.min - from.min) * eased,
+            from.max + (to.max - from.max) * eased,
+        )
     }
 
     /// Closes a tab: tears down its process (via `EngineTab`'s `Drop` —
@@ -779,6 +946,16 @@ impl App {
     }
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
+        // A `Transition` (either direction) always renders Graph view's
+        // node layout as the backdrop — it's the one screen both a
+        // shrinking-away Tab view and an expanding-toward Tab view have a
+        // coherent shared position in (the target/source node). The actual
+        // animated content quad itself is drawn separately, in
+        // `RedrawRequested` — see `transition_content_rect_points`.
+        if self.transition.is_some() {
+            self.build_graph_ui(ui);
+            return;
+        }
         match self.view_mode {
             ViewMode::Tab => self.build_tab_ui(ui),
             ViewMode::Graph => self.build_graph_ui(ui),
@@ -1447,7 +1624,7 @@ impl App {
         }
         if let Some(id) = clicked_focus {
             if self.tabs.contains_key(&id) {
-                self.focus_tab(&id);
+                self.start_transition_to_tab(&id);
             }
         }
     }
@@ -1614,6 +1791,11 @@ impl ApplicationHandler<DebugCommand> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.drain_tab_events();
+                // Checked before building this frame's UI so that, the
+                // instant a `Transition` completes, this same frame already
+                // renders the real destination view instead of an extra
+                // stale transitioning frame.
+                self.finish_transition_if_done();
 
                 let egui_output = match (self.egui_state.take(), self.window.clone()) {
                     (Some(mut state), Some(window)) => {
@@ -1630,21 +1812,54 @@ impl ApplicationHandler<DebugCommand> for App {
                     }
                 };
 
-                let chrome_height = self.chrome_height_px();
-                let focused_for_content = match self.view_mode {
-                    ViewMode::Tab => self.focused.as_deref(),
-                    ViewMode::Graph => None,
+                // The content quad's rect (points, screen space) and which
+                // tab's texture to draw there — a `Transition` overrides
+                // both to the animated in-between rect and that tab's id,
+                // regardless of `view_mode`; otherwise the normal
+                // full-content-area-in-Tab-view/nothing-in-Graph-view rule.
+                let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+                let (content_rect_pts, focused_for_content) = if let Some(transition) = &self.transition {
+                    (
+                        self.transition_content_rect_points(transition),
+                        Some(transition.tab_id.clone()),
+                    )
+                } else if self.view_mode == ViewMode::Tab {
+                    let screen = self
+                        .window
+                        .as_ref()
+                        .map(|w| w.inner_size())
+                        .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+                    let top = self.chrome_height_points();
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(0.0, top),
+                        egui::vec2(screen.width as f32 / ppp, (screen.height as f32 / ppp - top).max(0.0)),
+                    );
+                    (rect, self.focused.clone())
+                } else {
+                    (egui::Rect::ZERO, None)
                 };
+                let content_rect_px = (
+                    content_rect_pts.min.x * ppp,
+                    content_rect_pts.min.y * ppp,
+                    content_rect_pts.width() * ppp,
+                    content_rect_pts.height() * ppp,
+                );
+
                 let screenshot_path = self.pending_screenshot.take();
                 if let Some(gpu) = &mut self.gpu {
                     match egui_output {
                         Some(output) => gpu.render(
-                            chrome_height,
-                            focused_for_content,
+                            content_rect_px,
+                            focused_for_content.as_deref(),
                             Some((&self.egui_ctx, output)),
                             screenshot_path.as_deref(),
                         ),
-                        None => gpu.render(chrome_height, focused_for_content, None, screenshot_path.as_deref()),
+                        None => gpu.render(
+                            content_rect_px,
+                            focused_for_content.as_deref(),
+                            None,
+                            screenshot_path.as_deref(),
+                        ),
                     }
                 }
                 if let Some(window) = &self.window {

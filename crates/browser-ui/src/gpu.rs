@@ -474,19 +474,21 @@ impl GpuState {
         }
     }
 
-    /// `content_top_px` reserves the top strip of the window (in physical
-    /// pixels) for chrome — the content quad only draws below it — so the
-    /// tab strip/toolbar egui paints there never fights the tab's own
-    /// full-bleed texture for the same pixels. `egui` is `None` on the very
-    /// first frames before egui has produced any output yet.
+    /// `viewport` is the exact rect (physical pixels: x, y, w, h) the
+    /// content quad draws at — normally the full window below chrome, but
+    /// during a Tab↔Graph shrink/expand animation (`main.rs`'s
+    /// `Transition`) the caller passes an interpolated, animated rect
+    /// instead, sized/positioned partway between that and the target
+    /// graph-node's thumbnail spot. `egui` is `None` on the very first
+    /// frames before egui has produced any output yet.
     ///
     /// `focused_tab_id` is the tab whose live content should fill the
-    /// content viewport (Tab view) — `None` in Graph view, where there is
-    /// no single focused tab and node thumbnails are drawn entirely via the
-    /// egui pass instead. If it doesn't match whichever tab most recently
-    /// produced a frame (e.g. focus just switched and the new tab hasn't
-    /// painted yet), the content pass is skipped rather than briefly
-    /// showing the previous tab's stale frame.
+    /// content viewport (Tab view, or the tab a `Transition` is animating)
+    /// — `None` when there is no single tab whose content belongs on
+    /// screen (plain Graph view, no animation). If it doesn't match
+    /// whichever tab most recently produced a frame (e.g. focus just
+    /// switched and the new tab hasn't painted yet), the content pass is
+    /// skipped rather than briefly showing the previous tab's stale frame.
     /// Records the hand-rolled content-pipeline pass (the focused tab's live
     /// frame, if any) into `view`. A free function (not a `&self` method) so
     /// `render` can call it against two different targets — the real
@@ -498,9 +500,7 @@ impl GpuState {
     fn record_content_pass(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        content_top: u32,
-        width: u32,
-        height: u32,
+        viewport: (f32, f32, f32, f32),
         showing: Option<&TabTexture>,
         pipeline: &wgpu::RenderPipeline,
     ) {
@@ -521,14 +521,12 @@ impl GpuState {
             multiview_mask: None,
         });
         if let Some(tab_texture) = showing {
-            pass.set_viewport(
-                0.0,
-                content_top as f32,
-                width as f32,
-                (height - content_top) as f32,
-                0.0,
-                1.0,
-            );
+            let (x, y, w, h) = viewport;
+            // `.max(1.0)`: wgpu validation rejects a zero/negative-size
+            // viewport — a transition's interpolated rect should never
+            // actually collapse to zero, but a mid-animation window resize
+            // is cheap insurance against a transient degenerate frame.
+            pass.set_viewport(x, y, w.max(1.0), h.max(1.0), 0.0, 1.0);
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &tab_texture.bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -587,7 +585,7 @@ impl GpuState {
     /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
-        content_top_px: u32,
+        content_rect_px: (f32, f32, f32, f32),
         focused_tab_id: Option<&str>,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
@@ -607,7 +605,6 @@ impl GpuState {
                 label: Some("tab render encoder"),
             });
 
-        let content_top = content_top_px.min(self.config.height);
         let width = self.config.width;
         let height = self.config.height;
         let showing = self
@@ -654,7 +651,7 @@ impl GpuState {
             None
         };
 
-        Self::record_content_pass(&mut encoder, &view, content_top, width, height, showing, &self.pipeline);
+        Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline);
         if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
             Self::record_egui_pass(
                 &mut encoder,
@@ -677,7 +674,7 @@ impl GpuState {
                 view_formats: &[],
             });
             let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            Self::record_content_pass(&mut encoder, &readback_view, content_top, width, height, showing, &self.pipeline);
+            Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline);
             if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
                 Self::record_egui_pass(
                     &mut encoder,
