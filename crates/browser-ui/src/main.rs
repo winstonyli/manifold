@@ -363,6 +363,19 @@ struct App {
     /// spawn thread a way to report back. `None` only in the brief window
     /// before `main` sets it; every real spawn happens after that.
     event_proxy: Option<EventLoopProxy<UserEvent>>,
+
+    /// The tab id `respawn_tab` was called for *while it was the focused
+    /// tab* — i.e. an engine swap or crash recovery is currently respawning
+    /// the tab the user is looking at. `build_tab_ui`'s existing "focused
+    /// tab missing from `self.tabs`" guard (a pre-existing one-frame safety
+    /// net, from before spawning was async) would otherwise bounce the user
+    /// to Graph view for the tab's *entire* respawn duration — imperceptible
+    /// when spawning was synchronous, but a visible multi-second flicker
+    /// back to Graph and then back to Tab view now that a WebKit respawn can
+    /// take many seconds. Set in `respawn_tab`, cleared in
+    /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
+    /// (`Ok` or `Err`) arrives.
+    pending_respawn_focus: Option<String>,
 }
 
 impl Default for App {
@@ -404,6 +417,7 @@ impl Default for App {
             settings_open: false,
             transition: None,
             event_proxy: None,
+            pending_respawn_focus: None,
         }
     }
 }
@@ -689,6 +703,9 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome { id, parent, url, pos, vel, purpose, result } = outcome;
+        if matches!(purpose, SpawnPurpose::Respawn) && self.pending_respawn_focus.as_deref() == Some(id.as_str()) {
+            self.pending_respawn_focus = None;
+        }
         match result {
             Ok(mut tab) => {
                 let is_focused = match purpose {
@@ -1019,6 +1036,9 @@ impl App {
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
+        if self.focused.as_deref() == Some(tab_id) {
+            self.pending_respawn_focus = Some(tab_id.to_string());
+        }
         self.spawn_tab_async(tab_id.to_string(), parent, url, pos, vel, SpawnPurpose::Respawn, kind);
     }
 
@@ -1045,7 +1065,40 @@ impl App {
             return;
         };
         if !self.tabs.contains_key(&focused_id) {
-            self.view_mode = ViewMode::Graph;
+            if self.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
+                // An engine swap or crash recovery is respawning the tab
+                // the user is currently looking at — stay in Tab view
+                // (don't bounce to Graph, see `pending_respawn_focus`'s doc
+                // comment) and show a lightweight placeholder (with just
+                // enough chrome to still escape to Graph) instead of
+                // nothing until it reappears in `self.tabs`.
+                let mut back_to_graph = false;
+                egui::Panel::top("tab_strip_respawning")
+                    .exact_size(TAB_STRIP_HEIGHT_POINTS)
+                    .frame(
+                        egui::Frame::default()
+                            .fill(TAB_STRIP_FILL)
+                            .inner_margin(egui::Margin::symmetric(10, 0)),
+                    )
+                    .show(ui, |ui| {
+                        ui.horizontal_centered(|ui| {
+                            if ui.button("Graph").clicked() {
+                                back_to_graph = true;
+                            }
+                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.label("Reconnecting…");
+                        });
+                    });
+                if back_to_graph {
+                    self.view_mode = ViewMode::Graph;
+                    return;
+                }
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Spinner::new().size(32.0));
+                });
+            } else {
+                self.view_mode = ViewMode::Graph;
+            }
             return;
         }
         // Not just `!self.address_bar_focused`: found live that the moment
