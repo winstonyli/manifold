@@ -172,8 +172,9 @@ fn webkit_binary_path_in_repo() -> PathBuf {
 /// A few short retries clears it without needing an arbitrary fixed delay
 /// on every spawn (including the common non-swap case, where it's unused).
 fn listen_local_pair_with_retry(tab_id: &str) -> std::io::Result<transport::LocalListenerPair> {
+    const ATTEMPTS: u32 = 10;
     let mut last_err = None;
-    for attempt in 0..10 {
+    for attempt in 0..ATTEMPTS {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -182,7 +183,26 @@ fn listen_local_pair_with_retry(tab_id: &str) -> std::io::Result<transport::Loca
             Err(err) => last_err = Some(err),
         }
     }
-    Err(last_err.unwrap())
+    let err = last_err.unwrap();
+    // A collision this persistent (as opposed to the transient
+    // "Access is denied" this retry loop is normally for, see the doc
+    // comment above) usually means some *other* process — often a stale
+    // engine-host left over from a previous crashed/killed run — is still
+    // holding `tab_id`'s named pipe. Surface the OS error code and the
+    // name we tried, since the bare `err` alone (e.g. just "os error 5")
+    // gives no hint of which pipe or that a leftover process is the likely
+    // cause.
+    Err(std::io::Error::new(
+        err.kind(),
+        format!(
+            "failed to create named pipe for tab '{tab_id}' after {ATTEMPTS} attempts \
+             ({:.1}s): {err} (raw OS error: {:?}). A leftover engine-host process from a \
+             previous run may still be holding this pipe — check for and kill any stray \
+             engine-host-*.exe processes.",
+            (ATTEMPTS.saturating_sub(1)) as f64 * 0.05,
+            err.raw_os_error(),
+        ),
+    ))
 }
 
 fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::File)> {
