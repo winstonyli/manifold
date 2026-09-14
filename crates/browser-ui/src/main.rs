@@ -226,6 +226,15 @@ struct App {
     /// Set by a headless `SCREENSHOT` command; consumed on the next
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
+
+    /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
+    /// engine-host from a previous crashed run still holding the tab's
+    /// named pipe). Without this, a failed spawn left `tabs` empty and the
+    /// user saw the ordinary "No tabs" Graph view with no indication
+    /// anything had gone wrong — see `build_graph_ui`. Cleared at the start
+    /// of the next spawn attempt so a retry doesn't leave a stale message
+    /// on screen.
+    tab_spawn_error: Option<String>,
 }
 
 impl Default for App {
@@ -256,6 +265,7 @@ impl Default for App {
             pending_debug_escape: false,
             pending_debug_enter: false,
             pending_screenshot: None,
+            tab_spawn_error: None,
         }
     }
 }
@@ -371,6 +381,7 @@ impl App {
     /// browser" from before M5 — Graph view is reached explicitly).
     fn spawn_root_tab(&mut self) {
         let id = self.alloc_tab_id();
+        self.tab_spawn_error = None;
         match process_manager::spawn_tab(STARTING_ENGINE, &id, INITIAL_URL) {
             Ok(mut tab) => {
                 tab.set_visible(true);
@@ -397,6 +408,7 @@ impl App {
             }
             Err(err) => {
                 eprintln!("spawn root tab failed: {err}");
+                self.tab_spawn_error = Some(format!("Couldn't start a browser tab: {err}"));
             }
         }
     }
@@ -421,6 +433,7 @@ impl App {
             .map(|n| n.pos)
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
+        self.tab_spawn_error = None;
         match process_manager::spawn_tab(STARTING_ENGINE, &id, url) {
             Ok(mut tab) => {
                 tab.set_visible(false);
@@ -443,6 +456,7 @@ impl App {
             }
             Err(err) => {
                 eprintln!("spawn new tab failed: {err}");
+                self.tab_spawn_error = Some(format!("Couldn't start a new tab: {err}"));
             }
         }
     }
@@ -844,6 +858,9 @@ impl App {
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
+                    if let Some(err) = &self.tab_spawn_error {
+                        ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+                    }
                 });
             });
         if reset_view {
@@ -852,7 +869,13 @@ impl App {
 
         if self.tabs.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label("No tabs. Click \"+ New Tab\" to start browsing.");
+                match &self.tab_spawn_error {
+                    Some(err) => ui.colored_label(
+                        egui::Color32::from_rgb(220, 60, 60),
+                        format!("{err}\nClick \"+ New Tab\" to try again."),
+                    ),
+                    None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
+                };
             });
             if let Some(parent) = new_tab_parent {
                 self.spawn_new_tab(parent, INITIAL_URL);
