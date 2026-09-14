@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
-use webkit2gtk::{URIRequestExt, WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{gio, FaviconDatabaseExt, URIRequestExt, WebContextExt, WebView, WebViewExt};
 
 use gtk::cairo::{Format, ImageSurface};
 
@@ -68,17 +68,30 @@ fn main() {
     // database directory explicitly set (confirmed live: without this,
     // silent, no error, just never fires — no signal ever arrives).
     // `WebView::new()` uses the default context, so this must happen
-    // before it. This alone is necessary but not sufficient, though: with
-    // it, the database file is created and the signal handler is wired,
-    // but in testing under this WSL2/Xvfb setup, real favicons (e.g.
-    // github.com's) still never actually get fetched/stored — the
-    // underlying cause wasn't found (see project memory before spending
-    // more time on this; may be specific to running under Xvfb with no
-    // real GPU/network stack quirk, not yet isolated).
-    if let Some(context) = webkit2gtk::WebContext::default() {
+    // before it.
+    //
+    // Setting the directory alone was found (in an earlier pass) to be
+    // necessary but not sufficient — the database initializes and is
+    // actively written to (confirmed via the WSL2 filesystem: a real
+    // `WebpageIcons.db` + WAL journal), but a real page's favicon still
+    // never showed up via `WebView::favicon()`/`connect_favicon_notify`
+    // alone. Root cause, found by reading `webkit2gtk`'s own generated
+    // bindings rather than guessing further: `WebView::favicon`/
+    // `favicon-notify` are a passive property that reflects whatever the
+    // favicon database *already has cached* — they don't themselves cause
+    // a fetch. The actual fetch trigger is `FaviconDatabase::favicon(uri,
+    // cancellable, callback)`, a separate async API on the *database*
+    // object (`WebContext::favicon_database()`), which explicitly
+    // requests (and if needed, downloads) the icon for a given page URI.
+    // Nothing in this codebase ever called it — every prior attempt only
+    // ever waited passively for a signal that had nothing to actively
+    // trigger it. Kept alive for the process lifetime (not just this
+    // block) so it can be used below once a page finishes loading.
+    let favicon_database = webkit2gtk::WebContext::default().and_then(|context| {
         let dir = std::env::temp_dir().join("multiengine-browser-favicons");
         context.set_favicon_database_directory(dir.to_str());
-    }
+        context.favicon_database()
+    });
 
     let webview = WebView::new();
     webview.set_size_request(DEFAULT_WIDTH, DEFAULT_HEIGHT);
@@ -231,6 +244,13 @@ fn main() {
             webview.is_loading(),
         );
         if nav_now != last_nav {
+            // Fetch the favicon once a load actually finishes (loading
+            // true -> false), not on every nav-state tick — see
+            // `favicon_database`'s doc comment for why this explicit
+            // request is the real trigger, not something that happens on
+            // its own just because the page loaded.
+            let just_finished_loading = last_nav.4 && !nav_now.4;
+            let loaded_url = nav_now.0.clone();
             last_nav = nav_now.clone();
             let _ = to_host.send(&EngineToHost::NavigationStateChanged {
                 url: nav_now.0,
@@ -239,6 +259,18 @@ fn main() {
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
             });
+            if just_finished_loading {
+                if let Some(db) = &favicon_database {
+                    let pending_favicon = pending_favicon.clone();
+                    db.favicon(&loaded_url, gio::Cancellable::NONE, move |result| {
+                        if let Ok(surface) = result {
+                            if let Some(rgba) = favicon_to_rgba(&surface) {
+                                *pending_favicon.borrow_mut() = Some(rgba);
+                            }
+                        }
+                    });
+                }
+            }
         }
 
         if let Some(url) = pending_open_tab.borrow_mut().take() {
