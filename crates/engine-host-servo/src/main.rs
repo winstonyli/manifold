@@ -248,6 +248,15 @@ fn main() {
                     // this API surface yet; revisit once tab UI needs it.
                 }
                 HostToEngine::SetVisible(v) => {
+                    // Resuming from background: force one repaint even if
+                    // `notify_new_frame_ready` never fired while hidden
+                    // (static page, nothing changed) — otherwise the
+                    // capture-and-FrameReady-send block below stays gated
+                    // shut forever and browser-ui never gets a fresh
+                    // texture to display.
+                    if v && !visible {
+                        *delegate.frame_ready.borrow_mut() = true;
+                    }
                     visible = v;
                 }
                 HostToEngine::GetState => {
