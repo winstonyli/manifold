@@ -101,6 +101,8 @@ Commands:
 - `RESIZE <width> <height>`
 - `QUIT` — exits cleanly. Also sent automatically on stdin EOF, so a driving script that closes its write end doesn't leave the process hanging.
 
+`scripts/headless-smoke-test.sh` is a runnable example (and a real regression smoke test): drives the address-bar autocomplete flow end to end via a bash `coproc` and asserts each screenshot was actually produced and isn't suspiciously small — not full visual-regression testing (there's no state-query debug command yet to assert exact content), but enough to catch a crash or total breakage. Run it after `cargo build -p browser-ui`. Note for anything driving this from Git Bash/MSYS: a `SCREENSHOT` path travels over stdin, not argv, so it's not auto-translated from a POSIX path (`/c/Users/...`) the way a command-line argument to a spawned native exe would be — convert with `cygpath -w` first.
+
 ## Known limitations
 
 - Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only the URL carries over.
