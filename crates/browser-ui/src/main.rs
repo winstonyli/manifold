@@ -258,6 +258,14 @@ struct App {
     pending_debug_enter: bool,
     pending_debug_arrow_down: bool,
     pending_debug_arrow_up: bool,
+    /// Set by a headless `QUIT` that arrived while a `pending_debug_*` flag
+    /// above was still set (e.g. `ENTER`+`QUIT` sent back-to-back with no
+    /// delay) — exiting immediately in that case could drop the pending
+    /// command before any frame ever consumed it (`event_loop.exit()`
+    /// gives no guarantee a `RedrawRequested` runs first). Deferring one
+    /// frame lets `build_tab_ui`/etc. consume the pending flag normally;
+    /// `RedrawRequested`'s handler checks this and exits right after.
+    quit_after_next_redraw: bool,
     /// Set by a headless `ADDRESSBAR` command, cleared by `ENTER`/`ESCAPE`/
     /// accepting a suggestion. A real click gives the `TextEdit` real,
     /// *persistent* egui focus, so `response.has_focus()` keeps reporting
@@ -337,6 +345,7 @@ impl Default for App {
             pending_debug_enter: false,
             pending_debug_arrow_down: false,
             pending_debug_arrow_up: false,
+            quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
             tab_spawn_error: None,
@@ -1868,6 +1877,15 @@ impl ApplicationHandler<DebugCommand> for App {
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
+
+                // See `quit_after_next_redraw`'s doc comment — this frame's
+                // `build_ui` call above (already run, via `ctx.run_ui`) is
+                // what actually consumes any pending debug flag that was
+                // still set when `DebugCommand::Quit` deferred the exit;
+                // safe to exit now that it's had its one guaranteed frame.
+                if std::mem::take(&mut self.quit_after_next_redraw) {
+                    event_loop.exit();
+                }
             }
             _ => {}
         }
@@ -2044,7 +2062,24 @@ impl App {
                     let _ = window.request_inner_size(PhysicalSize::new(width, height));
                 }
             }
-            DebugCommand::Quit => event_loop.exit(),
+            DebugCommand::Quit => {
+                // See `quit_after_next_redraw`'s doc comment: exiting right
+                // now could drop a pending Enter/Escape/arrow command that
+                // arrived just before this Quit with no frame in between to
+                // consume it.
+                if self.pending_debug_enter
+                    || self.pending_debug_escape
+                    || self.pending_debug_arrow_down
+                    || self.pending_debug_arrow_up
+                {
+                    self.quit_after_next_redraw = true;
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                } else {
+                    event_loop.exit();
+                }
+            }
         }
     }
 

@@ -56,14 +56,49 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     })
 }
 
+/// Bounded wait for a single same-machine engine-host (CEF/Servo) to dial
+/// back on one of the two sockets, rather than `Listener::accept`'s
+/// unbounded block — see `accept_remote`'s doc comment for the sibling bug
+/// this mirrors (there, a cold WSL2 boot; here, in principle a
+/// same-machine child process that fails to reach `connect_local_pair` at
+/// all — e.g. a corrupted/mismatched binary that exits before connecting —
+/// would otherwise hang browser-ui's main/event-loop thread just the same,
+/// just without the "it can take literal hours" cold-boot severity that
+/// made the remote case the first one actually hit in practice).
+fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream> {
+    listener.set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok(stream) => return Ok(stream),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out after {timeout:?} waiting for engine-host to connect"),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Called by browser-ui once the engine-host child process has connected.
 /// Returns `(sender, receiver)`: send `HostToEngine` on the first, recv
-/// `EngineToHost` on the second.
+/// `EngineToHost` on the second. `timeout` applies to each socket in turn
+/// (so the real worst case is up to `2 * timeout`, not shared/split between
+/// them) — the two accepts are cheap and effectively sequential in
+/// practice (`connect_local_pair` dials both back within microseconds of
+/// each other), so this favors giving each one its own full budget over
+/// the bookkeeping of a single shared deadline.
 pub fn accept_local_pair(
     pair: &LocalListenerPair,
+    timeout: Duration,
 ) -> io::Result<(LocalTransport, LocalTransport)> {
-    let sender = MessageChannel::new(pair.host_to_engine.accept()?);
-    let receiver = MessageChannel::new(pair.engine_to_host.accept()?);
+    let sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout)?);
+    let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout)?);
     Ok((sender, receiver))
 }
 
@@ -135,4 +170,71 @@ pub fn accept_remote(listener: &TcpListener, timeout: Duration) -> io::Result<Re
 pub fn connect_remote(host: &str, port: u16) -> io::Result<RemoteTransport> {
     let stream = TcpStream::connect((host, port))?;
     Ok(MessageChannel::new(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the WebKit-engine-host hang: `accept_remote`
+    /// used to call `TcpListener::accept()` directly, which blocks
+    /// indefinitely if nobody ever connects — on browser-ui's main/
+    /// event-loop thread, that meant the *entire app* froze (window,
+    /// input, headless stdin commands) for as long as a WSL2-hosted
+    /// engine-host took to dial back, unbounded, confirmed live to reach
+    /// multiple hours in one real incident. This doesn't reproduce a cold
+    /// WSL2 boot (out of scope for a unit test), but it does pin the
+    /// actual behavioral contract the fix promises: given nobody ever
+    /// connects at all, `accept_remote` must return within (not much
+    /// more than) its `timeout` argument, as a clean `TimedOut` error, not
+    /// hang — the exact shape of the bug that let the freeze happen.
+    #[test]
+    fn accept_remote_times_out_when_nobody_connects() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let timeout = Duration::from_millis(200);
+
+        let start = Instant::now();
+        let result = accept_remote(&listener, timeout);
+        let elapsed = start.elapsed();
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("accept_remote should time out, not succeed"),
+        };
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        // Generous upper bound (not a tight timing assertion) — this just
+        // needs to prove it didn't block indefinitely, not measure exact
+        // poll-loop overhead.
+        assert!(
+            elapsed < timeout * 5,
+            "accept_remote took {elapsed:?}, expected close to the {timeout:?} timeout"
+        );
+    }
+
+    /// Same regression, for `accept_local_pair`'s bounded wait (added
+    /// alongside the WebKit fix, hardening the same unbounded-`accept()`
+    /// pattern on the same-machine CEF/Servo path) — a listener with no
+    /// client ever connecting must time out cleanly rather than hang.
+    #[test]
+    fn accept_local_pair_times_out_when_nobody_connects() {
+        let pair =
+            listen_local_pair("test-accept-local-pair-timeout").expect("listen_local_pair");
+        let timeout = Duration::from_millis(200);
+
+        let start = Instant::now();
+        let result = accept_local_pair(&pair, timeout);
+        let elapsed = start.elapsed();
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("accept_local_pair should time out, not succeed"),
+        };
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        // Two sequential per-socket timeouts (see accept_local_pair's doc
+        // comment) — worst case is up to ~2x timeout, not 1x.
+        assert!(
+            elapsed < timeout * 10,
+            "accept_local_pair took {elapsed:?}, expected roughly 2x the {timeout:?} timeout"
+        );
+    }
 }

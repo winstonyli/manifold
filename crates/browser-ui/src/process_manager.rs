@@ -309,6 +309,13 @@ enum RemoteOrLocalReceiver {
     Remote(RemoteTransport),
 }
 
+/// Same-machine (CEF/Servo) equivalent of `WEBKIT_CONNECT_TIMEOUT`, much
+/// shorter since there's no cold-VM-boot equivalent to wait out here — a
+/// same-machine child that hasn't connected within a few seconds of
+/// spawning has failed (crashed, or a missing/mismatched binary), not
+/// merely slow to start.
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Spawns an engine-host for `kind`, wires up its control channel(s), and
 /// returns a handle the process manager (and the tab-swap logic) can drive.
 ///
@@ -348,9 +355,12 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
         .stderr(stderr_file)
         .spawn()?;
 
-    // The child connects to both sockets right after spawning; accept()
-    // blocks until it does.
-    let (to_engine, from_engine) = transport::accept_local_pair(&listeners)?;
+    // The child connects to both sockets right after spawning — bounded by
+    // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
+    // doc comment, and accept_remote's, for why an unbounded wait here on
+    // browser-ui's main/event-loop thread is a real hazard, not just
+    // theoretical caution).
+    let (to_engine, from_engine) = transport::accept_local_pair(&listeners, LOCAL_CONNECT_TIMEOUT)?;
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
     Ok(EngineTab {
