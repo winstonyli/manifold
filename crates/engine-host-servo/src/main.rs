@@ -127,7 +127,12 @@ fn main() {
     // reserved for CEF's own command-line parsing. Kept consistent here too
     // so browser-ui's process manager has one spawn convention for every
     // engine-host.
-    let tab_id = std::env::var("ENGINE_TAB_ID").expect("ENGINE_TAB_ID env var required");
+    // ENGINE_SOCKET_ID names our control pipes/shared memory — normally
+    // equal to ENGINE_TAB_ID, but browser-ui may pass a different id if a
+    // stale engine-host from a prior crashed run still held ENGINE_TAB_ID's
+    // pipes (see process_manager::spawn_tab's fallback). Only this id
+    // matters here; we never need ENGINE_TAB_ID itself.
+    let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
     let initial_url = std::env::var("ENGINE_INITIAL_URL")
         .unwrap_or_else(|_| "https://example.com".to_string());
 
@@ -137,8 +142,9 @@ fn main() {
     // instead of one bidirectional stream means the reader thread below
     // never needs to duplicate a stream handle to read concurrently with
     // the main thread's sends.
-    let (mut host_to_engine, mut control) = ipc_protocol::transport::connect_local_pair(&tab_id)
-        .expect("connect to browser-ui control sockets");
+    let (mut host_to_engine, mut control) =
+        ipc_protocol::transport::connect_local_pair(&socket_id)
+            .expect("connect to browser-ui control sockets");
 
     // A dedicated IO thread owns receiving HostToEngine messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
@@ -187,7 +193,7 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
-    let mut frame_buffer = SharedFrameBuffer::create(&tab_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    let mut frame_buffer = SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
         .expect("create shared frame buffer");
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
@@ -229,7 +235,7 @@ fn main() {
                     // below wouldn't drop the old value until after the
                     // right-hand side (the new create() call) already ran.
                     drop(frame_buffer);
-                    frame_buffer = SharedFrameBuffer::create(&tab_id, w, h)
+                    frame_buffer = SharedFrameBuffer::create(&socket_id, w, h)
                         .expect("recreate shared frame buffer at new size");
                 }
                 HostToEngine::Input(event) => {
