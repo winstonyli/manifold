@@ -1,5 +1,6 @@
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::{
     prelude::*, GenericNamespaced, Listener, ListenerOptions, Name, Stream as LocalStream,
@@ -94,9 +95,39 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }
 
-pub fn accept_remote(listener: &TcpListener) -> io::Result<RemoteTransport> {
-    let (stream, _addr) = listener.accept()?;
-    Ok(MessageChannel::new(stream))
+/// Bounded wait for the WSL2-hosted engine-host to dial back, rather than
+/// `TcpListener::accept`'s unbounded block — a cold/idle WSL2 instance can
+/// take an extremely long, unpredictable time to boot its lightweight VM,
+/// start Xvfb, and get far enough into GTK/WebKit init to connect, and this
+/// call happens on browser-ui's own main/event-loop thread (`spawn_root_tab`
+/// runs from winit's `resumed()`), so an unbounded wait here freezes the
+/// entire app — window redraw, OS message pump, and headless stdin command
+/// dispatch alike — for as long as that takes (confirmed live: from
+/// sub-second on an already-warm WSL2 instance up to several minutes on a
+/// cold one, and per an earlier investigation, occasionally hours). Polling
+/// via `set_nonblocking` rather than a dedicated accept-with-deadline API,
+/// since `std::net::TcpListener` has none.
+pub fn accept_remote(listener: &TcpListener, timeout: Duration) -> io::Result<RemoteTransport> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((stream, _addr)) => {
+                stream.set_nonblocking(false)?;
+                return Ok(MessageChannel::new(stream));
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out after {timeout:?} waiting for engine-host to connect"),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// `host` is the Windows side's address as reachable from inside WSL2 —
