@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
@@ -83,8 +84,42 @@ impl EngineTab {
 impl Drop for EngineTab {
     fn drop(&mut self) {
         self.to_engine.send(&HostToEngine::Shutdown);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if self.kind == EngineKind::Webkit {
+            // For the WSL2-hosted case, `child` is only the Windows-side
+            // `wsl.exe` relay — force-killing it immediately (the
+            // local-engine path below) does NOT terminate the actual
+            // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
+            // engine-host-webkit), which WSL2 keeps running independently
+            // of any Windows-side process state: confirmed live, a killed
+            // relay leaves that whole tree orphaned and running
+            // indefinitely, invisible to any further Windows-side cleanup.
+            // The graceful `Shutdown` sent above already makes
+            // engine-host-webkit return from `main()` on its own, which
+            // cascades correctly on the Linux side (xvfb-run's own EXIT
+            // trap kills its Xvfb child once its wrapped command exits, and
+            // so on up through bash/fish to `wsl.exe` itself returning) —
+            // also confirmed live, leaving zero orphaned processes. So wait
+            // for that natural exit first, bounded in case the message
+            // never lands (network hiccup, or the process was already
+            // wedged for some unrelated reason), and only fall back to a
+            // force-kill — with its known orphan risk — if it doesn't
+            // happen in time.
+            let mut exited = false;
+            for _ in 0..30 {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    exited = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if !exited {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        } else {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 
@@ -327,6 +362,12 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     })
 }
 
+/// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
+/// WebKit init, not a tuned-tight value — see `accept_remote`'s doc comment
+/// for why this exists at all. Failing loudly (a `tab_spawn_error` the user
+/// can see and retry) well within a minute beats an unbounded app freeze.
+const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
+
 fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs
     // don't collide. Bound on all interfaces, not just loopback: WSL2's
@@ -359,17 +400,31 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         port,
         shell_quote(&binary_path),
     );
-    let child = Command::new("wsl.exe")
+    let mut child = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--", "bash", "-c", &command])
         .stdout(stdout_file)
         .stderr(stderr_file)
         .spawn()?;
 
-    // The child connects right after spawning; accept() blocks until it
-    // does. Unlike the local case there's only one TCP connection, used
-    // for both directions (see ToEngine::send / spawn_reader_thread) via
-    // try_clone() rather than two separate sockets.
-    let control = transport::accept_remote(&listener)?;
+    // The child connects right after spawning. Bounded, not the unbounded
+    // wait `TcpListener::accept` alone would give: this runs on browser-ui's
+    // own main/event-loop thread (`spawn_root_tab` runs from winit's
+    // `resumed()`), so an engine-host that never connects — a cold WSL2 VM
+    // boot, Xvfb taking unusually long to come up, etc. — would otherwise
+    // freeze the entire app (redraw, input, headless stdin commands, all of
+    // it) indefinitely; confirmed live to occasionally take minutes-to-hours
+    // rather than the sub-second common case. On timeout, kill the
+    // half-started `wsl.exe` launcher before surfacing the error — leaving
+    // it running would just orphan a second attempt at the same port/tab
+    // the next time this is retried.
+    let control = match transport::accept_remote(&listener, WEBKIT_CONNECT_TIMEOUT) {
+        Ok(control) => control,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
     let stream = control.into_inner();
     let read_stream = stream.try_clone()?;
     let to_engine = ipc_protocol::MessageChannel::new(stream);
