@@ -2,6 +2,7 @@ mod debug_control;
 mod gpu;
 mod graph_layout;
 mod process_manager;
+mod settings;
 mod suggestions;
 
 use std::collections::{HashMap, HashSet};
@@ -16,6 +17,7 @@ use ipc_protocol::{
     SharedFrameBuffer,
 };
 use process_manager::{EngineKind, EngineTab};
+use settings::{SearchEngine, Settings};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{DeviceId, ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -23,9 +25,6 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Window, WindowId};
-
-const INITIAL_URL: &str = "https://example.com";
-const STARTING_ENGINE: EngineKind = EngineKind::Servo;
 
 /// Chrome (tab strip + toolbar) is two stacked top `Panel`s of these
 /// exact heights, in egui points — kept as constants rather than read back
@@ -267,12 +266,22 @@ struct App {
     /// of the next spawn attempt so a retry doesn't leave a stale message
     /// on screen.
     tab_spawn_error: Option<String>,
+
+    /// User-configurable defaults (search engine, starting engine, zoom,
+    /// home page), loaded once at startup and persisted to
+    /// `%APPDATA%\multiengine-browser\settings.json` on every change — see
+    /// `settings.rs`. `settings_open` is the gear-icon popup's own
+    /// visibility, app-wide rather than per-toolbar since Tab and Graph
+    /// view never show chrome simultaneously.
+    settings: Settings,
+    settings_open: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
         let egui_ctx = egui::Context::default();
         apply_style(&egui_ctx);
+        let settings = Settings::load();
         Self {
             window: None,
             gpu: None,
@@ -285,7 +294,7 @@ impl Default for App {
             key_modifiers: 0,
             egui_ctx,
             egui_state: None,
-            address_bar_text: INITIAL_URL.to_string(),
+            address_bar_text: settings.home_page.clone(),
             address_bar_focused: false,
             open_tab_suggestions: Vec::new(),
             search_suggestions: Vec::new(),
@@ -302,6 +311,8 @@ impl Default for App {
             debug_address_bar_pin: false,
             pending_screenshot: None,
             tab_spawn_error: None,
+            settings,
+            settings_open: false,
         }
     }
 }
@@ -343,6 +354,126 @@ impl App {
                 height,
                 dpi_scale,
             });
+        }
+    }
+
+    /// Applies `self.settings.zoom_factor` to one tab — called right after
+    /// spawning it (new tabs pick up whatever the default is *at spawn
+    /// time*; this never retroactively revisits already-open tabs, matching
+    /// every other "default" setting here) and again by the Settings
+    /// popup's zoom control for the currently focused tab specifically
+    /// (`build_settings_popup`), since seeing the zoom control move with no
+    /// visible effect on the tab you're looking at would be confusing.
+    fn send_zoom_to(&mut self, tab_id: &str) {
+        let factor = self.settings.zoom_factor;
+        if let Some(node) = self.tabs.get_mut(tab_id) {
+            node.tab.send(&HostToEngine::SetZoom { factor });
+        }
+    }
+
+    /// Persists the current zoom setting and immediately applies it to
+    /// whichever tab is focused right now — otherwise moving the zoom
+    /// control would have no visible effect until the *next* tab spawn,
+    /// which reads as broken rather than "this is a default for new tabs."
+    fn apply_zoom_change(&mut self) {
+        self.settings.save();
+        if let Some(id) = self.focused.clone() {
+            self.send_zoom_to(&id);
+        }
+    }
+
+    /// The gear-icon popup: default search engine, default starting engine,
+    /// zoom, and home page — see `settings.rs` for what each actually
+    /// controls and `App::settings`'s own doc comment for why this is one
+    /// shared popup rather than per-view state. Every control saves to disk
+    /// immediately on change (no separate "Save" step, consistent with
+    /// every other instant-apply control in this chrome, e.g. the engine
+    /// picker).
+    fn build_settings_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+        let mut close = false;
+        egui::Area::new(egui::Id::new("settings_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_min_width(260.0);
+                        ui.label(egui::RichText::new("Settings").strong());
+                        ui.separator();
+
+                        ui.label("Default search engine");
+                        egui::ComboBox::from_id_salt("settings_search_engine")
+                            .selected_text(self.settings.default_search_engine.label())
+                            .show_ui(ui, |ui| {
+                                for engine in SearchEngine::ALL {
+                                    let selected = self.settings.default_search_engine == engine;
+                                    if ui.selectable_label(selected, engine.label()).clicked() && !selected {
+                                        self.settings.default_search_engine = engine;
+                                        self.settings.save();
+                                    }
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new(
+                                "Suggestions always come from DuckDuckGo; this only picks where a search actually goes.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+
+                        ui.add_space(8.0);
+                        ui.label("Default starting engine (new tabs)");
+                        egui::ComboBox::from_id_salt("settings_starting_engine")
+                            .selected_text(engine_label(self.settings.default_starting_engine))
+                            .show_ui(ui, |ui| {
+                                for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit] {
+                                    let selected = self.settings.default_starting_engine == kind;
+                                    if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
+                                        self.settings.default_starting_engine = kind;
+                                        self.settings.save();
+                                    }
+                                }
+                            });
+
+                        ui.add_space(8.0);
+                        ui.label("Zoom (new tabs; also applies to the current tab now)");
+                        ui.horizontal(|ui| {
+                            if ui.button("\u{2212}").clicked() {
+                                self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
+                                self.apply_zoom_change();
+                            }
+                            ui.label(format!("{:.0}%", self.settings.zoom_factor * 100.0));
+                            if ui.button("+").clicked() {
+                                self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
+                                self.apply_zoom_change();
+                            }
+                            if ui.button("Reset").clicked() {
+                                self.settings.zoom_factor = 1.0;
+                                self.apply_zoom_change();
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.label("Home page (new tabs)");
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY))
+                            .lost_focus()
+                        {
+                            self.settings.save();
+                        }
+
+                        ui.add_space(10.0);
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+            });
+        if close {
+            self.settings_open = false;
         }
     }
 
@@ -403,7 +534,7 @@ impl App {
         match suggestion {
             Suggestion::OpenTab { tab_id, .. } => self.focus_tab(&tab_id),
             Suggestion::Search { query } => {
-                let url = suggestions::search_url(&query);
+                let url = self.settings.default_search_engine.search_url(&query);
                 self.navigate_tab(focused_tab_id, url);
             }
         }
@@ -419,8 +550,9 @@ impl App {
     /// browser" from before M5 — Graph view is reached explicitly).
     fn spawn_root_tab(&mut self) {
         let id = self.alloc_tab_id();
+        let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
-        match process_manager::spawn_tab(STARTING_ENGINE, &id, INITIAL_URL) {
+        match process_manager::spawn_tab(self.settings.default_starting_engine, &id, &home_page) {
             Ok(mut tab) => {
                 tab.set_visible(true);
                 self.tabs.insert(
@@ -428,7 +560,7 @@ impl App {
                     TabNode {
                         tab,
                         parent: None,
-                        url: INITIAL_URL.to_string(),
+                        url: home_page.clone(),
                         title: String::new(),
                         can_go_back: false,
                         can_go_forward: false,
@@ -441,8 +573,9 @@ impl App {
                 self.tab_order.push(id.clone());
                 self.focused = Some(id.clone());
                 self.view_mode = ViewMode::Tab;
-                self.address_bar_text = INITIAL_URL.to_string();
+                self.address_bar_text = home_page;
                 self.send_resize_to(&id);
+                self.send_zoom_to(&id);
             }
             Err(err) => {
                 eprintln!("spawn root tab failed: {err}");
@@ -462,7 +595,7 @@ impl App {
     /// rather than auto-focusing (see plan's M5 scope decision 5), and
     /// background tabs render nothing until focused anyway. Also used for
     /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
-    /// that request's URL instead of `INITIAL_URL`.
+    /// that request's URL instead of the configured home page.
     fn spawn_new_tab(&mut self, parent: Option<String>, url: &str) {
         let id = self.alloc_tab_id();
         let parent_pos = parent
@@ -472,7 +605,7 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        match process_manager::spawn_tab(STARTING_ENGINE, &id, url) {
+        match process_manager::spawn_tab(self.settings.default_starting_engine, &id, url) {
             Ok(mut tab) => {
                 tab.set_visible(false);
                 self.tabs.insert(
@@ -490,7 +623,8 @@ impl App {
                         vel: egui::Vec2::ZERO,
                     },
                 );
-                self.tab_order.push(id);
+                self.tab_order.push(id.clone());
+                self.send_zoom_to(&id);
             }
             Err(err) => {
                 eprintln!("spawn new tab failed: {err}");
@@ -683,6 +817,7 @@ impl App {
         let mut navigate = None;
         let mut back_to_graph = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
+        let mut settings_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
         // — deferred here rather than acted on immediately inside the
         // toolbar closure below, since deciding what Enter *does* (accept
@@ -786,9 +921,15 @@ impl App {
                             }
                         });
 
+                    // Reserve room for the gear button after the address
+                    // bar — `desired_width(f32::INFINITY)` would otherwise
+                    // claim the whole remaining row, leaving nothing for a
+                    // widget added after it in the same horizontal layout.
+                    let gear_reserve = 32.0;
+                    let text_width = (ui.available_width() - gear_reserve).max(40.0);
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.address_bar_text)
-                            .desired_width(f32::INFINITY)
+                            .desired_width(text_width)
                             // Match `style.spacing.button_padding` (set in
                             // `apply_style`) so the address bar renders the
                             // same height as the back/forward buttons and
@@ -802,6 +943,11 @@ impl App {
                     );
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
+                    let gear_response = ui.button("\u{2699}").on_hover_text("Settings");
+                    if gear_response.clicked() {
+                        self.settings_open = !self.settings_open;
+                    }
+                    settings_button_rect = Some(gear_response.rect);
                     if response.changed() {
                         self.open_tab_suggestions =
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
@@ -825,6 +971,12 @@ impl App {
                     }
                 });
             });
+
+        if self.settings_open {
+            if let Some(rect) = settings_button_rect {
+                self.build_settings_popup(ui, rect);
+            }
+        }
 
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
@@ -952,7 +1104,7 @@ impl App {
             self.start_swap_to(&focused_id, kind);
         }
         if let Some(text) = navigate {
-            let url = resolve_navigation_url(&text);
+            let url = resolve_navigation_url(&text, self.settings.default_search_engine);
             self.navigate_tab(&focused_id, url);
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
@@ -967,6 +1119,7 @@ impl App {
         let mut close_requested: Option<String> = None;
 
         let mut reset_view = false;
+        let mut settings_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .frame(
@@ -985,8 +1138,18 @@ impl App {
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                     }
+                    let gear_response = ui.button("\u{2699}").on_hover_text("Settings");
+                    if gear_response.clicked() {
+                        self.settings_open = !self.settings_open;
+                    }
+                    settings_button_rect = Some(gear_response.rect);
                 });
             });
+        if self.settings_open {
+            if let Some(rect) = settings_button_rect {
+                self.build_settings_popup(ui, rect);
+            }
+        }
         if reset_view {
             self.graph_scene_rect = default_graph_scene_rect();
         }
@@ -1002,7 +1165,8 @@ impl App {
                 };
             });
             if let Some(parent) = new_tab_parent {
-                self.spawn_new_tab(parent, INITIAL_URL);
+                let home_page = self.settings.home_page.clone();
+                self.spawn_new_tab(parent, &home_page);
             }
             return;
         }
@@ -1275,7 +1439,8 @@ impl App {
         self.graph_scene_rect = scene_rect;
 
         if let Some(parent) = new_tab_parent {
-            self.spawn_new_tab(parent, INITIAL_URL);
+            let home_page = self.settings.home_page.clone();
+            self.spawn_new_tab(parent, &home_page);
         }
         if let Some(id) = close_requested {
             self.close_tab(&id);

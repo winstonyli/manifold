@@ -243,9 +243,12 @@ fn main() {
                         webview.notify_input_event(servo_event);
                     }
                 }
-                HostToEngine::SetZoom { .. } => {
-                    // TODO(M4): WebView doesn't expose a direct zoom setter in
-                    // this API surface yet; revisit once tab UI needs it.
+                HostToEngine::SetZoom { factor } => {
+                    // `set_page_zoom` is a plain linear multiplier (1.0 =
+                    // 100%, clamped internally to [0.1, 10.0]) — matches
+                    // `factor`'s own semantics directly, no conversion
+                    // needed (contrast CEF's log-scale zoom_level).
+                    webview.set_page_zoom(factor as f32);
                 }
                 HostToEngine::SetVisible(v) => {
                     // Resuming from background: force one repaint even if

@@ -1,6 +1,8 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::settings::SearchEngine;
+
 /// One row in the address bar's autocomplete dropdown.
 #[derive(Debug, Clone)]
 pub enum Suggestion {
@@ -59,9 +61,9 @@ pub fn looks_like_url(input: &str) -> bool {
 
 /// The URL to actually navigate to for the current address-bar text: as
 /// typed if it already looks like a URL (adding `https://` when no scheme
-/// is present, since engines generally require one), otherwise a DuckDuckGo
-/// search for it.
-pub fn resolve_navigation_url(input: &str) -> String {
+/// is present, since engines generally require one), otherwise a search via
+/// `search_engine` (the user's configured default — see `settings.rs`).
+pub fn resolve_navigation_url(input: &str, search_engine: SearchEngine) -> String {
     let trimmed = input.trim();
     if looks_like_url(trimmed) {
         if trimmed.contains("://") {
@@ -70,26 +72,16 @@ pub fn resolve_navigation_url(input: &str) -> String {
             format!("https://{trimmed}")
         }
     } else {
-        search_url(trimmed)
+        search_engine.search_url(trimmed)
     }
-}
-
-/// DuckDuckGo is used for both the actual search (here) and the
-/// autocomplete suggestions below (`fetch_suggestions`) — consistency
-/// between "what you're offered" and "where Enter takes you" matters more
-/// than which specific engine, and DuckDuckGo needs no API key.
-pub fn search_url(query: &str) -> String {
-    format!(
-        "https://duckduckgo.com/?q={}",
-        urlencoding_light(query)
-    )
 }
 
 /// A tiny percent-encoder covering what a search query actually needs
 /// (space and the usual URL-structural characters) — not a full RFC 3986
 /// implementation, since a search query is free text, not a URL component
-/// with sub-delimiters that matter.
-fn urlencoding_light(s: &str) -> String {
+/// with sub-delimiters that matter. `pub(crate)`: also used by
+/// `settings::SearchEngine::search_url` for the same reason.
+pub(crate) fn urlencoding_light(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         match byte {

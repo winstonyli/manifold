@@ -697,6 +697,7 @@ dependencies = [
  "image",
  "ipc-protocol",
  "pollster",
+ "serde",
  "serde_json",
  "ureq",
  "wgpu",

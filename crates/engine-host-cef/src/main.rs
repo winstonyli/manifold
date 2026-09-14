@@ -177,7 +177,17 @@ fn main() {
                 HostToEngine::Input(event) => {
                     input::send_input(&browser, event);
                 }
-                HostToEngine::SetZoom { .. } => {}
+                HostToEngine::SetZoom { factor } => {
+                    // CEF's own `zoom_level` is log-scale (Chromium's
+                    // internal representation, each whole step ~20%
+                    // larger/smaller), not a linear multiplier like
+                    // WebKit's/Servo's `factor` — convert so the same
+                    // `factor` value means the same visual result on every
+                    // engine: `zoom_level = log_1.2(factor)`.
+                    if let Some(host) = browser.host() {
+                        host.set_zoom_level(factor.max(0.01).ln() / 1.2_f64.ln());
+                    }
+                }
                 HostToEngine::SetVisible(v) => {
                     visible = v;
                 }
