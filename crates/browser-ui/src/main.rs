@@ -733,7 +733,22 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(10, 4)),
             )
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
+                // Not `horizontal_centered` (`Align::Center`): measured live
+                // that `egui::ComboBox` paints itself ~4.5pt lower than a
+                // plain `Button`/`TextEdit` even when all three report the
+                // exact same `response.rect.height()` (confirmed via
+                // temporary debug prints: 27.0 for all three, but the combo
+                // box's `rect.min.y` alone sat 4.5pt below the back button's)
+                // — an internal quirk of `ComboBox::show_ui` wrapping its
+                // content in its own nested `ui.horizontal(...)`, whose
+                // layout-pass size estimate apparently doesn't quite match
+                // what it actually paints. Since every item in this row is
+                // now confirmed the same real height (the address-bar-margin
+                // fix above made sure of that), top-aligning instead of
+                // center-aligning sidesteps the mismatch entirely rather
+                // than compensating for a specific pixel offset that could
+                // silently drift if padding/fonts ever change.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                     let node = &self.tabs[&focused_id];
                     if ui
                         .add_enabled(node.can_go_back, egui::Button::new("\u{25c0}"))
