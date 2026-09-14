@@ -32,12 +32,12 @@ const STARTING_ENGINE: EngineKind = EngineKind::Servo;
 /// from egui's layout so the compositor's content viewport (see `gpu::
 /// GpuState::render`'s `content_top_px`) always agrees with where egui
 /// actually painted, without a frame of lag.
-const TAB_STRIP_HEIGHT_POINTS: f32 = 28.0;
-const TOOLBAR_HEIGHT_POINTS: f32 = 40.0;
+const TAB_STRIP_HEIGHT_POINTS: f32 = 26.0;
+const TOOLBAR_HEIGHT_POINTS: f32 = 32.0;
 const CHROME_HEIGHT_POINTS: f32 = TAB_STRIP_HEIGHT_POINTS + TOOLBAR_HEIGHT_POINTS;
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
-const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 32.0;
+const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 26.0;
 
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
@@ -84,8 +84,8 @@ fn apply_style(ctx: &egui::Context) {
     // dark-only in practice, but there's no "just style whatever's active"
     // entry point, so set both identically.
     ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
 
         let corner_radius: egui::CornerRadius = 6u8.into();
         for widgets in [
@@ -696,7 +696,7 @@ impl App {
             .frame(
                 egui::Frame::default()
                     .fill(TAB_STRIP_FILL)
-                    .inner_margin(egui::Margin::symmetric(12, 0)),
+                    .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -730,7 +730,7 @@ impl App {
             .frame(
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
-                    .inner_margin(egui::Margin::symmetric(10, 4)),
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
                 // Not `horizontal_centered` (`Align::Center`): measured live
@@ -798,7 +798,7 @@ impl App {
                             // the row's tallest item (the text field) stood
                             // out with visibly more height than its
                             // neighbors instead of a level toolbar.
-                            .margin(egui::Margin::symmetric(8, 6)),
+                            .margin(egui::Margin::symmetric(8, 4)),
                     );
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
@@ -972,7 +972,7 @@ impl App {
             .frame(
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
-                    .inner_margin(egui::Margin::symmetric(10, 4)),
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
