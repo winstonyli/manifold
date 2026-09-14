@@ -602,7 +602,7 @@ impl App {
                 );
                 self.tab_order.push(id.clone());
                 self.focused = Some(id.clone());
-                self.view_mode = ViewMode::Tab;
+                self.view_mode = ViewMode::Graph;
                 self.address_bar_text = home_page;
                 self.send_resize_to(&id);
                 self.send_zoom_to(&id);

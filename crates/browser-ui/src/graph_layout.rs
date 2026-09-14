@@ -8,10 +8,10 @@ use std::collections::{HashMap, HashSet};
 /// The graph is structurally a forest (each tab has at most one parent —
 /// the tab it was opened from), but the layout itself doesn't need to know
 /// that; it only sees a flat edge list.
-const REPULSION_STRENGTH: f32 = 60_000.0;
+const REPULSION_STRENGTH: f32 = 190_000.0;
 const MIN_DISTANCE: f32 = 1.0;
 const SPRING_STRENGTH: f32 = 8.0;
-const REST_LENGTH: f32 = 180.0;
+const REST_LENGTH: f32 = 320.0;
 const CENTERING_STRENGTH: f32 = 0.15;
 const DAMPING: f32 = 0.85;
 const MAX_SPEED: f32 = 2000.0;

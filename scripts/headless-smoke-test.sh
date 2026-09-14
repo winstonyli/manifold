@@ -5,10 +5,11 @@
 # state-query debug command yet, only screenshots — so this catches
 # crashes/total breakage (process exits non-zero, a screenshot never gets
 # produced or comes back suspiciously small) rather than verifying exact
-# pixels. Exercises the address-bar autocomplete flow end to end: launch,
-# type a query, screenshot the suggestion dropdown, click a suggestion,
-# screenshot the result; arrow-key highlight + Enter-accept; Escape
-# dismissing the dropdown without leaving Tab view; quit.
+# pixels. Exercises the address-bar autocomplete flow end to end: launch
+# (into Graph view), click the root node to enter Tab view, type a query,
+# screenshot the suggestion dropdown, click a suggestion, screenshot the
+# result; arrow-key highlight + Enter-accept; Escape dismissing the
+# dropdown without leaving Tab view; quit.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
 # focuses another tab). That needs a second tab, which needs clicking a
@@ -98,6 +99,16 @@ sleep 4 # startup: root tab spawn + first Servo frame
 # this exact size during manual verification) stay valid regardless of
 # whatever winit's platform-default window size happens to be.
 send "RESIZE 816 639"
+sleep 1
+
+# The app now launches straight into Graph view (M5-polish-era change) —
+# with only the root tab and no edges, physics has nothing to do but pull
+# it toward the world origin, which maps to the window's screen center at
+# this pinned size (measured: ~(407, 332) at 816x639 during manual
+# verification of the shrink/expand transition). Click it to enter Tab
+# view before the address-bar flow below, which assumes Tab view's chrome
+# is on screen; the 220ms shrink/expand transition needs a moment to land.
+send "CLICK 407 332"
 sleep 1
 
 send "ADDRESSBAR weather"
