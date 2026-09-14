@@ -259,11 +259,13 @@ struct App {
     pending_debug_arrow_down: bool,
     pending_debug_arrow_up: bool,
     /// Set by a headless `QUIT` that arrived while a `pending_debug_*` flag
-    /// above was still set (e.g. `ENTER`+`QUIT` sent back-to-back with no
-    /// delay) — exiting immediately in that case could drop the pending
-    /// command before any frame ever consumed it (`event_loop.exit()`
-    /// gives no guarantee a `RedrawRequested` runs first). Deferring one
-    /// frame lets `build_tab_ui`/etc. consume the pending flag normally;
+    /// above (or `pending_screenshot`) was still set — e.g. `ENTER`+`QUIT`,
+    /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
+    /// immediately in that case could drop the pending command/screenshot
+    /// before any frame ever consumed it (`event_loop.exit()` gives no
+    /// guarantee a `RedrawRequested` runs first). Deferring one frame lets
+    /// `build_tab_ui`/etc. consume the pending flag, or lets `RedrawRequested`
+    /// actually capture and save the pending screenshot, normally;
     /// `RedrawRequested`'s handler checks this and exits right after.
     quit_after_next_redraw: bool,
     /// Set by a headless `ADDRESSBAR` command, cleared by `ENTER`/`ESCAPE`/
@@ -2064,13 +2066,18 @@ impl App {
             }
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
-                // now could drop a pending Enter/Escape/arrow command that
-                // arrived just before this Quit with no frame in between to
-                // consume it.
+                // now could drop a pending Enter/Escape/arrow command, or a
+                // just-requested Screenshot that hasn't been captured yet
+                // (`pending_screenshot` is only consumed inside a
+                // `RedrawRequested` — a `Screenshot` immediately followed by
+                // `Quit`, with no frame in between, would otherwise silently
+                // lose the screenshot the same way an unconsumed Enter
+                // could).
                 if self.pending_debug_enter
                     || self.pending_debug_escape
                     || self.pending_debug_arrow_down
                     || self.pending_debug_arrow_up
+                    || self.pending_screenshot.is_some()
                 {
                     self.quit_after_next_redraw = true;
                     if let Some(window) = &self.window {
