@@ -1514,6 +1514,13 @@ impl App {
     fn drain_tab_events(&mut self) {
         struct FrameUpdate {
             tab_id: String,
+            /// Socket/shared-memory id this tab's engine-host actually used
+            /// (see `EngineTab::socket_id`) — usually equal to `tab_id`,
+            /// but can diverge after the stale-pipe fallback in
+            /// `process_manager::spawn_tab`. Only used to look up the
+            /// shared frame buffer below; GPU texture bookkeeping stays
+            /// keyed by `tab_id`.
+            socket_id: String,
             kind: EngineKind,
             width: u32,
             height: u32,
@@ -1541,6 +1548,7 @@ impl App {
                     } => {
                         frame_updates.push(FrameUpdate {
                             tab_id: tab_id.clone(),
+                            socket_id: node.tab.socket_id.clone(),
                             kind: node.tab.kind,
                             width,
                             height,
@@ -1626,9 +1634,11 @@ impl App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_frame(&update.tab_id, &pixels, update.width, update.height, format);
                 }
-            } else if let Ok(buf) =
-                SharedFrameBuffer::open_existing(frame_path(&update.tab_id), update.width, update.height)
-            {
+            } else if let Ok(buf) = SharedFrameBuffer::open_existing(
+                frame_path(&update.socket_id),
+                update.width,
+                update.height,
+            ) {
                 // The engine-host truncates-then-grows this file when
                 // (re)creating it (see SharedFrameBuffer::create), which
                 // briefly exposes a 0-byte or otherwise wrong-sized file to

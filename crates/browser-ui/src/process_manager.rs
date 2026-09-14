@@ -1,6 +1,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
@@ -53,6 +54,13 @@ impl ToEngine {
 /// backing a tab.
 pub struct EngineTab {
     pub kind: EngineKind,
+    /// The id used to name this tab's control-pipe/shared-memory socket —
+    /// normally equal to its `tab_id`, but can diverge after the
+    /// stale-pipe fallback in `spawn_tab`. browser-ui's own bookkeeping
+    /// (the `TabNode` map, UI) keys off `tab_id`, never this; only
+    /// low-level socket/shared-memory lookups (e.g. `SharedFrameBuffer`)
+    /// need it.
+    pub socket_id: String,
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
     child: Child,
@@ -171,18 +179,29 @@ fn webkit_binary_path_in_repo() -> PathBuf {
 /// the same name right away can transiently fail with "Access is denied".
 /// A few short retries clears it without needing an arbitrary fixed delay
 /// on every spawn (including the common non-swap case, where it's unused).
-fn listen_local_pair_with_retry(tab_id: &str) -> std::io::Result<transport::LocalListenerPair> {
+fn listen_local_pair_with_retry(socket_id: &str) -> std::io::Result<transport::LocalListenerPair> {
     let mut last_err = None;
     for attempt in 0..10 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        match transport::listen_local_pair(tab_id) {
+        match transport::listen_local_pair(socket_id) {
             Ok(listeners) => return Ok(listeners),
             Err(err) => last_err = Some(err),
         }
     }
     Err(last_err.unwrap())
+}
+
+/// Disambiguator for the stale-pipe fallback below — distinct per call
+/// within this process, so repeated respawns of the same `tab_id` (e.g. a
+/// crash-restart loop) never collide with an earlier fallback attempt
+/// that's itself still stuck.
+static SOCKET_ID_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn fresh_fallback_socket_id(tab_id: &str) -> String {
+    let n = SOCKET_ID_FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{tab_id}-r{}-{n}", std::process::id())
 }
 
 fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::File)> {
@@ -247,11 +266,28 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
         return spawn_webkit_tab(tab_id, initial_url);
     }
 
-    let listeners = listen_local_pair_with_retry(tab_id)?;
+    // Normally the socket/shared-memory id is just tab_id. But a prior run
+    // that crashed (rather than exiting cleanly) can leave a stale
+    // engine-host-*.exe still holding tab_id's named pipe indefinitely —
+    // listen_local_pair_with_retry's short retries won't outlast that. In
+    // that case, fall back once to a fresh disambiguating id for
+    // socket/shared-memory naming only; tab_id itself keeps meaning what it
+    // already means everywhere else in browser-ui (TabNode map key, UI).
+    let (socket_id, listeners) = match listen_local_pair_with_retry(tab_id) {
+        Ok(listeners) => (tab_id.to_string(), listeners),
+        Err(primary_err) => {
+            let fallback_id = fresh_fallback_socket_id(tab_id);
+            match listen_local_pair_with_retry(&fallback_id) {
+                Ok(listeners) => (fallback_id, listeners),
+                Err(_) => return Err(primary_err),
+            }
+        }
+    };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
 
     let child = Command::new(engine_binary_path(kind))
         .env("ENGINE_TAB_ID", tab_id)
+        .env("ENGINE_SOCKET_ID", &socket_id)
         .env("ENGINE_INITIAL_URL", initial_url)
         .stdout(stdout_file)
         .stderr(stderr_file)
@@ -264,6 +300,7 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
 
     Ok(EngineTab {
         kind,
+        socket_id,
         to_engine: ToEngine::Local(to_engine),
         events_rx,
         child,
@@ -322,6 +359,10 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 
     Ok(EngineTab {
         kind: EngineKind::Webkit,
+        // No local named pipe/shared memory for the WSL2-hosted case (see
+        // ToEngine::Remote/RemoteTransport above), so there's nothing to
+        // disambiguate — tab_id is fine as-is.
+        socket_id: tab_id.to_string(),
         to_engine: ToEngine::Remote(to_engine),
         events_rx,
         child,

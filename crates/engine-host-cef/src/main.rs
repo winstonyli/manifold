@@ -49,7 +49,12 @@ fn main() {
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own
     // positional args risks CEF's Chromium-style parser misinterpreting
     // them as its own flags/URLs-to-open.
-    let tab_id = std::env::var("ENGINE_TAB_ID").expect("ENGINE_TAB_ID env var required");
+    // ENGINE_SOCKET_ID names our control pipes/shared memory — normally
+    // equal to ENGINE_TAB_ID, but browser-ui may pass a different id if a
+    // stale engine-host from a prior crashed run still held ENGINE_TAB_ID's
+    // pipes (see process_manager::spawn_tab's fallback). Only this id
+    // matters here; we never need ENGINE_TAB_ID itself.
+    let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
     let initial_url = std::env::var("ENGINE_INITIAL_URL")
         .unwrap_or_else(|_| "https://example.com".to_string());
 
@@ -77,8 +82,9 @@ fn main() {
 
     // Two one-directional control sockets back to browser-ui — same
     // convention as engine-host-servo (see ipc_protocol::transport).
-    let (mut host_to_engine, mut control) = ipc_protocol::transport::connect_local_pair(&tab_id)
-        .expect("connect to browser-ui control sockets");
+    let (mut host_to_engine, mut control) =
+        ipc_protocol::transport::connect_local_pair(&socket_id)
+            .expect("connect to browser-ui control sockets");
     let (tx, rx) = mpsc::channel::<HostToEngine>();
     std::thread::spawn(move || loop {
         match host_to_engine.recv::<HostToEngine>() {
@@ -123,8 +129,9 @@ fn main() {
     .expect("create CEF browser");
 
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&tab_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .expect("create shared frame buffer");
+    let mut frame_buffer =
+        ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+            .expect("create shared frame buffer");
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
@@ -223,7 +230,7 @@ fn main() {
                 if buffer_size != (frame.width, frame.height) {
                     drop(frame_buffer);
                     frame_buffer = ipc_protocol::SharedFrameBuffer::create(
-                        &tab_id,
+                        &socket_id,
                         frame.width,
                         frame.height,
                     )

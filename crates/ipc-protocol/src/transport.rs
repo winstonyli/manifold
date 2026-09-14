@@ -23,8 +23,8 @@ pub type LocalTransport = MessageChannel<LocalStream>;
 /// sent inline on this same TCP stream via `send_raw`/`recv_raw`.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
-fn socket_name(tab_id: &str, suffix: &str) -> io::Result<Name<'static>> {
-    format!("multiengine-browser-{tab_id}-{suffix}")
+fn socket_name(socket_id: &str, suffix: &str) -> io::Result<Name<'static>> {
+    format!("multiengine-browser-{socket_id}-{suffix}")
         .to_ns_name::<GenericNamespaced>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
 }
@@ -39,13 +39,18 @@ pub struct LocalListenerPair {
 /// Called by browser-ui (the process manager) right before spawning an
 /// engine-host child process, so both sockets exist before the child
 /// tries to connect to them.
-pub fn listen_local_pair(tab_id: &str) -> io::Result<LocalListenerPair> {
+///
+/// `socket_id` names the pipes and is normally the tab's `tab_id`, but
+/// callers may pass a distinct disambiguating id instead (e.g. when a
+/// stale engine-host from a prior crashed run still holds `tab_id`'s
+/// pipes) — it never needs to match browser-ui's own tab bookkeeping.
+pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     Ok(LocalListenerPair {
         host_to_engine: ListenerOptions::new()
-            .name(socket_name(tab_id, "h2e")?)
+            .name(socket_name(socket_id, "h2e")?)
             .create_sync()?,
         engine_to_host: ListenerOptions::new()
-            .name(socket_name(tab_id, "e2h")?)
+            .name(socket_name(socket_id, "e2h")?)
             .create_sync()?,
     })
 }
@@ -65,9 +70,13 @@ pub fn accept_local_pair(
 /// the two control sockets its parent (`browser-ui`) already created.
 /// Returns `(receiver, sender)`: recv `HostToEngine` on the first, send
 /// `EngineToHost` on the second.
-pub fn connect_local_pair(tab_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
-    let receiver = MessageChannel::new(LocalStream::connect(socket_name(tab_id, "h2e")?)?);
-    let sender = MessageChannel::new(LocalStream::connect(socket_name(tab_id, "e2h")?)?);
+///
+/// `socket_id` must match whatever id `listen_local_pair` was called
+/// with for this tab (browser-ui passes it down as `ENGINE_SOCKET_ID`,
+/// separate from the user-visible `ENGINE_TAB_ID`).
+pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
+    let receiver = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "h2e")?)?);
+    let sender = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "e2h")?)?);
     Ok((receiver, sender))
 }
 
