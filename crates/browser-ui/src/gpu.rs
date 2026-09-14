@@ -489,6 +489,13 @@ impl GpuState {
     /// whichever tab most recently produced a frame (e.g. focus just
     /// switched and the new tab hasn't painted yet), the content pass is
     /// skipped rather than briefly showing the previous tab's stale frame.
+    ///
+    /// `content_on_top`: which of the content quad / egui layer is drawn
+    /// first (the base, cleared layer) vs. second (drawn over it). Normal
+    /// Tab view wants content as the base and chrome/dropdowns on top
+    /// (`false`); a `Transition` wants the graph as the base and the
+    /// shrinking/expanding content quad on top of it, so the animated
+    /// tab content is never hidden underneath graph nodes/edges (`true`).
     /// Records the hand-rolled content-pipeline pass (the focused tab's live
     /// frame, if any) into `view`. A free function (not a `&self` method) so
     /// `render` can call it against two different targets — the real
@@ -503,6 +510,7 @@ impl GpuState {
         viewport: (f32, f32, f32, f32),
         showing: Option<&TabTexture>,
         pipeline: &wgpu::RenderPipeline,
+        clear: bool,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tab render pass"),
@@ -511,7 +519,11 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: if clear {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -545,6 +557,7 @@ impl GpuState {
         renderer: &mut egui_wgpu::Renderer,
         clipped_primitives: &[egui::ClippedPrimitive],
         screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        clear: bool,
     ) {
         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("egui render pass"),
@@ -553,7 +566,11 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: if clear {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -587,6 +604,7 @@ impl GpuState {
         &mut self,
         content_rect_px: (f32, f32, f32, f32),
         focused_tab_id: Option<&str>,
+        content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
     ) {
@@ -651,15 +669,38 @@ impl GpuState {
             None
         };
 
-        Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline);
-        if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-            Self::record_egui_pass(
-                &mut encoder,
-                &view,
-                &mut self.egui_renderer,
-                clipped_primitives,
-                screen_descriptor,
-            );
+        // Normally the content quad is the base layer and egui (chrome, any
+        // dropdown) draws on top of it, unclipped. During a Tab<->Graph
+        // transition the order flips: the graph (egui) is the base layer
+        // and the transitioning tab's content quad draws over it, since
+        // that quad is what's supposed to visually shrink/expand in front
+        // of the graph, not get hidden underneath its nodes/edges.
+        if content_on_top {
+            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+                Self::record_egui_pass(
+                    &mut encoder,
+                    &view,
+                    &mut self.egui_renderer,
+                    clipped_primitives,
+                    screen_descriptor,
+                    true,
+                );
+                Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, false);
+            } else {
+                Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, true);
+            }
+        } else {
+            Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, true);
+            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+                Self::record_egui_pass(
+                    &mut encoder,
+                    &view,
+                    &mut self.egui_renderer,
+                    clipped_primitives,
+                    screen_descriptor,
+                    false,
+                );
+            }
         }
 
         let pending_screenshot = screenshot_path.map(|path| {
@@ -674,15 +715,32 @@ impl GpuState {
                 view_formats: &[],
             });
             let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline);
-            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                Self::record_egui_pass(
-                    &mut encoder,
-                    &readback_view,
-                    &mut self.egui_renderer,
-                    clipped_primitives,
-                    screen_descriptor,
-                );
+            if content_on_top {
+                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+                    Self::record_egui_pass(
+                        &mut encoder,
+                        &readback_view,
+                        &mut self.egui_renderer,
+                        clipped_primitives,
+                        screen_descriptor,
+                        true,
+                    );
+                    Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, false);
+                } else {
+                    Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, true);
+                }
+            } else {
+                Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, true);
+                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+                    Self::record_egui_pass(
+                        &mut encoder,
+                        &readback_view,
+                        &mut self.egui_renderer,
+                        clipped_primitives,
+                        screen_descriptor,
+                        false,
+                    );
+                }
             }
 
             let unpadded_bytes_per_row = width * 4;

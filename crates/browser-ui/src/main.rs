@@ -1845,18 +1845,21 @@ impl ApplicationHandler<DebugCommand> for App {
                     content_rect_pts.height() * ppp,
                 );
 
+                let content_on_top = self.transition.is_some();
                 let screenshot_path = self.pending_screenshot.take();
                 if let Some(gpu) = &mut self.gpu {
                     match egui_output {
                         Some(output) => gpu.render(
                             content_rect_px,
                             focused_for_content.as_deref(),
+                            content_on_top,
                             Some((&self.egui_ctx, output)),
                             screenshot_path.as_deref(),
                         ),
                         None => gpu.render(
                             content_rect_px,
                             focused_for_content.as_deref(),
+                            content_on_top,
                             None,
                             screenshot_path.as_deref(),
                         ),
