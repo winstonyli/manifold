@@ -223,6 +223,27 @@ struct App {
     /// condition — see the comments at each check site.
     pending_debug_escape: bool,
     pending_debug_enter: bool,
+    /// Set by a headless `ADDRESSBAR` command, cleared by `ENTER`/`ESCAPE`/
+    /// accepting a suggestion. A real click gives the `TextEdit` real,
+    /// *persistent* egui focus, so `response.has_focus()` keeps reporting
+    /// `true` frame after frame on its own — headless mode has no way to
+    /// synthesize that (see `debug_control`'s doc comment on why keyboard/
+    /// text commands are direct calls, not synthetic events), so
+    /// `ADDRESSBAR` sets `address_bar_focused` for only the one frame it's
+    /// processed on; the very next frame, the real (never actually
+    /// clicked) widget's honest `response.has_focus() == false` overwrites
+    /// it right back. Without this pin, `editing_address` (see
+    /// `build_tab_ui`) goes false again within ~1 frame for any URL-like
+    /// input (nothing populates suggestions to keep it true the way a
+    /// search query's does), and the very next frame's resync-to-tab-URL
+    /// clobbers whatever `ADDRESSBAR` just set — confirmed live: a
+    /// `SCREENSHOT` taken 1 second after `ADDRESSBAR https://github.com`
+    /// showed the address bar already back to the tab's real URL, for
+    /// every engine tried (not engine-specific). This pin makes
+    /// `address_bar_focused` stay true across frames the same way real
+    /// focus would, until something that should actually end editing
+    /// clears it.
+    debug_address_bar_pin: bool,
     /// Set by a headless `SCREENSHOT` command; consumed on the next
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
@@ -264,6 +285,7 @@ impl Default for App {
             headless: false,
             pending_debug_escape: false,
             pending_debug_enter: false,
+            debug_address_bar_pin: false,
             pending_screenshot: None,
             tab_spawn_error: None,
         }
@@ -374,6 +396,7 @@ impl App {
         self.open_tab_suggestions.clear();
         self.search_suggestions.clear();
         self.address_bar_focused = false;
+        self.debug_address_bar_pin = false;
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -475,7 +498,7 @@ impl App {
         }
         if let Some(node) = self.tabs.get_mut(id) {
             node.tab.set_visible(true);
-            if !self.address_bar_focused {
+            if !self.address_bar_focused && !self.debug_address_bar_pin {
                 self.address_bar_text = node.url.clone();
             }
         }
@@ -494,6 +517,7 @@ impl App {
             }
         }
         self.view_mode = ViewMode::Graph;
+        self.debug_address_bar_pin = false;
     }
 
     /// Closes a tab: tears down its process (via `EngineTab`'s `Drop` —
@@ -592,7 +616,7 @@ impl App {
                     self.tab_order.push(tab_id.to_string());
                 }
                 if is_focused {
-                    if !self.address_bar_focused {
+                    if !self.address_bar_focused && !self.debug_address_bar_pin {
                         self.address_bar_text = url;
                     }
                     self.send_resize_to(tab_id);
@@ -630,7 +654,8 @@ impl App {
         // proxy for "still actively editing" that survives that blip.
         let editing_address = self.address_bar_focused
             || !self.open_tab_suggestions.is_empty()
-            || !self.search_suggestions.is_empty();
+            || !self.search_suggestions.is_empty()
+            || self.debug_address_bar_pin;
         if !editing_address {
             self.address_bar_text = self.tabs[&focused_id].url.clone();
         }
@@ -834,6 +859,7 @@ impl App {
             self.navigate_tab(&focused_id, url);
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
+            self.debug_address_bar_pin = false;
         }
     }
 
@@ -1479,7 +1505,13 @@ impl App {
                 // (see `build_tab_ui`) — setting `address_bar_focused`
                 // directly stands in for a real click-driven egui focus
                 // transfer, which headless mode has no way to synthesize.
+                // `debug_address_bar_pin` (see its own doc comment) is what
+                // actually makes this stick across the frames between now
+                // and whenever `ENTER`/`ESCAPE`/a suggestion click ends it —
+                // `address_bar_focused` alone only lasts the one frame this
+                // command is processed on.
                 self.address_bar_focused = true;
+                self.debug_address_bar_pin = true;
                 let exclude = self.focused.clone().unwrap_or_default();
                 self.open_tab_suggestions = self.compute_open_tab_suggestions(&text, &exclude);
                 self.suggestion_fetcher.note_text_changed(&text);
