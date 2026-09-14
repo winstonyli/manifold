@@ -81,6 +81,26 @@ The URL carries over on an engine swap; other state (cookies, scroll position, e
 
 Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`.
 
+## Headless mode (automated testing)
+
+```bash
+target/debug/browser-ui.exe --headless
+```
+
+Runs the same app, but the window is positioned far off-screen (not `--visible(false)` — a genuinely invisible window's swapchain never successfully acquires a frame on Windows, DWM permanently reports it occluded; an off-screen-but-visible window keeps rendering normally while never overlapping the user's actual screen) and driven entirely by a text-command protocol read from stdin, one command per line, instead of real OS input. This exists so live GUI testing of this app doesn't have to fight Windows' foreground-lock (`SetForegroundWindow` can be silently refused while the user is active on their own machine — see project memory) or contend visually with whatever the user is doing.
+
+Commands:
+- `MOUSEMOVE <x> <y>`, `MOUSEDOWN <x> <y> [left|right|middle]`, `MOUSEUP <x> <y> [left|right|middle]`, `CLICK <x> <y> [left|right|middle]` — dispatched as genuine synthetic `winit::event::WindowEvent`s, not a logic bypass, so they exercise real egui hit-testing exactly like real input would.
+- `SCROLL <x> <y> <delta_x> <delta_y>`
+- `ADDRESSBAR <text>` — sets the address bar's text and focus state directly and recomputes suggestions (headless has no way to synthesize a real click-driven egui focus transfer, since `winit::event::KeyEvent` has no public constructor outside the winit crate — see `debug_control`'s doc comment).
+- `ENTER` — navigates using the address bar's current text.
+- `ESCAPE` — dismisses the suggestion dropdown, or leaves Tab view for Graph view if none is showing.
+- `TYPE <text>` — sends each character to the focused tab's page (not the address bar).
+- `KEYPAGE <name>` — sends a KeyDown+KeyUp of the named key (`Enter`, `Backspace`, `ArrowLeft`, a single letter/digit, etc.) to the focused tab's page.
+- `SCREENSHOT <path>` — saves the next composited frame (chrome, any open dropdown, and content) as a PNG, read back directly from the GPU rather than `PrintWindow`/`CopyFromScreen` (see project memory's gotchas on GDI-handle exhaustion and foreground-lock unreliability with that approach).
+- `RESIZE <width> <height>`
+- `QUIT` — exits cleanly. Also sent automatically on stdin EOF, so a driving script that closes its write end doesn't leave the process hanging.
+
 ## Known limitations
 
 - Session state (cookies, localStorage, IndexedDB) is not portable across an engine swap — only the URL carries over.

@@ -1,3 +1,4 @@
+mod debug_control;
 mod gpu;
 mod graph_layout;
 mod process_manager;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
+use debug_control::DebugCommand;
 use gpu::GpuState;
 use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton,
@@ -15,9 +17,11 @@ use ipc_protocol::{
 };
 use process_manager::{EngineKind, EngineTab};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton as WinitMouseButton, WindowEvent};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{DeviceId, ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
+use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Window, WindowId};
 
 const INITIAL_URL: &str = "https://example.com";
@@ -206,6 +210,22 @@ struct App {
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
     graph_scene_rect: egui::Rect,
+
+    /// Headless mode (`--headless`): the window is created invisible (never
+    /// steals focus/foreground, never contends with the user's own screen —
+    /// see project memory's `SetForegroundWindow`/foreground-lock gotchas)
+    /// and is driven entirely by `DebugCommand`s read from stdin instead of
+    /// real OS input. See `debug_control`'s doc comment for the full
+    /// rationale and the text-command protocol.
+    headless: bool,
+    /// Set by a headless `ESCAPE`/`ENTER` command, consumed (and reset) the
+    /// next time `build_tab_ui` checks the corresponding real-keypress
+    /// condition — see the comments at each check site.
+    pending_debug_escape: bool,
+    pending_debug_enter: bool,
+    /// Set by a headless `SCREENSHOT` command; consumed on the next
+    /// `RedrawRequested` and passed into `gpu::GpuState::render`.
+    pending_screenshot: Option<String>,
 }
 
 impl Default for App {
@@ -232,6 +252,10 @@ impl Default for App {
             dragging: None,
             hovered: None,
             graph_scene_rect: default_graph_scene_rect(),
+            headless: false,
+            pending_debug_escape: false,
+            pending_debug_enter: false,
+            pending_screenshot: None,
         }
     }
 }
@@ -696,7 +720,15 @@ impl App {
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
                         self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
                     }
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    // `pending_debug_enter` (headless mode's `ENTER` command,
+                    // see `debug_control`) doesn't gate on `lost_focus()`:
+                    // headless "focus" is set directly by the `ADDRESSBAR`
+                    // command, not via a real click-driven egui focus
+                    // transfer, so `response.lost_focus()` would never fire
+                    // for it.
+                    if std::mem::take(&mut self.pending_debug_enter)
+                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
                         navigate = Some(self.address_bar_text.clone());
                     }
                 });
@@ -756,11 +788,17 @@ impl App {
 
         let has_suggestions =
             !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty();
-        if back_to_graph || (!has_suggestions && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+        // `pending_debug_escape` (headless mode's `ESCAPE` command) folds
+        // into the same real-Escape check rather than getting its own
+        // branch, so headless testing exercises the exact same dismiss-vs-
+        // leave-to-graph logic a real keypress would.
+        let escape_pressed =
+            ui.input(|i| i.key_pressed(egui::Key::Escape)) || std::mem::take(&mut self.pending_debug_escape);
+        if back_to_graph || (!has_suggestions && escape_pressed) {
             self.leave_to_graph();
             return;
         }
-        if has_suggestions && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if has_suggestions && escape_pressed {
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
         }
@@ -1103,16 +1141,32 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<DebugCommand> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title("multiengine-browser"))
-                .expect("create window"),
-        );
+        let mut attrs = Window::default_attributes().with_title("multiengine-browser");
+        if self.headless {
+            // NOT `.with_visible(false)`: found live that a genuinely
+            // invisible window's swapchain never successfully acquires a
+            // frame on Windows (DWM permanently reports it occluded, so
+            // `Surface::get_current_texture()` never returns `Success` —
+            // confirmed by instrumenting `gpu::GpuState::render` and seeing
+            // it bail out at that exact point on *every* frame, forever).
+            // Positioning a real, visible-but-off-screen window instead
+            // keeps DWM compositing it normally (frames actually render,
+            // screenshots actually work) while it never overlaps the user's
+            // actual screen — solving the real problem (focus/visual
+            // contention with the user's own desktop use) without hitting
+            // this platform limitation. `with_skip_taskbar` keeps it out of
+            // the taskbar/alt-tab list since there's nothing to switch to.
+            attrs = attrs
+                .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
+                .with_decorations(false)
+                .with_skip_taskbar(true);
+        }
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.gpu = Some(GpuState::new(window.clone()));
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -1124,6 +1178,10 @@ impl ApplicationHandler for App {
         ));
         self.window = Some(window);
         self.spawn_root_tab();
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: DebugCommand) {
+        self.handle_debug_command(event_loop, event);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1265,12 +1323,16 @@ impl ApplicationHandler for App {
                     ViewMode::Tab => self.focused.as_deref(),
                     ViewMode::Graph => None,
                 };
+                let screenshot_path = self.pending_screenshot.take();
                 if let Some(gpu) = &mut self.gpu {
                     match egui_output {
-                        Some(output) => {
-                            gpu.render(chrome_height, focused_for_content, Some((&self.egui_ctx, output)))
-                        }
-                        None => gpu.render(chrome_height, focused_for_content, None),
+                        Some(output) => gpu.render(
+                            chrome_height,
+                            focused_for_content,
+                            Some((&self.egui_ctx, output)),
+                            screenshot_path.as_deref(),
+                        ),
+                        None => gpu.render(chrome_height, focused_for_content, None, screenshot_path.as_deref()),
                     }
                 }
                 if let Some(window) = &self.window {
@@ -1283,6 +1345,164 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Feeds a synthetic `WindowEvent` through the exact same handling real
+    /// OS input goes through (`Self::window_event`) — used by
+    /// `handle_debug_command` for mouse commands, so headless mouse-driven
+    /// testing exercises real egui hit-testing/rendering-timing rather than
+    /// bypassing it (see `debug_control`'s doc comment for why this matters:
+    /// it's the only way headless testing could have caught the dropdown
+    /// click-swallowing bug fixed in the autocomplete feature). A no-op if
+    /// the window doesn't exist yet (shouldn't happen in practice — commands
+    /// only arrive after `resumed` has created it).
+    fn dispatch_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        let Some(window) = &self.window else { return };
+        let id = window.id();
+        self.window_event(event_loop, id, event);
+    }
+
+    /// Applies one headless `DebugCommand` (see `debug_control`'s doc
+    /// comment for the overall design: mouse commands are real synthetic
+    /// `WindowEvent`s, keyboard/text commands call the equivalent effect
+    /// directly since `winit::event::KeyEvent` has no public constructor).
+    fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
+        match cmd {
+            DebugCommand::MouseMove { x, y } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(x, y),
+                    },
+                );
+            }
+            DebugCommand::MouseDown { x, y, button } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(x, y),
+                    },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Pressed,
+                        button,
+                    },
+                );
+            }
+            DebugCommand::MouseUp { x, y, button } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(x, y),
+                    },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Released,
+                        button,
+                    },
+                );
+            }
+            DebugCommand::Click { x, y, button } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(x, y),
+                    },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Pressed,
+                        button,
+                    },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Released,
+                        button,
+                    },
+                );
+            }
+            DebugCommand::Scroll { x, y, delta_x, delta_y } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(x, y),
+                    },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseWheel {
+                        device_id: DeviceId::dummy(),
+                        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
+                        phase: TouchPhase::Moved,
+                    },
+                );
+            }
+            DebugCommand::AddressBar(text) => {
+                // Mirrors the real `TextEdit`'s `response.changed()` arm
+                // (see `build_tab_ui`) — setting `address_bar_focused`
+                // directly stands in for a real click-driven egui focus
+                // transfer, which headless mode has no way to synthesize.
+                self.address_bar_focused = true;
+                let exclude = self.focused.clone().unwrap_or_default();
+                self.open_tab_suggestions = self.compute_open_tab_suggestions(&text, &exclude);
+                self.suggestion_fetcher.note_text_changed(&text);
+                self.address_bar_text = text;
+            }
+            DebugCommand::Enter => self.pending_debug_enter = true,
+            DebugCommand::Escape => self.pending_debug_escape = true,
+            DebugCommand::TypeIntoPage(text) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.tabs.get_mut(&id) {
+                        for ch in text.chars() {
+                            node.tab
+                                .send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
+                        }
+                    }
+                }
+            }
+            DebugCommand::KeyPage(key) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.tabs.get_mut(&id) {
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown {
+                            key,
+                            modifiers: self.key_modifiers,
+                        }));
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp {
+                            key,
+                            modifiers: self.key_modifiers,
+                        }));
+                    }
+                }
+            }
+            DebugCommand::Screenshot(path) => {
+                self.pending_screenshot = Some(path);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            DebugCommand::Resize(width, height) => {
+                if let Some(window) = &self.window {
+                    let _ = window.request_inner_size(PhysicalSize::new(width, height));
+                }
+            }
+            DebugCommand::Quit => event_loop.exit(),
+        }
+    }
+
     /// Drains every tab's `events_rx` (not just the focused one — a
     /// background tab can still crash, or finish an in-flight swap, while
     /// suspended) and applies the results. Frame uploads are collected and
@@ -1522,8 +1742,18 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 }
 
 fn main() {
-    let event_loop = EventLoop::new().expect("create event loop");
+    let headless = std::env::args().any(|arg| arg == "--headless");
+
+    let event_loop = EventLoop::<DebugCommand>::with_user_event()
+        .build()
+        .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
+
     let mut app = App::default();
+    app.headless = headless;
+    if headless {
+        debug_control::spawn_stdin_reader(event_loop.create_proxy());
+    }
+
     event_loop.run_app(&mut app).expect("run event loop");
 }

@@ -116,6 +116,13 @@ impl GpuState {
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Deliberately *not* also `COPY_SRC` here: some backends'
+            // swapchain-presentable textures don't support arbitrary extra
+            // usage flags (surface capability negotiation can reject or
+            // silently misbehave). Screenshot readback (`render`'s
+            // `screenshot_path`) instead re-renders into a second, ordinary
+            // (non-surface) texture — those have no such restriction — so
+            // this stays exactly what it was before screenshots existed.
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -480,11 +487,110 @@ impl GpuState {
     /// produced a frame (e.g. focus just switched and the new tab hasn't
     /// painted yet), the content pass is skipped rather than briefly
     /// showing the previous tab's stale frame.
+    /// Records the hand-rolled content-pipeline pass (the focused tab's live
+    /// frame, if any) into `view`. A free function (not a `&self` method) so
+    /// `render` can call it against two different targets — the real
+    /// swapchain view and, when a screenshot was requested, a second
+    /// offscreen view — without the borrow checker treating `encoder`/
+    /// `pipeline` as aliasing `self` (see `render`'s own comment on why the
+    /// screenshot path re-renders rather than reads back the swapchain
+    /// texture directly).
+    fn record_content_pass(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        content_top: u32,
+        width: u32,
+        height: u32,
+        showing: Option<&TabTexture>,
+        pipeline: &wgpu::RenderPipeline,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("tab render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if let Some(tab_texture) = showing {
+            pass.set_viewport(
+                0.0,
+                content_top as f32,
+                width as f32,
+                (height - content_top) as f32,
+                0.0,
+                1.0,
+            );
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &tab_texture.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// Records egui's already-tessellated draw output into `view` — see
+    /// `record_content_pass`'s doc comment for why this takes explicit
+    /// pieces instead of `&mut self`. Safe to call twice against two
+    /// different targets with the same `clipped_primitives`/
+    /// `screen_descriptor` (plain draw calls reading buffers already
+    /// uploaded once by the caller before either call).
+    fn record_egui_pass(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        renderer: &mut egui_wgpu::Renderer,
+        clipped_primitives: &[egui::ClippedPrimitive],
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+    ) {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("egui render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // egui_wgpu::Renderer::render requires a 'static render pass;
+        // forget_lifetime() is the documented way to get one from a pass
+        // that in practice never outlives this function.
+        renderer.render(&mut pass.forget_lifetime(), clipped_primitives, screen_descriptor);
+    }
+
+    /// `screenshot_path`: when set, saves this frame (chrome, any open
+    /// dropdown, and content — the full composited picture, not just tab
+    /// content) as a PNG there — headless mode's replacement for PrintWindow-
+    /// based screenshots (see project memory's M5 gotchas on `PrintWindow`/
+    /// `CopyFromScreen` GDI-handle exhaustion and foreground-lock
+    /// unreliability; this reads pixels straight from the GPU instead).
+    ///
+    /// Implemented as a *second* render of the same content into an ordinary
+    /// (non-surface) texture, not a readback of the swapchain texture
+    /// itself: a presentable surface texture's usage flags are backend-
+    /// negotiated (`surface_caps`) and may not include `COPY_SRC` at all,
+    /// while a plain texture created with `COPY_SRC` always supports it on
+    /// every backend. The extra render only happens on frames where a
+    /// screenshot was actually requested (rare, testing-only) — normal
+    /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
         content_top_px: u32,
         focused_tab_id: Option<&str>,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
+        screenshot_path: Option<&str>,
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -502,44 +608,18 @@ impl GpuState {
             });
 
         let content_top = content_top_px.min(self.config.height);
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tab render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let showing = self
-                .tab_texture
-                .as_ref()
-                .filter(|t| focused_tab_id == Some(t.tab_id.as_str()));
-            if let Some(tab_texture) = showing {
-                pass.set_viewport(
-                    0.0,
-                    content_top as f32,
-                    self.config.width as f32,
-                    (self.config.height - content_top) as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &tab_texture.bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-        }
+        let width = self.config.width;
+        let height = self.config.height;
+        let showing = self
+            .tab_texture
+            .as_ref()
+            .filter(|t| focused_tab_id == Some(t.tab_id.as_str()));
 
+        // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
+        // and reused for both the on-screen pass and, if requested, the
+        // offscreen screenshot pass below.
         let mut extra_command_buffers = Vec::new();
-        if let Some((ctx, mut full_output)) = egui_output {
+        let egui_draw = if let Some((ctx, mut full_output)) = egui_output {
             for (id, deltas) in &full_output.textures_delta.set {
                 for delta in deltas {
                     self.egui_renderer
@@ -549,7 +629,7 @@ impl GpuState {
             let clipped_primitives =
                 ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [self.config.width, self.config.height],
+                size_in_pixels: [width, height],
                 pixels_per_point: full_output.pixels_per_point,
             };
             extra_command_buffers = self.egui_renderer.update_buffers(
@@ -559,32 +639,6 @@ impl GpuState {
                 &clipped_primitives,
                 &screen_descriptor,
             );
-            {
-                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("egui render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                // egui_wgpu::Renderer::render requires a 'static render pass;
-                // forget_lifetime() is the documented way to get one from a
-                // pass that in practice never outlives this function.
-                self.egui_renderer.render(
-                    &mut pass.forget_lifetime(),
-                    &clipped_primitives,
-                    &screen_descriptor,
-                );
-            }
             for id in &full_output.textures_delta.free {
                 self.egui_renderer.free_texture(id);
             }
@@ -595,7 +649,74 @@ impl GpuState {
             // uploaded on frame one) panics as soon as `full_output` goes
             // out of scope at the end of this block.
             full_output.textures_delta.clear();
+            Some((clipped_primitives, screen_descriptor))
+        } else {
+            None
+        };
+
+        Self::record_content_pass(&mut encoder, &view, content_top, width, height, showing, &self.pipeline);
+        if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+            Self::record_egui_pass(
+                &mut encoder,
+                &view,
+                &mut self.egui_renderer,
+                clipped_primitives,
+                screen_descriptor,
+            );
         }
+
+        let pending_screenshot = screenshot_path.map(|path| {
+            let readback_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("screenshot readback texture"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            Self::record_content_pass(&mut encoder, &readback_view, content_top, width, height, showing, &self.pipeline);
+            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
+                Self::record_egui_pass(
+                    &mut encoder,
+                    &readback_view,
+                    &mut self.egui_renderer,
+                    clipped_primitives,
+                    screen_descriptor,
+                );
+            }
+
+            let unpadded_bytes_per_row = width * 4;
+            let padded_bytes_per_row = unpadded_bytes_per_row
+                .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("screenshot readback buffer"),
+                size: (padded_bytes_per_row * height) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &readback_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback_buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bytes_per_row),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+            (path.to_string(), readback_buffer, padded_bytes_per_row)
+        });
 
         self.queue.submit(
             extra_command_buffers
@@ -603,5 +724,40 @@ impl GpuState {
                 .chain(std::iter::once(encoder.finish())),
         );
         self.queue.present(frame);
+
+        if let Some((path, readback_buffer, padded_bytes_per_row)) = pending_screenshot {
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = tx.send(result);
+            });
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            if let Ok(Ok(())) = rx.recv() {
+                let mapped = readback_buffer
+                    .get_mapped_range(..)
+                    .expect("mapped screenshot buffer");
+                let mut pixels = vec![0u8; (width * height * 4) as usize];
+                let unpadded_bytes_per_row = width * 4;
+                for row in 0..height {
+                    let src_start = (row * padded_bytes_per_row) as usize;
+                    let dst_start = (row * unpadded_bytes_per_row) as usize;
+                    pixels[dst_start..dst_start + unpadded_bytes_per_row as usize].copy_from_slice(
+                        &mapped[src_start..src_start + unpadded_bytes_per_row as usize],
+                    );
+                }
+                drop(mapped);
+                readback_buffer.unmap();
+                if matches!(
+                    self.config.format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                ) {
+                    for px in pixels.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                if let Err(err) = image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8) {
+                    eprintln!("screenshot: failed to save {path}: {err}");
+                }
+            }
+        }
     }
 }
