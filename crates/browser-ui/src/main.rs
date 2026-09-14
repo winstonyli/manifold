@@ -194,12 +194,17 @@ struct App {
     /// synchronously (cheap, from data already in memory) whenever the text
     /// changes; search-engine suggestions arrive later, asynchronously, via
     /// `suggestion_fetcher`'s debounced background fetch. Only shown while
-    /// `address_bar_focused`; see `build_tab_ui`'s doc comments on the
-    /// dropdown for why arrow-key navigation was cut from scope (mouse
-    /// click only).
+    /// `address_bar_focused`.
     open_tab_suggestions: Vec<Suggestion>,
     search_suggestions: Vec<String>,
     suggestion_fetcher: SuggestionFetcher,
+    /// Index into `combined_suggestions()` the user has moved to via
+    /// Up/Down — `None` means no row is highlighted (Enter falls through
+    /// to a plain navigate of the typed text). Reset whenever the
+    /// suggestion list itself changes or the dropdown closes, so a stale
+    /// index can never point at an unrelated row — see `build_tab_ui`'s
+    /// dropdown-handling comments for the full set of reset sites.
+    dropdown_highlighted: Option<usize>,
 
     /// Graph view: the node currently being dragged (pinned in the physics
     /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
@@ -211,18 +216,24 @@ struct App {
     /// mutated by the user dragging (pan) or scrolling (zoom).
     graph_scene_rect: egui::Rect,
 
-    /// Headless mode (`--headless`): the window is created invisible (never
-    /// steals focus/foreground, never contends with the user's own screen —
-    /// see project memory's `SetForegroundWindow`/foreground-lock gotchas)
-    /// and is driven entirely by `DebugCommand`s read from stdin instead of
-    /// real OS input. See `debug_control`'s doc comment for the full
-    /// rationale and the text-command protocol.
+    /// Headless mode (`--headless`): the window is created real but
+    /// positioned far off-screen (NOT invisible — a genuinely invisible
+    /// window's swapchain never successfully acquires a frame on Windows,
+    /// see `resumed`'s doc comment), so it never steals focus/foreground or
+    /// visually contends with the user's own screen (project memory's
+    /// `SetForegroundWindow`/foreground-lock gotchas), while still
+    /// rendering normally. Driven entirely by `DebugCommand`s read from
+    /// stdin instead of real OS input. See `debug_control`'s doc comment
+    /// for the full rationale and the text-command protocol.
     headless: bool,
-    /// Set by a headless `ESCAPE`/`ENTER` command, consumed (and reset) the
-    /// next time `build_tab_ui` checks the corresponding real-keypress
-    /// condition — see the comments at each check site.
+    /// Set by a headless `ESCAPE`/`ENTER`/`ARROWDOWN`/`ARROWUP` command,
+    /// consumed (and reset) the next time `build_tab_ui` checks the
+    /// corresponding real-keypress condition — see the comments at each
+    /// check site.
     pending_debug_escape: bool,
     pending_debug_enter: bool,
+    pending_debug_arrow_down: bool,
+    pending_debug_arrow_up: bool,
     /// Set by a headless `ADDRESSBAR` command, cleared by `ENTER`/`ESCAPE`/
     /// accepting a suggestion. A real click gives the `TextEdit` real,
     /// *persistent* egui focus, so `response.has_focus()` keeps reporting
@@ -279,12 +290,15 @@ impl Default for App {
             open_tab_suggestions: Vec::new(),
             search_suggestions: Vec::new(),
             suggestion_fetcher: SuggestionFetcher::new(),
+            dropdown_highlighted: None,
             dragging: None,
             hovered: None,
             graph_scene_rect: default_graph_scene_rect(),
             headless: false,
             pending_debug_escape: false,
             pending_debug_enter: false,
+            pending_debug_arrow_down: false,
+            pending_debug_arrow_up: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
             tab_spawn_error: None,
@@ -397,6 +411,7 @@ impl App {
         self.search_suggestions.clear();
         self.address_bar_focused = false;
         self.debug_address_bar_pin = false;
+        self.dropdown_highlighted = None;
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -518,6 +533,7 @@ impl App {
         }
         self.view_mode = ViewMode::Graph;
         self.debug_address_bar_pin = false;
+        self.dropdown_highlighted = None;
     }
 
     /// Closes a tab: tears down its process (via `EngineTab`'s `Drop` —
@@ -667,6 +683,13 @@ impl App {
         let mut navigate = None;
         let mut back_to_graph = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
+        // Whether Enter fired this frame (real keypress or headless `ENTER`)
+        // — deferred here rather than acted on immediately inside the
+        // toolbar closure below, since deciding what Enter *does* (accept
+        // the highlighted dropdown row vs. plain-navigate) needs `combined`
+        // (the suggestion list), which isn't computed until after this
+        // closure returns.
+        let mut enter_pressed = false;
 
         egui::Panel::top("tab_strip")
             .exact_size(TAB_STRIP_HEIGHT_POINTS)
@@ -758,6 +781,11 @@ impl App {
                         self.open_tab_suggestions =
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
                         self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
+                        // A changed query invalidates whatever row was
+                        // highlighted for the *previous* suggestion list —
+                        // keeping a stale index could silently highlight
+                        // (and Enter-accept) an unrelated row.
+                        self.dropdown_highlighted = None;
                     }
                     // `pending_debug_enter` (headless mode's `ENTER` command,
                     // see `debug_control`) doesn't gate on `lost_focus()`:
@@ -768,7 +796,7 @@ impl App {
                     if std::mem::take(&mut self.pending_debug_enter)
                         || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                     {
-                        navigate = Some(self.address_bar_text.clone());
+                        enter_pressed = true;
                     }
                 });
             });
@@ -781,13 +809,18 @@ impl App {
         // below the address bar (screen space, not the toolbar `Panel`'s
         // own layout — the dropdown needs to float over the content area
         // below chrome, which a plain widget inside the toolbar couldn't
-        // do without stretching the toolbar itself). Mouse-only: clicking
-        // a row accepts it. Arrow-key highlight/selection was cut from
-        // scope — it needs consuming Up/Down/Enter out of the `TextEdit`'s
-        // own input handling *before* the widget itself reads them this
-        // same frame (i.e. before `ui.add(TextEdit::...)` above), which
-        // read as a lot of added fragility for what's a nice-to-have, not
-        // the core feature.
+        // do without stretching the toolbar itself). Clicking a row accepts
+        // it directly; Up/Down move `dropdown_highlighted` (wrapping at
+        // both ends) and Enter accepts whichever row is highlighted (see
+        // `enter_pressed`'s resolution below) — reading arrow keys via
+        // `ui.input(|i| i.key_pressed(...))` here, after the `TextEdit`
+        // above already had its turn, is safe: `key_pressed` is a plain
+        // per-frame boolean read, not a consumed event, and a singleline
+        // `TextEdit` has no vertical text to move a cursor through, so
+        // there's no competing behavior to fight over (Enter was the one
+        // that actually needed care, via `enter_pressed`'s deferred
+        // resolution — a singleline `TextEdit` losing focus on Enter is a
+        // real, meaningful interaction to not double-handle).
         // Gated on `editing_address`, not raw `self.address_bar_focused`:
         // the same one-frame focus blip documented above (egui's focus
         // tracking transiently leaving the `TextEdit` when the dropdown's
@@ -796,6 +829,23 @@ impl App {
         // never reached anything and just silently dismissed the dropdown.
         let combined = self.combined_suggestions();
         if editing_address && !combined.is_empty() {
+            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                || std::mem::take(&mut self.pending_debug_arrow_down);
+            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                || std::mem::take(&mut self.pending_debug_arrow_up);
+            if arrow_down {
+                self.dropdown_highlighted = Some(match self.dropdown_highlighted {
+                    Some(i) if i + 1 < combined.len() => i + 1,
+                    _ => 0,
+                });
+            }
+            if arrow_up {
+                self.dropdown_highlighted = Some(match self.dropdown_highlighted {
+                    Some(i) if i > 0 => i - 1,
+                    _ => combined.len() - 1,
+                });
+            }
+
             if let Some(rect) = address_bar_rect {
                 let mut accepted = None;
                 egui::Area::new(egui::Id::new("address_suggestions"))
@@ -809,11 +859,13 @@ impl App {
                             .inner_margin(egui::Margin::same(4))
                             .show(ui, |ui| {
                                 ui.set_width(rect.width());
-                                for suggestion in &combined {
-                                    if ui
-                                        .add(egui::Button::new(suggestion.label()).truncate())
-                                        .clicked()
-                                    {
+                                for (idx, suggestion) in combined.iter().enumerate() {
+                                    let highlighted = self.dropdown_highlighted == Some(idx);
+                                    let mut button = egui::Button::new(suggestion.label()).truncate();
+                                    if highlighted {
+                                        button = button.fill(ACCENT);
+                                    }
+                                    if ui.add(button).clicked() {
                                         accepted = Some(suggestion.clone());
                                     }
                                 }
@@ -822,6 +874,13 @@ impl App {
                 if let Some(suggestion) = accepted {
                     self.accept_suggestion(suggestion, &focused_id);
                 }
+            }
+        }
+
+        if enter_pressed {
+            match self.dropdown_highlighted.filter(|&i| i < combined.len()) {
+                Some(idx) => self.accept_suggestion(combined[idx].clone(), &focused_id),
+                None => navigate = Some(self.address_bar_text.clone()),
             }
         }
 
@@ -840,6 +899,7 @@ impl App {
         if has_suggestions && escape_pressed {
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
+            self.dropdown_highlighted = None;
         }
         if go_back {
             if let Some(node) = self.tabs.get_mut(&focused_id) {
@@ -860,6 +920,7 @@ impl App {
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
             self.debug_address_bar_pin = false;
+            self.dropdown_highlighted = None;
         }
     }
 
@@ -1519,6 +1580,8 @@ impl App {
             }
             DebugCommand::Enter => self.pending_debug_enter = true,
             DebugCommand::Escape => self.pending_debug_escape = true,
+            DebugCommand::ArrowDown => self.pending_debug_arrow_down = true,
+            DebugCommand::ArrowUp => self.pending_debug_arrow_up = true,
             DebugCommand::TypeIntoPage(text) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.tabs.get_mut(&id) {

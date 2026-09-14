@@ -51,6 +51,12 @@ pub enum DebugCommand {
     /// is showing, otherwise leaves Tab view for Graph view (same behavior
     /// as a real Escape keypress).
     Escape,
+    /// Simulates pressing Down/Up in the address bar — moves the
+    /// highlighted suggestion row (wrapping at both ends) the same way a
+    /// real arrow-key press would; `Enter` afterward accepts whichever row
+    /// ends up highlighted.
+    ArrowDown,
+    ArrowUp,
     /// Sends each character as an `InputEvent::Char` to the focused tab's
     /// page — for typing into a page's own text field, not the address bar.
     TypeIntoPage(String),
@@ -176,6 +182,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDRESSBAR" => Some(DebugCommand::AddressBar(rest.to_string())),
         "ENTER" => Some(DebugCommand::Enter),
         "ESCAPE" => Some(DebugCommand::Escape),
+        "ARROWDOWN" => Some(DebugCommand::ArrowDown),
+        "ARROWUP" => Some(DebugCommand::ArrowUp),
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "SCREENSHOT" => Some(DebugCommand::Screenshot(rest.to_string())).filter(|_| !rest.is_empty()),
