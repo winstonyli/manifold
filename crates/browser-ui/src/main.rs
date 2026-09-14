@@ -773,7 +773,17 @@ impl App {
 
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.address_bar_text)
-                            .desired_width(f32::INFINITY),
+                            .desired_width(f32::INFINITY)
+                            // Match `style.spacing.button_padding` (set in
+                            // `apply_style`) so the address bar renders the
+                            // same height as the back/forward buttons and
+                            // engine picker next to it — `TextEdit`'s own
+                            // default margin (`Margin::symmetric(4, 2)`)
+                            // doesn't share that style value, so left unset
+                            // the row's tallest item (the text field) stood
+                            // out with visibly more height than its
+                            // neighbors instead of a level toolbar.
+                            .margin(egui::Margin::symmetric(8, 6)),
                     );
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
