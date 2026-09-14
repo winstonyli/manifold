@@ -859,9 +859,21 @@ impl App {
                             .inner_margin(egui::Margin::same(4))
                             .show(ui, |ui| {
                                 ui.set_width(rect.width());
+                                // `ui.set_width` alone only sets the *container's*
+                                // layout width (affects wrapping/available_width),
+                                // not an individual `Button`'s own size — left
+                                // unset, each row was only as wide as its own
+                                // text, producing a ragged right edge instead of
+                                // a uniform list. `min_size`'s width stretches
+                                // each row to fill the container; height stays
+                                // `0.0` (no minimum) so natural row height/padding
+                                // is untouched.
+                                let full_width = ui.available_width();
                                 for (idx, suggestion) in combined.iter().enumerate() {
                                     let highlighted = self.dropdown_highlighted == Some(idx);
-                                    let mut button = egui::Button::new(suggestion.label()).truncate();
+                                    let mut button = egui::Button::new(suggestion.label())
+                                        .truncate()
+                                        .min_size(egui::vec2(full_width, 0.0));
                                     if highlighted {
                                         button = button.fill(ACCENT);
                                     }
