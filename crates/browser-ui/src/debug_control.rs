@@ -62,6 +62,16 @@ pub enum DebugCommand {
     TypeIntoPage(String),
     /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
     KeyPage(KeyCode),
+    /// Sends `HostToEngine::SetVisible` to the focused tab directly —
+    /// bypassing `focus_tab`/`leave_to_graph`'s own visibility changes,
+    /// which always come bundled with a `Resize` (Tab vs. Graph view's
+    /// chrome heights differ). Exists for testing the `SetVisible(false)`→
+    /// `true` repaint path in isolation, without a same-transaction resize
+    /// able to mask a bug in it (see the M5 `SetVisible`-resume fix's own
+    /// verification-gap note in project memory/README: a real user's
+    /// Escape-then-refocus always resizes too, so a clean repro needs a
+    /// way to toggle visibility *without* one).
+    SetVisible(bool),
     /// Renders the next frame and saves it as a PNG at this path — includes
     /// chrome and any open dropdown, not just tab content, since it reads
     /// back the same composited frame a real screenshot would show.
@@ -186,6 +196,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ARROWUP" => Some(DebugCommand::ArrowUp),
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
+        "SETVISIBLE" => Some(DebugCommand::SetVisible(match parts.next()? {
+            "true" => true,
+            "false" => false,
+            _ => return None,
+        })),
         "SCREENSHOT" => Some(DebugCommand::Screenshot(rest.to_string())).filter(|_| !rest.is_empty()),
         "RESIZE" => Some(DebugCommand::Resize(parts.next()?.parse().ok()?, parts.next()?.parse().ok()?)),
         "QUIT" => Some(DebugCommand::Quit),

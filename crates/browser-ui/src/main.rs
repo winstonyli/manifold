@@ -1606,6 +1606,13 @@ impl App {
                     }
                 }
             }
+            DebugCommand::SetVisible(visible) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.tabs.get_mut(&id) {
+                        node.tab.set_visible(visible);
+                    }
+                }
+            }
             DebugCommand::Screenshot(path) => {
                 self.pending_screenshot = Some(path);
                 if let Some(window) = &self.window {
