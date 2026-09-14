@@ -92,20 +92,33 @@ wrap_display_handler! {
         // fetch+decode it, since that needs blocking I/O this handler
         // can't do.
         //
-        // Confirmed via debug logging that this callback does fire (twice
-        // per navigation, once for the initial load and once for the real
-        // page) with a real, non-null `icon_urls` list — but that list's
-        // *contents* were empty both times, for multiple real pages with
-        // real favicons (github.com, iana.org). CEF/Chromium's windowless
-        // (offscreen) rendering mode may just never populate favicon
-        // candidates the way a normal windowed browser does — not
-        // isolated further; see project memory before re-attempting.
+        // Confirmed via live logging (with a real page fully loaded and
+        // screenshotted, not just glanced at early) that this callback
+        // fires, but its `icon_urls` list is empty every time — for
+        // multiple real pages with real favicons (github.com, iana.org).
+        // Root cause, per CEF's own issue tracker (chromiumembedded/cef
+        // #3293/#3685): `windowless_rendering_enabled` forces CEF's legacy
+        // "Alloy" runtime rather than the modern "Chrome" runtime (OSR
+        // isn't supported by the Chrome runtime at all) — Alloy predates
+        // and never fully wired up the chrome-layer favicon-candidate
+        // collection a normal windowed Chrome/CEF browser gets, which is
+        // why the callback fires (it's genuinely called) but never carries
+        // real candidate URLs. This is a CEF/Alloy-runtime limitation in
+        // windowless mode, not something fixable from this handler's side
+        // — kept as a graceful no-op (a missing favicon is cosmetic, never
+        // load-bearing) with logging left in since favicon changes are
+        // rare (a couple of times per navigation, not per frame) and this
+        // is genuinely useful to see if CEF's behavior here ever changes.
         fn on_favicon_urlchange(
             &self,
             _browser: Option<&mut Browser>,
             icon_urls: Option<&mut CefStringList>,
         ) {
-            if let Some(url) = icon_urls.and_then(|l| l.clone().into_iter().next()) {
+            let urls: Vec<String> = icon_urls
+                .map(|l| l.clone().into_iter().collect())
+                .unwrap_or_default();
+            eprintln!("[favicon] on_favicon_urlchange fired, urls={urls:?}");
+            if let Some(url) = urls.into_iter().next() {
                 *self.handler.favicon_url.borrow_mut() = Some(url);
             }
         }
