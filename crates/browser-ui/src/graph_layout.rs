@@ -8,12 +8,25 @@ use std::collections::{HashMap, HashSet};
 /// The graph is structurally a forest (each tab has at most one parent —
 /// the tab it was opened from), but the layout itself doesn't need to know
 /// that; it only sees a flat edge list.
-const REPULSION_STRENGTH: f32 = 190_000.0;
+const REPULSION_STRENGTH: f32 = 900_000.0;
 const MIN_DISTANCE: f32 = 1.0;
 const SPRING_STRENGTH: f32 = 8.0;
 const REST_LENGTH: f32 = 320.0;
 const CENTERING_STRENGTH: f32 = 0.15;
-const DAMPING: f32 = 0.85;
+// Damping trades off two things: the fraction of velocity kept each frame,
+// and (less obviously) how much of a given force actually shows up as
+// motion at all. Under this integrator's semi-implicit-Euler-then-damp
+// step, a force sustained over many frames converges to a terminal
+// velocity of `force * dt * damping / (1 - damping)` — at the old 0.85
+// that coefficient was small enough that two overlapping siblings (a
+// spawn-jitter hash collision, or several tabs opened in a burst) could
+// sit almost fully overlapped for multiple real seconds before visibly
+// separating, even though the raw repulsion force between them was far
+// from zero. 0.95 (combined with the `REPULSION_STRENGTH` bump above)
+// roughly triples that coefficient (0.85's ~5.7 to 0.95's ~19), so a
+// genuine overlap resolves within well under a second instead of visibly
+// lingering.
+const DAMPING: f32 = 0.95;
 const MAX_SPEED: f32 = 2000.0;
 /// Below this speed a node is considered settled and snapped to a full
 /// stop, rather than asymptotically approaching zero forever under
@@ -114,7 +127,11 @@ pub fn step(
 /// Deterministic pseudo-random-ish spawn offset for a newly created node,
 /// derived from its own id so repeated spawns don't all land exactly on
 /// top of their parent (which would otherwise produce a near-infinite
-/// repulsion force on the very first tick — see `MIN_DISTANCE`).
+/// repulsion force on the very first tick — see `MIN_DISTANCE`). Radius is
+/// close to `REST_LENGTH` itself (not a small fixed offset) so a new child
+/// spawns near where the spring will settle it anyway, instead of starting
+/// deep inside its parent's/siblings' repulsion field and relying on the
+/// simulation to slowly push it out from near-zero distance.
 pub fn spawn_jitter(seed_str: &str) -> egui::Vec2 {
     let mut hash: u32 = 2166136261;
     for b in seed_str.bytes() {
@@ -122,7 +139,7 @@ pub fn spawn_jitter(seed_str: &str) -> egui::Vec2 {
         hash = hash.wrapping_mul(16777619);
     }
     let angle = (hash % 360) as f32 * std::f32::consts::PI / 180.0;
-    let radius = 40.0 + (hash % 40) as f32;
+    let radius = REST_LENGTH * 0.8 + (hash % (REST_LENGTH as u32 / 4)) as f32;
     egui::Vec2::new(angle.cos(), angle.sin()) * radius
 }
 
