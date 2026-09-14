@@ -696,6 +696,8 @@ dependencies = [
  "egui-winit",
  "ipc-protocol",
  "pollster",
+ "serde_json",
+ "ureq",
  "wgpu",
  "winit",
 ]

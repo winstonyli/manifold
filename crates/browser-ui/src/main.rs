@@ -1,9 +1,12 @@
 mod gpu;
 mod graph_layout;
 mod process_manager;
+mod suggestions;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use gpu::GpuState;
 use ipc_protocol::{
@@ -183,6 +186,16 @@ struct App {
     egui_state: Option<egui_winit::State>,
     address_bar_text: String,
     address_bar_focused: bool,
+    /// Address-bar autocomplete: open-tab matches are recomputed
+    /// synchronously (cheap, from data already in memory) whenever the text
+    /// changes; search-engine suggestions arrive later, asynchronously, via
+    /// `suggestion_fetcher`'s debounced background fetch. Only shown while
+    /// `address_bar_focused`; see `build_tab_ui`'s doc comments on the
+    /// dropdown for why arrow-key navigation was cut from scope (mouse
+    /// click only).
+    open_tab_suggestions: Vec<Suggestion>,
+    search_suggestions: Vec<String>,
+    suggestion_fetcher: SuggestionFetcher,
 
     /// Graph view: the node currently being dragged (pinned in the physics
     /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
@@ -213,6 +226,9 @@ impl Default for App {
             egui_state: None,
             address_bar_text: INITIAL_URL.to_string(),
             address_bar_focused: false,
+            open_tab_suggestions: Vec::new(),
+            search_suggestions: Vec::new(),
+            suggestion_fetcher: SuggestionFetcher::new(),
             dragging: None,
             hovered: None,
             graph_scene_rect: default_graph_scene_rect(),
@@ -266,6 +282,64 @@ impl App {
             node.tab
                 .send(&HostToEngine::Navigate { url, referrer: None });
         }
+    }
+
+    /// Address-bar autocomplete's open-tab source: every *other* tab (an
+    /// exact-match-only self isn't a useful "switch to" suggestion) whose
+    /// URL or title contains `query`, case-insensitively. Capped and
+    /// ordered by `tab_order` for determinism — this is a small in-memory
+    /// list, not worth a fuzzy-match/relevance-ranking pass.
+    fn compute_open_tab_suggestions(&self, query: &str, exclude: &str) -> Vec<Suggestion> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query = query.to_lowercase();
+        self.tab_order
+            .iter()
+            .filter(|id| id.as_str() != exclude)
+            .filter_map(|id| self.tabs.get(id).map(|node| (id, node)))
+            .filter(|(_, node)| {
+                node.url.to_lowercase().contains(&query) || node.title.to_lowercase().contains(&query)
+            })
+            .take(5)
+            .map(|(id, node)| Suggestion::OpenTab {
+                tab_id: id.clone(),
+                url: node.url.clone(),
+                title: node.title.clone(),
+            })
+            .collect()
+    }
+
+    /// The combined, ordered list the dropdown actually renders: open tabs
+    /// first (jumping to something already loaded beats a fresh
+    /// navigation/search), then search-engine suggestions.
+    fn combined_suggestions(&self) -> Vec<Suggestion> {
+        let mut all = self.open_tab_suggestions.clone();
+        all.extend(
+            self.search_suggestions
+                .iter()
+                .cloned()
+                .map(|query| Suggestion::Search { query }),
+        );
+        all
+    }
+
+    /// Accepting a suggestion: jump straight to an already-open tab (no
+    /// navigation at all), or navigate the focused tab to a search.
+    /// Either way the dropdown itself is cleared and the address bar drops
+    /// out of its "actively editing" state so it re-syncs to whichever
+    /// tab ends up focused, same as any other navigation.
+    fn accept_suggestion(&mut self, suggestion: Suggestion, focused_tab_id: &str) {
+        match suggestion {
+            Suggestion::OpenTab { tab_id, .. } => self.focus_tab(&tab_id),
+            Suggestion::Search { query } => {
+                let url = suggestions::search_url(&query);
+                self.navigate_tab(focused_tab_id, url);
+            }
+        }
+        self.open_tab_suggestions.clear();
+        self.search_suggestions.clear();
+        self.address_bar_focused = false;
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -508,7 +582,18 @@ impl App {
             self.view_mode = ViewMode::Graph;
             return;
         }
-        if !self.address_bar_focused {
+        // Not just `!self.address_bar_focused`: found live that the moment
+        // the suggestion dropdown's buttons first appear, egui's own
+        // keyboard-focus tracking transiently moves off the `TextEdit` for
+        // a frame (a real, reproducible bug, not a one-off) — `has_focus()`
+        // then reports false for that one frame, which (without this) blew
+        // away whatever the user had just typed by resyncing to the tab's
+        // real URL mid-keystroke. Suggestions being non-empty is a good
+        // proxy for "still actively editing" that survives that blip.
+        let editing_address = self.address_bar_focused
+            || !self.open_tab_suggestions.is_empty()
+            || !self.search_suggestions.is_empty();
+        if !editing_address {
             self.address_bar_text = self.tabs[&focused_id].url.clone();
         }
         let current_kind = self.tabs.get(&focused_id).map(|n| n.tab.kind);
@@ -518,6 +603,7 @@ impl App {
         let mut swap_to = None;
         let mut navigate = None;
         let mut back_to_graph = false;
+        let mut address_bar_rect: Option<egui::Rect> = None;
 
         egui::Panel::top("tab_strip")
             .exact_size(TAB_STRIP_HEIGHT_POINTS)
@@ -604,15 +690,79 @@ impl App {
                             .desired_width(f32::INFINITY),
                     );
                     self.address_bar_focused = response.has_focus();
+                    address_bar_rect = Some(response.rect);
+                    if response.changed() {
+                        self.open_tab_suggestions =
+                            self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
+                        self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
+                    }
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         navigate = Some(self.address_bar_text.clone());
                     }
                 });
             });
 
-        if back_to_graph || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if let Some(results) = self.suggestion_fetcher.tick() {
+            self.search_suggestions = results;
+        }
+
+        // Autocomplete dropdown: a separate `egui::Area` anchored right
+        // below the address bar (screen space, not the toolbar `Panel`'s
+        // own layout — the dropdown needs to float over the content area
+        // below chrome, which a plain widget inside the toolbar couldn't
+        // do without stretching the toolbar itself). Mouse-only: clicking
+        // a row accepts it. Arrow-key highlight/selection was cut from
+        // scope — it needs consuming Up/Down/Enter out of the `TextEdit`'s
+        // own input handling *before* the widget itself reads them this
+        // same frame (i.e. before `ui.add(TextEdit::...)` above), which
+        // read as a lot of added fragility for what's a nice-to-have, not
+        // the core feature.
+        // Gated on `editing_address`, not raw `self.address_bar_focused`:
+        // the same one-frame focus blip documented above (egui's focus
+        // tracking transiently leaving the `TextEdit` when the dropdown's
+        // buttons appear) was also hiding this whole Area, including the
+        // buttons, on the exact frame a click landed on one — so the click
+        // never reached anything and just silently dismissed the dropdown.
+        let combined = self.combined_suggestions();
+        if editing_address && !combined.is_empty() {
+            if let Some(rect) = address_bar_rect {
+                let mut accepted = None;
+                egui::Area::new(egui::Id::new("address_suggestions"))
+                    .fixed_pos(rect.left_bottom())
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::default()
+                            .fill(TOOLBAR_FILL)
+                            .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                            .corner_radius(6u8)
+                            .inner_margin(egui::Margin::same(4))
+                            .show(ui, |ui| {
+                                ui.set_width(rect.width());
+                                for suggestion in &combined {
+                                    if ui
+                                        .add(egui::Button::new(suggestion.label()).truncate())
+                                        .clicked()
+                                    {
+                                        accepted = Some(suggestion.clone());
+                                    }
+                                }
+                            });
+                    });
+                if let Some(suggestion) = accepted {
+                    self.accept_suggestion(suggestion, &focused_id);
+                }
+            }
+        }
+
+        let has_suggestions =
+            !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty();
+        if back_to_graph || (!has_suggestions && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
             self.leave_to_graph();
             return;
+        }
+        if has_suggestions && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.open_tab_suggestions.clear();
+            self.search_suggestions.clear();
         }
         if go_back {
             if let Some(node) = self.tabs.get_mut(&focused_id) {
@@ -627,8 +777,11 @@ impl App {
         if let Some(kind) = swap_to {
             self.start_swap_to(&focused_id, kind);
         }
-        if let Some(url) = navigate {
+        if let Some(text) = navigate {
+            let url = resolve_navigation_url(&text);
             self.navigate_tab(&focused_id, url);
+            self.open_tab_suggestions.clear();
+            self.search_suggestions.clear();
         }
     }
 
