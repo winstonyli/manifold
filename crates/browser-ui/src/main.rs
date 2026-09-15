@@ -42,6 +42,10 @@ const CHROME_HEIGHT_POINTS: f32 = 32.0;
 const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 26.0;
 
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
+/// Smaller than `GRAPH_NODE_SIZE` — a download node has no live thumbnail,
+/// just a filename, so it doesn't need the same footprint a tab's preview
+/// does.
+const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
 const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
@@ -203,6 +207,22 @@ struct TabNode {
     vel: egui::Vec2,
 }
 
+/// A completed download shown as its own graph node, edged to the tab it
+/// was downloaded from — same force-directed layout/edge machinery as
+/// `TabNode` (see `graph_layout::step`), but no engine process/live content
+/// behind it, just a static file reference. `parent` follows the same
+/// reparent-on-close rule `close_tab` already applies to tabs (falls back
+/// to the closed tab's own parent, or `None` if it was a root). Session-
+/// only — not written to `session.json`: the downloaded file already
+/// exists on disk regardless, so losing this node on restart costs nothing
+/// but a "recent downloads" convenience.
+struct DownloadNode {
+    parent: Option<String>,
+    path: String,
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+}
+
 /// Snapshot of a tab taken by `close_tab` just before removal, enough to
 /// respawn it via `Ctrl+Shift+T`/headless `REOPENTAB` — `App::last_closed_
 /// tab` holds only the single most recently closed one (a full stack, like
@@ -284,12 +304,17 @@ struct App {
     /// `HashMap`'s own iteration order is unspecified and can change
     /// frame-to-frame, which would make node click/drag targeting flaky.
     tab_order: Vec<String>,
+    /// Completed downloads shown as graph nodes — see `DownloadNode`'s own
+    /// doc comment.
+    downloads: HashMap<String, DownloadNode>,
+    download_order: Vec<String>,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
     focused: Option<String>,
     view_mode: ViewMode,
     next_tab_id: u64,
+    next_download_id: u64,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -479,9 +504,12 @@ impl Default for App {
             gpu: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
+            downloads: HashMap::new(),
+            download_order: Vec::new(),
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
+            next_download_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -970,6 +998,50 @@ impl App {
         id
     }
 
+    /// Distinct prefix from `alloc_tab_id` so a download node's id can
+    /// never collide with a tab's — both share the same graph/edge id
+    /// space (`graph_layout::step` sees them as one flat set of nodes).
+    fn alloc_download_id(&mut self) -> String {
+        let id = format!("dl-{}", self.next_download_id);
+        self.next_download_id += 1;
+        id
+    }
+
+    /// Removes a download node from the graph — the file on disk is left
+    /// untouched, this only forgets the node. Session-only state, so
+    /// there's nothing to persist after removal either.
+    fn remove_download_node(&mut self, id: &str) {
+        self.downloads.remove(id);
+        self.download_order.retain(|d| d != id);
+        if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+        }
+        if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
+    }
+
+    /// Graph node click on a download: opens the containing folder with
+    /// the file pre-selected, same "just show the obvious thing, no custom
+    /// UI" posture as the download itself (see `EngineToHost::
+    /// DownloadCompleted`'s doc comment). A WebKit-sourced path is a WSL2-
+    /// side path (WebKit runs inside WSL2 — see project docs), not
+    /// reachable from this Windows process as a plain path, so it's
+    /// translated to the `\\wsl.localhost\<distro>\...` UNC form Explorer
+    /// understands, using the same "Ubuntu" distro name `process_manager`
+    /// already hardcodes for spawning the WebKit engine-host.
+    fn reveal_download(&self, id: &str) {
+        let Some(node) = self.downloads.get(id) else { return };
+        let path = if let Some(posix) = node.path.strip_prefix('/') {
+            format!("\\\\wsl.localhost\\Ubuntu\\{}", posix.replace('/', "\\"))
+        } else {
+            node.path.clone()
+        };
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{path}"))
+            .spawn();
+    }
+
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
     /// if `parent` is `None`), spawned invisible — it stays in Graph view
     /// rather than auto-focusing (see plan's M5 scope decision 5), and
@@ -1192,6 +1264,11 @@ impl App {
         };
         self.last_closed_tab = Some(ClosedTab { url, kind, parent: parent.clone() });
         for node in self.tabs.values_mut() {
+            if node.parent.as_deref() == Some(id) {
+                node.parent = parent.clone();
+            }
+        }
+        for node in self.downloads.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
             }
@@ -2089,6 +2166,8 @@ impl App {
         let mut new_tab_parent: Option<Option<String>> = None;
         let mut clicked_focus: Option<String> = None;
         let mut close_requested: Option<String> = None;
+        let mut download_close_requested: Option<String> = None;
+        let mut download_clicked: Option<String> = None;
 
         let mut reset_view = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -2149,14 +2228,30 @@ impl App {
         // world-space math, independent of the pan/zoom view below.
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         {
-            let mut positions: HashMap<String, egui::Vec2> =
-                self.tabs.iter().map(|(id, n)| (id.clone(), n.pos)).collect();
-            let mut velocities: HashMap<String, egui::Vec2> =
-                self.tabs.iter().map(|(id, n)| (id.clone(), n.vel)).collect();
+            // Tabs and download nodes share one flat id space here —
+            // `graph_layout::step` doesn't distinguish node kinds, only
+            // ids and parent->child edges.
+            let mut positions: HashMap<String, egui::Vec2> = self
+                .tabs
+                .iter()
+                .map(|(id, n)| (id.clone(), n.pos))
+                .chain(self.downloads.iter().map(|(id, n)| (id.clone(), n.pos)))
+                .collect();
+            let mut velocities: HashMap<String, egui::Vec2> = self
+                .tabs
+                .iter()
+                .map(|(id, n)| (id.clone(), n.vel))
+                .chain(self.downloads.iter().map(|(id, n)| (id.clone(), n.vel)))
+                .collect();
             let edges: Vec<(String, String)> = self
                 .tabs
                 .iter()
                 .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
+                .chain(
+                    self.downloads
+                        .iter()
+                        .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
+                )
                 .collect();
             let mut pinned = HashSet::new();
             if let Some(d) = &self.dragging {
@@ -2171,6 +2266,14 @@ impl App {
                 dt,
             );
             for (id, node) in self.tabs.iter_mut() {
+                if let Some(p) = positions.get(id) {
+                    node.pos = *p;
+                }
+                if let Some(v) = velocities.get(id) {
+                    node.vel = *v;
+                }
+            }
+            for (id, node) in self.downloads.iter_mut() {
                 if let Some(p) = positions.get(id) {
                     node.pos = *p;
                 }
@@ -2203,6 +2306,23 @@ impl App {
                         continue;
                     };
                     let _ = id;
+                    ui.painter().line_segment(
+                        [
+                            egui::Pos2::new(parent.pos.x, parent.pos.y),
+                            egui::Pos2::new(node.pos.x, node.pos.y),
+                        ],
+                        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                    );
+                }
+                // Download nodes are always parented to a tab (never to
+                // another download), so the same `self.tabs` lookup works.
+                for node in self.downloads.values() {
+                    let Some(parent_id) = &node.parent else {
+                        continue;
+                    };
+                    let Some(parent) = self.tabs.get(parent_id) else {
+                        continue;
+                    };
                     ui.painter().line_segment(
                         [
                             egui::Pos2::new(parent.pos.x, parent.pos.y),
@@ -2386,6 +2506,117 @@ impl App {
                     }
                 }
 
+                // Download nodes: no thumbnail/title-strip/audio-dot
+                // machinery (no live content behind them), just a card with
+                // the filename and a click-to-reveal/close affordance,
+                // reusing the same interact/hover/drag pattern as tab nodes.
+                for id in self.download_order.clone() {
+                    let Some(node_pos) = self.downloads.get(&id).map(|n| n.pos) else {
+                        continue;
+                    };
+                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                    let rect = egui::Rect::from_center_size(center_pos, DOWNLOAD_NODE_SIZE);
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_download_node", id.as_str())),
+                        egui::Sense::click_and_drag(),
+                    );
+
+                    let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+                    let card_fill = if is_hovered {
+                        ui.visuals().extreme_bg_color.gamma_multiply(1.35)
+                    } else {
+                        ui.visuals().extreme_bg_color
+                    };
+                    ui.painter().rect_filled(rect, 6.0, card_fill);
+                    let (border_width, border_color) = if is_hovered {
+                        (1.5, ui.visuals().text_color())
+                    } else {
+                        (1.0, ui.visuals().weak_text_color())
+                    };
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0,
+                        egui::Stroke::new(border_width, border_color),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    if let Some(node) = self.downloads.get(&id) {
+                        let filename = std::path::Path::new(&node.path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&node.path);
+                        // A plain painter-drawn glyph rather than a Unicode
+                        // file icon — several symbol glyphs are confirmed
+                        // elsewhere in this app to render as empty boxes in
+                        // whatever font it actually has glyphs for (see the
+                        // audio-indicator dot's own doc comment).
+                        ui.painter().text(
+                            rect.center_top() + egui::vec2(0.0, 10.0),
+                            egui::Align2::CENTER_TOP,
+                            "\u{2913}",
+                            egui::FontId::proportional(18.0),
+                            ui.visuals().text_color(),
+                        );
+                        ui.painter().text(
+                            rect.center_bottom() + egui::vec2(0.0, -8.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            filename,
+                            egui::FontId::default(),
+                            ui.visuals().text_color(),
+                        );
+                    }
+
+                    if is_hovered {
+                        let close_rect =
+                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
+                        let close_response = ui.interact(
+                            close_rect,
+                            egui::Id::new(("graph_download_node_close", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let close_fill = if close_response.hovered() {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                        ui.painter().rect_stroke(
+                            close_rect,
+                            4.0,
+                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            close_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "x",
+                            egui::FontId::default(),
+                            ui.visuals().text_color(),
+                        );
+                        if close_response.clicked() {
+                            download_close_requested = Some(id.clone());
+                        }
+                    }
+
+                    if response.dragged() {
+                        self.dragging = Some(id.clone());
+                        if let Some(node) = self.downloads.get_mut(&id) {
+                            node.pos += response.drag_delta();
+                        }
+                    } else if self.dragging.as_deref() == Some(id.as_str()) {
+                        self.dragging = None;
+                    }
+                    if response.hovered() {
+                        self.hovered = Some(id.clone());
+                    } else if self.hovered.as_deref() == Some(id.as_str()) {
+                        self.hovered = None;
+                    }
+                    if response.clicked() {
+                        download_clicked = Some(id.clone());
+                    }
+                }
+
                 // Peek preview: an enlarged view of the hovered node's cached
                 // thumbnail, floating near it, without changing focus. Painted
                 // directly in this same world-space layer (not a separate
@@ -2436,6 +2667,12 @@ impl App {
             if self.tabs.contains_key(&id) {
                 self.start_transition_to_tab(&id);
             }
+        }
+        if let Some(id) = download_close_requested {
+            self.remove_download_node(&id);
+        }
+        if let Some(id) = download_clicked {
+            self.reveal_download(&id);
         }
     }
 }
@@ -2956,6 +3193,7 @@ impl App {
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
         let mut favicon_updates: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
+        let mut download_events: Vec<(String, String)> = Vec::new();
         // Whether any tab's real (settled) url changed this pass — used to
         // trigger one `save_session()` after the loop below rather than one
         // per `NavigationStateChanged` (title/history-only changes and a
@@ -3042,7 +3280,8 @@ impl App {
                         }
                     }
                     EngineToHost::DownloadCompleted { path } => {
-                        self.download_toast = Some((path, std::time::Instant::now()));
+                        self.download_toast = Some((path.clone(), std::time::Instant::now()));
+                        download_events.push((tab_id.clone(), path));
                     }
                 }
             }
@@ -3079,6 +3318,20 @@ impl App {
         // "+ New Tab" click.
         for (requesting_tab_id, url) in open_tab_requests {
             self.spawn_new_tab(Some(requesting_tab_id), &url);
+        }
+
+        // A completed download becomes its own graph node, child of the
+        // tab it came from — same spawn-jitter placement a new tab gets
+        // relative to its parent.
+        for (tab_id, path) in download_events {
+            let id = self.alloc_download_id();
+            let parent_pos = self.tabs.get(&tab_id).map(|n| n.pos).unwrap_or(egui::Vec2::ZERO);
+            let pos = parent_pos + graph_layout::spawn_jitter(&id);
+            self.downloads.insert(
+                id.clone(),
+                DownloadNode { parent: Some(tab_id), path, pos, vel: egui::Vec2::ZERO },
+            );
+            self.download_order.push(id);
         }
 
         for (tab_id, rgba, width, height) in favicon_updates {
