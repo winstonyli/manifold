@@ -5,6 +5,11 @@ edition.workspace = true
 
 [dependencies]
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+# Only used by the Phase-2 capture spike (examples/capture_spike.rs) to
+# dump a captured frame to a PNG for visual verification -- not needed by
+# the real engine-host binary, which writes raw bytes into SharedFrameBuffer
+# instead.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Pinned to match webview2-com's own workspace pin (wravery/webview2-rs
 # Cargo.toml) exactly -- COM/WinRT interface types from a mismatched
 # `windows` version are not interchangeable with webview2-com's, so this
@@ -15,6 +20,21 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
 ] }

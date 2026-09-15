@@ -1,13 +1,16 @@
-//! WebView2 engine-host, Phase 1 (see the M6 plan): IPC + navigation state
-//! wired up fully; frame capture is a fixed solid-color placeholder until
-//! the real `Windows.Graphics.Capture` pipeline lands in Phase 2 (see
-//! `capture.rs`'s own doc comment once that file exists). Structured to
-//! mirror `engine-host-cef/src/main.rs`'s shape (fixed-tick poll loop,
+//! WebView2 engine-host (see the M6 plan). Structured to mirror
+//! `engine-host-cef/src/main.rs`'s shape (fixed-tick poll loop,
 //! `SharedNavState` + `dirty` flag) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
+//! Real frame capture via `Windows.Graphics.Capture` -- see `capture.rs`'s
+//! doc comment for why it captures the host window directly rather than
+//! the originally-planned DirectComposition Visual.
 
+mod capture;
 mod nav_state;
 mod window;
+
+use capture::Capture;
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -41,6 +44,24 @@ fn main() {
         );
     }
 
+    // WebView2 spawns its own Chromium-like multi-process tree
+    // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
+    // direct children of this process in the Windows sense (they're
+    // children of WebView2's own browser-process, a grandchild of us) --
+    // confirmed live that a hard-killed engine-host-webview2.exe (e.g. an
+    // external `timeout` cutting the whole tree, or a plain force-kill)
+    // leaves those grandchildren running indefinitely, invisible to any
+    // cleanup this process's own `Shutdown` handler could do (it never
+    // gets to run). A Job Object with `KILL_ON_JOB_CLOSE`, assigned to this
+    // process at startup, fixes this generally: Windows terminates every
+    // process still in the job the moment this process's own job handle is
+    // closed, which happens automatically on ANY exit path (graceful,
+    // crashed, or force-killed) since the OS closes all of a dying
+    // process's handles regardless of how it died. `_job`'s only purpose
+    // is to stay alive for the whole process lifetime; never used again
+    // after this.
+    let _job = setup_kill_on_exit_job();
+
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
     let initial_url =
         std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
@@ -64,15 +85,10 @@ fn main() {
         }
     });
 
-    // Phase 1 deliberately uses plain *windowed* hosting (`CreateCoreWebView2Controller`)
-    // against a real, off-screen, invisible window -- the exact same trick
-    // browser-ui's own headless mode already uses successfully on this
-    // machine (position far off-screen, no WS_VISIBLE, skip the taskbar).
-    // Composition/Visual hosting (needed for the real Windows.Graphics.Capture
-    // pipeline) is deferred to Phase 2 along with capture.rs -- switching the
-    // controller-creation call is expected, bounded rework once that phase
-    // starts, and far lower-risk than betting Phase 1's buildability on an
-    // also-unproven composition-without-a-visual-target configuration.
+    // Plain *windowed* WebView2 hosting against a real, off-screen host
+    // window -- see `window.rs`'s doc comment for why this ended up
+    // simpler than the originally-planned Composition/Visual hosting once
+    // `Windows.Graphics.Capture`'s actual constraints were discovered live.
     let hwnd = window::create_hidden_window().expect("create hidden host window");
 
     let environment = create_environment().expect("create CoreWebView2Environment");
@@ -90,16 +106,10 @@ fn main() {
             .expect("initial navigate");
     }
 
-    // Phase 1 placeholder: a fixed mid-gray frame, sent once so browser-ui
-    // has *something* to display and the tab UI (title/loading spinner/
-    // engine badge) can be fully exercised without the real capture
-    // pipeline (Phase 2) existing yet.
-    let mut frame_buffer = SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .expect("create shared frame buffer");
-    let placeholder = vec![60u8; (DEFAULT_WIDTH * DEFAULT_HEIGHT * 4) as usize];
+    let mut capture = Capture::new(hwnd).expect("create capture pipeline");
+    let mut frame_buffer: Option<SharedFrameBuffer> = None;
     let mut frame_id: u64 = 0;
     let mut visible = true;
-    let mut sent_placeholder = false;
 
     loop {
         window::pump_messages();
@@ -124,15 +134,14 @@ fn main() {
                     }
                 },
                 HostToEngine::Resize { width, height, .. } => {
+                    window::resize(hwnd, width, height);
                     resize_controller(&controller, width, height);
-                    // Real resize handling (recreating the capture frame
-                    // pool at the new size) lands in Phase 2 -- the
-                    // placeholder buffer intentionally stays fixed-size.
+                    capture.resize(width, height);
                 }
                 HostToEngine::Input(_event) => {
-                    // Phase 3 (see the M6 plan) -- input dispatch needs
-                    // real rendered content to verify against, done after
-                    // Phase 2's capture pipeline, not before.
+                    // Not yet implemented -- needs real rendered content to
+                    // verify input against, done after capture (this pass),
+                    // not before. See the M6 plan.
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
@@ -172,20 +181,55 @@ fn main() {
             }
         }
 
-        if visible && !sent_placeholder {
-            frame_buffer.write_frame(&placeholder);
-            frame_id += 1;
-            let _ = control.send(&EngineToHost::FrameReady {
-                frame_id,
-                width: DEFAULT_WIDTH,
-                height: DEFAULT_HEIGHT,
-                damage: None,
-                pixels: None,
-            });
-            sent_placeholder = true;
+        if visible {
+            if let Some((pixels, width, height)) = capture.try_get_latest_frame() {
+                let needs_new_buffer = match &frame_buffer {
+                    Some(buf) => buf.width() != width || buf.height() != height,
+                    None => true,
+                };
+                if needs_new_buffer {
+                    frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
+                }
+                if let Some(buf) = &mut frame_buffer {
+                    buf.write_frame(&pixels);
+                    frame_id += 1;
+                    let _ = control.send(&EngineToHost::FrameReady {
+                        frame_id,
+                        width,
+                        height,
+                        damage: None,
+                        pixels: None,
+                    });
+                }
+            }
         }
 
         std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
+/// See the call site's doc comment. Returns the job handle purely to keep
+/// it alive for the process lifetime -- never queried or signaled again.
+fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let job = CreateJobObjectW(None, None)?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )?;
+        AssignProcessToJobObject(job, GetCurrentProcess())?;
+        Ok(job)
     }
 }
 

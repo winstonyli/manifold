@@ -13,9 +13,9 @@ use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos,
     ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_SHOWNOACTIVATE,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 const CLASS_NAME: PCWSTR = w!("MultiengineBrowserWebView2Host");
@@ -32,8 +32,16 @@ unsafe extern "system" fn wndproc(
 }
 
 /// Creates the host window: off-screen positioned (never overlaps the
-/// user's real desktop), undecorated, kept out of the taskbar/alt-tab list
-/// (`WS_EX_TOOLWINDOW`) since there's nothing for the user to switch to.
+/// user's real desktop). Deliberately a plain `WS_OVERLAPPEDWINDOW`, not
+/// `WS_POPUP`/`WS_EX_TOOLWINDOW` as originally written -- confirmed live
+/// (`examples/capture_spike.rs`) that `Windows.Graphics.Capture`'s
+/// `CreateForWindow` rejects both with `E_INVALIDARG` ("Could not capture
+/// the given window") -- a real, undocumented-enough-to-be-worth-recording
+/// restriction, not a guess. Being a normal top-level window means it could
+/// technically show up in alt-tab/taskbar, but since it's permanently
+/// parked off-screen the user would only ever see a blank rectangle out in
+/// space if they somehow switched to it -- an acceptable tradeoff for
+/// actually being capturable at all.
 pub fn create_hidden_window() -> Result<HWND> {
     unsafe {
         let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
@@ -52,10 +60,10 @@ pub fn create_hidden_window() -> Result<HWND> {
         let _ = RegisterClassW(&class);
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            WINDOW_EX_STYLE(0),
             CLASS_NAME,
             w!("multiengine-browser-webview2-host"),
-            WS_POPUP,
+            WS_OVERLAPPEDWINDOW,
             -32000,
             -32000,
             1024,
@@ -67,6 +75,26 @@ pub fn create_hidden_window() -> Result<HWND> {
         )?;
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         Ok(hwnd)
+    }
+}
+
+/// Resizes the actual host window's outer size to match the requested
+/// content size -- capture (`capture.rs`) grabs the whole window's client
+/// area, so the window itself must track `HostToEngine::Resize`, not just
+/// the WebView2 controller's own bounds within it (otherwise the captured
+/// frame would stay at the window's original fixed size regardless of what
+/// `SetBounds` was told).
+pub fn resize(hwnd: HWND, width: u32, height: u32) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            width as i32,
+            height as i32,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 

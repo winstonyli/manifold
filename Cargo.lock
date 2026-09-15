@@ -2138,6 +2138,7 @@ dependencies = [
 name = "engine-host-webview2"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ipc-protocol",
  "webview2-com",
  "windows 0.62.2",
