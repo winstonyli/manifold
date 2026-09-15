@@ -60,7 +60,26 @@ fn main() {
                     break;
                 }
             }
-            Err(_) => break,
+            Err(_) => {
+                // The control socket dropped without a graceful `Shutdown`
+                // message — browser-ui.exe exited abnormally (force-killed,
+                // crashed) rather than running `Drop for EngineTab`'s normal
+                // teardown, which is the only other place `Shutdown` would
+                // have come from. Windows still closes the TCP socket on
+                // process death regardless of whether any Rust destructor
+                // ran, so this `recv` reliably observes it (as an
+                // `UnexpectedEof` from `read_exact`) — but before this fix,
+                // nothing told the main loop, which kept polling GTK,
+                // capturing frames nobody could receive, and re-attempting
+                // now-dead sends forever: confirmed live via `taskkill /F
+                // /IM browser-ui.exe`, the orphaned engine-host-webkit (and
+                // the wsl.exe relay above it) pegged at ~45% CPU
+                // indefinitely. Synthesizing `Shutdown` here reuses the
+                // existing clean-exit path below for this case too, so a
+                // dead parent is torn down exactly like a graceful one.
+                let _ = tx.send(HostToEngine::Shutdown);
+                break;
+            }
         }
     });
 
