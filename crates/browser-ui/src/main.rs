@@ -194,6 +194,18 @@ struct TabNode {
     vel: egui::Vec2,
 }
 
+/// Snapshot of a tab taken by `close_tab` just before removal, enough to
+/// respawn it via `Ctrl+Shift+T`/headless `REOPENTAB` — `App::last_closed_
+/// tab` holds only the single most recently closed one (a full stack, like
+/// a real browser's, isn't worth the extra state for this project's scope).
+/// Not cookies/localStorage/scroll position, same "graph shape only"
+/// limitation session restore and an engine swap already both have.
+struct ClosedTab {
+    url: String,
+    kind: EngineKind,
+    parent: Option<String>,
+}
+
 /// The event loop's real user-event type: headless debug commands, plus
 /// `TabSpawned` — see its own doc comment for why engine-host spawning needs
 /// to be async in the first place.
@@ -364,6 +376,10 @@ struct App {
     /// while a fresh search is still in flight). See `EngineToHost::
     /// FindResult`'s doc comment for why `active_index` is always 0 on a
     /// WebKit tab and Servo tabs never populate this at all.
+    /// `Ctrl+Shift+T`/headless `REOPENTAB` respawns and clears this — see
+    /// `ClosedTab`'s own doc comment.
+    last_closed_tab: Option<ClosedTab>,
+
     find_bar_open: bool,
     find_text: String,
     /// Resets to `false` on every `close_find_bar` — a fresh find session
@@ -455,6 +471,7 @@ impl Default for App {
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
+            last_closed_tab: None,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -924,6 +941,13 @@ impl App {
     /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
     fn spawn_new_tab(&mut self, parent: Option<String>, url: &str) {
+        self.spawn_new_tab_with_kind(parent, url, self.settings.default_starting_engine);
+    }
+
+    /// Shared by `spawn_new_tab` (always `default_starting_engine`) and
+    /// `reopen_closed_tab_shortcut` (the closed tab's own engine, not
+    /// necessarily today's default).
+    fn spawn_new_tab_with_kind(&mut self, parent: Option<String>, url: &str, kind: EngineKind) {
         let id = self.alloc_tab_id();
         let parent_pos = parent
             .as_ref()
@@ -932,7 +956,6 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        let kind = self.settings.default_starting_engine;
         self.spawn_tab_async(id, parent, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
     }
 
@@ -1122,9 +1145,14 @@ impl App {
     /// than orphaning that whole subtree. Falls back to Graph view if the
     /// closed tab was focused.
     fn close_tab(&mut self, id: &str) {
-        let Some(parent) = self.tabs.get(id).map(|n| n.parent.clone()) else {
+        let Some((parent, url, kind)) = self
+            .tabs
+            .get(id)
+            .map(|n| (n.parent.clone(), n.url.clone(), n.tab.kind))
+        else {
             return;
         };
+        self.last_closed_tab = Some(ClosedTab { url, kind, parent: parent.clone() });
         for node in self.tabs.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
@@ -1207,23 +1235,28 @@ impl App {
     /// view. `consume_key` removes the matching key event from this
     /// frame's input first, so a page never sees e.g. `Ctrl+T` leak
     /// through as a plain `T` keypress the way an unhandled key would
-    /// (see `window_event`'s `KeyboardInput` arm). `Ctrl+Shift+Tab` is
-    /// checked before plain `Ctrl+Tab` — egui's `matches_logically`
-    /// ignores an extra Shift/Alt, so checking the less specific one
-    /// first would consume a `Ctrl+Shift+Tab` press as if it were a
-    /// plain `Ctrl+Tab`.
+    /// (see `window_event`'s `KeyboardInput` arm). `Ctrl+Shift+Tab` and
+    /// `Ctrl+Shift+T` are each checked before their plain (no-Shift)
+    /// counterpart — egui's `matches_logically` ignores an extra Shift/Alt,
+    /// so checking the less specific one first would consume a
+    /// `Ctrl+Shift+X` press as if it were plain `Ctrl+X`.
     fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (new_tab, close_tab, focus_address, open_find, prev_tab, next_tab) = ui.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
-                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
-            )
-        });
+        let (reopen_tab, new_tab, close_tab, focus_address, open_find, prev_tab, next_tab) =
+            ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
+                    i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
+                    i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
+                    i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
+                    i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
+                    i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
+                    i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
+                )
+            });
 
+        if reopen_tab {
+            self.reopen_closed_tab_shortcut();
+        }
         if new_tab {
             self.new_tab_shortcut();
         }
@@ -1247,6 +1280,19 @@ impl App {
     fn new_tab_shortcut(&mut self) {
         let home_page = self.settings.home_page.clone();
         self.spawn_new_tab(self.focused.clone(), &home_page);
+    }
+
+    /// `Ctrl+Shift+T` / headless `REOPENTAB` — respawns the single most
+    /// recently closed tab (see `ClosedTab`'s doc comment; a no-op if
+    /// nothing's been closed yet, or the record was already consumed by an
+    /// earlier reopen). Its original parent respawns it as a new root
+    /// instead if that parent was itself closed/no longer exists —
+    /// `spawn_new_tab_with_kind` already treats an unknown parent id this
+    /// way for graph-position purposes, and `process_manager::spawn_tab`
+    /// doesn't require a real parent tab to exist either.
+    fn reopen_closed_tab_shortcut(&mut self) {
+        let Some(closed) = self.last_closed_tab.take() else { return };
+        self.spawn_new_tab_with_kind(closed.parent, &closed.url, closed.kind);
     }
 
     /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
@@ -2610,6 +2656,7 @@ impl App {
                     }
                 }
             }
+            DebugCommand::ReopenTab => self.reopen_closed_tab_shortcut(),
             DebugCommand::NewTab => self.new_tab_shortcut(),
             DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
             DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),

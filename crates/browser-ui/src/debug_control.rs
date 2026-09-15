@@ -64,6 +64,8 @@ pub enum DebugCommand {
     TypeIntoPage(String),
     /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
     KeyPage(KeyCode),
+    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_tab_shortcut`.
+    ReopenTab,
     /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
     /// code (see this module's own doc comment), so this and the four
@@ -228,6 +230,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ARROWUP" => Some(DebugCommand::ArrowUp),
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
+        "REOPENTAB" => Some(DebugCommand::ReopenTab),
         "NEWTAB" => Some(DebugCommand::NewTab),
         "CLOSETAB" => Some(DebugCommand::CloseTab),
         "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),
