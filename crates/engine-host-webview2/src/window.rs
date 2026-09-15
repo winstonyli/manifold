@@ -117,20 +117,25 @@ pub fn create_hidden_window() -> Result<HWND> {
 ///   visibility transition, no NC-area recalculation -- so it doesn't
 ///   share any of these failure modes.
 ///
-/// Runs on a **detached background thread**, not inline -- confirmed live
-/// that `ITaskbarList::DeleteTab` can hang indefinitely in an environment
-/// with no responsive Explorer/taskbar shell (observed in this project's
-/// own sandboxed test session: `engine-host-webview2.exe` stayed alive but
-/// completely unresponsive, never even reaching the tick loop, until
-/// force-killed). This project already went to real effort (the whole
-/// off-screen-window + `--headless` design) to avoid depending on a real
-/// interactive desktop, so this call must never be allowed to block
-/// startup even in a shell-less/CI-like context -- best-effort only, same
-/// shape as `favicon::register`'s graceful degradation. `HWND` isn't
-/// `Send` (wraps a raw pointer Rust can't prove is thread-safe, even
-/// though Win32 handles are designed to cross threads freely) -- carried
-/// across as a plain `isize` and reconstructed on the other side instead
-/// of fighting the type system.
+/// Runs on a **detached background thread**, not inline. An earlier round
+/// of live testing produced a zero-screenshot, unresponsive-looking
+/// `engine-host-webview2.exe` right after adding this call and was first
+/// read as `DeleteTab` hanging -- **re-tested since, with a hard-timeout-
+/// wrapped synchronous call and diagnostic prints bracketing it, and it
+/// completed normally in well under the 2s retry budget below**. The
+/// original observation was actually this session's own well-documented
+/// coprocess/test-harness flakiness (a disabled-feature control run
+/// reproduced the identical symptom), not a real hang -- correcting the
+/// record here since an earlier commit message overstated this as
+/// "confirmed live." The real reason to background it: the retry loop
+/// below is a synchronous sleep totalling up to 2s, and blocking
+/// engine-host startup for that long before the first frame is captured
+/// would be a real, avoidable regression, hang or not. Kept backgrounded
+/// on that basis, with the same best-effort shape as `favicon::register`.
+/// `HWND` isn't `Send` (wraps a raw pointer Rust can't prove is
+/// thread-safe, even though Win32 handles are designed to cross threads
+/// freely) -- carried across as a plain `isize` and reconstructed on the
+/// other side instead of fighting the type system.
 pub fn hide_from_taskbar(hwnd: HWND) {
     let hwnd_value = hwnd.0 as isize;
     std::thread::spawn(move || unsafe {
