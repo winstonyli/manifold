@@ -90,6 +90,21 @@ pub enum HostToEngine {
     /// capture-and-send step is gated on this.
     SetVisible(bool),
     GetState,
+    /// Begin (or replace) a find-in-page search for `text` in this tab,
+    /// jumping to the nearest match. Sent when the find bar's text changes,
+    /// or the bar opens with existing text. Supported by CEF, WebKit, and
+    /// WebView2 — all three have a real native find API (see each
+    /// engine-host's own find-handling code); Servo's embedding API has
+    /// none, so this is a silent no-op there, same per-engine support gap
+    /// as `EngineToHost::OpenTabRequested`.
+    FindStart { text: String, match_case: bool },
+    /// Advance to the next/previous match of the current find session (the
+    /// most recent `FindStart`'s term) — Enter/Shift+Enter in the find bar.
+    FindNext,
+    FindPrevious,
+    /// Ends the find session: clears highlighted matches/selection. Sent
+    /// when the find bar closes.
+    FindStop,
     Shutdown,
 }
 
@@ -147,4 +162,12 @@ pub enum EngineToHost {
     /// Servo tabs don't send this (page-triggered popups fall back to
     /// whatever Servo's own unhandled-request default behavior is).
     OpenTabRequested { url: String },
+    /// A find-in-page result update for the current search term: `count`
+    /// matches found, `active_index` the 1-based position of the currently
+    /// selected match among them (0 if `count` is 0). WebKitGTK's
+    /// `WebKitFindController` only ever reports a total count, never which
+    /// match is currently selected — its engine-host always sends
+    /// `active_index: 0`, so `browser-ui` shows just the count for a WebKit
+    /// tab rather than "3 of 12".
+    FindResult { count: u32, active_index: u32 },
 }

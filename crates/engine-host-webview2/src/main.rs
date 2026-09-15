@@ -8,6 +8,7 @@
 
 mod capture;
 mod favicon;
+mod find;
 mod input;
 mod nav_state;
 mod popup;
@@ -104,7 +105,7 @@ fn main() {
 
     let environment = create_environment().expect("create CoreWebView2Environment");
     let (controller, webview) =
-        create_controller(environment, hwnd).expect("create CoreWebView2Controller");
+        create_controller(environment.clone(), hwnd).expect("create CoreWebView2Controller");
 
     resize_controller(&controller, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
@@ -129,6 +130,10 @@ fn main() {
     // graceful-degradation shape as CEF's already-known-broken favicon path.
     let pending_favicon = favicon::register(&webview).ok();
     let pending_popup = popup::register(&webview);
+    // Best-effort like favicon's own version-gated API -- an
+    // `ICoreWebView2_28`/`ICoreWebView2Environment15`-less WebView2 Runtime
+    // just means this tab's find bar never reports results.
+    let find_state = find::register(&environment, &webview).ok();
 
     unsafe {
         webview
@@ -201,6 +206,26 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::FindStart { text, match_case } => {
+                    if let Some(find) = &find_state {
+                        find.start(&text, match_case);
+                    }
+                }
+                HostToEngine::FindNext => {
+                    if let Some(find) = &find_state {
+                        find.next();
+                    }
+                }
+                HostToEngine::FindPrevious => {
+                    if let Some(find) = &find_state {
+                        find.previous();
+                    }
+                }
+                HostToEngine::FindStop => {
+                    if let Some(find) = &find_state {
+                        find.stop();
+                    }
+                }
                 HostToEngine::Shutdown => {
                     unsafe {
                         let _ = controller.Close();
@@ -232,6 +257,12 @@ fn main() {
 
         if let Some(url) = pending_popup.borrow_mut().take() {
             let _ = control.send(&EngineToHost::OpenTabRequested { url });
+        }
+
+        if let Some(find) = &find_state {
+            if let Some((count, active_index)) = find.pending().borrow_mut().take() {
+                let _ = control.send(&EngineToHost::FindResult { count, active_index });
+            }
         }
 
         if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {

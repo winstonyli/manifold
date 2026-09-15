@@ -78,6 +78,18 @@ pub enum DebugCommand {
     NextTab,
     /// `Ctrl+Shift+Tab` equivalent — see `App::cycle_focused_tab`.
     PrevTab,
+    /// `Ctrl+F` equivalent — see `App::open_find_bar_shortcut`.
+    OpenFindBar,
+    /// Sets the find bar's search text directly and sends `FindStart` to
+    /// the focused tab — same "direct call, not a synthetic key event"
+    /// reason as `AddressBar`.
+    FindText(String),
+    /// `Enter`/`Shift+Enter` in the find bar.
+    FindNext,
+    FindPrevious,
+    /// `Escape` (or the find bar's own close button) — sends `FindStop` and
+    /// closes the bar.
+    CloseFindBar,
     /// Sends `HostToEngine::SetVisible` to the focused tab directly —
     /// bypassing `focus_tab`/`leave_to_graph`'s own visibility changes,
     /// which always come bundled with a `Resize` (Tab vs. Graph view's
@@ -217,6 +229,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),
         "NEXTTAB" => Some(DebugCommand::NextTab),
         "PREVTAB" => Some(DebugCommand::PrevTab),
+        "OPENFINDBAR" => Some(DebugCommand::OpenFindBar),
+        "FINDTEXT" => Some(DebugCommand::FindText(rest.to_string())),
+        "FINDNEXT" => Some(DebugCommand::FindNext),
+        "FINDPREVIOUS" => Some(DebugCommand::FindPrevious),
+        "CLOSEFINDBAR" => Some(DebugCommand::CloseFindBar),
         "SETVISIBLE" => Some(DebugCommand::SetVisible(match parts.next()? {
             "true" => true,
             "false" => false,

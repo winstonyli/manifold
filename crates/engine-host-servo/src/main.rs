@@ -270,6 +270,16 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
+                // find-in-page method at all — silent no-op, same per-engine
+                // support gap as popup interception (see
+                // `ipc_protocol::EngineToHost::OpenTabRequested`'s doc
+                // comment). `browser-ui`'s find bar still opens on a Servo
+                // tab; it just never receives a `FindResult`.
+                HostToEngine::FindStart { .. }
+                | HostToEngine::FindNext
+                | HostToEngine::FindPrevious
+                | HostToEngine::FindStop => {}
                 HostToEngine::Shutdown => return,
             }
         }

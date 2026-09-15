@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod find_handler;
 mod input;
 mod life_span_handler;
 mod nav_handler;
@@ -14,6 +15,7 @@ use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
+use find_handler::new_shared_find_result;
 use life_span_handler::new_shared_pending_open_tab;
 use nav_handler::{new_shared_favicon_url, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
@@ -103,6 +105,11 @@ fn main() {
     let nav_state = new_shared_nav_state(initial_url.clone());
     let pending_open_tab = new_shared_pending_open_tab();
     let favicon_url = new_shared_favicon_url();
+    let find_result = new_shared_find_result();
+    // Remembers the most recent `FindStart`'s term/case-sensitivity —
+    // `BrowserHost::find` needs both repeated on every call, even a plain
+    // `FindNext`/`FindPrevious` continuation of an already-running search.
+    let mut find_term: Option<(String, bool)> = None;
 
     let window_info = WindowInfo {
         windowless_rendering_enabled: true as _,
@@ -120,6 +127,7 @@ fn main() {
             nav_state.clone(),
             pending_open_tab.clone(),
             favicon_url.clone(),
+            find_result.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -197,6 +205,28 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::FindStart { text, match_case } => {
+                    if let Some(host) = browser.host() {
+                        host.find(Some(&text.as_str().into()), true as _, match_case as _, false as _);
+                    }
+                    find_term = Some((text, match_case));
+                }
+                HostToEngine::FindNext => {
+                    if let (Some(host), Some((text, match_case))) = (browser.host(), &find_term) {
+                        host.find(Some(&text.as_str().into()), true as _, *match_case as _, true as _);
+                    }
+                }
+                HostToEngine::FindPrevious => {
+                    if let (Some(host), Some((text, match_case))) = (browser.host(), &find_term) {
+                        host.find(Some(&text.as_str().into()), false as _, *match_case as _, true as _);
+                    }
+                }
+                HostToEngine::FindStop => {
+                    find_term = None;
+                    if let Some(host) = browser.host() {
+                        host.stop_finding(true as _);
+                    }
+                }
                 HostToEngine::Shutdown => {
                     cef::shutdown();
                     return;
@@ -220,6 +250,10 @@ fn main() {
 
         if let Some(url) = pending_open_tab.borrow_mut().take() {
             let _ = control.send(&EngineToHost::OpenTabRequested { url });
+        }
+
+        if let Some((count, active_index)) = find_result.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::FindResult { count, active_index });
         }
 
         // Blocking HTTP fetch + decode, right here in the tick loop rather

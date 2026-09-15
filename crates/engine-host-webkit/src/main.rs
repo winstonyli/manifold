@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
-use webkit2gtk::{gio, FaviconDatabaseExt, URIRequestExt, WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{
+    gio, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt, WebContextExt,
+    WebView, WebViewExt,
+};
 
 use gtk::cairo::{Format, ImageSurface};
 
@@ -146,6 +149,29 @@ fn main() {
         });
     }
 
+    // Find-in-page: WebKitGTK's own `WebKitFindController`, one per
+    // `WebView` (`find_controller()` never returns `None` in practice for a
+    // real `WebView`, but the type is `Option` so this degrades gracefully
+    // to a silent no-op rather than a panic if it ever did). `found-text`/
+    // `failed-to-find-text` fire from every `search`/`search_next`/
+    // `search_previous` call with the current total match count — WebKit's
+    // API has no notion of "which match is currently active" the way CEF's
+    // `active_match_ordinal`/WebView2's `ActiveMatchIndex` do, so
+    // `active_index` is always reported as 0 here; see
+    // `ipc_protocol::EngineToHost::FindResult`'s own doc comment.
+    let find_controller = webview.find_controller();
+    let pending_find_result: Rc<RefCell<Option<(u32, u32)>>> = Rc::new(RefCell::new(None));
+    if let Some(controller) = &find_controller {
+        let pending = pending_find_result.clone();
+        controller.connect_found_text(move |_controller, count| {
+            *pending.borrow_mut() = Some((count, 0));
+        });
+        let pending = pending_find_result.clone();
+        controller.connect_failed_to_find_text(move |_controller| {
+            *pending.borrow_mut() = Some((0, 0));
+        });
+    }
+
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
@@ -227,6 +253,30 @@ fn main() {
                         zoom: webview.zoom_level(),
                     }));
                 }
+                HostToEngine::FindStart { text, match_case } => {
+                    if let Some(controller) = &find_controller {
+                        let mut options = FindOptions::WRAP_AROUND;
+                        if !match_case {
+                            options |= FindOptions::CASE_INSENSITIVE;
+                        }
+                        controller.search(&text, options.bits(), 0);
+                    }
+                }
+                HostToEngine::FindNext => {
+                    if let Some(controller) = &find_controller {
+                        controller.search_next();
+                    }
+                }
+                HostToEngine::FindPrevious => {
+                    if let Some(controller) = &find_controller {
+                        controller.search_previous();
+                    }
+                }
+                HostToEngine::FindStop => {
+                    if let Some(controller) = &find_controller {
+                        controller.search_finish();
+                    }
+                }
                 HostToEngine::Shutdown => {
                     return;
                 }
@@ -279,6 +329,10 @@ fn main() {
 
         if let Some((rgba, width, height)) = pending_favicon.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::FaviconChanged { rgba, width, height });
+        }
+
+        if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::FindResult { count, active_index });
         }
 
         if visible {

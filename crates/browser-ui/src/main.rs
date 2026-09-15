@@ -355,6 +355,24 @@ struct App {
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
 
+    /// Find-in-page: tied to the focused tab only, not persisted per-tab —
+    /// closes (and sends `FindStop`) on tab switch/close, same "don't try
+    /// to be a full session" scope as the address bar's own suggestion
+    /// state. `find_text` mirrors what's sent as the last `FindStart`;
+    /// `find_result` is `None` until the first `FindResult` for the current
+    /// search arrives (so the bar shows nothing rather than a stale count
+    /// while a fresh search is still in flight). See `EngineToHost::
+    /// FindResult`'s doc comment for why `active_index` is always 0 on a
+    /// WebKit tab and Servo tabs never populate this at all.
+    find_bar_open: bool,
+    find_text: String,
+    find_result: Option<(u32, u32)>,
+    /// Set by `Ctrl+F`/headless `OPENFINDBAR`, consumed the next time
+    /// `build_tab_ui` builds the find bar's `TextEdit` — same "needs a
+    /// frame to exist as a widget to focus" reason as
+    /// `pending_focus_address_bar`.
+    pending_focus_find_bar: bool,
+
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
     /// named pipe). Without this, a failed spawn left `tabs` empty and the
@@ -433,6 +451,10 @@ impl Default for App {
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
+            find_bar_open: false,
+            find_text: String::new(),
+            find_result: None,
+            pending_focus_find_bar: false,
             tab_spawn_error: None,
             settings,
             settings_open: false,
@@ -915,6 +937,7 @@ impl App {
     /// visible at a time.
     fn focus_tab(&mut self, id: &str) {
         if self.focused.as_deref() != Some(id) {
+            self.close_find_bar();
             if let Some(old_id) = self.focused.clone() {
                 if let Some(old) = self.tabs.get_mut(&old_id) {
                     old.tab.set_visible(false);
@@ -1116,6 +1139,11 @@ impl App {
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
             self.view_mode = ViewMode::Graph;
+            // The tab (and its `EngineTab`) is already gone — nothing left
+            // to send `FindStop` to, just reset the UI-side state directly
+            // rather than going through `close_find_bar`'s normal send.
+            self.find_bar_open = false;
+            self.find_result = None;
         }
         self.save_session();
     }
@@ -1180,11 +1208,12 @@ impl App {
     /// first would consume a `Ctrl+Shift+Tab` press as if it were a
     /// plain `Ctrl+Tab`.
     fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (new_tab, close_tab, focus_address, prev_tab, next_tab) = ui.input_mut(|i| {
+        let (new_tab, close_tab, focus_address, open_find, prev_tab, next_tab) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
             )
@@ -1198,6 +1227,9 @@ impl App {
         }
         if focus_address {
             self.focus_address_bar_shortcut();
+        }
+        if open_find {
+            self.open_find_bar_shortcut();
         }
         if next_tab || prev_tab {
             self.cycle_focused_tab(next_tab);
@@ -1242,6 +1274,173 @@ impl App {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
+        }
+    }
+
+    /// `Ctrl+F` / headless `OPENFINDBAR` — only meaningful in Tab view, same
+    /// as `Ctrl+L`. Opening with existing text immediately re-searches for
+    /// it (matches a real browser's find bar remembering the last term).
+    fn open_find_bar_shortcut(&mut self) {
+        if !matches!(self.view_mode, ViewMode::Tab) {
+            return;
+        }
+        self.find_bar_open = true;
+        self.pending_focus_find_bar = true;
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        if !self.find_text.is_empty() {
+            self.send_find_start();
+        }
+    }
+
+    /// Sends `FindStart` for `self.find_text` to the focused tab, or
+    /// `FindStop` if it's empty (clearing any existing highlight) — shared
+    /// by the find bar's own text-changed handling and `open_find_bar_shortcut`
+    /// re-opening with a remembered term.
+    fn send_find_start(&mut self) {
+        self.find_result = None;
+        // Tab view has no continuous redraw loop of its own (unlike Graph
+        // view's physics) — without this, a headless `FINDTEXT` (or a
+        // remembered-term re-open) can land with nothing scheduled to ever
+        // paint the bar's updated count, the same gap `focus_address_bar_
+        // shortcut` already has its own note about.
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        let Some(id) = self.focused.clone() else { return };
+        let Some(node) = self.tabs.get_mut(&id) else { return };
+        if self.find_text.is_empty() {
+            node.tab.send(&HostToEngine::FindStop);
+        } else {
+            node.tab.send(&HostToEngine::FindStart {
+                text: self.find_text.clone(),
+                match_case: false,
+            });
+        }
+    }
+
+    /// Closes the find bar: sends `FindStop` (clears highlighted matches)
+    /// and resets its text/result — called on `Escape`, its own close
+    /// button, headless `CLOSEFINDBAR`, and whenever focus leaves the tab
+    /// it was searching (tab switch/close), so a stale search never keeps
+    /// running silently in the background.
+    fn close_find_bar(&mut self) {
+        if !self.find_bar_open {
+            return;
+        }
+        self.find_bar_open = false;
+        self.find_result = None;
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        if let Some(id) = self.focused.clone() {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.tab.send(&HostToEngine::FindStop);
+            }
+        }
+    }
+
+    /// `Enter`/`Shift+Enter` in the find bar, or its Prev/Next buttons.
+    fn send_find_navigate(&mut self, forward: bool) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        let Some(id) = self.focused.clone() else { return };
+        let Some(node) = self.tabs.get_mut(&id) else { return };
+        node.tab.send(&if forward { HostToEngine::FindNext } else { HostToEngine::FindPrevious });
+    }
+
+    /// `Ctrl+F`'s floating find bar: a text field, prev/next, a match count,
+    /// and a close button. Anchored top-right of the content area in
+    /// screen space rather than off some toolbar button's rect — unlike
+    /// Settings, there's no persistent visible button to anchor from (this
+    /// only ever opens via `Ctrl+F`/headless `OPENFINDBAR`).
+    fn build_find_bar(&mut self, ui: &mut egui::Ui) {
+        let mut close = false;
+        let mut text_changed = false;
+        let mut go_next = false;
+        let mut go_prev = false;
+        egui::Area::new(egui::Id::new("find_bar"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, CHROME_HEIGHT_POINTS + 6.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.find_text)
+                                    .desired_width(160.0)
+                                    .hint_text("Find in page"),
+                            );
+                            // Same "needs a frame to exist as a widget"
+                            // reason as `pending_focus_address_bar`.
+                            if std::mem::take(&mut self.pending_focus_find_bar) {
+                                response.request_focus();
+                            }
+                            if response.changed() {
+                                text_changed = true;
+                            }
+                            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                if ui.input(|i| i.modifiers.shift) {
+                                    go_prev = true;
+                                } else {
+                                    go_next = true;
+                                }
+                            }
+
+                            match self.find_result {
+                                Some((0, _)) => {
+                                    ui.label("No results");
+                                }
+                                // WebKit never reports `active_index` (see
+                                // `EngineToHost::FindResult`'s doc comment)
+                                // — show just the count, not "0 of N".
+                                Some((count, 0)) => {
+                                    ui.label(format!("{count}"));
+                                }
+                                Some((count, active)) => {
+                                    ui.label(format!("{active}/{count}"));
+                                }
+                                None => {}
+                            }
+
+                            // Plain ASCII labels, not Unicode arrow/×
+                            // glyphs — confirmed live that `▲`/`▼`/`✕`
+                            // render as empty tofu boxes with this app's
+                            // font (unlike `◀`/`▶`/`⚙` elsewhere in this
+                            // same toolbar, which do render — evidently not
+                            // in the fallback font this build actually has
+                            // glyphs for).
+                            let has_matches = matches!(self.find_result, Some((count, _)) if count > 0);
+                            if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
+                                go_prev = true;
+                            }
+                            if ui.add_enabled(has_matches, egui::Button::new("Next")).clicked() {
+                                go_next = true;
+                            }
+                            if ui.button("X").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+
+        if text_changed {
+            self.send_find_start();
+        }
+        if go_next {
+            self.send_find_navigate(true);
+        }
+        if go_prev {
+            self.send_find_navigate(false);
+        }
+        if close {
+            self.close_find_bar();
         }
     }
 
@@ -1499,6 +1698,10 @@ impl App {
             }
         }
 
+        if self.find_bar_open {
+            self.build_find_bar(ui);
+        }
+
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
         }
@@ -1602,14 +1805,24 @@ impl App {
         // leave-to-graph logic a real keypress would.
         let escape_pressed =
             ui.input(|i| i.key_pressed(egui::Key::Escape)) || std::mem::take(&mut self.pending_debug_escape);
-        if back_to_graph || (!has_suggestions && escape_pressed) {
+        if back_to_graph || (!has_suggestions && !self.find_bar_open && escape_pressed) {
             self.leave_to_graph();
             return;
         }
-        if has_suggestions && escape_pressed {
-            self.open_tab_suggestions.clear();
-            self.search_suggestions.clear();
-            self.dropdown_highlighted = None;
+        if escape_pressed {
+            // Find bar takes priority over the address-bar dropdown if both
+            // somehow ended up open at once (independent widgets — nothing
+            // stops a user from clicking the address bar while the find
+            // bar is also open) — closes one thing per Escape press, same
+            // layered-dismiss shape the dropdown-vs-Graph-view case above
+            // already has.
+            if self.find_bar_open {
+                self.close_find_bar();
+            } else if has_suggestions {
+                self.open_tab_suggestions.clear();
+                self.search_suggestions.clear();
+                self.dropdown_highlighted = None;
+            }
         }
         if go_back {
             if let Some(node) = self.tabs.get_mut(&focused_id) {
@@ -2389,6 +2602,14 @@ impl App {
             DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
             DebugCommand::NextTab => self.cycle_focused_tab(true),
             DebugCommand::PrevTab => self.cycle_focused_tab(false),
+            DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
+            DebugCommand::FindText(text) => {
+                self.find_text = text;
+                self.send_find_start();
+            }
+            DebugCommand::FindNext => self.send_find_navigate(true),
+            DebugCommand::FindPrevious => self.send_find_navigate(false),
+            DebugCommand::CloseFindBar => self.close_find_bar(),
             DebugCommand::SetVisible(visible) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.tabs.get_mut(&id) {
@@ -2521,6 +2742,17 @@ impl App {
                     }
                     EngineToHost::FaviconChanged { rgba, width, height } => {
                         favicon_updates.push((tab_id.clone(), rgba, width, height));
+                    }
+                    EngineToHost::FindResult { count, active_index } => {
+                        // Ignore a result from a tab that isn't the one the
+                        // find bar is currently searching — shouldn't
+                        // normally happen (`close_find_bar` sends
+                        // `FindStop` on every focus change), but a stray
+                        // late result from just before a switch is cheap to
+                        // guard against.
+                        if self.focused.as_deref() == Some(tab_id.as_str()) {
+                            self.find_result = Some((count, active_index));
+                        }
                     }
                 }
             }
