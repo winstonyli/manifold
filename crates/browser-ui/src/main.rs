@@ -304,6 +304,15 @@ struct App {
     pending_debug_enter: bool,
     pending_debug_arrow_down: bool,
     pending_debug_arrow_up: bool,
+    /// Set by `Ctrl+L`/headless `FOCUSADDRESS` (see
+    /// `App::focus_address_bar_shortcut`), consumed the next time
+    /// `build_tab_ui` builds the address bar's `TextEdit` — unlike the
+    /// `pending_debug_*` flags above, this drives a *real* `request_focus()`
+    /// call on the real widget (this is the one shortcut where a real user
+    /// genuinely wants real, persistent egui focus, not just the app-state
+    /// approximation `ADDRESSBAR`'s `debug_address_bar_pin` settles for),
+    /// so it needs a frame to actually exist as a widget to focus.
+    pending_focus_address_bar: bool,
     /// Set by a headless `QUIT` that arrived while a `pending_debug_*` flag
     /// above (or `pending_screenshot`) was still set — e.g. `ENTER`+`QUIT`,
     /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
@@ -413,6 +422,7 @@ impl Default for App {
             pending_debug_enter: false,
             pending_debug_arrow_down: false,
             pending_debug_arrow_up: false,
+            pending_focus_address_bar: false,
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
@@ -1050,7 +1060,109 @@ impl App {
         self.spawn_tab_async(tab_id.to_string(), parent, url, pos, vel, SpawnPurpose::Respawn, kind);
     }
 
+    /// Browser-chrome keyboard shortcuts — checked via egui's own input
+    /// polling (same mechanism `build_tab_ui`'s own `Escape` check uses),
+    /// so they fire regardless of which widget has focus and in either
+    /// view. `consume_key` removes the matching key event from this
+    /// frame's input first, so a page never sees e.g. `Ctrl+T` leak
+    /// through as a plain `T` keypress the way an unhandled key would
+    /// (see `window_event`'s `KeyboardInput` arm). `Ctrl+Shift+Tab` is
+    /// checked before plain `Ctrl+Tab` — egui's `matches_logically`
+    /// ignores an extra Shift/Alt, so checking the less specific one
+    /// first would consume a `Ctrl+Shift+Tab` press as if it were a
+    /// plain `Ctrl+Tab`.
+    fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
+        let (new_tab, close_tab, focus_address, prev_tab, next_tab) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
+            )
+        });
+
+        if new_tab {
+            self.new_tab_shortcut();
+        }
+        if close_tab {
+            self.close_focused_tab_shortcut();
+        }
+        if focus_address {
+            self.focus_address_bar_shortcut();
+        }
+        if next_tab || prev_tab {
+            self.cycle_focused_tab(next_tab);
+        }
+    }
+
+    /// `Ctrl+T` / headless `NEWTAB` — same call the "+ New Tab" button
+    /// makes — a child of whichever tab is currently focused, staying put
+    /// rather than auto-focusing (see `spawn_new_tab`'s own doc comment).
+    fn new_tab_shortcut(&mut self) {
+        let home_page = self.settings.home_page.clone();
+        self.spawn_new_tab(self.focused.clone(), &home_page);
+    }
+
+    /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
+    /// none is focused (Graph view with nothing selected).
+    fn close_focused_tab_shortcut(&mut self) {
+        if let Some(id) = self.focused.clone() {
+            self.close_tab(&id);
+        }
+    }
+
+    /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
+    /// since Graph view has no address bar to focus. Sets a pending flag
+    /// rather than `address_bar_focused` directly: the address bar's
+    /// `TextEdit` doesn't exist as a widget until `build_tab_ui` builds it,
+    /// so actually moving real egui focus onto it needs to happen there,
+    /// via `response.request_focus()` — see `pending_focus_address_bar`'s
+    /// own doc comment.
+    fn focus_address_bar_shortcut(&mut self) {
+        if matches!(self.view_mode, ViewMode::Tab) {
+            self.pending_focus_address_bar = true;
+            // `request_focus()` only takes hold starting the *next* frame
+            // after it's called (immediate-mode: the widget this frame
+            // already painted before `build_tab_ui` gets to call it) — a
+            // real keypress always gets a following frame for free, but
+            // this command can otherwise land with nothing further
+            // scheduled to redraw (Tab view, unlike Graph view's physics,
+            // has no continuous redraw loop of its own), leaving the
+            // pending flag applied-but-invisible until some unrelated
+            // event happens to trigger another frame.
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: focuses the next/previous tab in
+    /// `tab_order` (insertion order — this graph-based UI has no tab strip
+    /// to define a more meaningful order), wrapping at both ends. A no-op
+    /// with zero or one tab open.
+    fn cycle_focused_tab(&mut self, forward: bool) {
+        if self.tab_order.len() < 2 {
+            return;
+        }
+        let current = self
+            .focused
+            .as_ref()
+            .and_then(|id| self.tab_order.iter().position(|t| t == id));
+        let len = self.tab_order.len() as isize;
+        let next = match current {
+            Some(i) => {
+                let delta = if forward { 1 } else { -1 };
+                (i as isize + delta).rem_euclid(len) as usize
+            }
+            None => 0,
+        };
+        let id = self.tab_order[next].clone();
+        self.focus_tab(&id);
+    }
+
     fn build_ui(&mut self, ui: &mut egui::Ui) {
+        self.handle_global_shortcuts(ui);
         // A `Transition` (either direction) always renders Graph view's
         // node layout as the backdrop — it's the one screen both a
         // shrinking-away Tab view and an expanding-toward Tab view have a
@@ -1239,6 +1351,9 @@ impl App {
                             // neighbors instead of a level toolbar.
                             .margin(egui::Margin::symmetric(8, 4)),
                     );
+                    if std::mem::take(&mut self.pending_focus_address_bar) {
+                        response.request_focus();
+                    }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
                     let gear_response = ui.button("\u{2699}").on_hover_text("Settings");
@@ -2159,6 +2274,11 @@ impl App {
                     }
                 }
             }
+            DebugCommand::NewTab => self.new_tab_shortcut(),
+            DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
+            DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
+            DebugCommand::NextTab => self.cycle_focused_tab(true),
+            DebugCommand::PrevTab => self.cycle_focused_tab(false),
             DebugCommand::SetVisible(visible) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.tabs.get_mut(&id) {
@@ -2190,6 +2310,7 @@ impl App {
                     || self.pending_debug_escape
                     || self.pending_debug_arrow_down
                     || self.pending_debug_arrow_up
+                    || self.pending_focus_address_bar
                     || self.pending_screenshot.is_some()
                 {
                     self.quit_after_next_redraw = true;

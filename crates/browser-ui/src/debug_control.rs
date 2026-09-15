@@ -64,6 +64,20 @@ pub enum DebugCommand {
     TypeIntoPage(String),
     /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
     KeyPage(KeyCode),
+    /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
+    /// `WindowEvent::KeyboardInput` can't be synthesized from application
+    /// code (see this module's own doc comment), so this and the four
+    /// shortcut commands below call the exact same effect directly instead,
+    /// same as `TypeIntoPage`/`KeyPage` already do for page-level input.
+    NewTab,
+    /// `Ctrl+W` equivalent — see `App::close_focused_tab_shortcut`.
+    CloseTab,
+    /// `Ctrl+L` equivalent — see `App::focus_address_bar_shortcut`.
+    FocusAddressBar,
+    /// `Ctrl+Tab` equivalent — see `App::cycle_focused_tab`.
+    NextTab,
+    /// `Ctrl+Shift+Tab` equivalent — see `App::cycle_focused_tab`.
+    PrevTab,
     /// Sends `HostToEngine::SetVisible` to the focused tab directly —
     /// bypassing `focus_tab`/`leave_to_graph`'s own visibility changes,
     /// which always come bundled with a `Resize` (Tab vs. Graph view's
@@ -198,6 +212,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ARROWUP" => Some(DebugCommand::ArrowUp),
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
+        "NEWTAB" => Some(DebugCommand::NewTab),
+        "CLOSETAB" => Some(DebugCommand::CloseTab),
+        "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),
+        "NEXTTAB" => Some(DebugCommand::NextTab),
+        "PREVTAB" => Some(DebugCommand::PrevTab),
         "SETVISIBLE" => Some(DebugCommand::SetVisible(match parts.next()? {
             "true" => true,
             "false" => false,
