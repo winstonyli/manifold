@@ -70,6 +70,26 @@ fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
 }
 
+/// `%USERPROFILE%\Pictures\multiengine-browser-<unix-seconds>.png` — same
+/// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
+/// (in each engine-host's own download-handling code) already takes, just
+/// on the browser-ui side for the toolbar's "Screenshot" button. The
+/// timestamp is the simplest collision-free name that needs no extra
+/// state; a real "Save As" dialog would be the alternative, but this
+/// project doesn't build custom save UI anywhere else either.
+fn screenshot_default_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join("Pictures");
+    let _ = std::fs::create_dir_all(&dir);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    dir.join(format!("multiengine-browser-{timestamp}.png"))
+}
+
 /// A single accent color used throughout — selection highlights, hyperlinks,
 /// the focused-tab-strip fill, the focused graph node's border — so the
 /// whole chrome reads as one coherent theme rather than egui's flat default
@@ -177,9 +197,9 @@ struct Transition {
 
 const TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 
-/// How long a "Saved <path>" download toast stays on screen — see `App::
-/// download_toast`'s doc comment.
-const DOWNLOAD_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
+/// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
+/// doc comment.
+const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// One tab: its engine-host process/IPC handle, the "opened from" edge
 /// (`parent`) that makes the tab collection a forest for the M5 graph view,
@@ -446,12 +466,12 @@ struct App {
     /// `ContextMenuState`'s own doc comment.
     context_menu: Option<ContextMenuState>,
 
-    /// A brief "Saved <path>" toast for the most recent `EngineToHost::
-    /// DownloadCompleted`, and when it was set — cleared once
-    /// `DOWNLOAD_TOAST_DURATION` has passed. No queue: a second download
-    /// finishing while one toast is showing just replaces it, same
-    /// "latest wins" simplicity as `find_result`.
-    download_toast: Option<(String, std::time::Instant)>,
+    /// A brief "Saved <path>" toast for the most recent completed download
+    /// or screenshot save, and when it was set — cleared once
+    /// `SAVE_TOAST_DURATION` has passed. No queue: a second save finishing
+    /// while one toast is showing just replaces it, same "latest wins"
+    /// simplicity as `find_result`.
+    save_toast: Option<(String, std::time::Instant)>,
 
     find_bar_open: bool,
     find_text: String,
@@ -549,7 +569,7 @@ impl Default for App {
             pending_screenshot: None,
             last_closed_tab: None,
             context_menu: None,
-            download_toast: None,
+            save_toast: None,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -1744,17 +1764,17 @@ impl App {
         }
     }
 
-    /// A brief "Saved <path>" toast, bottom-left, for `self.download_toast`
-    /// — cleared once `DOWNLOAD_TOAST_DURATION` elapses. No dismiss
-    /// interaction (unlike the context menu): it just times out.
-    fn build_download_toast(&mut self, ui: &mut egui::Ui) {
-        let Some((path, shown_at)) = &self.download_toast else { return };
-        if shown_at.elapsed() >= DOWNLOAD_TOAST_DURATION {
-            self.download_toast = None;
+    /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
+    /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
+    /// (unlike the context menu): it just times out.
+    fn build_save_toast(&mut self, ui: &mut egui::Ui) {
+        let Some((path, shown_at)) = &self.save_toast else { return };
+        if shown_at.elapsed() >= SAVE_TOAST_DURATION {
+            self.save_toast = None;
             return;
         }
         let path = path.clone();
-        egui::Area::new(egui::Id::new("download_toast"))
+        egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -1876,6 +1896,7 @@ impl App {
         let mut navigate = None;
         let mut back_to_graph = false;
         let mut mute_toggle = false;
+        let mut screenshot_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
@@ -1976,6 +1997,16 @@ impl App {
                         mute_toggle = true;
                     }
 
+                    // Full window (chrome + content), same composited
+                    // picture the headless `SCREENSHOT` debug command
+                    // already captures via `GpuState::render`'s
+                    // `screenshot_path` -- this button is that same
+                    // mechanism wired to a real default save location
+                    // instead of a test-supplied path.
+                    if ui.button("Screenshot").clicked() {
+                        screenshot_requested = true;
+                    }
+
                     // Reserve room for the gear button after the address
                     // bar — `desired_width(f32::INFINITY)` would otherwise
                     // claim the whole remaining row, leaving nothing for a
@@ -2041,7 +2072,7 @@ impl App {
         }
 
         self.build_context_menu(ui);
-        self.build_download_toast(ui);
+        self.build_save_toast(ui);
 
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
@@ -2187,6 +2218,14 @@ impl App {
                 node.muted = !node.muted;
                 let muted = node.muted;
                 node.tab.send(&HostToEngine::SetMuted { muted });
+            }
+        }
+        if screenshot_requested {
+            let path = screenshot_default_path();
+            self.save_toast = Some((path.to_string_lossy().to_string(), std::time::Instant::now()));
+            self.pending_screenshot = Some(path.to_string_lossy().to_string());
+            if let Some(window) = &self.window {
+                window.request_redraw();
             }
         }
         if let Some(text) = navigate {
@@ -3361,7 +3400,7 @@ impl App {
                         }
                     }
                     EngineToHost::DownloadCompleted { path } => {
-                        self.download_toast = Some((path.clone(), std::time::Instant::now()));
+                        self.save_toast = Some((path.clone(), std::time::Instant::now()));
                         download_events.push((tab_id.clone(), path));
                     }
                 }
