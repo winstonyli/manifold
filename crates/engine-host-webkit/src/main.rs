@@ -149,6 +149,19 @@ fn main() {
         });
     }
 
+    // Audio-playing indicator: `is-playing-audio` is a real GObject notify
+    // property (same passive-read shape as `favicon`), unlike CEF's only
+    // equivalent (a full `AudioHandler` that takes over raw audio output
+    // entirely) -- see `ipc_protocol::EngineToHost::AudioPlayingChanged`'s
+    // doc comment.
+    let pending_audio_playing: Rc<RefCell<Option<bool>>> = Rc::new(RefCell::new(None));
+    {
+        let pending_audio_playing = pending_audio_playing.clone();
+        webview.connect_is_playing_audio_notify(move |webview| {
+            *pending_audio_playing.borrow_mut() = Some(webview.is_playing_audio());
+        });
+    }
+
     // Find-in-page: WebKitGTK's own `WebKitFindController`, one per
     // `WebView` (`find_controller()` never returns `None` in practice for a
     // real `WebView`, but the type is `Option` so this degrades gracefully
@@ -349,6 +362,10 @@ fn main() {
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::FindResult { count, active_index });
+        }
+
+        if let Some(playing) = pending_audio_playing.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::AudioPlayingChanged { playing });
         }
 
         if visible {

@@ -180,4 +180,20 @@ pub enum EngineToHost {
     /// `active_index: 0`, so `browser-ui` shows just the count for a WebKit
     /// tab rather than "3 of 12".
     FindResult { count: u32, active_index: u32 },
+    /// Whether this tab's page is currently producing audio — shown as a
+    /// speaker icon on its graph node. Only sent when the value actually
+    /// changes (a real native event/notify property on the engine side),
+    /// not polled. WebView2 (`ICoreWebView2_8::IsDocumentPlayingAudio`/
+    /// `add_IsDocumentPlayingAudioChanged`) and WebKitGTK (`WebView::
+    /// is_playing_audio`/its `is-playing-audio` GObject notify) both have a
+    /// real *passive* API for this — reading/observing a value Chromium/
+    /// WebKit already track internally, no different in kind from reading
+    /// `title`. CEF's only equivalent is registering a `Client::
+    /// audio_handler()`, which takes over delivering every raw PCM audio
+    /// packet to the app instead of playing it through the normal OS audio
+    /// output — a real audio-routing feature, not a passive read, and a
+    /// much bigger and riskier change than a tab icon warrants (get it
+    /// wrong and CEF tabs go silent), so CEF tabs never send this. Servo's
+    /// embedding API has no such property at all.
+    AudioPlayingChanged { playing: bool },
 }

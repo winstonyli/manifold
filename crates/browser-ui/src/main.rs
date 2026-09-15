@@ -185,6 +185,11 @@ struct TabNode {
     can_go_back: bool,
     can_go_forward: bool,
     loading: bool,
+    /// Shown as a speaker icon on this tab's graph node — see
+    /// `ipc_protocol::EngineToHost::AudioPlayingChanged`'s doc comment for
+    /// which engines actually send this (WebView2, WebKit; never CEF or
+    /// Servo, so this just stays `false` for those tabs).
+    audio_playing: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
@@ -879,6 +884,7 @@ impl App {
                         can_go_back: false,
                         can_go_forward: false,
                         loading: false,
+                        audio_playing: false,
                         swap_target: None,
                         pos,
                         vel,
@@ -2198,6 +2204,21 @@ impl App {
                             egui::Color32::WHITE,
                         );
                     }
+                    // Audio-playing indicator: a plain colored dot (like the
+                    // engine-identity one below the thumbnail), not a
+                    // speaker glyph — confirmed elsewhere in this project
+                    // that several Unicode symbol glyphs render as empty
+                    // boxes in this app's font, so a painter-drawn shape is
+                    // the reliable choice, not text. Only ever true for
+                    // WebView2/WebKit tabs — see `TabNode::audio_playing`'s
+                    // doc comment.
+                    if self.tabs.get(&id).is_some_and(|n| n.audio_playing) {
+                        ui.painter().circle_filled(
+                            rect.right_top() + egui::vec2(-8.0, 8.0),
+                            4.0,
+                            egui::Color32::from_rgb(80, 200, 120),
+                        );
+                    }
 
                     // Close button: a small square just outside the node's own
                     // top-right corner, given its own interact() id so it doesn't
@@ -2885,6 +2906,9 @@ impl App {
                         if self.focused.as_deref() == Some(tab_id.as_str()) {
                             self.find_result = Some((count, active_index));
                         }
+                    }
+                    EngineToHost::AudioPlayingChanged { playing } => {
+                        node.audio_playing = playing;
                     }
                 }
             }

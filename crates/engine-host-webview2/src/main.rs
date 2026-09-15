@@ -6,6 +6,7 @@
 //! doc comment for why it captures the host window directly rather than
 //! the originally-planned DirectComposition Visual.
 
+mod audio;
 mod capture;
 mod favicon;
 mod find;
@@ -134,6 +135,7 @@ fn main() {
     // `ICoreWebView2_28`/`ICoreWebView2Environment15`-less WebView2 Runtime
     // just means this tab's find bar never reports results.
     let find_state = find::register(&environment, &webview).ok();
+    let pending_audio_playing = audio::register(&webview).ok();
 
     unsafe {
         webview
@@ -265,6 +267,12 @@ fn main() {
         if let Some(find) = &find_state {
             if let Some((count, active_index)) = find.pending().borrow_mut().take() {
                 let _ = control.send(&EngineToHost::FindResult { count, active_index });
+            }
+        }
+
+        if let Some(pending) = &pending_audio_playing {
+            if let Some(playing) = pending.borrow_mut().take() {
+                let _ = control.send(&EngineToHost::AudioPlayingChanged { playing });
             }
         }
 
