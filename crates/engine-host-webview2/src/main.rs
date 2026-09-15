@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use ipc_protocol::{transport, EngineToHost, HostToEngine, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2_8,
     COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use webview2_com::CreateCoreWebView2EnvironmentCompletedHandler;
@@ -234,6 +234,13 @@ fn main() {
                 HostToEngine::OpenDevTools => unsafe {
                     let _ = webview.OpenDevToolsWindow();
                 },
+                HostToEngine::SetMuted { muted } => {
+                    let webview8: windows::core::Result<ICoreWebView2_8> =
+                        windows::core::Interface::cast(&webview);
+                    if let Ok(webview8) = webview8 {
+                        let _ = unsafe { webview8.SetIsMuted(muted) };
+                    }
+                }
                 HostToEngine::Shutdown => {
                     unsafe {
                         let _ = controller.Close();

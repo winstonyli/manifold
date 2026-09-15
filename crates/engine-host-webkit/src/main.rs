@@ -386,6 +386,9 @@ fn main() {
                 // warranted) -- silent no-op instead, same per-engine gap
                 // as Servo's own missing DevTools API.
                 HostToEngine::OpenDevTools => {}
+                HostToEngine::SetMuted { muted } => {
+                    webview.set_is_muted(muted);
+                }
                 HostToEngine::Shutdown => {
                     return;
                 }

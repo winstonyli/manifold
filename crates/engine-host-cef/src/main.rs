@@ -242,6 +242,12 @@ fn main() {
                         host.show_dev_tools(None, None, None, None);
                     }
                 }
+                // CEF's only equivalent would be a full `AudioHandler`
+                // taking over raw PCM delivery entirely -- see
+                // `ipc_protocol::HostToEngine::SetMuted`'s doc comment for
+                // why that's out of scope for a toggle this minor. Silent
+                // no-op, same per-engine gap as the audio indicator itself.
+                HostToEngine::SetMuted { .. } => {}
                 HostToEngine::Shutdown => {
                     cef::shutdown();
                     return;

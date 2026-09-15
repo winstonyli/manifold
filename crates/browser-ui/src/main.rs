@@ -198,6 +198,12 @@ struct TabNode {
     /// which engines actually send this (WebView2, WebKit; never CEF or
     /// Servo, so this just stays `false` for those tabs).
     audio_playing: bool,
+    /// User-toggled via the toolbar's "Muted" button — host-tracked (not
+    /// read back from the engine), see `ipc_protocol::HostToEngine::
+    /// SetMuted`'s doc comment. Resets to `false` on a fresh spawn/respawn/
+    /// engine swap, same as every other per-tab UI-only flag here (nothing
+    /// about mute state survives a swap to a different engine process).
+    muted: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
@@ -943,6 +949,7 @@ impl App {
                         can_go_forward: false,
                         loading: false,
                         audio_playing: false,
+                        muted: false,
                         swap_target: None,
                         pos,
                         vel,
@@ -1858,6 +1865,7 @@ impl App {
         let mut swap_to = None;
         let mut navigate = None;
         let mut back_to_graph = false;
+        let mut mute_toggle = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
@@ -1945,6 +1953,18 @@ impl App {
                                 });
                             }
                         });
+
+                    // WebView2/WebKit only — see `HostToEngine::SetMuted`'s
+                    // doc comment for CEF/Servo's gap. `selectable_label`
+                    // gives a pressed look while muted, same minimal
+                    // indicator shape the engine picker's own selected row
+                    // uses, without risking a speaker glyph this app's font
+                    // might not have (see the audio-indicator dot's own
+                    // doc comment for why that risk is real here).
+                    let node_muted = self.tabs.get(&focused_id).is_some_and(|n| n.muted);
+                    if ui.selectable_label(node_muted, "Muted").clicked() {
+                        mute_toggle = true;
+                    }
 
                     // Reserve room for the gear button after the address
                     // bar — `desired_width(f32::INFINITY)` would otherwise
@@ -2151,6 +2171,13 @@ impl App {
         }
         if let Some(kind) = swap_to {
             self.start_swap_to(&focused_id, kind);
+        }
+        if mute_toggle {
+            if let Some(node) = self.tabs.get_mut(&focused_id) {
+                node.muted = !node.muted;
+                let muted = node.muted;
+                node.tab.send(&HostToEngine::SetMuted { muted });
+            }
         }
         if let Some(text) = navigate {
             let url = resolve_navigation_url(&text, self.settings.default_search_engine);

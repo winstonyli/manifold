@@ -115,6 +115,21 @@ pub enum HostToEngine {
     /// does anything. Servo's embedding API has no DevTools/inspector
     /// method at all — silent no-op, same per-engine gap as find-in-page.
     OpenDevTools,
+    /// Mutes/unmutes this tab's audio output — host-initiated (the mute
+    /// button), unlike `EngineToHost::AudioPlayingChanged`'s passive
+    /// engine-reported state, so there's no matching `EngineToHost` reply:
+    /// `browser-ui` already knows the state it just asked for, same
+    /// fire-and-forget shape as `SetZoom`. WebView2 (`ICoreWebView2_8::
+    /// SetIsMuted` — the same interface `IsDocumentPlayingAudio` already
+    /// uses) and WebKitGTK (`WebView::set_is_muted`, needing the
+    /// `webkit2gtk` Cargo feature bumped to `v2_30`) both have a real
+    /// native mute API. CEF's only equivalent would again be a full
+    /// `AudioHandler` taking over raw PCM delivery (see
+    /// `AudioPlayingChanged`'s doc comment for why that's out of scope for
+    /// a toggle this minor); Servo's embedding API has no audio control at
+    /// all. Silent no-op on both, same per-engine gap as the audio
+    /// indicator itself.
+    SetMuted { muted: bool },
     Shutdown,
 }
 

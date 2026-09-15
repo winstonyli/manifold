@@ -277,12 +277,14 @@ fn main() {
                 // comment). `browser-ui`'s find bar still opens on a Servo
                 // tab; it just never receives a `FindResult`.
                 // Same gap for DevTools: no inspector/DevTools method
-                // exists in Servo's embedding API either.
+                // exists in Servo's embedding API either. Same gap again
+                // for mute: no audio control at all in this embedding API.
                 HostToEngine::FindStart { .. }
                 | HostToEngine::FindNext
                 | HostToEngine::FindPrevious
                 | HostToEngine::FindStop
-                | HostToEngine::OpenDevTools => {}
+                | HostToEngine::OpenDevTools
+                | HostToEngine::SetMuted { .. } => {}
                 HostToEngine::Shutdown => return,
             }
         }
