@@ -31,6 +31,35 @@ impl EngineKind {
     }
 }
 
+/// `EngineKind` itself has no reason to derive serde (it's an internal
+/// process-management type) — a small manual string mapping instead, shared
+/// by the two independent persistence formats that each need to store one
+/// (`settings.rs`'s default-starting-engine, `session.rs`'s per-tab engine).
+pub(crate) mod engine_kind_serde {
+    use super::EngineKind;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
+        let name = match kind {
+            EngineKind::Servo => "servo",
+            EngineKind::Cef => "cef",
+            EngineKind::Webkit => "webkit",
+            EngineKind::Webview2 => "webview2",
+        };
+        name.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(match name.as_str() {
+            "cef" => EngineKind::Cef,
+            "webkit" => EngineKind::Webkit,
+            "webview2" => EngineKind::Webview2,
+            _ => EngineKind::Servo,
+        })
+    }
+}
+
 /// Either control channel an `EngineTab` might have, depending on whether
 /// its engine-host is a same-machine process (`Local`, shared memory for
 /// frames) or WSL2-hosted (`Remote`, TCP loopback, frames travel inline in

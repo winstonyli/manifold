@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::process_manager::EngineKind;
+use crate::process_manager::{engine_kind_serde, EngineKind};
 
 /// Which search engine `resolve_navigation_url`/the autocomplete dropdown's
 /// "Search for X" rows actually navigate to. Deliberately separate from
@@ -70,35 +70,6 @@ impl Default for Settings {
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
         }
-    }
-}
-
-/// `EngineKind` has no reason to derive serde elsewhere (it's an internal
-/// process-management type, not otherwise persisted) — a small manual
-/// string mapping here keeps that decoupled rather than adding a derive to
-/// `process_manager` just for this one call site.
-mod engine_kind_serde {
-    use crate::process_manager::EngineKind;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
-        let name = match kind {
-            EngineKind::Servo => "servo",
-            EngineKind::Cef => "cef",
-            EngineKind::Webkit => "webkit",
-            EngineKind::Webview2 => "webview2",
-        };
-        name.serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
-        let name = String::deserialize(d)?;
-        Ok(match name.as_str() {
-            "cef" => EngineKind::Cef,
-            "webkit" => EngineKind::Webkit,
-            "webview2" => EngineKind::Webview2,
-            _ => EngineKind::Servo,
-        })
     }
 }
 

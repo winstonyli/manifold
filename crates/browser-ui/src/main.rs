@@ -2,6 +2,7 @@ mod debug_control;
 mod gpu;
 mod graph_layout;
 mod process_manager;
+mod session;
 mod settings;
 mod suggestions;
 
@@ -215,6 +216,12 @@ enum SpawnPurpose {
     /// whether `tab_id` is still the focused tab by the time the spawn
     /// actually completes (checked at handling time, not capture time).
     Respawn,
+    /// Startup session restore (see `session::Session`) — one of
+    /// potentially many concurrent spawns kicked off together, so (like
+    /// `Respawn`) visibility/focus is decided at completion time against
+    /// whatever `self.focused` was set to before any of them were issued,
+    /// not capture time.
+    Restore,
 }
 
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
@@ -668,6 +675,88 @@ impl App {
         self.dropdown_highlighted = None;
     }
 
+    /// Snapshots the current tab graph (shape, url/engine/position per tab,
+    /// focused id, view mode) and writes it to disk — called at every point
+    /// that shape actually changes (a tab spawns, closes, navigates, or
+    /// focus/view changes), not once per frame; see `session::Session`'s
+    /// own doc comment for what is/isn't portable across a restart.
+    /// Fire-and-forget, same as `Settings::save` — a failed write is
+    /// logged, never fatal.
+    fn save_session(&self) {
+        let tabs = self
+            .tab_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.tabs.get(id)?;
+                Some(session::SessionTab {
+                    id: id.clone(),
+                    parent: node.parent.clone(),
+                    url: node.url.clone(),
+                    engine: node.tab.kind,
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                })
+            })
+            .collect();
+        session::Session {
+            tabs,
+            focused: self.focused.clone(),
+            view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
+            next_tab_id: self.next_tab_id,
+        }
+        .save();
+    }
+
+    /// Startup: replays a saved `session::Session` instead of spawning one
+    /// fresh root tab — returns `false` (having done nothing) if there's no
+    /// session file, it's corrupt, or it has zero tabs, so the caller can
+    /// fall back to `spawn_root_tab`, same "never let a bad/missing file
+    /// stop the browser from starting" posture `Settings::load` already
+    /// takes. All of a session's tabs are spawned concurrently (like
+    /// `process_manager::spawn_tab` always is) rather than parent-before-
+    /// child — a child referencing a not-yet-spawned parent is already a
+    /// case `graph_layout::step` handles gracefully (skips the edge's
+    /// spring force until both ends exist), so there's no correctness
+    /// reason to serialize the spawns, only a briefly-less-tidy transient
+    /// layout.
+    fn restore_session(&mut self) -> bool {
+        let Some(session) = session::Session::load() else {
+            return false;
+        };
+        if session.tabs.is_empty() {
+            return false;
+        }
+        self.next_tab_id = session.next_tab_id;
+        let valid_focus = session
+            .focused
+            .as_ref()
+            .filter(|id| session.tabs.iter().any(|t| &t.id == *id));
+        self.focused = valid_focus
+            .cloned()
+            .or_else(|| session.tabs.first().map(|t| t.id.clone()));
+        self.view_mode = if session.view_mode_tab { ViewMode::Tab } else { ViewMode::Graph };
+        if matches!(self.view_mode, ViewMode::Tab) {
+            // The focused tab hasn't actually spawned yet — this is the
+            // exact same "still starting up" gap crash recovery has, so
+            // reuse its own spinner-instead-of-snapping-to-Graph path
+            // (see `build_tab_ui`) rather than inventing a second one.
+            self.pending_respawn_focus = self.focused.clone();
+        }
+        for tab in session.tabs {
+            let pos = egui::vec2(tab.pos_x, tab.pos_y);
+            self.spawn_tab_async(
+                tab.id,
+                tab.parent,
+                tab.url,
+                pos,
+                egui::Vec2::ZERO,
+                SpawnPurpose::Restore,
+                tab.engine,
+            );
+        }
+        true
+    }
+
     /// Spawns the very first tab at startup: no parent, becomes focused,
     /// starts in Tab view (preserves "opens straight into a usable
     /// browser" from before M5 — Graph view is reached explicitly).
@@ -721,7 +810,9 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome { id, parent, url, pos, vel, purpose, result } = outcome;
-        if matches!(purpose, SpawnPurpose::Respawn) && self.pending_respawn_focus.as_deref() == Some(id.as_str()) {
+        if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore)
+            && self.pending_respawn_focus.as_deref() == Some(id.as_str())
+        {
             self.pending_respawn_focus = None;
         }
         match result {
@@ -729,7 +820,9 @@ impl App {
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New => false,
-                    SpawnPurpose::Respawn => self.focused.as_deref() == Some(id.as_str()),
+                    SpawnPurpose::Respawn | SpawnPurpose::Restore => {
+                        self.focused.as_deref() == Some(id.as_str())
+                    }
                 };
                 tab.set_visible(is_focused);
                 self.tabs.insert(
@@ -769,7 +862,15 @@ impl App {
                             self.send_resize_to(&id);
                         }
                     }
+                    SpawnPurpose::Restore => {
+                        self.send_zoom_to(&id);
+                        if is_focused {
+                            self.address_bar_text = url;
+                            self.send_resize_to(&id);
+                        }
+                    }
                 }
+                self.save_session();
             }
             Err(err) => {
                 eprintln!("spawn tab failed for {id}: {err}");
@@ -777,6 +878,7 @@ impl App {
                     SpawnPurpose::Root => format!("Couldn't start a browser tab: {err}"),
                     SpawnPurpose::New => format!("Couldn't start a new tab: {err}"),
                     SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
+                    SpawnPurpose::Restore => format!("Couldn't restore tab: {err}"),
                 });
             }
         }
@@ -828,6 +930,7 @@ impl App {
         self.focused = Some(id.to_string());
         self.view_mode = ViewMode::Tab;
         self.send_resize_to(id);
+        self.save_session();
     }
 
     /// Leaves Tab view for Graph view: starts a shrink animation (see
@@ -848,7 +951,10 @@ impl App {
             }
             // No focused tab at all (shouldn't normally happen — Tab view
             // always has one — but nothing to animate either way).
-            None => self.view_mode = ViewMode::Graph,
+            None => {
+                self.view_mode = ViewMode::Graph;
+                self.save_session();
+            }
         }
         self.debug_address_bar_pin = false;
         self.dropdown_highlighted = None;
@@ -901,6 +1007,7 @@ impl App {
                 self.view_mode = ViewMode::Tab;
             }
         }
+        self.save_session();
     }
 
     /// Replicates `egui::Scene`'s own internal `fit_to_rect_in_scene`
@@ -1010,6 +1117,7 @@ impl App {
             self.focused = None;
             self.view_mode = ViewMode::Graph;
         }
+        self.save_session();
     }
 
     /// M2's swap sequence, now per-tab and driven by the engine-picker
@@ -1902,7 +2010,9 @@ impl ApplicationHandler<UserEvent> for App {
             None,
         ));
         self.window = Some(window);
-        self.spawn_root_tab();
+        if !self.restore_session() {
+            self.spawn_root_tab();
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -2354,6 +2464,12 @@ impl App {
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
         let mut favicon_updates: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
+        // Whether any tab's real (settled) url changed this pass — used to
+        // trigger one `save_session()` after the loop below rather than one
+        // per `NavigationStateChanged` (title/history-only changes and a
+        // same-url reload both leave this `false`; url actually changing is
+        // the one thing worth persisting here).
+        let mut nav_url_changed = false;
 
         for tab_id in &tab_ids {
             let Some(node) = self.tabs.get_mut(tab_id) else {
@@ -2388,6 +2504,9 @@ impl App {
                         can_go_forward,
                         loading,
                     } => {
+                        if node.url != url {
+                            nav_url_changed = true;
+                        }
                         node.url = url;
                         node.title = title;
                         node.can_go_back = can_go_back;
@@ -2405,6 +2524,9 @@ impl App {
                     }
                 }
             }
+        }
+        if nav_url_changed {
+            self.save_session();
         }
 
         for (tab_id, reason) in crashes {

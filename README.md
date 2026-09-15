@@ -89,6 +89,8 @@ If an engine-host process dies (crashes, or is killed) — focused or not — th
 
 The URL carries over on an engine swap; other state (cookies, scroll position, etc.) does not — a known v1 limitation, not a bug.
 
+The whole tab graph (which tabs, their url/engine/graph position, who opened whom, which tab is focused, which view is active) is saved to `%APPDATA%\multiengine-browser\session.json` on every change that matters (a tab spawns, closes, navigates, or focus/view changes) and restored at the next launch, instead of always starting over at one root tab on the home page. A missing or corrupt session file just falls back to that original single-root-tab startup. Like an engine swap, only the graph's shape is portable across a restart — a restored tab is a fresh navigation to its last known URL, not a resumed one (no cookies/localStorage/scroll position).
+
 Each engine-host writes its own log to `%TEMP%\multiengine-browser-<tab_id>.log`.
 
 ## Headless mode (automated testing)
