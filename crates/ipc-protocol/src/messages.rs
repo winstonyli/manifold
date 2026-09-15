@@ -213,4 +213,18 @@ pub enum EngineToHost {
     /// version. Servo has no context-menu hook in its embedding surface at
     /// all.
     ContextMenuLink { x: f64, y: f64, href: String },
+    /// A download finished — `path` is where the engine saved it. This
+    /// project never prompts for a save location or shows progress; each
+    /// engine picks its own default location (WebView2: its own real
+    /// Downloads-folder default; CEF: `%USERPROFILE%\Downloads` plus the
+    /// server's suggested filename, chosen by `browser-ui`'s equivalent —
+    /// see each engine-host's own download-handling code) and this just
+    /// reports the final result so `browser-ui` can show a brief "Saved
+    /// <path>" toast. WebView2, CEF, and WebKit (`WebContext::
+    /// download-started`, `WebKitDownload::finished`) all have a real
+    /// native download API — none of them are tied to the per-engine input
+    /// mechanism the way context-menu support was, so there's no
+    /// asymmetry gap here beyond Servo, whose embedding API has no
+    /// download hook at all.
+    DownloadCompleted { path: String },
 }

@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod download_handler;
 mod find_handler;
 mod input;
 mod life_span_handler;
@@ -15,6 +16,7 @@ use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
+use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::new_shared_pending_open_tab;
 use nav_handler::{new_shared_favicon_url, new_shared_nav_state};
@@ -106,6 +108,7 @@ fn main() {
     let pending_open_tab = new_shared_pending_open_tab();
     let favicon_url = new_shared_favicon_url();
     let find_result = new_shared_find_result();
+    let download_path = new_shared_download_path();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -128,6 +131,7 @@ fn main() {
             pending_open_tab.clone(),
             favicon_url.clone(),
             find_result.clone(),
+            download_path.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -265,6 +269,10 @@ fn main() {
 
         if let Some((count, active_index)) = find_result.borrow_mut().take() {
             let _ = control.send(&EngineToHost::FindResult { count, active_index });
+        }
+
+        if let Some(path) = download_path.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::DownloadCompleted { path });
         }
 
         // Blocking HTTP fetch + decode, right here in the tick loop rather

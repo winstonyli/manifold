@@ -173,6 +173,10 @@ struct Transition {
 
 const TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 
+/// How long a "Saved <path>" download toast stays on screen — see `App::
+/// download_toast`'s doc comment.
+const DOWNLOAD_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// One tab: its engine-host process/IPC handle, the "opened from" edge
 /// (`parent`) that makes the tab collection a forest for the M5 graph view,
 /// per-tab navigation/UI state, and force-directed layout state (`pos`/
@@ -402,6 +406,13 @@ struct App {
     /// `ContextMenuState`'s own doc comment.
     context_menu: Option<ContextMenuState>,
 
+    /// A brief "Saved <path>" toast for the most recent `EngineToHost::
+    /// DownloadCompleted`, and when it was set — cleared once
+    /// `DOWNLOAD_TOAST_DURATION` has passed. No queue: a second download
+    /// finishing while one toast is showing just replaces it, same
+    /// "latest wins" simplicity as `find_result`.
+    download_toast: Option<(String, std::time::Instant)>,
+
     find_bar_open: bool,
     find_text: String,
     /// Resets to `false` on every `close_find_bar` — a fresh find session
@@ -495,6 +506,7 @@ impl Default for App {
             pending_screenshot: None,
             last_closed_tab: None,
             context_menu: None,
+            download_toast: None,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -1638,6 +1650,31 @@ impl App {
         }
     }
 
+    /// A brief "Saved <path>" toast, bottom-left, for `self.download_toast`
+    /// — cleared once `DOWNLOAD_TOAST_DURATION` elapses. No dismiss
+    /// interaction (unlike the context menu): it just times out.
+    fn build_download_toast(&mut self, ui: &mut egui::Ui) {
+        let Some((path, shown_at)) = &self.download_toast else { return };
+        if shown_at.elapsed() >= DOWNLOAD_TOAST_DURATION {
+            self.download_toast = None;
+            return;
+        }
+        let path = path.clone();
+        egui::Area::new(egui::Id::new("download_toast"))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.label(format!("Saved {path}"));
+                    });
+            });
+    }
+
     /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: focuses the next/previous tab in
     /// `tab_order` (insertion order — this graph-based UI has no tab strip
     /// to define a more meaningful order), wrapping at both ends. A no-op
@@ -1897,6 +1934,7 @@ impl App {
         }
 
         self.build_context_menu(ui);
+        self.build_download_toast(ui);
 
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
@@ -3002,6 +3040,9 @@ impl App {
                                 href,
                             });
                         }
+                    }
+                    EngineToHost::DownloadCompleted { path } => {
+                        self.download_toast = Some((path, std::time::Instant::now()));
                     }
                 }
             }

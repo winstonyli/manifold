@@ -8,8 +8,8 @@ use std::time::Duration;
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use webkit2gtk::{
-    gio, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt, WebContextExt,
-    WebView, WebViewExt,
+    gio, DownloadExt, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt,
+    WebContextExt, WebView, WebViewExt,
 };
 
 use gtk::cairo::{Format, ImageSurface};
@@ -109,11 +109,48 @@ fn main() {
     // ever waited passively for a signal that had nothing to actively
     // trigger it. Kept alive for the process lifetime (not just this
     // block) so it can be used below once a page finishes loading.
-    let favicon_database = webkit2gtk::WebContext::default().and_then(|context| {
+    let web_context = webkit2gtk::WebContext::default();
+    let favicon_database = web_context.as_ref().and_then(|context| {
         let dir = std::env::temp_dir().join("multiengine-browser-favicons");
         context.set_favicon_database_directory(dir.to_str());
         context.favicon_database()
     });
+
+    // Downloads: WebKitGTK has no default save location of its own (unlike
+    // WebView2) -- `decide-destination` fires with the server's suggested
+    // filename and MUST call `set_destination` or the download silently
+    // never starts, same requirement as CEF's `on_before_download`/
+    // `BeforeDownloadCallback::cont`. `$HOME/Downloads` mirrors CEF's
+    // `%USERPROFILE%\Downloads` choice for the same reason: this project
+    // never shows its own save-as dialog. `connect_finished` (not
+    // `received_data_length`/`estimated_progress` polling) is the actual
+    // completion signal; `destination()` returns back whatever URI was set
+    // above, stripped of its `file://` prefix to match the plain
+    // filesystem paths WebView2/CEF report over the same
+    // `EngineToHost::DownloadCompleted` message.
+    let pending_download: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    if let Some(context) = &web_context {
+        let pending_download = pending_download.clone();
+        context.connect_download_started(move |_context, download| {
+            download.connect_decide_destination(|download, suggested_filename| {
+                let dir = std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default()
+                    .join("Downloads");
+                let _ = std::fs::create_dir_all(&dir);
+                let dest = dir.join(suggested_filename);
+                download.set_destination(&format!("file://{}", dest.display()));
+                true
+            });
+            let pending_download = pending_download.clone();
+            download.connect_finished(move |download| {
+                if let Some(uri) = download.destination() {
+                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                    *pending_download.borrow_mut() = Some(path);
+                }
+            });
+        });
+    }
 
     let webview = WebView::new();
     webview.set_size_request(DEFAULT_WIDTH, DEFAULT_HEIGHT);
@@ -405,6 +442,10 @@ fn main() {
 
         if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
+        }
+
+        if let Some(path) = pending_download.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::DownloadCompleted { path });
         }
 
         if visible {

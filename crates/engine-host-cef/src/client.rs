@@ -1,5 +1,6 @@
 use cef::{rc::Rc, *};
 
+use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, SharedDownloadPath};
 use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
 use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedPendingOpenTab};
 use crate::nav_handler::{
@@ -15,6 +16,7 @@ wrap_client! {
         load_handler: LoadHandler,
         life_span_handler: LifeSpanHandler,
         find_handler: FindHandler,
+        download_handler: DownloadHandler,
     }
 
     impl Client {
@@ -37,6 +39,10 @@ wrap_client! {
         fn find_handler(&self) -> Option<cef::FindHandler> {
             Some(self.find_handler.clone())
         }
+
+        fn download_handler(&self) -> Option<cef::DownloadHandler> {
+            Some(self.download_handler.clone())
+        }
     }
 }
 
@@ -47,6 +53,7 @@ impl ClientBuilder {
         pending_open_tab: SharedPendingOpenTab,
         favicon_url: SharedFaviconUrl,
         find_result: SharedFindResult,
+        download_path: SharedDownloadPath,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
@@ -54,6 +61,7 @@ impl ClientBuilder {
             LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
+            DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
         )
     }
 }

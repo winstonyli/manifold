@@ -8,6 +8,7 @@
 
 mod audio;
 mod capture;
+mod download;
 mod favicon;
 mod find;
 mod input;
@@ -137,6 +138,7 @@ fn main() {
     let find_state = find::register(&environment, &webview).ok();
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
+    let pending_download = download::register(&webview).ok();
 
     unsafe {
         webview
@@ -279,6 +281,12 @@ fn main() {
 
         if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
             let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+        }
+
+        if let Some(pending) = &pending_download {
+            if let Some(path) = pending.borrow_mut().take() {
+                let _ = control.send(&EngineToHost::DownloadCompleted { path });
+            }
         }
 
         if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {
