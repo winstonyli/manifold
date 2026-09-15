@@ -84,6 +84,10 @@ pub enum DebugCommand {
     /// the focused tab — same "direct call, not a synthetic key event"
     /// reason as `AddressBar`.
     FindText(String),
+    /// Sets the find bar's case-sensitivity toggle directly, re-sending
+    /// `FindStart` if a search is already in progress — headless equivalent
+    /// of clicking the bar's "Aa" toggle.
+    FindMatchCase(bool),
     /// `Enter`/`Shift+Enter` in the find bar.
     FindNext,
     FindPrevious,
@@ -231,6 +235,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "PREVTAB" => Some(DebugCommand::PrevTab),
         "OPENFINDBAR" => Some(DebugCommand::OpenFindBar),
         "FINDTEXT" => Some(DebugCommand::FindText(rest.to_string())),
+        "FINDMATCHCASE" => Some(DebugCommand::FindMatchCase(match parts.next()? {
+            "true" => true,
+            "false" => false,
+            _ => return None,
+        })),
         "FINDNEXT" => Some(DebugCommand::FindNext),
         "FINDPREVIOUS" => Some(DebugCommand::FindPrevious),
         "CLOSEFINDBAR" => Some(DebugCommand::CloseFindBar),

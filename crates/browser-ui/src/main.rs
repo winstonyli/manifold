@@ -366,6 +366,10 @@ struct App {
     /// WebKit tab and Servo tabs never populate this at all.
     find_bar_open: bool,
     find_text: String,
+    /// Resets to `false` on every `close_find_bar` — a fresh find session
+    /// (new tab, or reopening after closing) starts case-insensitive by
+    /// default, matching a real browser's find bar.
+    find_match_case: bool,
     find_result: Option<(u32, u32)>,
     /// Set by `Ctrl+F`/headless `OPENFINDBAR`, consumed the next time
     /// `build_tab_ui` builds the find bar's `TextEdit` — same "needs a
@@ -453,6 +457,7 @@ impl Default for App {
             pending_screenshot: None,
             find_bar_open: false,
             find_text: String::new(),
+            find_match_case: false,
             find_result: None,
             pending_focus_find_bar: false,
             tab_spawn_error: None,
@@ -1315,7 +1320,7 @@ impl App {
         } else {
             node.tab.send(&HostToEngine::FindStart {
                 text: self.find_text.clone(),
-                match_case: false,
+                match_case: self.find_match_case,
             });
         }
     }
@@ -1331,6 +1336,7 @@ impl App {
         }
         self.find_bar_open = false;
         self.find_result = None;
+        self.find_match_case = false;
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -1383,6 +1389,13 @@ impl App {
                                 response.request_focus();
                             }
                             if response.changed() {
+                                text_changed = true;
+                            }
+                            if ui
+                                .toggle_value(&mut self.find_match_case, "Aa")
+                                .on_hover_text("Match case")
+                                .changed()
+                            {
                                 text_changed = true;
                             }
                             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2605,6 +2618,10 @@ impl App {
             DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
             DebugCommand::FindText(text) => {
                 self.find_text = text;
+                self.send_find_start();
+            }
+            DebugCommand::FindMatchCase(match_case) => {
+                self.find_match_case = match_case;
                 self.send_find_start();
             }
             DebugCommand::FindNext => self.send_find_navigate(true),
