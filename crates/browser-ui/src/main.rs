@@ -26,14 +26,16 @@ use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Window, WindowId};
 
-/// Chrome (tab strip + toolbar) is two stacked top `Panel`s of these
-/// exact heights, in egui points — kept as constants rather than read back
-/// from egui's layout so the compositor's content viewport (see `gpu::
-/// GpuState::render`'s `content_top_px`) always agrees with where egui
-/// actually painted, without a frame of lag.
-const TAB_STRIP_HEIGHT_POINTS: f32 = 26.0;
-const TOOLBAR_HEIGHT_POINTS: f32 = 32.0;
-const CHROME_HEIGHT_POINTS: f32 = TAB_STRIP_HEIGHT_POINTS + TOOLBAR_HEIGHT_POINTS;
+/// Tab view's chrome is a single top `Panel` of this exact height, in egui
+/// points — kept as a constant rather than read back from egui's layout so
+/// the compositor's content viewport (see `gpu::GpuState::render`'s
+/// `content_top_px`) always agrees with where egui actually painted,
+/// without a frame of lag. Was two stacked bars (a tab-identity strip above
+/// a separate navigation toolbar) until they were merged into one row —
+/// the identity info (favicon/spinner, engine dot) now lives inline with
+/// navigation controls in the same bar, and the separate page-title label
+/// was dropped as redundant with the address bar's URL.
+const CHROME_HEIGHT_POINTS: f32 = 32.0;
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
 const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 26.0;
@@ -54,12 +56,9 @@ const GRAPH_SCENE_DEFAULT_SIZE: egui::Vec2 = egui::vec2(900.0, 620.0);
 const GRAPH_ZOOM_MIN: f32 = 0.15;
 const GRAPH_ZOOM_MAX: f32 = 3.0;
 
-/// Distinct fills for the two stacked chrome bars (see `CHROME_HEIGHT_POINTS`'
-/// doc comment) so they read as two separate strips rather than one flat
-/// slab — the tab strip a shade darker (background-like), the toolbar a
-/// shade lighter (surface-like), both distinct from the graph/content area
-/// below.
-const TAB_STRIP_FILL: egui::Color32 = egui::Color32::from_rgb(20, 21, 25);
+/// Fill for the toolbar/chrome bars (Tab view's merged single bar, Graph
+/// view's "+ New Tab" bar, the settings popup) — distinct from the
+/// graph/content area below.
 const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(30, 31, 36);
 
 fn default_graph_scene_rect() -> egui::Rect {
@@ -1078,10 +1077,10 @@ impl App {
                 // nothing until it reappears in `self.tabs`.
                 let mut back_to_graph = false;
                 egui::Panel::top("tab_strip_respawning")
-                    .exact_size(TAB_STRIP_HEIGHT_POINTS)
+                    .exact_size(CHROME_HEIGHT_POINTS)
                     .frame(
                         egui::Frame::default()
-                            .fill(TAB_STRIP_FILL)
+                            .fill(TOOLBAR_FILL)
                             .inner_margin(egui::Margin::symmetric(10, 0)),
                     )
                     .show(ui, |ui| {
@@ -1137,42 +1136,8 @@ impl App {
         // closure returns.
         let mut enter_pressed = false;
 
-        egui::Panel::top("tab_strip")
-            .exact_size(TAB_STRIP_HEIGHT_POINTS)
-            .frame(
-                egui::Frame::default()
-                    .fill(TAB_STRIP_FILL)
-                    .inner_margin(egui::Margin::symmetric(10, 0)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    if ui.button("Graph").clicked() {
-                        back_to_graph = true;
-                    }
-                    let node = &self.tabs[&focused_id];
-                    let label = if node.title.is_empty() {
-                        node.url.as_str()
-                    } else {
-                        node.title.as_str()
-                    };
-                    let kind = node.tab.kind;
-                    engine_dot(ui, kind, 8.0);
-                    if node.loading {
-                        ui.add(egui::Spinner::new().size(12.0));
-                    } else if let Some(tex_id) =
-                        self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id))
-                    {
-                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                            tex_id,
-                            FAVICON_SIZE,
-                        )));
-                    }
-                    ui.add(egui::Label::new(label).truncate());
-                });
-            });
-
         egui::Panel::top("toolbar")
-            .exact_size(TOOLBAR_HEIGHT_POINTS)
+            .exact_size(CHROME_HEIGHT_POINTS)
             .frame(
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
@@ -1195,6 +1160,9 @@ impl App {
                 // than compensating for a specific pixel offset that could
                 // silently drift if padding/fonts ever change.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    if ui.button("Graph").clicked() {
+                        back_to_graph = true;
+                    }
                     let node = &self.tabs[&focused_id];
                     if ui
                         .add_enabled(node.can_go_back, egui::Button::new("\u{25c0}"))
@@ -1207,6 +1175,20 @@ impl App {
                         .clicked()
                     {
                         go_forward = true;
+                    }
+
+                    // Tab identity (was a separate strip above the toolbar,
+                    // merged into this single bar): a small loading spinner
+                    // or the fetched favicon, right before the engine picker.
+                    if node.loading {
+                        ui.add(egui::Spinner::new().size(12.0));
+                    } else if let Some(tex_id) =
+                        self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id))
+                    {
+                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                            tex_id,
+                            FAVICON_SIZE,
+                        )));
                     }
 
                     let combo_label = current_kind.map(engine_label).unwrap_or("?");

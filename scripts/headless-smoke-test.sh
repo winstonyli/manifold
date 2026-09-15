@@ -119,10 +119,10 @@ check_screenshot "$out_dir/dropdown.png" "autocomplete dropdown"
 
 # First suggestion row's position below the address bar, at the 816x639
 # size pinned above — re-measure (via a manual SCREENSHOT) if chrome
-# layout constants (TAB_STRIP_HEIGHT_POINTS/TOOLBAR_HEIGHT_POINTS in
-# main.rs) ever change. (Already had to once — this y-coordinate moved up
-# when the chrome was compacted.)
-send "CLICK 283 68"
+# layout constants (CHROME_HEIGHT_POINTS in main.rs) ever change. (Already
+# had to move this twice — most recently when Tab view's separate tab-strip
+# and toolbar bars were merged into one, shrinking chrome height 58->32.)
+send "CLICK 283 42"
 sleep 3 # navigation + first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
 sleep 1
