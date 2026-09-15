@@ -204,6 +204,15 @@ struct TabNode {
     /// engine swap, same as every other per-tab UI-only flag here (nothing
     /// about mute state survives a swap to a different engine process).
     muted: bool,
+    /// Graph view's pin toggle — a pinned node is excluded from the
+    /// force-directed layout entirely (same `pinned` exclusion
+    /// `graph_layout::step` already gives a node currently being dragged),
+    /// so it stays exactly where the user put it instead of drifting under
+    /// repulsion/centering forces as siblings come and go. Not persisted to
+    /// `session.json` (unlike `pos`, which is) — resets to unpinned on
+    /// every restart, a smaller scope than plumbing a new field through
+    /// `SessionTab` warranted for a graph-view display preference.
+    pinned: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
@@ -950,6 +959,7 @@ impl App {
                         loading: false,
                         audio_playing: false,
                         muted: false,
+                        pinned: false,
                         swap_target: None,
                         pos,
                         vel,
@@ -2195,6 +2205,7 @@ impl App {
         let mut close_requested: Option<String> = None;
         let mut download_close_requested: Option<String> = None;
         let mut download_clicked: Option<String> = None;
+        let mut pin_toggle_requested: Option<String> = None;
 
         let mut reset_view = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -2280,7 +2291,12 @@ impl App {
                         .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
                 )
                 .collect();
-            let mut pinned = HashSet::new();
+            let mut pinned: HashSet<String> = self
+                .tabs
+                .iter()
+                .filter(|(_, n)| n.pinned)
+                .map(|(id, _)| id.clone())
+                .collect();
             if let Some(d) = &self.dragging {
                 pinned.insert(d.clone());
             }
@@ -2474,6 +2490,39 @@ impl App {
                             4.0,
                             egui::Color32::from_rgb(80, 200, 120),
                         );
+                    }
+
+                    // Pin toggle: bottom-left corner, always visible (not
+                    // hover-only like the close button) so a pinned node's
+                    // state stays legible at a glance. A pinned node is
+                    // excluded from the force-directed layout entirely —
+                    // see `TabNode::pinned`'s own doc comment — filled vs.
+                    // outline-only conveys the state without risking a pin
+                    // glyph this app's font might not have.
+                    let node_pinned = self.tabs.get(&id).is_some_and(|n| n.pinned);
+                    let pin_rect =
+                        egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0));
+                    let pin_response = ui.interact(
+                        pin_rect,
+                        egui::Id::new(("graph_node_pin", id.as_str())),
+                        egui::Sense::click(),
+                    );
+                    let pin_color = if node_pinned {
+                        ACCENT
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+                    if node_pinned {
+                        ui.painter().circle_filled(pin_rect.center(), 5.0, pin_color);
+                    } else {
+                        ui.painter().circle_stroke(
+                            pin_rect.center(),
+                            5.0,
+                            egui::Stroke::new(1.5, pin_color),
+                        );
+                    }
+                    if pin_response.clicked() {
+                        pin_toggle_requested = Some(id.clone());
                     }
 
                     // Close button: a small square just outside the node's own
@@ -2700,6 +2749,11 @@ impl App {
         }
         if let Some(id) = download_clicked {
             self.reveal_download(&id);
+        }
+        if let Some(id) = pin_toggle_requested {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.pinned = !node.pinned;
+            }
         }
     }
 }
