@@ -506,7 +506,8 @@ impl App {
                     .corner_radius(6u8)
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
-                        ui.set_min_width(260.0);
+                        ui.set_min_width(200.0);
+                        ui.set_max_width(200.0);
                         ui.label(egui::RichText::new("Settings").strong());
                         ui.separator();
 
@@ -522,12 +523,15 @@ impl App {
                                     }
                                 }
                             });
-                        ui.label(
-                            egui::RichText::new(
-                                "Suggestions always come from DuckDuckGo; this only picks where a search actually goes.",
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    "Suggestions always come from DuckDuckGo; this only picks where a search actually goes.",
+                                )
+                                .small()
+                                .weak(),
                             )
-                            .small()
-                            .weak(),
+                            .wrap(),
                         );
 
                         ui.add_space(8.0);
