@@ -72,6 +72,8 @@ pub enum DebugCommand {
     ZoomOut,
     /// `Ctrl+0` equivalent — see `App::zoom_reset_shortcut`.
     ZoomReset,
+    /// `F12` equivalent — see `App::open_devtools_shortcut`.
+    OpenDevTools,
     /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
     /// code (see this module's own doc comment), so this and the four
@@ -240,6 +242,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
         "ZOOMOUT" => Some(DebugCommand::ZoomOut),
         "ZOOMRESET" => Some(DebugCommand::ZoomReset),
+        "OPENDEVTOOLS" => Some(DebugCommand::OpenDevTools),
         "NEWTAB" => Some(DebugCommand::NewTab),
         "CLOSETAB" => Some(DebugCommand::CloseTab),
         "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),

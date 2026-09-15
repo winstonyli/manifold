@@ -226,6 +226,9 @@ fn main() {
                         find.stop();
                     }
                 }
+                HostToEngine::OpenDevTools => unsafe {
+                    let _ = webview.OpenDevToolsWindow();
+                },
                 HostToEngine::Shutdown => {
                     unsafe {
                         let _ = controller.Close();

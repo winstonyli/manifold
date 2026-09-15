@@ -277,6 +277,22 @@ fn main() {
                         controller.search_finish();
                     }
                 }
+                // Confirmed live: `WebInspector::show()` opens a real,
+                // separate top-level `GtkWindow` (unlike the main
+                // `WebView`, which only ever lives inside our own
+                // `GtkOffscreenWindow`) -- and this project's Xvfb session
+                // (`xvfb-run -a`, no `-wm`/window-manager flag) has no
+                // window manager running at all. A real toplevel shown with
+                // no WM to map it never receives the response GTK's show
+                // path waits on, which pegged engine-host-webkit at ~45%
+                // CPU indefinitely (confirmed via a live 8-minute hang,
+                // process never returned to servicing IPC) rather than
+                // just failing visibly. No safe way to open a real window
+                // in this specific hosting setup without adding a window
+                // manager to the Xvfb session (a bigger change than this
+                // warranted) -- silent no-op instead, same per-engine gap
+                // as Servo's own missing DevTools API.
+                HostToEngine::OpenDevTools => {}
                 HostToEngine::Shutdown => {
                     return;
                 }

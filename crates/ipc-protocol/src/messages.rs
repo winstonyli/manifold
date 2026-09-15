@@ -105,6 +105,16 @@ pub enum HostToEngine {
     /// Ends the find session: clears highlighted matches/selection. Sent
     /// when the find bar closes.
     FindStop,
+    /// Opens this engine's own native DevTools UI — a separate real window
+    /// the engine manages itself, not part of the tab's own captured
+    /// content, so nothing comes back over `EngineToHost` for this. `F12`.
+    /// CEF and WebView2 both have a real API for this
+    /// (`BrowserHost::show_dev_tools`/`ICoreWebView2::OpenDevToolsWindow`);
+    /// WebKitGTK's `WebInspector` needs `developer-extras` enabled on the
+    /// `WebView`'s settings first (done once at startup) before `.show()`
+    /// does anything. Servo's embedding API has no DevTools/inspector
+    /// method at all — silent no-op, same per-engine gap as find-in-page.
+    OpenDevTools,
     Shutdown,
 }
 

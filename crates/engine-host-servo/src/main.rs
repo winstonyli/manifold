@@ -276,10 +276,13 @@ fn main() {
                 // `ipc_protocol::EngineToHost::OpenTabRequested`'s doc
                 // comment). `browser-ui`'s find bar still opens on a Servo
                 // tab; it just never receives a `FindResult`.
+                // Same gap for DevTools: no inspector/DevTools method
+                // exists in Servo's embedding API either.
                 HostToEngine::FindStart { .. }
                 | HostToEngine::FindNext
                 | HostToEngine::FindPrevious
-                | HostToEngine::FindStop => {}
+                | HostToEngine::FindStop
+                | HostToEngine::OpenDevTools => {}
                 HostToEngine::Shutdown => return,
             }
         }

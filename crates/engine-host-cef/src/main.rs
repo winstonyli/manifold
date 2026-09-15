@@ -227,6 +227,17 @@ fn main() {
                         host.stop_finding(true as _);
                     }
                 }
+                HostToEngine::OpenDevTools => {
+                    // All `None`: a default (real, windowed, OS-visible)
+                    // `WindowInfo` rather than inheriting this browser's own
+                    // `windowless_rendering_enabled` client/settings --
+                    // DevTools is meant to be an actual on-screen window,
+                    // not something this project's off-screen capture
+                    // pipeline should try to composite.
+                    if let Some(host) = browser.host() {
+                        host.show_dev_tools(None, None, None, None);
+                    }
+                }
                 HostToEngine::Shutdown => {
                     cef::shutdown();
                     return;

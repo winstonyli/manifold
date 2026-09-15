@@ -1250,6 +1250,7 @@ impl App {
             zoom_in,
             zoom_out,
             zoom_reset,
+            open_devtools,
             prev_tab,
             next_tab,
         ) = ui.input_mut(|i| {
@@ -1267,6 +1268,7 @@ impl App {
                     || i.consume_key(egui::Modifiers::CTRL, egui::Key::Plus),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Minus),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::F12),
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
             )
@@ -1296,6 +1298,9 @@ impl App {
         if zoom_reset {
             self.zoom_reset_shortcut();
         }
+        if open_devtools {
+            self.open_devtools_shortcut();
+        }
         if next_tab || prev_tab {
             self.cycle_focused_tab(next_tab);
         }
@@ -1320,6 +1325,17 @@ impl App {
     fn zoom_reset_shortcut(&mut self) {
         self.settings.zoom_factor = 1.0;
         self.apply_zoom_change();
+    }
+
+    /// `F12` / headless `OPENDEVTOOLS` — opens the focused tab's engine's
+    /// own native DevTools UI (a separate real window the engine manages
+    /// itself; nothing comes back to `browser-ui` for this, so there's no
+    /// state to track here beyond sending the message). See
+    /// `HostToEngine::OpenDevTools`'s doc comment for per-engine support.
+    fn open_devtools_shortcut(&mut self) {
+        let Some(id) = self.focused.clone() else { return };
+        let Some(node) = self.tabs.get_mut(&id) else { return };
+        node.tab.send(&HostToEngine::OpenDevTools);
     }
 
     /// `Ctrl+T` / headless `NEWTAB` — same call the "+ New Tab" button
@@ -2708,6 +2724,7 @@ impl App {
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
             DebugCommand::ZoomOut => self.zoom_out_shortcut(),
             DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
+            DebugCommand::OpenDevTools => self.open_devtools_shortcut(),
             DebugCommand::NewTab => self.new_tab_shortcut(),
             DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
             DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
