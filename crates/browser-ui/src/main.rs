@@ -1852,27 +1852,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let chrome_height = self.chrome_height_px() as f64;
                 let (x, y) = self.cursor_pos;
                 if in_tab_view && !consumed_by_egui && y >= chrome_height {
-                    // Unmodified wheel zooms the page instead of scrolling it
-                    // (Ctrl/Shift/Alt/Super+wheel still scrolls, the old
-                    // unconditional behavior) — reuses the same
-                    // `zoom_factor`/`apply_zoom_change` path as the Settings
-                    // popup's +/- buttons, one 0.1 step per notch, so a
-                    // wheel notch and a button click always agree on how
-                    // much zoom that is.
-                    if self.key_modifiers == 0 {
-                        let steps = match delta {
-                            winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
-                            // Trackpad/high-resolution wheel: no discrete
-                            // notches, so treat 100 pixels of scroll as one
-                            // notch-equivalent for the same per-notch feel.
-                            winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 100.0,
-                        };
-                        if steps != 0.0 {
-                            self.settings.zoom_factor =
-                                (self.settings.zoom_factor + steps * 0.1).clamp(0.5, 2.0);
-                            self.apply_zoom_change();
-                        }
-                    } else if let Some(id) = self.focused.clone() {
+                    if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.tabs.get_mut(&id) {
                             let (dx, dy) = match delta {
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
