@@ -10,6 +10,7 @@ mod capture;
 mod favicon;
 mod input;
 mod nav_state;
+mod popup;
 mod window;
 
 use capture::Capture;
@@ -127,6 +128,7 @@ fn main() {
     // `register` fails and this tab just never reports a favicon, same
     // graceful-degradation shape as CEF's already-known-broken favicon path.
     let pending_favicon = favicon::register(&webview).ok();
+    let pending_popup = popup::register(&webview);
 
     unsafe {
         webview
@@ -226,6 +228,10 @@ fn main() {
             if let Some((rgba, width, height)) = pending.borrow_mut().take() {
                 let _ = control.send(&EngineToHost::FaviconChanged { rgba, width, height });
             }
+        }
+
+        if let Some(url) = pending_popup.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::OpenTabRequested { url });
         }
 
         if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {

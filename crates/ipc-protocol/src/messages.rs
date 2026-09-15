@@ -120,9 +120,13 @@ pub enum EngineToHost {
     /// Raw pixels, like `FrameReady` — not encoded image bytes. Servo's
     /// `WebView::favicon()` and WebKitGTK's `WebView::favicon()` both hand
     /// over already-decoded pixels, so there's nothing to decode on this
-    /// end; only CEF's `DisplayHandler::on_favicon_urlchange` gives a URL
-    /// instead of pixels (would need an HTTP fetch + image decode to turn
-    /// into this shape), so only Servo and WebKit send this for now.
+    /// end; WebView2's `ICoreWebView2_15::GetFavicon` hands back a
+    /// PNG-encoded `IStream` instead, decoded to raw RGBA before landing
+    /// here (see `engine-host-webview2/src/favicon.rs`) to match this same
+    /// convention. Only CEF's `DisplayHandler::on_favicon_urlchange` gives a
+    /// URL instead of pixels or a stream (would need an HTTP fetch + image
+    /// decode to turn into this shape), so only Servo, WebKit, and WebView2
+    /// send this for now.
     FaviconChanged {
         rgba: Vec<u8>,
         width: u32,
@@ -133,8 +137,10 @@ pub enum EngineToHost {
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
     /// place — `browser-ui` spawns a real child tab for `url` instead.
-    /// Only CEF and WebKit send this: their popup-interception APIs hand
-    /// over the target URL before creating anything. Servo's equivalent
+    /// CEF, WebKit, and WebView2 (`ICoreWebView2::NewWindowRequested`, see
+    /// `engine-host-webview2/src/popup.rs`) send this: their
+    /// popup-interception APIs all hand over the target URL before creating
+    /// anything. Servo's equivalent
     /// (`WebViewDelegate::request_create_new`) doesn't expose a URL until
     /// you've already constructed a same-process auxiliary `WebView` —
     /// doesn't fit this project's one-process-per-tab architecture, so
