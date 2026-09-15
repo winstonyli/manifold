@@ -135,6 +135,7 @@ fn main() {
     }
 
     let mut capture = Capture::new(hwnd).expect("create capture pipeline");
+    window::hide_from_taskbar(hwnd);
     let mut frame_buffer: Option<SharedFrameBuffer> = None;
     let mut frame_id: u64 = 0;
     let mut visible = true;
