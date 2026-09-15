@@ -1241,18 +1241,36 @@ impl App {
     /// so checking the less specific one first would consume a
     /// `Ctrl+Shift+X` press as if it were plain `Ctrl+X`.
     fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (reopen_tab, new_tab, close_tab, focus_address, open_find, prev_tab, next_tab) =
-            ui.input_mut(|i| {
-                (
-                    i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
-                    i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
-                )
-            });
+        let (
+            reopen_tab,
+            new_tab,
+            close_tab,
+            focus_address,
+            open_find,
+            zoom_in,
+            zoom_out,
+            zoom_reset,
+            prev_tab,
+            next_tab,
+        ) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
+                // `Ctrl+=` is the physical key most keyboards actually send
+                // for "zoom in" (`+` needs Shift on most layouts) — accept
+                // both so either a real `Ctrl++` or the more common
+                // `Ctrl+=` works.
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Equals)
+                    || i.consume_key(egui::Modifiers::CTRL, egui::Key::Plus),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Minus),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0),
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
+            )
+        });
 
         if reopen_tab {
             self.reopen_closed_tab_shortcut();
@@ -1269,9 +1287,39 @@ impl App {
         if open_find {
             self.open_find_bar_shortcut();
         }
+        if zoom_in {
+            self.zoom_in_shortcut();
+        }
+        if zoom_out {
+            self.zoom_out_shortcut();
+        }
+        if zoom_reset {
+            self.zoom_reset_shortcut();
+        }
         if next_tab || prev_tab {
             self.cycle_focused_tab(next_tab);
         }
+    }
+
+    /// `Ctrl+=`/`Ctrl++` / headless `ZOOMIN` — same step/cap the settings
+    /// popup's own "+" button uses.
+    fn zoom_in_shortcut(&mut self) {
+        self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
+        self.apply_zoom_change();
+    }
+
+    /// `Ctrl+-` / headless `ZOOMOUT` — same step/floor the settings popup's
+    /// own "−" button uses.
+    fn zoom_out_shortcut(&mut self) {
+        self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
+        self.apply_zoom_change();
+    }
+
+    /// `Ctrl+0` / headless `ZOOMRESET` — same as the settings popup's own
+    /// "Reset" button.
+    fn zoom_reset_shortcut(&mut self) {
+        self.settings.zoom_factor = 1.0;
+        self.apply_zoom_change();
     }
 
     /// `Ctrl+T` / headless `NEWTAB` — same call the "+ New Tab" button
@@ -2657,6 +2705,9 @@ impl App {
                 }
             }
             DebugCommand::ReopenTab => self.reopen_closed_tab_shortcut(),
+            DebugCommand::ZoomIn => self.zoom_in_shortcut(),
+            DebugCommand::ZoomOut => self.zoom_out_shortcut(),
+            DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
             DebugCommand::NewTab => self.new_tab_shortcut(),
             DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
             DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),

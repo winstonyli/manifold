@@ -66,6 +66,12 @@ pub enum DebugCommand {
     KeyPage(KeyCode),
     /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_tab_shortcut`.
     ReopenTab,
+    /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
+    ZoomIn,
+    /// `Ctrl+-` equivalent — see `App::zoom_out_shortcut`.
+    ZoomOut,
+    /// `Ctrl+0` equivalent — see `App::zoom_reset_shortcut`.
+    ZoomReset,
     /// `Ctrl+T` equivalent — see `App::new_tab_shortcut`. A real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
     /// code (see this module's own doc comment), so this and the four
@@ -231,6 +237,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),
+        "ZOOMIN" => Some(DebugCommand::ZoomIn),
+        "ZOOMOUT" => Some(DebugCommand::ZoomOut),
+        "ZOOMRESET" => Some(DebugCommand::ZoomReset),
         "NEWTAB" => Some(DebugCommand::NewTab),
         "CLOSETAB" => Some(DebugCommand::CloseTab),
         "FOCUSADDRESS" => Some(DebugCommand::FocusAddressBar),
