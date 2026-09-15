@@ -17,12 +17,11 @@
 //! **Verified live**: a dispatched `MouseUp` visibly changed real Wikipedia
 //! page content (a fundraising banner expanded) -- unambiguous proof the
 //! click reached the page for real, not just that the call didn't error.
-//! Text entry (`Char`, via `execCommand('insertText', ...)`) is implemented
-//! the same way but not yet independently confirmed live -- the one
-//! attempt to test it first needed a search box to actually be open via a
-//! preceding click, which itself wasn't confirmed to have landed on the
-//! right element, so that test was inconclusive about `execCommand`
-//! specifically, not a sign it's broken.
+//! Text entry (`Char`, via `execCommand('insertText', ...)`) is confirmed
+//! live too: a `MouseUp` on DuckDuckGo's HTML search box focused it, then
+//! dispatched `Char` events typed the real string into the field (visible
+//! in the resulting screenshot, cursor included) -- both halves of the
+//! click-then-type path work end to end, not just each in isolation.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::ExecuteScriptCompletedHandler;
@@ -79,6 +78,9 @@ pub fn send_input(webview: &ICoreWebView2, event: InputEvent) {
         // and fires the same `input` event a real keystroke would, so
         // framework-bound inputs (React-style controlled inputs included)
         // see it correctly.
+        // Confirmed live: click-focusing DuckDuckGo's HTML search box then
+        // dispatching `Char` events actually typed the real string into the
+        // field (screenshot showed the text and a real cursor).
         InputEvent::Char { codepoint } => {
             exec(
                 webview,
