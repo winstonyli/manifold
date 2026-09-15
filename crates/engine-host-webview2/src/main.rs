@@ -27,6 +27,13 @@ use nav_state::new_shared_nav_state;
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
+/// Caps how often a captured frame is actually acted on and sent to
+/// browser-ui -- see the cap's own call-site doc comment for why this
+/// exists (unlike CEF/Servo/WebKit, WGC produces a new frame every vsync
+/// regardless of whether content changed, which measurably overloaded
+/// browser-ui without this). ~30fps is plenty for a tab preview/thumbnail
+/// use case and well below what caused the observed overload.
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 fn main() {
     // WebView2 is fundamentally a COM component -- unlike CEF/Servo (which
@@ -110,6 +117,20 @@ fn main() {
     let mut frame_buffer: Option<SharedFrameBuffer> = None;
     let mut frame_id: u64 = 0;
     let mut visible = true;
+    // Unlike CEF/Servo (which only paint on invalidation, so a static page
+    // naturally settles to a low steady-state frame rate) or WebKit (its
+    // own GTK-driven capture), `Windows.Graphics.Capture` produces a new
+    // frame on every compositor vsync *regardless of whether page content
+    // actually changed* -- confirmed live: a real page can flood ~60-70
+    // `FrameReady` messages/sec continuously, even fully static, which
+    // measurably overloaded browser-ui's per-frame handling badly enough
+    // to make it stop responding to headless stdin commands for tens of
+    // seconds. `TryGetNextFrame` itself can't be told to slow down (no
+    // rate-control knob exists on the capture session), so this throttles
+    // at the polling level instead: skip acting on a new frame entirely
+    // unless enough wall time has passed, capping our own outgoing rate
+    // independent of the compositor's.
+    let mut last_frame_sent = std::time::Instant::now() - FRAME_INTERVAL;
 
     loop {
         window::pump_messages();
@@ -139,9 +160,20 @@ fn main() {
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(_event) => {
-                    // Not yet implemented -- needs real rendered content to
-                    // verify input against, done after capture (this pass),
-                    // not before. See the M6 plan.
+                    // Not yet working -- see project memory's Phase 3 entry.
+                    // Raw Win32 WM_* messages (both PostMessage and
+                    // SendMessage) to Chrome_RenderWidgetHostHWND (three
+                    // levels under this host window) are silently ignored
+                    // by Chromium's actual input pipeline, confirmed live
+                    // with a real hyperlink click. Composition hosting's
+                    // native SendMouseInput was tried next (the
+                    // engine-native API every other engine here uses
+                    // instead of OS message injection) but broke capture
+                    // (blank frames) without fixing input either, for
+                    // reasons not fully diagnosed -- reverted rather than
+                    // destabilize the proven-working windowed-hosting
+                    // capture pipeline further. Needs a dedicated future
+                    // session, not more time in this one.
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
@@ -181,8 +213,9 @@ fn main() {
             }
         }
 
-        if visible {
+        if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {
             if let Some((pixels, width, height)) = capture.try_get_latest_frame() {
+                last_frame_sent = std::time::Instant::now();
                 let needs_new_buffer = match &frame_buffer {
                     Some(buf) => buf.width() != width || buf.height() != height,
                     None => true,
