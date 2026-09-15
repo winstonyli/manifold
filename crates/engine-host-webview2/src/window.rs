@@ -145,7 +145,17 @@ pub fn hide_from_taskbar(hwnd: HWND) {
             return;
         };
         let _ = taskbar_list.HrInit();
-        let _ = taskbar_list.DeleteTab(hwnd);
+        // `ShowWindow` returning doesn't guarantee Explorer's shell hook has
+        // already registered this window as a taskbar tab -- a `DeleteTab`
+        // that races ahead of that registration deletes nothing, and the
+        // entry can still appear once Explorer catches up. `DeleteTab` is
+        // idempotent, so retrying a few times over a short window is cheap,
+        // reliable insurance against that race rather than trusting a single
+        // fire-and-forget call to always land after registration.
+        for _ in 0..10 {
+            let _ = taskbar_list.DeleteTab(hwnd);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     });
 }
 
