@@ -138,7 +138,15 @@ fn main() {
                     .unwrap_or_default()
                     .join("Downloads");
                 let _ = std::fs::create_dir_all(&dir);
-                let dest = dir.join(suggested_filename);
+                // Server-controlled -- only its final path component is
+                // ever used, same `..`/absolute-path guard as CEF's
+                // `on_before_download`.
+                let name = std::path::Path::new(suggested_filename)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("download");
+                let dest = dir.join(name);
                 download.set_destination(&format!("file://{}", dest.display()));
                 true
             });

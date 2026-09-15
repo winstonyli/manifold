@@ -52,10 +52,21 @@ wrap_download_handler! {
             callback: Option<&mut BeforeDownloadCallback>,
         ) -> ::std::os::raw::c_int {
             if let Some(callback) = callback {
+                // Server-controlled -- only its final path component is
+                // ever used, so a `..`-laden or absolute suggested name
+                // can't escape `downloads_dir()` (`PathBuf::join` doesn't
+                // sanitize either case: `..` segments pass through
+                // untouched and an absolute joinee replaces the base
+                // entirely).
                 let name = suggested_name
                     .map(|s| s.to_string())
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "download".to_string());
+                    .unwrap_or("download")
+                    .to_string();
                 let path = downloads_dir().join(name);
                 callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
             }
