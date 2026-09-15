@@ -8,6 +8,7 @@
 
 mod capture;
 mod favicon;
+mod input;
 mod nav_state;
 mod window;
 
@@ -19,6 +20,7 @@ use std::time::Duration;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use webview2_com::CreateCoreWebView2EnvironmentCompletedHandler;
 use windows::core::{BOOL, HSTRING};
@@ -105,6 +107,19 @@ fn main() {
 
     resize_controller(&controller, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
+    // Gives the webview logical focus programmatically -- no real OS window
+    // activation (`SetForegroundWindow`) needed or wanted, this project's
+    // off-screen host window deliberately never becomes the real foreground
+    // window. Tried (unsuccessfully on its own) as a fix for raw WM_*
+    // message injection in an earlier round -- see input.rs's doc comment
+    // for the full history; kept here as cheap, harmless insurance since
+    // some WebView2 behaviors genuinely do depend on logical focus state,
+    // even though the actual input fix (input.rs's ExecuteScript approach)
+    // doesn't need it.
+    unsafe {
+        let _ = controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    }
+
     let nav_state = new_shared_nav_state(initial_url.clone());
     nav_state::register_handlers(&webview, nav_state.clone());
     // Favicon support is best-effort -- if `ICoreWebView2_15` isn't
@@ -165,21 +180,8 @@ fn main() {
                     resize_controller(&controller, width, height);
                     capture.resize(width, height);
                 }
-                HostToEngine::Input(_event) => {
-                    // Not yet working -- see project memory's Phase 3 entry.
-                    // Raw Win32 WM_* messages (both PostMessage and
-                    // SendMessage) to Chrome_RenderWidgetHostHWND (three
-                    // levels under this host window) are silently ignored
-                    // by Chromium's actual input pipeline, confirmed live
-                    // with a real hyperlink click. Composition hosting's
-                    // native SendMouseInput was tried next (the
-                    // engine-native API every other engine here uses
-                    // instead of OS message injection) but broke capture
-                    // (blank frames) without fixing input either, for
-                    // reasons not fully diagnosed -- reverted rather than
-                    // destabilize the proven-working windowed-hosting
-                    // capture pipeline further. Needs a dedicated future
-                    // session, not more time in this one.
+                HostToEngine::Input(event) => {
+                    input::send_input(&webview, event);
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
