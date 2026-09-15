@@ -6,6 +6,7 @@ members = [
     "crates/engine-host-servo",
     "crates/engine-host-cef",
     "crates/engine-host-webkit",
+    "crates/engine-host-webview2",
 ]
 
 [workspace.package]

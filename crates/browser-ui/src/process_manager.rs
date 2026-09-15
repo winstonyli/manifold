@@ -15,6 +15,9 @@ pub enum EngineKind {
     /// WebKit, via WebKitGTK — hosted inside WSL2 (no native Windows
     /// embedding story for WebKit exists; see project plan/memory).
     Webkit,
+    /// Microsoft Edge WebView2 — native Windows API, same-machine process
+    /// like Servo/Cef (no WSL2 relay needed).
+    Webview2,
 }
 
 impl EngineKind {
@@ -23,6 +26,7 @@ impl EngineKind {
             EngineKind::Servo => "engine-host-servo",
             EngineKind::Cef => "engine-host-cef",
             EngineKind::Webkit => "engine-host-webkit",
+            EngineKind::Webview2 => "engine-host-webview2",
         }
     }
 }
@@ -165,6 +169,11 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
             });
             path
         }
+        // WebView2Loader is a single small loader (statically linked by
+        // the `webview2-com` crate, or a lone DLL at worst) — no ANGLE-style
+        // filename collision with Servo/CEF's runtime files, so no isolation
+        // directory needed like CEF's `cef-runtime/` above.
+        EngineKind::Webview2 => sibling_binary(kind.binary_name()),
         EngineKind::Webkit => unreachable!("Webkit is spawned via wsl.exe, not a local path"),
     }
 }

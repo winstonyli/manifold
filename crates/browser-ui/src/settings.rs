@@ -86,6 +86,7 @@ mod engine_kind_serde {
             EngineKind::Servo => "servo",
             EngineKind::Cef => "cef",
             EngineKind::Webkit => "webkit",
+            EngineKind::Webview2 => "webview2",
         };
         name.serialize(s)
     }
@@ -95,6 +96,7 @@ mod engine_kind_serde {
         Ok(match name.as_str() {
             "cef" => EngineKind::Cef,
             "webkit" => EngineKind::Webkit,
+            "webview2" => EngineKind::Webview2,
             _ => EngineKind::Servo,
         })
     }

@@ -109,6 +109,7 @@ fn engine_label(kind: EngineKind) -> &'static str {
         EngineKind::Servo => "Servo",
         EngineKind::Cef => "Blink (CEF)",
         EngineKind::Webkit => "WebKit",
+        EngineKind::Webview2 => "WebView2",
     }
 }
 
@@ -123,6 +124,10 @@ fn engine_color(kind: EngineKind) -> egui::Color32 {
         EngineKind::Servo => egui::Color32::from_rgb(255, 138, 80),
         EngineKind::Cef => egui::Color32::from_rgb(66, 133, 244),
         EngineKind::Webkit => egui::Color32::from_rgb(26, 188, 156),
+        // Windows/Edge blue — distinct enough from CEF's Chromium blue to
+        // tell the two apart at a glance despite both being Blink under
+        // the hood.
+        EngineKind::Webview2 => egui::Color32::from_rgb(0, 120, 212),
     }
 }
 
@@ -538,7 +543,7 @@ impl App {
                         egui::ComboBox::from_id_salt("settings_starting_engine")
                             .selected_text(engine_label(self.settings.default_starting_engine))
                             .show_ui(ui, |ui| {
-                                for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit] {
+                                for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
                                     let selected = self.settings.default_starting_engine == kind;
                                     if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
                                         self.settings.default_starting_engine = kind;
@@ -1199,7 +1204,7 @@ impl App {
                     egui::ComboBox::from_id_salt("engine_picker")
                         .selected_text(combo_text)
                         .show_ui(ui, |ui| {
-                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit] {
+                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
                                 let selected = current_kind == Some(kind);
                                 ui.horizontal(|ui| {
                                     engine_dot(ui, kind, 8.0);
@@ -2320,7 +2325,7 @@ impl App {
         for update in frame_updates {
             let format = match update.kind {
                 EngineKind::Servo | EngineKind::Webkit => wgpu::TextureFormat::Rgba8UnormSrgb,
-                EngineKind::Cef => wgpu::TextureFormat::Bgra8UnormSrgb,
+                EngineKind::Cef | EngineKind::Webview2 => wgpu::TextureFormat::Bgra8UnormSrgb,
             };
             if let Some(pixels) = update.pixels {
                 // RemoteTransport engine-host (WebKit over WSL2): no shared
