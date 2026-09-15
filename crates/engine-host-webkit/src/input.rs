@@ -1,7 +1,15 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gtk::gdk;
 use gtk::prelude::*;
 use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
-use webkit2gtk::WebView;
+use javascriptcore::ValueExt;
+use webkit2gtk::{WebView, WebViewExt};
+
+/// `(x, y, href)` for a right-click that landed on a link — see
+/// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment.
+pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
 /// Round 2 on WebKit input (see project memory for round 1's revert): the
 /// prior attempt synthesized `GdkEventKey`/`Button`/`Motion` structs by hand
@@ -23,10 +31,36 @@ pub fn send_input(
     event: InputEvent,
     keyboard_device: Option<&gdk::Device>,
     pointer_device: Option<&gdk::Device>,
+    pending_context_menu: &PendingContextMenu,
 ) {
     let Some(window) = webview.window() else {
         return;
     };
+
+    // A right-click here also dispatches a genuine native `ButtonRelease`
+    // below (same as every other button) -- WebKitGTK's own real
+    // `context-menu` signal fires from that and is suppressed elsewhere
+    // (see `main.rs`) so no real popup window ever tries to show. This is
+    // a separate, script-driven query for the one thing this minimal
+    // feature actually needs: whether the click landed on a link.
+    if let InputEvent::MouseUp { x, y, button: MouseButton::Right } = event {
+        let pending = pending_context_menu.clone();
+        webview.run_javascript(
+            &format!(
+                "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
+            ),
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                if let Ok(js_result) = result {
+                    if let Some(value) = js_result.js_value() {
+                        if value.is_string() {
+                            *pending.borrow_mut() = Some((x, y, value.to_str().to_string()));
+                        }
+                    }
+                }
+            },
+        );
+    }
 
     match event {
         InputEvent::MouseMove { x, y } => {

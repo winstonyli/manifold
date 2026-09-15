@@ -136,6 +136,7 @@ fn main() {
     // just means this tab's find bar never reports results.
     let find_state = find::register(&environment, &webview).ok();
     let pending_audio_playing = audio::register(&webview).ok();
+    let pending_context_menu: input::PendingContextMenu = Default::default();
 
     unsafe {
         webview
@@ -191,7 +192,7 @@ fn main() {
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(event) => {
-                    input::send_input(&webview, event);
+                    input::send_input(&webview, event, &pending_context_menu);
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
@@ -274,6 +275,10 @@ fn main() {
             if let Some(playing) = pending.borrow_mut().take() {
                 let _ = control.send(&EngineToHost::AudioPlayingChanged { playing });
             }
+        }
+
+        if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
         if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {

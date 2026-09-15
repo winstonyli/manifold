@@ -196,4 +196,21 @@ pub enum EngineToHost {
     /// wrong and CEF tabs go silent), so CEF tabs never send this. Servo's
     /// embedding API has no such property at all.
     AudioPlayingChanged { playing: bool },
+    /// A right-click (`InputEvent::MouseUp` with `MouseButton::Right`)
+    /// landed on a link — `href` is its resolved absolute target URL,
+    /// found via the same script-driven hit-testing `input.rs`'s own
+    /// left-click handling already uses (`elementFromPoint`, walking up to
+    /// the nearest `<a href>` ancestor). `browser-ui` shows a minimal
+    /// single-item "Open in new tab" menu at `(x, y)` when this arrives; a
+    /// right-click that didn't land on a link sends nothing (no menu to
+    /// show). Only WebView2 and WebKit send this — both already drive
+    /// every other input event through a script-execution API
+    /// (`ExecuteScript`/`run_javascript`) this reuses directly. CEF drives
+    /// input via real native mouse-event injection instead (a completely
+    /// different mechanism — see `engine-host-cef/src/input.rs`) and has
+    /// its own native `ContextMenuHandler` API for this, but wiring a
+    /// second, unrelated input mechanism is out of scope for this minimal
+    /// version. Servo has no context-menu hook in its embedding surface at
+    /// all.
+    ContextMenuLink { x: f64, y: f64, href: String },
 }

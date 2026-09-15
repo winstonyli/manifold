@@ -162,6 +162,21 @@ fn main() {
         });
     }
 
+    // Minimal context menu: a right-click already dispatches a genuine
+    // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
+    // fire its own real `context-menu` signal -- suppressed here (`true` =
+    // "handled, don't show your own") unconditionally, same
+    // don't-risk-a-real-popup-window caution `HostToEngine::OpenDevTools`
+    // already has to (a real GTK popup here would be override-redirect,
+    // not a toplevel, so likely wouldn't hit that exact hang -- but this
+    // project has no way to verify that live in this sandboxed session,
+    // and suppressing it costs nothing since `input.rs`'s own
+    // script-driven href query below is what `browser-ui`'s minimal
+    // "Open in new tab" menu actually needs). See `input.rs`'s own
+    // `PendingContextMenu`.
+    webview.connect_context_menu(|_, _, _, _| true);
+    let pending_context_menu: input::PendingContextMenu = Default::default();
+
     // Find-in-page: WebKitGTK's own `WebKitFindController`, one per
     // `WebView` (`find_controller()` never returns `None` in practice for a
     // real `WebView`, but the type is `Option` so this degrades gracefully
@@ -248,6 +263,7 @@ fn main() {
                         event,
                         keyboard_device.as_ref(),
                         pointer_device.as_ref(),
+                        &pending_context_menu,
                     );
                 }
                 HostToEngine::SetZoom { factor } => {
@@ -366,6 +382,10 @@ fn main() {
 
         if let Some(playing) = pending_audio_playing.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::AudioPlayingChanged { playing });
+        }
+
+        if let Some((x, y, href)) = pending_context_menu.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
         if visible {

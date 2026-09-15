@@ -211,6 +211,19 @@ struct ClosedTab {
     parent: Option<String>,
 }
 
+/// A minimal right-click context menu: just "Open in new tab" for a link,
+/// positioned where the click landed — see `ipc_protocol::EngineToHost::
+/// ContextMenuLink`'s doc comment for why this is the one action
+/// implemented rather than a full copy/paste/inspect menu. `x`/`y` are
+/// already in window (not content-area) point space — see where this is
+/// constructed in `drain_tab_events`.
+#[derive(Clone)]
+struct ContextMenuState {
+    x: f32,
+    y: f32,
+    href: String,
+}
+
 /// The event loop's real user-event type: headless debug commands, plus
 /// `TabSpawned` — see its own doc comment for why engine-host spawning needs
 /// to be async in the first place.
@@ -385,6 +398,10 @@ struct App {
     /// `ClosedTab`'s own doc comment.
     last_closed_tab: Option<ClosedTab>,
 
+    /// The minimal right-click context menu, if currently showing — see
+    /// `ContextMenuState`'s own doc comment.
+    context_menu: Option<ContextMenuState>,
+
     find_bar_open: bool,
     find_text: String,
     /// Resets to `false` on every `close_find_bar` — a fresh find session
@@ -477,6 +494,7 @@ impl Default for App {
             debug_address_bar_pin: false,
             pending_screenshot: None,
             last_closed_tab: None,
+            context_menu: None,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -972,6 +990,7 @@ impl App {
     fn focus_tab(&mut self, id: &str) {
         if self.focused.as_deref() != Some(id) {
             self.close_find_bar();
+            self.context_menu = None;
             if let Some(old_id) = self.focused.clone() {
                 if let Some(old) = self.tabs.get_mut(&old_id) {
                     old.tab.set_visible(false);
@@ -998,6 +1017,7 @@ impl App {
     /// when the animation started — only actually suspended once the
     /// animation finishes (`finish_transition_if_done`).
     fn leave_to_graph(&mut self) {
+        self.context_menu = None;
         match self.focused.clone() {
             Some(id) => {
                 self.transition = Some(Transition {
@@ -1573,6 +1593,51 @@ impl App {
         }
     }
 
+    /// The minimal right-click context menu: one "Open in new tab" item at
+    /// `self.context_menu`'s position, if a menu is currently showing.
+    /// Dismissed by clicking the item (and acting on it), a click anywhere
+    /// outside the menu's own rect, or Escape (see the Escape-priority
+    /// chain in `build_tab_ui`).
+    fn build_context_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(menu) = self.context_menu.clone() else { return };
+        let mut open_tab = false;
+        let mut close = false;
+
+        let area = egui::Area::new(egui::Id::new("context_menu"))
+            .fixed_pos(egui::pos2(menu.x, menu.y))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .show(ui, |ui| {
+                        if ui.button("Open in new tab").clicked() {
+                            open_tab = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| !area.response.rect.contains(pos))
+        });
+        if clicked_outside {
+            close = true;
+        }
+
+        if open_tab {
+            self.spawn_new_tab(self.focused.clone(), &menu.href);
+        }
+        if close {
+            self.context_menu = None;
+        }
+    }
+
     /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: focuses the next/previous tab in
     /// `tab_order` (insertion order — this graph-based UI has no tab strip
     /// to define a more meaningful order), wrapping at both ends. A no-op
@@ -1831,6 +1896,8 @@ impl App {
             self.build_find_bar(ui);
         }
 
+        self.build_context_menu(ui);
+
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
         }
@@ -1934,18 +2001,22 @@ impl App {
         // leave-to-graph logic a real keypress would.
         let escape_pressed =
             ui.input(|i| i.key_pressed(egui::Key::Escape)) || std::mem::take(&mut self.pending_debug_escape);
-        if back_to_graph || (!has_suggestions && !self.find_bar_open && escape_pressed) {
+        if back_to_graph
+            || (!has_suggestions && !self.find_bar_open && self.context_menu.is_none() && escape_pressed)
+        {
             self.leave_to_graph();
             return;
         }
         if escape_pressed {
-            // Find bar takes priority over the address-bar dropdown if both
-            // somehow ended up open at once (independent widgets — nothing
-            // stops a user from clicking the address bar while the find
-            // bar is also open) — closes one thing per Escape press, same
-            // layered-dismiss shape the dropdown-vs-Graph-view case above
-            // already has.
-            if self.find_bar_open {
+            // Context menu, then find bar, take priority over the
+            // address-bar dropdown if more than one somehow ended up open
+            // at once (independent widgets — nothing stops a user from
+            // right-clicking while the find bar is also open) — closes one
+            // thing per Escape press, same layered-dismiss shape the
+            // dropdown-vs-Graph-view case above already has.
+            if self.context_menu.is_some() {
+                self.context_menu = None;
+            } else if self.find_bar_open {
                 self.close_find_bar();
             } else if has_suggestions {
                 self.open_tab_suggestions.clear();
@@ -2413,7 +2484,16 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
                 let (x, y) = self.cursor_pos;
-                if in_tab_view && !consumed_by_egui && y >= chrome_height {
+                // `egui_winit` reports the right button as "consumed"
+                // unconditionally (confirmed live via temporary logging:
+                // `consumed_by_egui=true` even over this project's own raw
+                // content quad, which isn't a real egui widget and has
+                // nothing there to legitimately claim it) — bypassed for
+                // the right button specifically so a right-click on tab
+                // content still reaches `InputEvent::MouseDown`/`MouseUp`
+                // the same way every left-click already does.
+                let egui_wants_it = consumed_by_egui && button != WinitMouseButton::Right;
+                if in_tab_view && !egui_wants_it && y >= chrome_height {
                     if let Some(button) = translate_mouse_button(button) {
                         if let Some(id) = self.focused.clone() {
                             if let Some(node) = self.tabs.get_mut(&id) {
@@ -2909,6 +2989,19 @@ impl App {
                     }
                     EngineToHost::AudioPlayingChanged { playing } => {
                         node.audio_playing = playing;
+                    }
+                    EngineToHost::ContextMenuLink { x, y, href } => {
+                        // Content-area coordinates -> window point space:
+                        // Tab view's content starts below the toolbar (see
+                        // `CHROME_HEIGHT_POINTS`'s other call sites). Only
+                        // meaningful for the tab currently on screen.
+                        if self.focused.as_deref() == Some(tab_id.as_str()) {
+                            self.context_menu = Some(ContextMenuState {
+                                x: x as f32,
+                                y: y as f32 + CHROME_HEIGHT_POINTS,
+                                href,
+                            });
+                        }
                     }
                 }
             }
