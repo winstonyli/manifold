@@ -46,6 +46,12 @@ const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 /// just a filename, so it doesn't need the same footprint a tab's preview
 /// does.
 const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
+/// A group card's footprint — same idea as `DOWNLOAD_NODE_SIZE` (no live
+/// thumbnail, just a name/member-count), sized a bit larger since it's a
+/// container rather than a single file. Also the drop-target rect a
+/// dragged tab is tested against on release — see `GroupNode`'s own doc
+/// comment.
+const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
 const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
@@ -233,6 +239,15 @@ struct TabNode {
     /// every restart, a smaller scope than plumbing a new field through
     /// `SessionTab` warranted for a graph-view display preference.
     pinned: bool,
+    /// Which group's subgraph this tab is shown in — `None` at the top
+    /// level. See `GroupNode`'s own doc comment. Unlike `parent` (who
+    /// opened this tab, used for the edge drawn to it), `group` is purely
+    /// "which graph view is this node rendered in" — a tab's parent can
+    /// point to a tab in a *different* group (or none at all) without
+    /// anything breaking; the edge just isn't drawn unless both endpoints
+    /// share the same `group` (see `build_graph_ui`'s level-filtering).
+    /// Session-only, same scope decision as `pinned`.
+    group: Option<String>,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
@@ -253,7 +268,33 @@ struct TabNode {
 /// but a "recent downloads" convenience.
 struct DownloadNode {
     parent: Option<String>,
+    /// Inherited from the parent tab's own `group` at creation time — see
+    /// `TabNode::group`'s doc comment. Fixed at creation rather than
+    /// tracking the parent tab live: a download node has no reason to
+    /// follow its tab into a *different* group after the fact (nothing
+    /// currently moves a tab between groups after creation either).
+    group: Option<String>,
     path: String,
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+}
+
+/// A tab group: a container node shown at the top level of Graph view that,
+/// double-clicked, drills into its own subgraph of member tabs/downloads
+/// (`App::current_group`) in place of the top level's — the same "swap
+/// which set of nodes this view renders" idea `ViewMode::Tab`/`Graph`
+/// already is, just one level deeper, and reusing that same flat
+/// `graph_layout::step` simulation rather than a second nested one running
+/// inside the group's own node. No nesting in this first cut — a group
+/// can't contain another group, only tabs/downloads (`TabNode::group`/
+/// `DownloadNode::group` are a single `Option<String>`, not a path) — and
+/// no animated zoom-in the way Tab<->Graph gets: `Transition` is built
+/// around morphing *one tab's* content quad between two known rects, not
+/// swapping an entire node set, so entering/leaving a group is an instant
+/// view swap for now. Groups (and membership) are session-only, same scope
+/// decision as `TabNode::pinned` — not written to `session.json`.
+struct GroupNode {
+    name: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
 }
@@ -268,6 +309,7 @@ struct ClosedTab {
     url: String,
     kind: EngineKind,
     parent: Option<String>,
+    group: Option<String>,
 }
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
@@ -324,6 +366,7 @@ enum SpawnPurpose {
 struct TabSpawnOutcome {
     id: String,
     parent: Option<String>,
+    group: Option<String>,
     url: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
@@ -343,6 +386,17 @@ struct App {
     /// doc comment.
     downloads: HashMap<String, DownloadNode>,
     download_order: Vec<String>,
+    /// Tab groups shown as top-level graph nodes — see `GroupNode`'s own
+    /// doc comment.
+    groups: HashMap<String, GroupNode>,
+    group_order: Vec<String>,
+    /// `None` while viewing the top level; `Some(group_id)` while a
+    /// group's own subgraph has been drilled into (see `GroupNode`'s doc
+    /// comment) — only meaningful when `view_mode == Graph`, but not reset
+    /// on leaving Graph view, so returning to Graph resumes wherever the
+    /// user last drilled into, same "graph view remembers its own state"
+    /// treatment `graph_scene_rect`'s pan/zoom already gets.
+    current_group: Option<String>,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -350,6 +404,7 @@ struct App {
     view_mode: ViewMode,
     next_tab_id: u64,
     next_download_id: u64,
+    next_group_id: u64,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -541,10 +596,14 @@ impl Default for App {
             tab_order: Vec::new(),
             downloads: HashMap::new(),
             download_order: Vec::new(),
+            groups: HashMap::new(),
+            group_order: Vec::new(),
+            current_group: None,
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
             next_download_id: 0,
+            next_group_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -889,6 +948,7 @@ impl App {
             self.spawn_tab_async(
                 tab.id,
                 tab.parent,
+                None,
                 tab.url,
                 pos,
                 egui::Vec2::ZERO,
@@ -907,7 +967,7 @@ impl App {
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
-        self.spawn_tab_async(id, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
+        self.spawn_tab_async(id, None, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
     }
 
     /// Runs `process_manager::spawn_tab` on a background thread and posts
@@ -920,6 +980,7 @@ impl App {
         &mut self,
         id: String,
         parent: Option<String>,
+        group: Option<String>,
         url: String,
         pos: egui::Vec2,
         vel: egui::Vec2,
@@ -935,6 +996,7 @@ impl App {
             let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome {
                 id,
                 parent,
+                group,
                 url,
                 pos,
                 vel,
@@ -951,7 +1013,14 @@ impl App {
     /// Focus/visibility for `Respawn` is decided here, at completion time —
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
-        let TabSpawnOutcome { id, parent, url, pos, vel, purpose, result } = outcome;
+        let TabSpawnOutcome { id, parent, group, url, pos, vel, purpose, result } = outcome;
+        // A group dissolved while this spawn was still in flight (spawning
+        // is async, see this fn's own doc comment) would otherwise leave
+        // the new tab pointing at a group id nothing can navigate into —
+        // same guard `reopen_closed_tab_shortcut` applies for the same
+        // reason, centralized here since every spawn path funnels through
+        // this one function.
+        let group = group.filter(|g| self.groups.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
         {
@@ -980,6 +1049,7 @@ impl App {
                         audio_playing: false,
                         muted: false,
                         pinned: false,
+                        group,
                         swap_target: None,
                         pos,
                         vel,
@@ -1079,20 +1149,98 @@ impl App {
             .spawn();
     }
 
+    /// Distinct prefix from `alloc_tab_id`/`alloc_download_id` — group ids
+    /// share the same flat id space at the top level (`graph_layout::step`
+    /// again sees ids only, not node kinds).
+    fn alloc_group_id(&mut self) -> String {
+        let id = format!("grp-{}", self.next_group_id);
+        self.next_group_id += 1;
+        id
+    }
+
+    /// Dissolves a group: members become top-level tabs again (never
+    /// closed — grouping is purely a display grouping, not an ownership
+    /// one), and the group card itself is removed. `current_group` resets
+    /// to top level if it happened to be the group just dissolved (should
+    /// only actually matter defensively — the close button that calls
+    /// this only ever renders at the top level, where the group being
+    /// closed can't simultaneously be the one being viewed).
+    fn dissolve_group(&mut self, id: &str) {
+        for node in self.tabs.values_mut() {
+            if node.group.as_deref() == Some(id) {
+                node.group = None;
+            }
+        }
+        for node in self.downloads.values_mut() {
+            if node.group.as_deref() == Some(id) {
+                node.group = None;
+            }
+        }
+        self.groups.remove(id);
+        self.group_order.retain(|g| g != id);
+        if self.current_group.as_deref() == Some(id) {
+            self.current_group = None;
+        }
+        if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+        }
+        if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
+    }
+
+    /// `parent`'s own group, if it has one and still exists — the natural
+    /// "a tab opened from another tab lands in the same group" rule used
+    /// by every `spawn_new_tab` call site that has a real opener (Ctrl+T,
+    /// the context menu's "Open in new tab", a page-triggered popup). The
+    /// toolbar's own "+ New Tab" button uses `self.current_group` directly
+    /// instead, since `self.focused` (its `parent`) isn't necessarily a
+    /// tab inside whichever group's subgraph is currently being viewed.
+    fn group_of(&self, id: &Option<String>) -> Option<String> {
+        id.as_ref().and_then(|id| self.tabs.get(id)).and_then(|n| n.group.clone())
+    }
+
+    /// `tab_order`/`download_order`, filtered to whichever level
+    /// `self.current_group` is currently viewing — the id lists
+    /// `build_graph_ui`'s node-rendering loops iterate, kept in their
+    /// stable insertion order (unlike filtering `self.tabs`/`self.downloads`
+    /// directly, a `HashMap`'s iteration order isn't stable frame-to-frame).
+    fn tabs_at_current_level(&self) -> Vec<String> {
+        self.tab_order
+            .iter()
+            .filter(|id| self.tabs.get(*id).is_some_and(|n| n.group == self.current_group))
+            .cloned()
+            .collect()
+    }
+
+    fn downloads_at_current_level(&self) -> Vec<String> {
+        self.download_order
+            .iter()
+            .filter(|id| self.downloads.get(*id).is_some_and(|n| n.group == self.current_group))
+            .cloned()
+            .collect()
+    }
+
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
     /// if `parent` is `None`), spawned invisible — it stays in Graph view
     /// rather than auto-focusing (see plan's M5 scope decision 5), and
     /// background tabs render nothing until focused anyway. Also used for
     /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
-    fn spawn_new_tab(&mut self, parent: Option<String>, url: &str) {
-        self.spawn_new_tab_with_kind(parent, url, self.settings.default_starting_engine);
+    fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
+        self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine);
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_engine`) and
     /// `reopen_closed_tab_shortcut` (the closed tab's own engine, not
     /// necessarily today's default).
-    fn spawn_new_tab_with_kind(&mut self, parent: Option<String>, url: &str, kind: EngineKind) {
+    fn spawn_new_tab_with_kind(
+        &mut self,
+        parent: Option<String>,
+        group: Option<String>,
+        url: &str,
+        kind: EngineKind,
+    ) {
         let id = self.alloc_tab_id();
         let parent_pos = parent
             .as_ref()
@@ -1101,7 +1249,7 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        self.spawn_tab_async(id, parent, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
+        self.spawn_tab_async(id, parent, group, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
     }
 
     /// Peek-click commits focus: the tab losing focus (if any, and if
@@ -1292,14 +1440,14 @@ impl App {
     /// than orphaning that whole subtree. Falls back to Graph view if the
     /// closed tab was focused.
     fn close_tab(&mut self, id: &str) {
-        let Some((parent, url, kind)) = self
+        let Some((parent, url, kind, group)) = self
             .tabs
             .get(id)
-            .map(|n| (n.parent.clone(), n.url.clone(), n.tab.kind))
+            .map(|n| (n.parent.clone(), n.url.clone(), n.tab.kind, n.group.clone()))
         else {
             return;
         };
-        self.last_closed_tab = Some(ClosedTab { url, kind, parent: parent.clone() });
+        self.last_closed_tab = Some(ClosedTab { url, kind, parent: parent.clone(), group });
         for node in self.tabs.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
@@ -1349,10 +1497,10 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, pos, vel)) = self
+        let Some((parent, group, pos, vel)) = self
             .tabs
             .get(tab_id)
-            .map(|n| (n.parent.clone(), n.pos, n.vel))
+            .map(|n| (n.parent.clone(), n.group.clone(), n.pos, n.vel))
         else {
             return;
         };
@@ -1360,25 +1508,26 @@ impl App {
         // the new one at the same tab_id — the new engine-host's named-pipe
         // listeners would collide with the old ones otherwise.
         self.tabs.remove(tab_id);
-        self.respawn_tab(tab_id, target, url, parent, pos, vel);
+        self.respawn_tab(tab_id, target, url, parent, group, pos, vel);
     }
 
     /// Shared by swap-finish and crash recovery: (re)spawn `kind` at `url`
-    /// for `tab_id`, preserving its place in the graph (`parent`/`pos`/
-    /// `vel`) and visibility (only the focused tab is ever visible).
+    /// for `tab_id`, preserving its place in the graph (`parent`/`group`/
+    /// `pos`/`vel`) and visibility (only the focused tab is ever visible).
     fn respawn_tab(
         &mut self,
         tab_id: &str,
         kind: EngineKind,
         url: String,
         parent: Option<String>,
+        group: Option<String>,
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
         if self.focused.as_deref() == Some(tab_id) {
             self.pending_respawn_focus = Some(tab_id.to_string());
         }
-        self.spawn_tab_async(tab_id.to_string(), parent, url, pos, vel, SpawnPurpose::Respawn, kind);
+        self.spawn_tab_async(tab_id.to_string(), parent, group, url, pos, vel, SpawnPurpose::Respawn, kind);
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
@@ -1495,7 +1644,9 @@ impl App {
     /// rather than auto-focusing (see `spawn_new_tab`'s own doc comment).
     fn new_tab_shortcut(&mut self) {
         let home_page = self.settings.home_page.clone();
-        self.spawn_new_tab(self.focused.clone(), &home_page);
+        let parent = self.focused.clone();
+        let group = self.group_of(&parent);
+        self.spawn_new_tab(parent, group, &home_page);
     }
 
     /// `Ctrl+Shift+T` / headless `REOPENTAB` — respawns the single most
@@ -1508,7 +1659,9 @@ impl App {
     /// doesn't require a real parent tab to exist either.
     fn reopen_closed_tab_shortcut(&mut self) {
         let Some(closed) = self.last_closed_tab.take() else { return };
-        self.spawn_new_tab_with_kind(closed.parent, &closed.url, closed.kind);
+        // A stale/dissolved `closed.group` is sanitized centrally in
+        // `handle_tab_spawn_result` once this spawn actually completes.
+        self.spawn_new_tab_with_kind(closed.parent, closed.group, &closed.url, closed.kind);
     }
 
     /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
@@ -1757,7 +1910,9 @@ impl App {
         }
 
         if open_tab {
-            self.spawn_new_tab(self.focused.clone(), &menu.href);
+            let parent = self.focused.clone();
+            let group = self.group_of(&parent);
+            self.spawn_new_tab(parent, group, &menu.href);
         }
         if close {
             self.context_menu = None;
@@ -2245,6 +2400,10 @@ impl App {
         let mut download_close_requested: Option<String> = None;
         let mut download_clicked: Option<String> = None;
         let mut pin_toggle_requested: Option<String> = None;
+        let mut new_group_requested = false;
+        let mut leave_group_requested = false;
+        let mut group_close_requested: Option<String> = None;
+        let mut group_entered: Option<String> = None;
 
         let mut reset_view = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -2257,8 +2416,27 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
+                    if let Some(group_id) = &self.current_group {
+                        // Inside a group's own subgraph: a way back takes
+                        // the place of "+ New Group" (no nesting in this
+                        // first cut — see `GroupNode`'s doc comment), and
+                        // the group's name replaces the empty space "+ New
+                        // Tab"/"Reset View" already fill at the top level.
+                        if ui.button("\u{25c0} Groups").clicked() {
+                            leave_group_requested = true;
+                        }
+                        let name = self
+                            .groups
+                            .get(group_id)
+                            .map(|g| g.name.as_str())
+                            .unwrap_or("Group");
+                        ui.label(name);
+                    }
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
+                    }
+                    if self.current_group.is_none() && ui.button("+ New Group").clicked() {
+                        new_group_requested = true;
                     }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
@@ -2294,7 +2472,8 @@ impl App {
             });
             if let Some(parent) = new_tab_parent {
                 let home_page = self.settings.home_page.clone();
-                self.spawn_new_tab(parent, &home_page);
+                let group = self.current_group.clone();
+                self.spawn_new_tab(parent, group, &home_page);
             }
             return;
         }
@@ -2305,35 +2484,75 @@ impl App {
         // world-space math, independent of the pan/zoom view below.
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         {
-            // Tabs and download nodes share one flat id space here —
-            // `graph_layout::step` doesn't distinguish node kinds, only
-            // ids and parent->child edges.
+            // Tabs, download nodes, and (top level only) group nodes share
+            // one flat id space here — `graph_layout::step` doesn't
+            // distinguish node kinds, only ids and parent->child edges.
+            // Filtered to `self.current_group`'s level so a node hidden
+            // inside a different group doesn't drift under forces from
+            // siblings it can't currently see anyway (and can't be dragged
+            // into, since it isn't rendered) — see `TabNode::group`'s own
+            // doc comment. Group nodes only ever exist at the top level
+            // (no nesting in this first cut), so they're excluded entirely
+            // while viewing a group's own subgraph.
             let mut positions: HashMap<String, egui::Vec2> = self
                 .tabs
                 .iter()
+                .filter(|(_, n)| n.group == self.current_group)
                 .map(|(id, n)| (id.clone(), n.pos))
-                .chain(self.downloads.iter().map(|(id, n)| (id.clone(), n.pos)))
+                .chain(
+                    self.downloads
+                        .iter()
+                        .filter(|(_, n)| n.group == self.current_group)
+                        .map(|(id, n)| (id.clone(), n.pos)),
+                )
+                .chain(
+                    self.current_group
+                        .is_none()
+                        .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.pos)))
+                        .into_iter()
+                        .flatten(),
+                )
                 .collect();
             let mut velocities: HashMap<String, egui::Vec2> = self
                 .tabs
                 .iter()
+                .filter(|(_, n)| n.group == self.current_group)
                 .map(|(id, n)| (id.clone(), n.vel))
-                .chain(self.downloads.iter().map(|(id, n)| (id.clone(), n.vel)))
+                .chain(
+                    self.downloads
+                        .iter()
+                        .filter(|(_, n)| n.group == self.current_group)
+                        .map(|(id, n)| (id.clone(), n.vel)),
+                )
+                .chain(
+                    self.current_group
+                        .is_none()
+                        .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.vel)))
+                        .into_iter()
+                        .flatten(),
+                )
                 .collect();
+            // Both endpoints must be at this level -- a tab whose `parent`
+            // was dragged into a different group (or out of one) simply
+            // stops drawing/exerting that edge until they're viewed
+            // together again, rather than reaching across levels.
             let edges: Vec<(String, String)> = self
                 .tabs
                 .iter()
+                .filter(|(_, n)| n.group == self.current_group)
                 .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
                 .chain(
                     self.downloads
                         .iter()
+                        .filter(|(_, n)| n.group == self.current_group)
                         .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
                 )
+                .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
                 .collect();
             let mut pinned: HashSet<String> = self
                 .tabs
                 .iter()
-                .filter(|(_, n)| n.pinned)
+                .filter(|(_, n)| n.group == self.current_group && n.pinned)
                 .map(|(id, _)| id.clone())
                 .collect();
             if let Some(d) = &self.dragging {
@@ -2363,6 +2582,14 @@ impl App {
                     node.vel = *v;
                 }
             }
+            for (id, node) in self.groups.iter_mut() {
+                if let Some(p) = positions.get(id) {
+                    node.pos = *p;
+                }
+                if let Some(v) = velocities.get(id) {
+                    node.vel = *v;
+                }
+            }
         }
 
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
@@ -2380,11 +2607,16 @@ impl App {
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             .show(ui, &mut scene_rect, |ui| {
                 // Edges first so node cards paint on top of the lines feeding them.
+                // Both endpoints must share the currently-viewed level —
+                // see the physics block's own edge filter above for why.
                 for (id, node) in &self.tabs {
+                    if node.group != self.current_group {
+                        continue;
+                    }
                     let Some(parent_id) = &node.parent else {
                         continue;
                     };
-                    let Some(parent) = self.tabs.get(parent_id) else {
+                    let Some(parent) = self.tabs.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
                     let _ = id;
@@ -2399,10 +2631,13 @@ impl App {
                 // Download nodes are always parented to a tab (never to
                 // another download), so the same `self.tabs` lookup works.
                 for node in self.downloads.values() {
+                    if node.group != self.current_group {
+                        continue;
+                    }
                     let Some(parent_id) = &node.parent else {
                         continue;
                     };
-                    let Some(parent) = self.tabs.get(parent_id) else {
+                    let Some(parent) = self.tabs.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
                     ui.painter().line_segment(
@@ -2414,7 +2649,7 @@ impl App {
                     );
                 }
 
-                for id in self.tab_order.clone() {
+                for id in self.tabs_at_current_level() {
                     let Some(node_pos) = self.tabs.get(&id).map(|n| n.pos) else {
                         continue;
                     };
@@ -2614,6 +2849,27 @@ impl App {
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
                         self.dragging = None;
+                        // Dropping a tab onto a group's card joins that
+                        // group -- only meaningful at the top level, where
+                        // tabs and groups are rendered (and can overlap)
+                        // together. See `GroupNode`'s own doc comment.
+                        if self.current_group.is_none() {
+                            if let Some(tab_pos) = self.tabs.get(&id).map(|n| n.pos) {
+                                let dropped_on_group = self.groups.iter().find_map(|(gid, g)| {
+                                    egui::Rect::from_center_size(
+                                        egui::Pos2::new(g.pos.x, g.pos.y),
+                                        GROUP_NODE_SIZE,
+                                    )
+                                    .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
+                                    .then(|| gid.clone())
+                                });
+                                if let Some(group_id) = dropped_on_group {
+                                    if let Some(node) = self.tabs.get_mut(&id) {
+                                        node.group = Some(group_id);
+                                    }
+                                }
+                            }
+                        }
                     }
                     if response.hovered() {
                         self.hovered = Some(id.clone());
@@ -2633,7 +2889,7 @@ impl App {
                 // machinery (no live content behind them), just a card with
                 // the filename and a click-to-reveal/close affordance,
                 // reusing the same interact/hover/drag pattern as tab nodes.
-                for id in self.download_order.clone() {
+                for id in self.downloads_at_current_level() {
                     let Some(node_pos) = self.downloads.get(&id).map(|n| n.pos) else {
                         continue;
                     };
@@ -2740,6 +2996,113 @@ impl App {
                     }
                 }
 
+                // Group nodes: top level only (no nesting in this first
+                // cut — see `GroupNode`'s own doc comment). Double-click
+                // drills into the group's own subgraph; a dragged tab
+                // dropped onto one joins it (handled above, in the tab
+                // loop, since that's where the drag-release fires).
+                if self.current_group.is_none() {
+                    for id in self.group_order.clone() {
+                        let Some(node_pos) = self.groups.get(&id).map(|g| g.pos) else {
+                            continue;
+                        };
+                        let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                        let rect = egui::Rect::from_center_size(center_pos, GROUP_NODE_SIZE);
+                        let response = ui.interact(
+                            rect,
+                            egui::Id::new(("graph_group_node", id.as_str())),
+                            egui::Sense::click_and_drag(),
+                        );
+
+                        let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+                        let card_fill = if is_hovered {
+                            ui.visuals().extreme_bg_color.gamma_multiply(1.35)
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(rect, 6.0, card_fill);
+                        ui.painter().rect_stroke(
+                            rect,
+                            6.0,
+                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 }, ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+
+                        if let Some(node) = self.groups.get(&id) {
+                            let member_count = self
+                                .tabs
+                                .values()
+                                .filter(|n| n.group.as_deref() == Some(id.as_str()))
+                                .count();
+                            ui.painter().text(
+                                rect.center_top() + egui::vec2(0.0, 14.0),
+                                egui::Align2::CENTER_TOP,
+                                &node.name,
+                                egui::FontId::proportional(16.0),
+                                ui.visuals().text_color(),
+                            );
+                            ui.painter().text(
+                                rect.center_bottom() + egui::vec2(0.0, -10.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
+                                egui::FontId::default(),
+                                ui.visuals().weak_text_color(),
+                            );
+                        }
+
+                        if is_hovered {
+                            let close_rect = egui::Rect::from_center_size(
+                                rect.right_top(),
+                                egui::vec2(18.0, 18.0),
+                            );
+                            let close_response = ui.interact(
+                                close_rect,
+                                egui::Id::new(("graph_group_node_close", id.as_str())),
+                                egui::Sense::click(),
+                            );
+                            let close_fill = if close_response.hovered() {
+                                egui::Color32::from_rgb(220, 60, 60)
+                            } else {
+                                ui.visuals().extreme_bg_color
+                            };
+                            ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                            ui.painter().rect_stroke(
+                                close_rect,
+                                4.0,
+                                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().text(
+                                close_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "x",
+                                egui::FontId::default(),
+                                ui.visuals().text_color(),
+                            );
+                            if close_response.clicked() {
+                                group_close_requested = Some(id.clone());
+                            }
+                        }
+
+                        if response.dragged() {
+                            self.dragging = Some(id.clone());
+                            if let Some(node) = self.groups.get_mut(&id) {
+                                node.pos += response.drag_delta();
+                            }
+                        } else if self.dragging.as_deref() == Some(id.as_str()) {
+                            self.dragging = None;
+                        }
+                        if response.hovered() {
+                            self.hovered = Some(id.clone());
+                        } else if self.hovered.as_deref() == Some(id.as_str()) {
+                            self.hovered = None;
+                        }
+                        if response.double_clicked() {
+                            group_entered = Some(id.clone());
+                        }
+                    }
+                }
+
                 // Peek preview: an enlarged view of the hovered node's cached
                 // thumbnail, floating near it, without changing focus. Painted
                 // directly in this same world-space layer (not a separate
@@ -2781,7 +3144,8 @@ impl App {
 
         if let Some(parent) = new_tab_parent {
             let home_page = self.settings.home_page.clone();
-            self.spawn_new_tab(parent, &home_page);
+            let group = self.current_group.clone();
+            self.spawn_new_tab(parent, group, &home_page);
         }
         if let Some(id) = close_requested {
             self.close_tab(&id);
@@ -2801,6 +3165,29 @@ impl App {
             if let Some(node) = self.tabs.get_mut(&id) {
                 node.pinned = !node.pinned;
             }
+        }
+        if new_group_requested {
+            let id = self.alloc_group_id();
+            let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+            let name = format!("Group {}", self.groups.len() + 1);
+            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
+            self.group_order.push(id);
+        }
+        // Entering/leaving a group resets the view the same way "Reset
+        // View" does -- the new level's nodes settle around the same
+        // `GRAPH_WORLD_CENTER` the level just left used, so keeping
+        // whatever pan/zoom the old level happened to be at would likely
+        // frame empty space rather than the new level's own nodes.
+        if let Some(id) = group_entered {
+            self.current_group = Some(id);
+            self.graph_scene_rect = default_graph_scene_rect();
+        }
+        if leave_group_requested {
+            self.current_group = None;
+            self.graph_scene_rect = default_graph_scene_rect();
+        }
+        if let Some(id) = group_close_requested {
+            self.dissolve_group(&id);
         }
     }
 }
@@ -3419,11 +3806,12 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
+            let Some((kind, url, parent, group, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
                 (
                     n.tab.kind,
                     n.url.clone(),
                     n.parent.clone(),
+                    n.group.clone(),
                     n.pos,
                     n.vel,
                 )
@@ -3432,7 +3820,7 @@ impl App {
             };
             eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
             self.tabs.remove(&tab_id);
-            self.respawn_tab(&tab_id, kind, url, parent, pos, vel);
+            self.respawn_tab(&tab_id, kind, url, parent, group, pos, vel);
         }
 
         for (tab_id, target, url) in swap_finishes {
@@ -3445,7 +3833,9 @@ impl App {
         // the current view rather than auto-focusing, same as an explicit
         // "+ New Tab" click.
         for (requesting_tab_id, url) in open_tab_requests {
-            self.spawn_new_tab(Some(requesting_tab_id), &url);
+            let parent = Some(requesting_tab_id);
+            let group = self.group_of(&parent);
+            self.spawn_new_tab(parent, group, &url);
         }
 
         // A completed download becomes its own graph node, child of the
@@ -3453,11 +3843,12 @@ impl App {
         // relative to its parent.
         for (tab_id, path) in download_events {
             let id = self.alloc_download_id();
+            let group = self.tabs.get(&tab_id).and_then(|n| n.group.clone());
             let parent_pos = self.tabs.get(&tab_id).map(|n| n.pos).unwrap_or(egui::Vec2::ZERO);
             let pos = parent_pos + graph_layout::spawn_jitter(&id);
             self.downloads.insert(
                 id.clone(),
-                DownloadNode { parent: Some(tab_id), path, pos, vel: egui::Vec2::ZERO },
+                DownloadNode { parent: Some(tab_id), group, path, pos, vel: egui::Vec2::ZERO },
             );
             self.download_order.push(id);
         }
