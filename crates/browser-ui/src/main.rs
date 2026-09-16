@@ -2537,7 +2537,11 @@ impl App {
                     // excluded from the force-directed layout entirely —
                     // see `TabNode::pinned`'s own doc comment — filled vs.
                     // outline-only conveys the state without risking a pin
-                    // glyph this app's font might not have.
+                    // glyph this app's font might not have. This hit-rect is
+                    // centered exactly on the card's corner (so it overlaps
+                    // `rect` below) — the `response.clicked()` check further
+                    // down excludes `pin_response.clicked()` so a pin click
+                    // doesn't also focus the node into Tab view.
                     let node_pinned = self.tabs.get(&id).is_some_and(|n| n.pinned);
                     let pin_rect =
                         egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0));
@@ -2616,7 +2620,11 @@ impl App {
                     } else if self.hovered.as_deref() == Some(id.as_str()) {
                         self.hovered = None;
                     }
-                    if response.clicked() {
+                    // Excludes a click on the pin dot -- its hit-rect
+                    // overlaps this card's corner, and without this guard
+                    // pinning a node also focuses it into Tab view (see
+                    // `pin_response`'s own doc comment).
+                    if response.clicked() && !pin_response.clicked() {
                         clicked_focus = Some(id.clone());
                     }
                 }
