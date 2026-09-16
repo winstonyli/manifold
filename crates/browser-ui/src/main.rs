@@ -334,6 +334,28 @@ struct Transition {
 
 const TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 
+/// An in-progress eased pan/zoom from one `graph_scene_rect` to another --
+/// entering/leaving a group used to snap the camera to the new level's
+/// `fit_all_nodes_scene_rect()` instantly; this animates the same jump over
+/// `TRANSITION_DURATION` instead, same smoothstep easing as `Transition`
+/// above (see `App::eased_graph_scene_rect`). Deliberately a separate,
+/// simpler mechanism rather than reusing `Transition` itself: `Transition`
+/// morphs *one tab's* rendered content quad between two rects, but entering
+/// a group swaps the whole visible node set, not one tab's content -- there
+/// is nothing to morph, only the camera to move. Because a group's members
+/// already live in the same shared world-space coordinates the group's own
+/// card does (not a separate per-group origin), easing the camera toward
+/// them doubles as the "zoom into the subgraph" reveal effect for free: the
+/// new level's real nodes render (tiny, correctly positioned) from the very
+/// first frame, and the camera zooming in is what grows them into view --
+/// no separate rendered "thumbnail" of the subgraph is needed.
+#[derive(Clone, Copy)]
+struct GraphCameraTween {
+    from: egui::Rect,
+    to: egui::Rect,
+    start: std::time::Instant,
+}
+
 /// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
@@ -596,6 +618,10 @@ struct App {
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
     graph_scene_rect: egui::Rect,
+    /// `Some` while entering/leaving a group is easing the camera toward
+    /// the new level's framing instead of having already snapped there --
+    /// see `GraphCameraTween`'s own doc comment.
+    graph_camera_tween: Option<GraphCameraTween>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
     /// last ran a settle burst for -- `build_graph_ui` compares this
     /// against the current level/count every frame and only re-settles
@@ -784,6 +810,7 @@ impl Default for App {
             rect_select_start: None,
             selected_tabs: HashSet::new(),
             graph_scene_rect: default_graph_scene_rect(),
+            graph_camera_tween: None,
             graph_settled_key: None,
             headless: false,
             pending_debug_escape: false,
@@ -3140,6 +3167,26 @@ impl App {
             }
         }
 
+        // Eased camera move into/out of a group -- see `GraphCameraTween`'s
+        // doc comment for why this is a separate mechanism from
+        // `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
+        // every frame (not derived from `self.graph_scene_rect`, which
+        // `Scene::show` below may also nudge from user pan/zoom input this
+        // same frame) so an in-progress user pan can't throw off where the
+        // animation is actually headed.
+        if let Some(tween) = self.graph_camera_tween {
+            let elapsed = tween.start.elapsed();
+            let t = (elapsed.as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+            let eased = t * t * (3.0 - 2.0 * t);
+            self.graph_scene_rect = egui::Rect::from_min_max(
+                tween.from.min + (tween.to.min - tween.from.min) * eased,
+                tween.from.max + (tween.to.max - tween.from.max) * eased,
+            );
+            if elapsed >= TRANSITION_DURATION {
+                self.graph_camera_tween = None;
+            }
+        }
+
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
@@ -3868,26 +3915,32 @@ impl App {
         if rename_cancel {
             self.renaming_group = None;
         }
-        // Entering/leaving a group resets the view the same way "Reset
-        // View" does -- keeping whatever pan/zoom the old level happened
-        // to be at would likely frame empty space rather than the new
-        // level's own nodes. `current_group` is updated first so
-        // `fit_all_nodes_scene_rect` bounds the level actually being
-        // switched *to*, not the one just left. Settling *before* fitting
-        // matters: the new level's members may never have been settled
-        // before (every group created via drag-and-drop starts with its
-        // members wherever the drop happened, often nearly overlapping)
-        // -- fitting first would frame their old, pre-settle positions,
-        // which then jump to their real spacing the moment the regular
-        // per-frame settle-check caught up one frame later, with nothing
-        // to re-fit the now-stale viewport. Updating `graph_settled_key`
-        // here too avoids that same settle running a second time on the
-        // very next frame.
+        // Entering/leaving a group eases the camera to the same target
+        // "Reset View" would jump to instantly -- keeping whatever pan/zoom
+        // the old level happened to be at would likely frame empty space
+        // rather than the new level's own nodes. `current_group` is updated
+        // first so `fit_all_nodes_scene_rect` bounds the level actually
+        // being switched *to*, not the one just left. Settling *before*
+        // fitting matters: the new level's members may never have been
+        // settled before (every group created via drag-and-drop starts with
+        // its members wherever the drop happened, often nearly overlapping)
+        // -- fitting first would target their old, pre-settle positions,
+        // which then jump to their real spacing mid-animation once the
+        // regular per-frame settle-check caught up one frame later.
+        // Updating `graph_settled_key` here too avoids that same settle
+        // running a second time on the very next frame. See
+        // `GraphCameraTween`'s doc comment for why the actual camera move
+        // eases instead of snapping, and why that's a separate mechanism
+        // from the Tab<->Graph `Transition` below.
         if let Some(id) = group_entered {
             self.current_group = Some(id);
             self.settle_current_level();
             self.graph_settled_key = Some(self.current_level_settle_key());
-            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            self.graph_camera_tween = Some(GraphCameraTween {
+                from: self.graph_scene_rect,
+                to: self.fit_all_nodes_scene_rect(),
+                start: std::time::Instant::now(),
+            });
             // A rectangle-selection belongs to the level it was drawn on —
             // carrying it into a different level left the toolbar's "Group
             // Selected"/"Close Selected" buttons acting on tabs that aren't
@@ -3899,7 +3952,11 @@ impl App {
             self.current_group = None;
             self.settle_current_level();
             self.graph_settled_key = Some(self.current_level_settle_key());
-            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            self.graph_camera_tween = Some(GraphCameraTween {
+                from: self.graph_scene_rect,
+                to: self.fit_all_nodes_scene_rect(),
+                start: std::time::Instant::now(),
+            });
             self.renaming_group = None;
             self.selected_tabs.clear();
             self.rect_select_start = None;
