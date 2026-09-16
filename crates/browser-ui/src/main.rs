@@ -186,6 +186,34 @@ fn apply_style(ctx: &egui::Context) {
     });
 }
 
+/// Replaces egui's bundled default (`Ubuntu-Light`) with Nunito Sans,
+/// inserted ahead of it in the proportional family rather than instead of
+/// it — a font this app doesn't ship a weight for, or any glyph outside
+/// Nunito Sans's own coverage, still falls back to the bundled default
+/// (and from there to egui's bundled emoji/symbol fonts) instead of
+/// tofu-boxing. Picked over the OS's own Segoe UI for one concrete
+/// reason: `egui`/`ab_glyph` needs the actual font bytes at build time,
+/// and there's no equivalent of a browser's "ask the OS for this family"
+/// for a native GPU-rendered glyph atlas — bundling a real file was
+/// required either way, so the choice came down to which file, not
+/// whether to bundle one. Picked from a side-by-side comparison of
+/// ten-odd candidates -- kept here as a settled default, not a final
+/// verdict; worth revisiting if the app's character ever calls for
+/// something else.
+fn apply_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "NunitoSans".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/NunitoSans.ttf"
+        ))),
+    );
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(0, "NunitoSans".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 fn engine_label(kind: EngineKind) -> &'static str {
     match kind {
         EngineKind::Servo => "Servo",
@@ -653,6 +681,7 @@ impl Default for App {
     fn default() -> Self {
         let egui_ctx = egui::Context::default();
         apply_style(&egui_ctx);
+        apply_fonts(&egui_ctx);
         let settings = Settings::load();
         Self {
             window: None,
