@@ -59,6 +59,16 @@ pub enum DebugCommand {
     /// ends up highlighted.
     ArrowDown,
     ArrowUp,
+    /// Graph-view keyboard navigation equivalents -- see
+    /// `App::move_graph_focus`/`open_focused_graph_node`. Separate from
+    /// `ArrowDown`/`ArrowUp` above (those are address-bar-dropdown-specific)
+    /// since Graph view's arrow keys move in all four directions and do a
+    /// different thing entirely.
+    GraphFocusLeft,
+    GraphFocusRight,
+    GraphFocusUp,
+    GraphFocusDown,
+    GraphOpenFocused,
     /// Sends each character as an `InputEvent::Char` to the focused tab's
     /// page — for typing into a page's own text field, not the address bar.
     TypeIntoPage(String),
@@ -236,6 +246,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ESCAPE" => Some(DebugCommand::Escape),
         "ARROWDOWN" => Some(DebugCommand::ArrowDown),
         "ARROWUP" => Some(DebugCommand::ArrowUp),
+        "GRAPHLEFT" => Some(DebugCommand::GraphFocusLeft),
+        "GRAPHRIGHT" => Some(DebugCommand::GraphFocusRight),
+        "GRAPHUP" => Some(DebugCommand::GraphFocusUp),
+        "GRAPHDOWN" => Some(DebugCommand::GraphFocusDown),
+        "GRAPHOPEN" => Some(DebugCommand::GraphOpenFocused),
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),

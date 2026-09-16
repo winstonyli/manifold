@@ -1437,6 +1437,76 @@ impl App {
         )
     }
 
+    /// Directional spatial navigation for arrow-key graph focus: among tab
+    /// nodes at the current level lying roughly in `dir` from `from`,
+    /// returns whichever minimizes `along + perp * 2.0` (distance in the
+    /// travel direction, penalized for straying sideways) -- the standard
+    /// heuristic behind CSS's spatial navigation, picking the node that
+    /// "feels like" the next one over rather than just the closest by raw
+    /// distance (which would favor a diagonal neighbor over a same-row one).
+    /// Only tabs are candidates, not downloads/groups: `self.focused` is a
+    /// tab id everywhere else it's read (address bar sync, Ctrl+W, "+ New
+    /// Tab" parent), so keeping it tab-only here avoids handing those call
+    /// sites an id type they don't expect.
+    fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
+        let mut best: Option<(String, f32)> = None;
+        for id in self.tabs_at_current_level() {
+            let Some(node) = self.tabs.get(&id) else { continue };
+            let delta = node.pos - from;
+            let along = delta.dot(dir);
+            if along <= 0.5 {
+                continue;
+            }
+            let perp = (delta - dir * along).length();
+            let score = along + perp * 2.0;
+            if best.as_ref().map_or(true, |(_, s)| score < *s) {
+                best = Some((id, score));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// Moves `self.focused` to the nearest tab node in `dir` (see
+    /// `nearest_tab_in_direction`), or -- if nothing at this level is
+    /// currently focused -- just picks a starting node so the first arrow
+    /// press has something to move from next time. Shared by
+    /// `build_graph_ui`'s real-keyboard arrow handling and the headless
+    /// `GRAPHLEFT`/`GRAPHRIGHT`/`GRAPHUP`/`GRAPHDOWN` debug commands (a real
+    /// `WindowEvent::KeyboardInput` can't be synthesized from application
+    /// code -- see `debug_control`'s own doc comment -- so headless mode
+    /// calls this directly instead).
+    fn move_graph_focus(&mut self, dir: egui::Vec2) {
+        let from_at_level = self
+            .focused
+            .as_ref()
+            .filter(|id| self.tabs.get(id.as_str()).is_some_and(|n| n.group == self.current_group))
+            .and_then(|id| self.tabs.get(id))
+            .map(|n| n.pos);
+        match from_at_level {
+            Some(from) => {
+                if let Some(next) = self.nearest_tab_in_direction(from, dir) {
+                    self.focused = Some(next);
+                }
+            }
+            None => {
+                if let Some(first) = self.tabs_at_current_level().into_iter().next() {
+                    self.focused = Some(first);
+                }
+            }
+        }
+    }
+
+    /// Opens whichever node `move_graph_focus` last landed on, the same way
+    /// clicking its card does -- the Enter-key equivalent of graph-view
+    /// keyboard navigation, and the headless `GRAPHOPEN` command.
+    fn open_focused_graph_node(&mut self) {
+        if let Some(id) = self.focused.clone() {
+            if self.tabs.get(&id).is_some_and(|n| n.group == self.current_group) {
+                self.start_transition_to_tab(&id);
+            }
+        }
+    }
+
     /// Runs the force-directed layout to convergence for whichever level
     /// `self.current_group` is currently viewing, then stops -- unlike the
     /// old always-on-every-frame simulation, positions are static between
@@ -2881,6 +2951,39 @@ impl App {
             }
         }
 
+        // Arrow-key graph navigation: moves `self.focused` to the nearest
+        // tab node in the pressed direction, reusing the same field the
+        // ACCENT border below already highlights and every other
+        // "act on the focused tab" path (Ctrl+W, "+ New Tab"'s parent,
+        // Enter/click-to-open) already reads -- so a keyboard-selected node
+        // behaves exactly like a clicked one, just without the view
+        // transition. Gated on the settings popup and group-rename text
+        // field both being closed so arrow keys still do their normal job
+        // there instead of hijacking focus underneath an open widget.
+        if !self.settings_open && self.renaming_group.is_none() {
+            let dir = ui.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    Some(egui::vec2(1.0, 0.0))
+                } else if i.key_pressed(egui::Key::ArrowLeft) {
+                    Some(egui::vec2(-1.0, 0.0))
+                } else if i.key_pressed(egui::Key::ArrowDown) {
+                    Some(egui::vec2(0.0, 1.0))
+                } else if i.key_pressed(egui::Key::ArrowUp) {
+                    Some(egui::vec2(0.0, -1.0))
+                } else {
+                    None
+                }
+            });
+            if let Some(dir) = dir {
+                self.move_graph_focus(dir);
+            }
+            // Enter opens whatever arrow-key navigation landed on, the same
+            // way clicking the node's card does.
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.open_focused_graph_node();
+            }
+        }
+
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
         // cursor) via egui's built-in `Scene` container — everything drawn
         // inside `add_contents` below is in the same world-space coordinates
@@ -4084,10 +4187,34 @@ impl App {
                 self.suggestion_fetcher.note_text_changed(&text);
                 self.address_bar_text = text;
             }
-            DebugCommand::Enter => self.pending_debug_enter = true,
-            DebugCommand::Escape => self.pending_debug_escape = true,
-            DebugCommand::ArrowDown => self.pending_debug_arrow_down = true,
-            DebugCommand::ArrowUp => self.pending_debug_arrow_up = true,
+            // Only `build_tab_ui` ever consumes these four (`std::mem::take`,
+            // same as a real key press), and it only runs while genuinely in
+            // Tab view with no transition animating -- setting the flag
+            // outside that window left it stuck `true` indefinitely (a real
+            // key press instead just evaporates unconsumed at end of frame,
+            // egui's `InputState` isn't a sticky latch the way this is).
+            // Found live: an `ESCAPE` sent while already in Graph view (a
+            // common "make sure we're in Graph view" test-setup step) stayed
+            // pending and fired the moment ANY later command opened a tab,
+            // silently bouncing straight back out to Graph.
+            DebugCommand::Enter if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+                self.pending_debug_enter = true;
+            }
+            DebugCommand::Escape if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+                self.pending_debug_escape = true;
+            }
+            DebugCommand::ArrowDown if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+                self.pending_debug_arrow_down = true;
+            }
+            DebugCommand::ArrowUp if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+                self.pending_debug_arrow_up = true;
+            }
+            DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {}
+            DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
+            DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
+            DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
+            DebugCommand::GraphFocusDown => self.move_graph_focus(egui::vec2(0.0, 1.0)),
+            DebugCommand::GraphOpenFocused => self.open_focused_graph_node(),
             DebugCommand::TypeIntoPage(text) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.tabs.get_mut(&id) {
