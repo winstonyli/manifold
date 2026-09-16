@@ -2759,6 +2759,25 @@ impl App {
         // must live outside `self` while the closure below also borrows
         // `self` mutably, so it's round-tripped through a local instead of
         // borrowed from `self.graph_scene_rect` directly.
+        // Everything painted inside `Scene`'s closure lives in world-space
+        // coordinates that `Scene` itself then scales uniformly by the
+        // current zoom factor — a decoration sized in world units (a
+        // favicon, a dot, a button, label text) would otherwise shrink to
+        // illegible at `GRAPH_ZOOM_MIN` and balloon at `GRAPH_ZOOM_MAX`
+        // right along with the card. `inv_zoom` is the counter-scale: a
+        // decoration's world-space size becomes `desired_screen_px *
+        // inv_zoom`, so after `Scene`'s own scale multiplies it back out,
+        // it lands at a constant on-screen size regardless of zoom — using
+        // the exact same `outer_rect`/`graph_scene_rect` pair
+        // `graph_world_to_screen_transform` already derives the same scale
+        // factor from for the Tab<->Graph transition animation. The node
+        // card itself (`GRAPH_NODE_SIZE`) and the hover peek preview
+        // (`GRAPH_PEEK_SIZE`) are deliberately excluded — those represent
+        // actual zoomable content, not chrome, so they're meant to scale.
+        let scene_outer_rect = ui.available_rect_before_wrap();
+        let (zoom_scale, _) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let inv_zoom = 1.0 / zoom_scale;
+
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
@@ -2782,7 +2801,7 @@ impl App {
                             egui::Pos2::new(parent.pos.x, parent.pos.y),
                             egui::Pos2::new(node.pos.x, node.pos.y),
                         ],
-                        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                        egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
                     );
                 }
                 // Download nodes are always parented to a tab (never to
@@ -2802,7 +2821,7 @@ impl App {
                             egui::Pos2::new(parent.pos.x, parent.pos.y),
                             egui::Pos2::new(node.pos.x, node.pos.y),
                         ],
-                        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+                        egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
                     );
                 }
 
@@ -2826,7 +2845,7 @@ impl App {
                     } else {
                         ui.visuals().extreme_bg_color
                     };
-                    ui.painter().rect_filled(rect, 6.0, card_fill);
+                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     let (border_width, border_color) = if is_focused {
                         (2.5, ACCENT)
                     } else if is_hovered {
@@ -2836,8 +2855,8 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        6.0,
-                        egui::Stroke::new(border_width, border_color),
+                        6.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
 
@@ -2852,8 +2871,8 @@ impl App {
                         );
                     } else {
                         ui.put(
-                            egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0)),
-                            egui::Spinner::new().size(24.0),
+                            egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                            egui::Spinner::new().size(24.0 * inv_zoom),
                         );
                     }
 
@@ -2868,7 +2887,7 @@ impl App {
                         // pages are light-background, and plain text on top
                         // of one was unreadable without this.
                         let title_strip = egui::Rect::from_min_max(
-                            egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0),
+                            egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
                             thumb_rect.right_bottom(),
                         );
                         ui.painter().rect_filled(
@@ -2883,22 +2902,22 @@ impl App {
                         // strip and engine picker), and reads faster at this
                         // node's small size than another word would.
                         ui.painter().circle_filled(
-                            egui::Pos2::new(title_strip.left() + 8.0, title_strip.center().y),
-                            4.0,
+                            egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
+                            4.0 * inv_zoom,
                             engine_color(node.tab.kind),
                         );
                         ui.painter().text(
-                            egui::Pos2::new(title_strip.left() + 16.0, title_strip.center().y),
+                            egui::Pos2::new(title_strip.left() + 16.0 * inv_zoom, title_strip.center().y),
                             egui::Align2::LEFT_CENTER,
                             label,
-                            egui::FontId::default(),
+                            egui::FontId::proportional(14.0 * inv_zoom),
                             egui::Color32::WHITE,
                         );
                     }
                     if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
                         let favicon_rect = egui::Rect::from_min_size(
-                            rect.left_top() + egui::vec2(4.0, 4.0),
-                            FAVICON_SIZE,
+                            rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                            FAVICON_SIZE * inv_zoom,
                         );
                         ui.painter().image(
                             tex_id,
@@ -2917,8 +2936,8 @@ impl App {
                     // doc comment.
                     if self.tabs.get(&id).is_some_and(|n| n.audio_playing) {
                         ui.painter().circle_filled(
-                            rect.right_top() + egui::vec2(-8.0, 8.0),
-                            4.0,
+                            rect.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom,
+                            4.0 * inv_zoom,
                             egui::Color32::from_rgb(80, 200, 120),
                         );
                     }
@@ -2936,7 +2955,7 @@ impl App {
                     // doesn't also focus the node into Tab view.
                     let node_pinned = self.tabs.get(&id).is_some_and(|n| n.pinned);
                     let pin_rect =
-                        egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0));
+                        egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
                     let pin_response = ui.interact(
                         pin_rect,
                         egui::Id::new(("graph_node_pin", id.as_str())),
@@ -2948,12 +2967,12 @@ impl App {
                         ui.visuals().weak_text_color()
                     };
                     if node_pinned {
-                        ui.painter().circle_filled(pin_rect.center(), 5.0, pin_color);
+                        ui.painter().circle_filled(pin_rect.center(), 5.0 * inv_zoom, pin_color);
                     } else {
                         ui.painter().circle_stroke(
                             pin_rect.center(),
-                            5.0,
-                            egui::Stroke::new(1.5, pin_color),
+                            5.0 * inv_zoom,
+                            egui::Stroke::new(1.5 * inv_zoom, pin_color),
                         );
                     }
                     if pin_response.clicked() {
@@ -2969,7 +2988,7 @@ impl App {
                     // real browser tab strips make for their own close buttons).
                     if is_hovered {
                         let close_rect =
-                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
+                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
                         let close_response = ui.interact(
                             close_rect,
                             egui::Id::new(("graph_node_close", id.as_str())),
@@ -2980,18 +2999,18 @@ impl App {
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
                         ui.painter().rect_stroke(
                             close_rect,
-                            4.0,
-                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
                         ui.painter().text(
                             close_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "x",
-                            egui::FontId::default(),
+                            egui::FontId::proportional(14.0 * inv_zoom),
                             ui.visuals().text_color(),
                         );
                         if close_response.clicked() {
@@ -3064,7 +3083,7 @@ impl App {
                     } else {
                         ui.visuals().extreme_bg_color
                     };
-                    ui.painter().rect_filled(rect, 6.0, card_fill);
+                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
                     } else {
@@ -3072,8 +3091,8 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        6.0,
-                        egui::Stroke::new(border_width, border_color),
+                        6.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
 
@@ -3088,24 +3107,24 @@ impl App {
                         // whatever font it actually has glyphs for (see the
                         // audio-indicator dot's own doc comment).
                         ui.painter().text(
-                            rect.center_top() + egui::vec2(0.0, 10.0),
+                            rect.center_top() + egui::vec2(0.0, 10.0) * inv_zoom,
                             egui::Align2::CENTER_TOP,
                             "\u{2913}",
-                            egui::FontId::proportional(18.0),
+                            egui::FontId::proportional(18.0 * inv_zoom),
                             ui.visuals().text_color(),
                         );
                         ui.painter().text(
-                            rect.center_bottom() + egui::vec2(0.0, -8.0),
+                            rect.center_bottom() + egui::vec2(0.0, -8.0) * inv_zoom,
                             egui::Align2::CENTER_BOTTOM,
                             filename,
-                            egui::FontId::default(),
+                            egui::FontId::proportional(14.0 * inv_zoom),
                             ui.visuals().text_color(),
                         );
                     }
 
                     if is_hovered {
                         let close_rect =
-                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0));
+                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
                         let close_response = ui.interact(
                             close_rect,
                             egui::Id::new(("graph_download_node_close", id.as_str())),
@@ -3116,18 +3135,18 @@ impl App {
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
                         ui.painter().rect_stroke(
                             close_rect,
-                            4.0,
-                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
                         ui.painter().text(
                             close_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "x",
-                            egui::FontId::default(),
+                            egui::FontId::proportional(14.0 * inv_zoom),
                             ui.visuals().text_color(),
                         );
                         if close_response.clicked() {
@@ -3177,11 +3196,11 @@ impl App {
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(rect, 6.0, card_fill);
+                        ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                         ui.painter().rect_stroke(
                             rect,
-                            6.0,
-                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 }, ACCENT),
+                            6.0 * inv_zoom,
+                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 } * inv_zoom, ACCENT),
                             egui::StrokeKind::Inside,
                         );
 
@@ -3192,17 +3211,17 @@ impl App {
                                 .filter(|n| n.group.as_deref() == Some(id.as_str()))
                                 .count();
                             ui.painter().text(
-                                rect.center_top() + egui::vec2(0.0, 14.0),
+                                rect.center_top() + egui::vec2(0.0, 14.0) * inv_zoom,
                                 egui::Align2::CENTER_TOP,
                                 &node.name,
-                                egui::FontId::proportional(16.0),
+                                egui::FontId::proportional(16.0 * inv_zoom),
                                 ui.visuals().text_color(),
                             );
                             ui.painter().text(
-                                rect.center_bottom() + egui::vec2(0.0, -10.0),
+                                rect.center_bottom() + egui::vec2(0.0, -10.0) * inv_zoom,
                                 egui::Align2::CENTER_BOTTOM,
                                 format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
-                                egui::FontId::default(),
+                                egui::FontId::proportional(14.0 * inv_zoom),
                                 ui.visuals().weak_text_color(),
                             );
                         }
@@ -3210,7 +3229,7 @@ impl App {
                         if is_hovered {
                             let close_rect = egui::Rect::from_center_size(
                                 rect.right_top(),
-                                egui::vec2(18.0, 18.0),
+                                egui::vec2(18.0, 18.0) * inv_zoom,
                             );
                             let close_response = ui.interact(
                                 close_rect,
@@ -3222,18 +3241,18 @@ impl App {
                             } else {
                                 ui.visuals().extreme_bg_color
                             };
-                            ui.painter().rect_filled(close_rect, 4.0, close_fill);
+                            ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
                             ui.painter().rect_stroke(
                                 close_rect,
-                                4.0,
-                                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                                4.0 * inv_zoom,
+                                egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                                 egui::StrokeKind::Inside,
                             );
                             ui.painter().text(
                                 close_rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 "x",
-                                egui::FontId::default(),
+                                egui::FontId::proportional(14.0 * inv_zoom),
                                 ui.visuals().text_color(),
                             );
                             if close_response.clicked() {
