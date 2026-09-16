@@ -1422,6 +1422,21 @@ impl App {
         bounds.expand(MARGIN)
     }
 
+    /// `(level, node_count)` for whichever level `self.current_group` is
+    /// currently viewing -- the key `build_graph_ui`'s settle-check
+    /// compares against `graph_settled_key`, factored out so every call
+    /// site that changes `current_group` (the per-frame check, and
+    /// entering/leaving a group) computes it the same way rather than
+    /// duplicating the formula.
+    fn current_level_settle_key(&self) -> (Option<String>, usize) {
+        (
+            self.current_group.clone(),
+            self.tabs_at_current_level().len()
+                + self.downloads_at_current_level().len()
+                + if self.current_group.is_none() { self.groups.len() } else { 0 },
+        )
+    }
+
     /// Runs the force-directed layout to convergence for whichever level
     /// `self.current_group` is currently viewing, then stops -- unlike the
     /// old always-on-every-frame simulation, positions are static between
@@ -2859,12 +2874,7 @@ impl App {
         // independent of this, and everything else should stay exactly
         // where it is for the whole gesture.
         if self.dragging.is_none() {
-            let current_key = (
-                self.current_group.clone(),
-                self.tabs_at_current_level().len()
-                    + self.downloads_at_current_level().len()
-                    + if self.current_group.is_none() { self.groups.len() } else { 0 },
-            );
+            let current_key = self.current_level_settle_key();
             if self.graph_settled_key.as_ref() != Some(&current_key) {
                 self.settle_current_level();
                 self.graph_settled_key = Some(current_key);
@@ -3597,13 +3607,26 @@ impl App {
         // to be at would likely frame empty space rather than the new
         // level's own nodes. `current_group` is updated first so
         // `fit_all_nodes_scene_rect` bounds the level actually being
-        // switched *to*, not the one just left.
+        // switched *to*, not the one just left. Settling *before* fitting
+        // matters: the new level's members may never have been settled
+        // before (every group created via drag-and-drop starts with its
+        // members wherever the drop happened, often nearly overlapping)
+        // -- fitting first would frame their old, pre-settle positions,
+        // which then jump to their real spacing the moment the regular
+        // per-frame settle-check caught up one frame later, with nothing
+        // to re-fit the now-stale viewport. Updating `graph_settled_key`
+        // here too avoids that same settle running a second time on the
+        // very next frame.
         if let Some(id) = group_entered {
             self.current_group = Some(id);
+            self.settle_current_level();
+            self.graph_settled_key = Some(self.current_level_settle_key());
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
         if leave_group_requested {
             self.current_group = None;
+            self.settle_current_level();
+            self.graph_settled_key = Some(self.current_level_settle_key());
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
             self.renaming_group = None;
         }
