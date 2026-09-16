@@ -582,6 +582,16 @@ struct App {
     /// currently hovered (drives the peek-preview popup).
     dragging: Option<String>,
     hovered: Option<String>,
+    /// Graph view rectangle-select: `Some` (holding the screen-space anchor
+    /// point) for exactly the duration of a right-button drag over the
+    /// graph panel -- the right button specifically, since the primary
+    /// button is already Scene's own pan gesture (`drag_pan_buttons` is
+    /// restricted to `PRIMARY` in `build_graph_ui` so the two never fight
+    /// over the same drag). `selected_tabs` is the committed result, kept
+    /// until the next selection (a fresh right-drag) or an explicit clear
+    /// (a plain click on empty background, or Escape).
+    rect_select_start: Option<egui::Pos2>,
+    selected_tabs: HashSet<String>,
     /// The graph view's current pan/zoom state (visible world-space rect),
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
@@ -771,6 +781,8 @@ impl Default for App {
             dropdown_highlighted: None,
             dragging: None,
             hovered: None,
+            rect_select_start: None,
+            selected_tabs: HashSet::new(),
             graph_scene_rect: default_graph_scene_rect(),
             graph_settled_key: None,
             headless: false,
@@ -2840,6 +2852,8 @@ impl App {
         let mut rename_cancel = false;
 
         let mut reset_view = false;
+        let mut group_selected_requested = false;
+        let mut close_selected_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
@@ -2895,6 +2909,26 @@ impl App {
                     }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
+                    }
+                    // Rectangle-select's own action bar: only shown once a
+                    // right-drag has actually selected something (see the
+                    // gesture handling below, near `Scene::new()`).
+                    if !self.selected_tabs.is_empty() {
+                        // Matches "+ New Group" above: no nesting in this
+                        // first cut, so grouping is a top-level-only action.
+                        // Rectangle-select itself and closing a selection
+                        // both still work fine inside a group's own subgraph.
+                        if self.current_group.is_none()
+                            && ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked()
+                        {
+                            group_selected_requested = true;
+                        }
+                        if ui
+                            .button(format!("Close Selected ({})", self.selected_tabs.len()))
+                            .clicked()
+                        {
+                            close_selected_requested = true;
+                        }
                     }
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
@@ -2982,6 +3016,12 @@ impl App {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
+            // Escape clears a rectangle-select selection -- Graph view has
+            // no other use for Escape (unlike Tab view, where it steps back
+            // to Graph), so this is a plain no-op the rest of the time.
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.selected_tabs.clear();
+            }
         }
 
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
@@ -3034,9 +3074,63 @@ impl App {
             scene_outer_rect,
         );
 
+        // Rectangle-select: a right-button drag over the graph panel
+        // selects every tab node its screen-space rectangle overlaps.
+        // Deliberately the secondary button, not primary -- primary is
+        // Scene's own pan gesture, and `.drag_pan_buttons(PRIMARY)` below
+        // restricts Scene to just that button so the two never compete for
+        // the same drag. Read directly off `ui.input`'s raw pointer state
+        // rather than through a `Response`: this needs to work anywhere
+        // over the panel, including empty space no widget claims, and
+        // egui's own hit-testing/consumption (which a `Response` reflects)
+        // is irrelevant to a plain "where is the mouse" query.
+        let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        if secondary_down && self.rect_select_start.is_none() {
+            if let Some(pos) = pointer_pos.filter(|p| scene_outer_rect.contains(*p)) {
+                self.rect_select_start = Some(pos);
+            }
+        }
+        if let Some(start) = self.rect_select_start {
+            let current = pointer_pos.unwrap_or(start);
+            let screen_rect = egui::Rect::from_two_pos(start, current);
+            overlay_painter.rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 35),
+            );
+            overlay_painter.rect_stroke(
+                screen_rect,
+                0.0,
+                egui::Stroke::new(1.5, ACCENT),
+                egui::StrokeKind::Inside,
+            );
+            if !secondary_down {
+                self.rect_select_start = None;
+                let world_rect = egui::Rect::from_two_pos(
+                    ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
+                    ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
+                );
+                self.selected_tabs = self
+                    .tabs_at_current_level()
+                    .into_iter()
+                    .filter(|id| {
+                        self.tabs.get(id).is_some_and(|node| {
+                            let card = egui::Rect::from_center_size(
+                                egui::Pos2::new(node.pos.x, node.pos.y),
+                                GRAPH_NODE_SIZE,
+                            );
+                            world_rect.intersects(card)
+                        })
+                    })
+                    .collect();
+            }
+        }
+
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
+            .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
             .show(ui, &mut scene_rect, |ui| {
                 // Edges first so node cards paint on top of the lines feeding them.
                 // Both endpoints must share the currently-viewed level —
@@ -3095,6 +3189,7 @@ impl App {
 
                     let is_focused = self.focused.as_deref() == Some(id.as_str());
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+                    let is_selected = self.selected_tabs.contains(&id);
 
                     let card_fill = if is_hovered {
                         ui.visuals().extreme_bg_color.gamma_multiply(1.35)
@@ -3115,6 +3210,18 @@ impl App {
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
+                    // Rectangle-select's own highlight: a translucent accent
+                    // wash on top of everything painted so far, distinct
+                    // from the focus border above (solid outline only) so a
+                    // multi-selected node still reads differently from the
+                    // single keyboard-focused one when both apply at once.
+                    if is_selected {
+                        ui.painter().rect_filled(
+                            rect,
+                            6.0 * inv_zoom,
+                            egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
+                        );
+                    }
 
                     let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
                     let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
@@ -3661,6 +3768,7 @@ impl App {
         }
         if let Some(id) = clicked_focus {
             if self.tabs.contains_key(&id) {
+                self.selected_tabs.clear();
                 self.start_transition_to_tab(&id);
             }
         }
@@ -3681,6 +3789,34 @@ impl App {
             let name = format!("Group {}", self.groups.len() + 1);
             self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
             self.group_order.push(id);
+        }
+        if group_selected_requested && !self.selected_tabs.is_empty() {
+            let id = self.alloc_group_id();
+            // Centroid of the selected cards, rather than the usual
+            // world-center-plus-jitter spawn point: these tabs already have
+            // real positions the user just drew a box around, so the new
+            // group card should appear where they actually are, not at the
+            // origin of a possibly-distant part of the graph.
+            let count = self.selected_tabs.len() as f32;
+            let sum = self
+                .selected_tabs
+                .iter()
+                .filter_map(|id| self.tabs.get(id))
+                .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
+            let pos = sum / count;
+            let name = format!("Group {}", self.groups.len() + 1);
+            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
+            self.group_order.push(id.clone());
+            for tab_id in self.selected_tabs.drain() {
+                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                    node.group = Some(id.clone());
+                }
+            }
+        }
+        if close_selected_requested {
+            for id in std::mem::take(&mut self.selected_tabs) {
+                self.close_tab(&id);
+            }
         }
         // Applied before `leave_group_requested` below: the "◀ Groups"
         // button and the rename `TextEdit` share one toolbar row, so
