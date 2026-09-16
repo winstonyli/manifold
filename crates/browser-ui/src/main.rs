@@ -152,7 +152,7 @@ fn apply_style(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
 
-        let corner_radius: egui::CornerRadius = 6u8.into();
+        let corner_radius: egui::CornerRadius = 3u8.into();
         style.visuals.widgets.noninteractive.corner_radius = corner_radius;
         style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
         style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
@@ -182,8 +182,8 @@ fn apply_style(ctx: &egui::Context) {
         style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
         style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
-        style.visuals.window_corner_radius = 8u8.into();
-        style.visuals.menu_corner_radius = 8u8.into();
+        style.visuals.window_corner_radius = 4u8.into();
+        style.visuals.menu_corner_radius = 4u8.into();
         style.visuals.window_fill = TOOLBAR_FILL;
         style.visuals.panel_fill = BG;
         style.visuals.extreme_bg_color = BG;
@@ -893,7 +893,7 @@ impl App {
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
+                    .corner_radius(4u8)
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
                         ui.set_min_width(200.0);
@@ -2229,7 +2229,7 @@ impl App {
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
+                    .corner_radius(4u8)
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -2329,7 +2329,7 @@ impl App {
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
+                    .corner_radius(3u8)
                     .inner_margin(egui::Margin::symmetric(6, 4))
                     .show(ui, |ui| {
                         if ui.button("Open in new tab").clicked() {
@@ -2376,7 +2376,7 @@ impl App {
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
+                    .corner_radius(3u8)
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.label(format!("Saved {path}"));
@@ -2723,7 +2723,7 @@ impl App {
                         egui::Frame::default()
                             .fill(TOOLBAR_FILL)
                             .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                            .corner_radius(6u8)
+                            .corner_radius(4u8)
                             .inner_margin(egui::Margin::same(4))
                             .show(ui, |ui| {
                                 ui.set_width(rect.width());
