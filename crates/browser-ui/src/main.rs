@@ -1739,7 +1739,20 @@ impl App {
     /// `focus_tab` is also used for a same-view tab switch (accepting an
     /// open-tab autocomplete suggestion, already in Tab view), where an
     /// expand-from-a-graph-node animation wouldn't make sense.
+    ///
+    /// Ignored while a `Transition` is already running: `build_ui` keeps
+    /// rendering Graph view (with all its normal node-click handling) as
+    /// the backdrop for a transition's whole duration, so a second click
+    /// during the first click's 220ms animation would otherwise retarget
+    /// `self.transition` mid-flight — the animation would jump to the new
+    /// node/tab partway through, and `focus_tab` would hide the first
+    /// node's still-animating tab out from under it. Found live: clicking a
+    /// tab node multiple times in quick succession visibly glitched the
+    /// expand animation instead of queuing or ignoring the extra clicks.
     fn start_transition_to_tab(&mut self, id: &str) {
+        if self.transition.is_some() {
+            return;
+        }
         self.focus_tab(id);
         // `focus_tab` already set `view_mode = Tab`, but `build_ui` renders
         // Graph view as the backdrop for as long as `self.transition` is
