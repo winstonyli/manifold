@@ -102,10 +102,35 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// dark gray-on-gray.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
 
+/// The window/content-area base — behind every panel, the darkest layer.
+/// Distinct from `TOOLBAR_FILL` on purpose: egui's own default has exactly
+/// one dark gray for everything (panels, buttons, the app background all
+/// read as the same flat plane), which is the single biggest reason this
+/// app used to look like an unstyled egui demo rather than real chrome.
+/// This + `TOOLBAR_FILL` + `SURFACE_RAISED` form a three-step depth ladder
+/// (background < panel < raised widget) that egui's stock palette doesn't
+/// have at all.
+const BG: egui::Color32 = egui::Color32::from_rgb(16, 17, 20);
+/// A button/field's own resting fill, one step up from `TOOLBAR_FILL` — the
+/// panel it sits on. Also used for the graph card's engine-picker `Frame`.
+/// Deliberately a wide jump from `TOOLBAR_FILL`, not a subtle one — the
+/// point is a button reads as its own raised chip at a glance, not just
+/// under close pixel inspection.
+const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(54, 58, 68);
+/// Hover state, one step up again — every interactive widget in this app's
+/// toolbar/popups visibly lightens on hover, which stock egui's near-
+/// identical inactive/hovered grays don't make obvious at a glance.
+const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(72, 77, 90);
+const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(230, 231, 235);
+const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(148, 151, 161);
+
 /// Applied once at startup (see `Default for App`). Bumps corner rounding
 /// and spacing up from egui's fairly tight defaults (which read as "plain
-/// tool window" rather than "app chrome") and threads `ACCENT` through
-/// selection/hyperlink/focus colors.
+/// tool window" rather than "app chrome"), replaces egui's stock flat-gray
+/// widget palette with the `BG`/`TOOLBAR_FILL`/`SURFACE_RAISED`/
+/// `SURFACE_HOVER` depth ladder above, and threads `ACCENT` through
+/// selection/hyperlink/focus/active-widget colors so the whole chrome reads
+/// as one deliberately designed theme rather than an unstyled egui app.
 fn apply_style(ctx: &egui::Context) {
     // `all_styles_mut` (not `style`/`set_style`, egui 0.36 keeps separate
     // dark/light styles internally) applies the same tweaks regardless of
@@ -117,21 +142,47 @@ fn apply_style(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
 
         let corner_radius: egui::CornerRadius = 6u8.into();
-        for widgets in [
-            &mut style.visuals.widgets.noninteractive,
-            &mut style.visuals.widgets.inactive,
-            &mut style.visuals.widgets.hovered,
-            &mut style.visuals.widgets.active,
-            &mut style.visuals.widgets.open,
-        ] {
-            widgets.corner_radius = corner_radius;
-        }
+        style.visuals.widgets.noninteractive.corner_radius = corner_radius;
+        style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
+        style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
+        style.visuals.widgets.noninteractive.fg_stroke.color = TEXT_WEAK;
+
+        style.visuals.widgets.inactive.corner_radius = corner_radius;
+        style.visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
+        style.visuals.widgets.inactive.weak_bg_fill = SURFACE_RAISED;
+        style.visuals.widgets.inactive.fg_stroke.color = TEXT_PRIMARY;
+        style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, SURFACE_HOVER);
+
+        style.visuals.widgets.hovered.corner_radius = corner_radius;
+        style.visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
+        style.visuals.widgets.hovered.weak_bg_fill = SURFACE_HOVER;
+        style.visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+
+        style.visuals.widgets.active.corner_radius = corner_radius;
+        style.visuals.widgets.active.bg_fill = ACCENT;
+        style.visuals.widgets.active.weak_bg_fill = ACCENT;
+        style.visuals.widgets.active.fg_stroke.color = egui::Color32::BLACK;
+        style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+
+        style.visuals.widgets.open.corner_radius = corner_radius;
+        style.visuals.widgets.open.bg_fill = SURFACE_RAISED;
+        style.visuals.widgets.open.weak_bg_fill = SURFACE_RAISED;
+        style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
+        style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+
         style.visuals.window_corner_radius = 8u8.into();
         style.visuals.menu_corner_radius = 8u8.into();
+        style.visuals.window_fill = TOOLBAR_FILL;
+        style.visuals.panel_fill = BG;
+        style.visuals.extreme_bg_color = BG;
+        style.visuals.faint_bg_color = SURFACE_RAISED;
+        style.visuals.window_stroke = egui::Stroke::new(1.0, SURFACE_RAISED);
 
         style.visuals.selection.bg_fill = ACCENT;
         style.visuals.selection.stroke.color = egui::Color32::WHITE;
         style.visuals.hyperlink_color = ACCENT;
+        style.visuals.override_text_color = None;
     });
 }
 
