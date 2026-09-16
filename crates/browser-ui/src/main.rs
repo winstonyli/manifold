@@ -482,17 +482,23 @@ struct GroupNode {
 }
 
 /// Snapshot of a tab taken by `close_tab` just before removal, enough to
-/// respawn it via `Ctrl+Shift+T`/headless `REOPENTAB` — `App::last_closed_
-/// tab` holds only the single most recently closed one (a full stack, like
-/// a real browser's, isn't worth the extra state for this project's scope).
-/// Not cookies/localStorage/scroll position, same "graph shape only"
-/// limitation session restore and an engine swap already both have.
+/// respawn it via `Ctrl+Shift+T`/headless `REOPENTAB` (the last one) or the
+/// "Recently Closed" toolbar dropdown (any specific one) — see `App::
+/// closed_tabs`. Not cookies/localStorage/scroll position, same "graph
+/// shape only" limitation session restore and an engine swap already both
+/// have.
 struct ClosedTab {
     url: String,
     kind: EngineKind,
     parent: Option<String>,
     group: Option<String>,
 }
+
+/// How many closed tabs `App::closed_tabs` remembers before dropping the
+/// oldest -- unbounded would leak slowly for a long-running session that
+/// opens/closes a lot of tabs, and a real browser's own "Recently closed"
+/// list is bounded too.
+const MAX_CLOSED_TABS: usize = 10;
 
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::EngineToHost::
@@ -740,9 +746,11 @@ struct App {
     /// while a fresh search is still in flight). See `EngineToHost::
     /// FindResult`'s doc comment for why `active_index` is always 0 on a
     /// WebKit tab and Servo tabs never populate this at all.
-    /// `Ctrl+Shift+T`/headless `REOPENTAB` respawns and clears this — see
-    /// `ClosedTab`'s own doc comment.
-    last_closed_tab: Option<ClosedTab>,
+    /// `Ctrl+Shift+T`/headless `REOPENTAB` respawns and removes the last
+    /// entry; the "Recently Closed" toolbar dropdown can also respawn (and
+    /// remove) any specific one — see `ClosedTab`'s own doc comment. Capped
+    /// at `MAX_CLOSED_TABS`, oldest dropped first.
+    closed_tabs: Vec<ClosedTab>,
 
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
@@ -785,6 +793,9 @@ struct App {
     /// view never show chrome simultaneously.
     settings: Settings,
     settings_open: bool,
+    /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
+    /// currently open -- see `App::build_recently_closed_popup`.
+    recently_closed_open: bool,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -861,7 +872,7 @@ impl Default for App {
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
-            last_closed_tab: None,
+            closed_tabs: Vec::new(),
             context_menu: None,
             save_toast: None,
             find_bar_open: false,
@@ -872,6 +883,7 @@ impl Default for App {
             tab_spawn_error: None,
             settings,
             settings_open: false,
+            recently_closed_open: false,
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,
@@ -1040,6 +1052,58 @@ impl App {
             });
         if close {
             self.settings_open = false;
+        }
+    }
+
+    /// The "Recently Closed" toolbar dropdown (Graph view, top level or
+    /// not -- unlike groups, this isn't level-scoped): every entry in
+    /// `self.closed_tabs`, most recently closed first, click one to respawn
+    /// exactly that tab and remove it from the list. `Ctrl+Shift+T`/
+    /// `REOPENTAB` only ever reaches the *last* entry; this is the way to
+    /// reopen an older one without reopening everything after it first.
+    fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+        let mut close = false;
+        let mut reopen_index: Option<usize> = None;
+        let area = egui::Area::new(egui::Id::new("recently_closed_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(220.0);
+                        ui.set_max_width(320.0);
+                        for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
+                            ui.horizontal(|ui| {
+                                engine_dot(ui, closed.kind, 8.0);
+                                if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click())).clicked() {
+                                    reopen_index = Some(index);
+                                }
+                            });
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| !area.response.rect.contains(pos) && !anchor_rect.contains(pos))
+        });
+
+        if let Some(index) = reopen_index {
+            let closed = self.closed_tabs.remove(index);
+            self.respawn_closed_tab(closed);
+            close = true;
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close || self.closed_tabs.is_empty() {
+            self.recently_closed_open = false;
         }
     }
 
@@ -1954,7 +2018,10 @@ impl App {
         else {
             return;
         };
-        self.last_closed_tab = Some(ClosedTab { url, kind, parent: parent.clone(), group });
+        self.closed_tabs.push(ClosedTab { url, kind, parent: parent.clone(), group });
+        if self.closed_tabs.len() > MAX_CLOSED_TABS {
+            self.closed_tabs.remove(0);
+        }
         for node in self.tabs.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
@@ -2169,16 +2236,22 @@ impl App {
         self.spawn_new_tab(parent, group, &home_page);
     }
 
-    /// `Ctrl+Shift+T` / headless `REOPENTAB` — respawns the single most
-    /// recently closed tab (see `ClosedTab`'s doc comment; a no-op if
-    /// nothing's been closed yet, or the record was already consumed by an
-    /// earlier reopen). Its original parent respawns it as a new root
-    /// instead if that parent was itself closed/no longer exists —
-    /// `spawn_new_tab_with_kind` already treats an unknown parent id this
-    /// way for graph-position purposes, and `process_manager::spawn_tab`
-    /// doesn't require a real parent tab to exist either.
+    /// `Ctrl+Shift+T` / headless `REOPENTAB` — respawns the most recently
+    /// closed tab (the end of `self.closed_tabs`; a no-op if the list is
+    /// empty). Its original parent respawns it as a new root instead if
+    /// that parent was itself closed/no longer exists — `spawn_new_tab_
+    /// with_kind` already treats an unknown parent id this way for
+    /// graph-position purposes, and `process_manager::spawn_tab` doesn't
+    /// require a real parent tab to exist either.
     fn reopen_closed_tab_shortcut(&mut self) {
-        let Some(closed) = self.last_closed_tab.take() else { return };
+        let Some(closed) = self.closed_tabs.pop() else { return };
+        self.respawn_closed_tab(closed);
+    }
+
+    /// Shared by `reopen_closed_tab_shortcut` (always the last entry) and
+    /// the "Recently Closed" toolbar dropdown (any specific entry the user
+    /// picked, already removed from `self.closed_tabs` by the caller).
+    fn respawn_closed_tab(&mut self, closed: ClosedTab) {
         // A stale/dissolved `closed.group` is sanitized centrally in
         // `handle_tab_spawn_result` once this spawn actually completes.
         self.spawn_new_tab_with_kind(closed.parent, closed.group, &closed.url, closed.kind);
@@ -3059,6 +3132,7 @@ impl App {
         let mut group_selected_requested = false;
         let mut close_selected_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
+        let mut recently_closed_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .frame(
@@ -3114,6 +3188,14 @@ impl App {
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
+                    if !self.closed_tabs.is_empty() {
+                        let label = format!("Recently Closed ({})", self.closed_tabs.len());
+                        let response = ui.button(label);
+                        if response.clicked() {
+                            self.recently_closed_open = !self.recently_closed_open;
+                        }
+                        recently_closed_button_rect = Some(response.rect);
+                    }
                     // Rectangle-select's own action bar: only shown once a
                     // right-drag has actually selected something (see the
                     // gesture handling below, near `Scene::new()`).
@@ -3147,6 +3229,11 @@ impl App {
         if self.settings_open {
             if let Some(rect) = settings_button_rect {
                 self.build_settings_popup(ui, rect);
+            }
+        }
+        if self.recently_closed_open {
+            if let Some(rect) = recently_closed_button_rect {
+                self.build_recently_closed_popup(ui, rect);
             }
         }
         self.build_group_context_menu(ui);
