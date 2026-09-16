@@ -3432,7 +3432,21 @@ impl App {
                                     .then(|| gid.clone())
                                 });
                                 if let Some(group_id) = dropped_on_group {
-                                    if let Some(node) = self.tabs.get_mut(&id) {
+                                    // Dragging one member of an active
+                                    // rectangle-selection joins the *whole*
+                                    // selection, not just the node the
+                                    // pointer happened to grab -- matches
+                                    // "Group Selected"/"Close Selected"
+                                    // already treating the selection as one
+                                    // unit. A plain (unselected) drag keeps
+                                    // the original single-tab behavior.
+                                    if self.selected_tabs.contains(&id) {
+                                        for tab_id in self.selected_tabs.drain() {
+                                            if let Some(node) = self.tabs.get_mut(&tab_id) {
+                                                node.group = Some(group_id.clone());
+                                            }
+                                        }
+                                    } else if let Some(node) = self.tabs.get_mut(&id) {
                                         node.group = Some(group_id);
                                     }
                                 } else {
