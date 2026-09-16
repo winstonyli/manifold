@@ -397,6 +397,16 @@ struct App {
     /// user last drilled into, same "graph view remembers its own state"
     /// treatment `graph_scene_rect`'s pan/zoom already gets.
     current_group: Option<String>,
+    /// `(group_id, draft_name)` while the toolbar's group-name button (only
+    /// shown while `current_group` is `Some`) has been clicked to rename
+    /// it — a real `egui::TextEdit` replaces the plain name button for
+    /// that one group until Enter commits or Escape cancels. Transient UI
+    /// state, not part of `GroupNode` itself.
+    renaming_group: Option<(String, String)>,
+    /// Set for exactly one frame when `renaming_group` is first set, same
+    /// one-shot `response.request_focus()` pattern as
+    /// `pending_focus_address_bar`.
+    pending_focus_rename: bool,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -599,6 +609,8 @@ impl Default for App {
             groups: HashMap::new(),
             group_order: Vec::new(),
             current_group: None,
+            renaming_group: None,
+            pending_focus_rename: false,
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
@@ -1186,6 +1198,9 @@ impl App {
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
+        }
+        if self.renaming_group.as_ref().is_some_and(|(g, _)| g == id) {
+            self.renaming_group = None;
         }
     }
 
@@ -2414,6 +2429,9 @@ impl App {
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut group_entered: Option<String> = None;
+        let mut rename_start: Option<(String, String)> = None;
+        let mut rename_commit: Option<String> = None;
+        let mut rename_cancel = false;
 
         let mut reset_view = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -2435,12 +2453,33 @@ impl App {
                         if ui.button("\u{25c0} Groups").clicked() {
                             leave_group_requested = true;
                         }
-                        let name = self
-                            .groups
-                            .get(group_id)
-                            .map(|g| g.name.as_str())
-                            .unwrap_or("Group");
-                        ui.label(name);
+                        let is_renaming =
+                            self.renaming_group.as_ref().is_some_and(|(id, _)| id == group_id);
+                        if is_renaming {
+                            if let Some((_, draft)) = &mut self.renaming_group {
+                                let response = ui
+                                    .add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                                if std::mem::take(&mut self.pending_focus_rename) {
+                                    response.request_focus();
+                                }
+                                if response.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        rename_cancel = true;
+                                    } else {
+                                        rename_commit = Some(draft.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            let name = self
+                                .groups
+                                .get(group_id)
+                                .map(|g| g.name.clone())
+                                .unwrap_or_default();
+                            if ui.button(&name).on_hover_text("Click to rename").clicked() {
+                                rename_start = Some((group_id.clone(), name));
+                            }
+                        }
                     }
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
@@ -3195,9 +3234,27 @@ impl App {
         if leave_group_requested {
             self.current_group = None;
             self.graph_scene_rect = default_graph_scene_rect();
+            self.renaming_group = None;
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
+        }
+        if let Some((id, draft)) = rename_start {
+            self.renaming_group = Some((id, draft));
+            self.pending_focus_rename = true;
+        }
+        if let Some(new_name) = rename_commit {
+            if let Some((id, _)) = self.renaming_group.take() {
+                let trimmed = new_name.trim();
+                if !trimmed.is_empty() {
+                    if let Some(node) = self.groups.get_mut(&id) {
+                        node.name = trimmed.to_string();
+                    }
+                }
+            }
+        }
+        if rename_cancel {
+            self.renaming_group = None;
         }
     }
 }
