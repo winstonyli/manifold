@@ -270,7 +270,7 @@ fn main() {
             }
         }
 
-        if let Some(url) = pending_popup.borrow_mut().take() {
+        for url in pending_popup.borrow_mut().drain(..) {
             let _ = control.send(&EngineToHost::OpenTabRequested { url });
         }
 
@@ -291,7 +291,7 @@ fn main() {
         }
 
         if let Some(pending) = &pending_download {
-            if let Some(path) = pending.borrow_mut().take() {
+            for path in pending.borrow_mut().drain(..) {
                 let _ = control.send(&EngineToHost::DownloadCompleted { path });
             }
         }

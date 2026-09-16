@@ -59,10 +59,15 @@ pub mod modifiers {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum InputEvent {
-    MouseMove { x: f64, y: f64 },
-    MouseDown { x: f64, y: f64, button: MouseButton },
-    MouseUp { x: f64, y: f64, button: MouseButton },
-    Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
+    /// `modifiers` (see the `modifiers` module) are the modifier keys held
+    /// *at the time of* this mouse event — added so a native-input-
+    /// injection engine (currently only CEF; the others are script-driven
+    /// and read modifier state some other way) can forward e.g. Ctrl+click/
+    /// Shift+click to the page instead of always injecting a bare click.
+    MouseMove { x: f64, y: f64, modifiers: u8 },
+    MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8 },
+    MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8 },
+    Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: u8 },
     KeyDown { key: KeyCode, modifiers: u8 },
     KeyUp { key: KeyCode, modifiers: u8 },
     /// The actual text a keypress produced (after layout/shift/dead-key

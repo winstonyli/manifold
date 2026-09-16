@@ -18,7 +18,7 @@ use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
-use life_span_handler::new_shared_pending_open_tab;
+use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::{new_shared_favicon_url, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
 
@@ -109,6 +109,7 @@ fn main() {
     let favicon_url = new_shared_favicon_url();
     let find_result = new_shared_find_result();
     let download_path = new_shared_download_path();
+    let closed = new_shared_closed();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -132,6 +133,7 @@ fn main() {
             favicon_url.clone(),
             find_result.clone(),
             download_path.clone(),
+            closed.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -148,6 +150,10 @@ fn main() {
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
+    // Set once `HostToEngine::Shutdown` calls `close_browser` -- the loop
+    // keeps pumping (`do_message_loop_work` below) until `closed` flips,
+    // which is what actually drives `on_before_close` to fire.
+    let mut shutting_down = false;
 
     loop {
         do_message_loop_work();
@@ -249,8 +255,18 @@ fn main() {
                 // no-op, same per-engine gap as the audio indicator itself.
                 HostToEngine::SetMuted { .. } => {}
                 HostToEngine::Shutdown => {
-                    cef::shutdown();
-                    return;
+                    // Must call `close_browser` and wait for
+                    // `LifeSpanHandler::on_before_close` before
+                    // `cef::shutdown()` -- CEF's own documented contract.
+                    // Calling `cef::shutdown()` immediately, with the
+                    // browser/renderer still alive, risks a crash or hang
+                    // inside libcef itself. `force_close: true` since
+                    // there's nothing here (no unsaved-changes prompt) that
+                    // would need a graceful, cancelable close.
+                    if let Some(host) = browser.host() {
+                        host.close_browser(true as _);
+                    }
+                    shutting_down = true;
                 }
             }
         }
@@ -269,7 +285,7 @@ fn main() {
             }
         }
 
-        if let Some(url) = pending_open_tab.borrow_mut().take() {
+        for url in pending_open_tab.borrow_mut().drain(..) {
             let _ = control.send(&EngineToHost::OpenTabRequested { url });
         }
 
@@ -277,7 +293,7 @@ fn main() {
             let _ = control.send(&EngineToHost::FindResult { count, active_index });
         }
 
-        if let Some(path) = download_path.borrow_mut().take() {
+        for path in download_path.borrow_mut().queue.drain(..) {
             let _ = control.send(&EngineToHost::DownloadCompleted { path });
         }
 
@@ -316,6 +332,11 @@ fn main() {
                     pixels: None,
                 });
             }
+        }
+
+        if shutting_down && *closed.borrow() {
+            cef::shutdown();
+            return;
         }
 
         std::thread::sleep(Duration::from_millis(8));

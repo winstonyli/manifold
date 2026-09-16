@@ -1,15 +1,24 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-/// The completed download's final path, once `DownloadItem::is_complete()`
-/// -- see `ipc_protocol::EngineToHost::DownloadCompleted`'s doc comment.
-pub type SharedDownloadPath = Rc<RefCell<Option<String>>>;
+/// Completed downloads' final paths, queued rather than a single slot --
+/// two downloads finishing within the same tick would otherwise silently
+/// clobber each other (see `ipc_protocol::EngineToHost::DownloadCompleted`'s
+/// doc comment). `reported` dedupes `on_download_updated` firing more than
+/// once with `is_complete() != 0` for the same item.
+pub struct DownloadResults {
+    pub queue: Vec<String>,
+    reported: HashSet<u32>,
+}
+
+pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
 
 pub fn new_shared_download_path() -> SharedDownloadPath {
-    Rc::new(RefCell::new(None))
+    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), reported: HashSet::new() }))
 }
 
 /// `%USERPROFILE%\Downloads` -- CEF (unlike WebView2) has no built-in
@@ -81,8 +90,11 @@ wrap_download_handler! {
         ) {
             if let Some(item) = download_item {
                 if item.is_complete() != 0 {
-                    let path = CefString::from(&item.full_path()).to_string();
-                    *self.handler.result.borrow_mut() = Some(path);
+                    let mut results = self.handler.result.borrow_mut();
+                    if results.reported.insert(item.id()) {
+                        let path = CefString::from(&item.full_path()).to_string();
+                        results.queue.push(path);
+                    }
                 }
             }
         }

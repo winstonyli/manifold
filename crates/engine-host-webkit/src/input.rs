@@ -43,7 +43,7 @@ pub fn send_input(
     // (see `main.rs`) so no real popup window ever tries to show. This is
     // a separate, script-driven query for the one thing this minimal
     // feature actually needs: whether the click landed on a link.
-    if let InputEvent::MouseUp { x, y, button: MouseButton::Right } = event {
+    if let InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } = event {
         let pending = pending_context_menu.clone();
         webview.run_javascript(
             &format!(
@@ -63,7 +63,7 @@ pub fn send_input(
     }
 
     match event {
-        InputEvent::MouseMove { x, y } => {
+        InputEvent::MouseMove { x, y, .. } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -74,7 +74,7 @@ pub fn send_input(
                 gdk::ModifierType::empty(),
             );
         }
-        InputEvent::MouseDown { x, y, button } => {
+        InputEvent::MouseDown { x, y, button, .. } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -85,7 +85,7 @@ pub fn send_input(
                 gdk::ModifierType::empty(),
             );
         }
-        InputEvent::MouseUp { x, y, button } => {
+        InputEvent::MouseUp { x, y, button, .. } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -96,7 +96,7 @@ pub fn send_input(
                 gdk::ModifierType::empty(),
             );
         }
-        InputEvent::Scroll { x, y, delta_x, delta_y } => {
+        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
             send_scroll_event(&window, pointer_device, x, y, delta_x, delta_y);
         }
         InputEvent::KeyDown { key, modifiers: mods } => {

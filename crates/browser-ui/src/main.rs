@@ -367,6 +367,10 @@ struct TabSpawnOutcome {
     id: String,
     parent: Option<String>,
     group: Option<String>,
+    /// Carried through a respawn/engine-swap/crash-recovery so a pinned
+    /// tab stays pinned — see `TabNode::pinned`'s own doc comment. Always
+    /// `false` for a genuinely new tab (`SpawnPurpose::New`/`Root`).
+    pinned: bool,
     url: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
@@ -961,6 +965,7 @@ impl App {
                 tab.id,
                 tab.parent,
                 None,
+                false,
                 tab.url,
                 pos,
                 egui::Vec2::ZERO,
@@ -979,7 +984,7 @@ impl App {
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
-        self.spawn_tab_async(id, None, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
+        self.spawn_tab_async(id, None, None, false, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
     }
 
     /// Runs `process_manager::spawn_tab` on a background thread and posts
@@ -993,6 +998,7 @@ impl App {
         id: String,
         parent: Option<String>,
         group: Option<String>,
+        pinned: bool,
         url: String,
         pos: egui::Vec2,
         vel: egui::Vec2,
@@ -1009,6 +1015,7 @@ impl App {
                 id,
                 parent,
                 group,
+                pinned,
                 url,
                 pos,
                 vel,
@@ -1025,7 +1032,7 @@ impl App {
     /// Focus/visibility for `Respawn` is decided here, at completion time —
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
-        let TabSpawnOutcome { id, parent, group, url, pos, vel, purpose, result } = outcome;
+        let TabSpawnOutcome { id, parent, group, pinned, url, pos, vel, purpose, result } = outcome;
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
@@ -1060,7 +1067,7 @@ impl App {
                         loading: false,
                         audio_playing: false,
                         muted: false,
-                        pinned: false,
+                        pinned,
                         group,
                         swap_target: None,
                         pos,
@@ -1274,7 +1281,7 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        self.spawn_tab_async(id, parent, group, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
+        self.spawn_tab_async(id, parent, group, false, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
     }
 
     /// Peek-click commits focus: the tab losing focus (if any, and if
@@ -1522,10 +1529,10 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, group, pos, vel)) = self
+        let Some((parent, group, pinned, pos, vel)) = self
             .tabs
             .get(tab_id)
-            .map(|n| (n.parent.clone(), n.group.clone(), n.pos, n.vel))
+            .map(|n| (n.parent.clone(), n.group.clone(), n.pinned, n.pos, n.vel))
         else {
             return;
         };
@@ -1533,12 +1540,24 @@ impl App {
         // the new one at the same tab_id — the new engine-host's named-pipe
         // listeners would collide with the old ones otherwise.
         self.tabs.remove(tab_id);
-        self.respawn_tab(tab_id, target, url, parent, group, pos, vel);
+        // Same stale-state guard `close_tab` already applies: without it, a
+        // drag in progress on this exact tab when its engine swap/crash
+        // fires would leave `self.dragging` pointing at an id invisible for
+        // the whole respawn window, then get misread as "just dropped" the
+        // instant the respawned node starts rendering again.
+        if self.dragging.as_deref() == Some(tab_id) {
+            self.dragging = None;
+        }
+        if self.hovered.as_deref() == Some(tab_id) {
+            self.hovered = None;
+        }
+        self.respawn_tab(tab_id, target, url, parent, group, pinned, pos, vel);
     }
 
     /// Shared by swap-finish and crash recovery: (re)spawn `kind` at `url`
     /// for `tab_id`, preserving its place in the graph (`parent`/`group`/
-    /// `pos`/`vel`) and visibility (only the focused tab is ever visible).
+    /// `pinned`/`pos`/`vel`) and visibility (only the focused tab is ever
+    /// visible).
     fn respawn_tab(
         &mut self,
         tab_id: &str,
@@ -1546,13 +1565,14 @@ impl App {
         url: String,
         parent: Option<String>,
         group: Option<String>,
+        pinned: bool,
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
         if self.focused.as_deref() == Some(tab_id) {
             self.pending_respawn_focus = Some(tab_id.to_string());
         }
-        self.spawn_tab_async(tab_id.to_string(), parent, group, url, pos, vel, SpawnPurpose::Respawn, kind);
+        self.spawn_tab_async(tab_id.to_string(), parent, group, pinned, url, pos, vel, SpawnPurpose::Respawn, kind);
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
@@ -2401,8 +2421,11 @@ impl App {
             }
         }
         if screenshot_requested {
+            // No toast here -- the save hasn't happened yet. `save_toast`
+            // is only set once `RenderOutcome::screenshot_result` actually
+            // confirms success (see `WindowEvent::RedrawRequested`'s
+            // handling of `pending_screenshot`).
             let path = screenshot_default_path();
-            self.save_toast = Some((path.to_string_lossy().to_string(), std::time::Instant::now()));
             self.pending_screenshot = Some(path.to_string_lossy().to_string());
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -3222,6 +3245,29 @@ impl App {
             self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
             self.group_order.push(id);
         }
+        // Applied before `leave_group_requested` below: the "◀ Groups"
+        // button and the rename `TextEdit` share one toolbar row, so
+        // clicking "◀ Groups" while renaming causes the text field to lose
+        // focus the same frame (egui's ordinary click-away focus
+        // transfer), setting both `rename_commit` and
+        // `leave_group_requested` at once. Committing first means
+        // `self.renaming_group.take()` here observes the real value;
+        // `leave_group_requested`'s own clear becomes a harmless no-op on
+        // whatever `take()` already emptied, instead of the other order
+        // silently discarding the typed name before it's ever read.
+        if let Some(new_name) = rename_commit {
+            if let Some((id, _)) = self.renaming_group.take() {
+                let trimmed = new_name.trim();
+                if !trimmed.is_empty() {
+                    if let Some(node) = self.groups.get_mut(&id) {
+                        node.name = trimmed.to_string();
+                    }
+                }
+            }
+        }
+        if rename_cancel {
+            self.renaming_group = None;
+        }
         // Entering/leaving a group resets the view the same way "Reset
         // View" does -- the new level's nodes settle around the same
         // `GRAPH_WORLD_CENTER` the level just left used, so keeping
@@ -3242,19 +3288,6 @@ impl App {
         if let Some((id, draft)) = rename_start {
             self.renaming_group = Some((id, draft));
             self.pending_focus_rename = true;
-        }
-        if let Some(new_name) = rename_commit {
-            if let Some((id, _)) = self.renaming_group.take() {
-                let trimmed = new_name.trim();
-                if !trimmed.is_empty() {
-                    if let Some(node) = self.groups.get_mut(&id) {
-                        node.name = trimmed.to_string();
-                    }
-                }
-            }
-        }
-        if rename_cancel {
-            self.renaming_group = None;
         }
     }
 }
@@ -3333,6 +3366,7 @@ impl ApplicationHandler<UserEvent> for App {
                             node.tab.send(&HostToEngine::Input(InputEvent::MouseMove {
                                 x: position.x,
                                 y: position.y - chrome_height,
+                                modifiers: self.key_modifiers,
                             }));
                         }
                     }
@@ -3359,11 +3393,13 @@ impl ApplicationHandler<UserEvent> for App {
                                         x,
                                         y: y - chrome_height,
                                         button,
+                                        modifiers: self.key_modifiers,
                                     },
                                     ElementState::Released => InputEvent::MouseUp {
                                         x,
                                         y: y - chrome_height,
                                         button,
+                                        modifiers: self.key_modifiers,
                                     },
                                 };
                                 node.tab.send(&HostToEngine::Input(event));
@@ -3389,6 +3425,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 y: y - chrome_height,
                                 delta_x: dx,
                                 delta_y: dy,
+                                modifiers: self.key_modifiers,
                             }));
                         }
                     }
@@ -3489,9 +3526,13 @@ impl ApplicationHandler<UserEvent> for App {
                 );
 
                 let content_on_top = self.transition.is_some();
-                let screenshot_path = self.pending_screenshot.take();
+                // Not taken yet -- a transient surface-acquire failure
+                // (Outdated/Occluded/...) means the screenshot was never
+                // attempted this frame, and the request must survive to
+                // retry on a later one instead of being silently dropped.
+                let screenshot_path = self.pending_screenshot.clone();
                 if let Some(gpu) = &mut self.gpu {
-                    match egui_output {
+                    let outcome = match egui_output {
                         Some(output) => gpu.render(
                             content_rect_px,
                             focused_for_content.as_deref(),
@@ -3506,6 +3547,18 @@ impl ApplicationHandler<UserEvent> for App {
                             None,
                             screenshot_path.as_deref(),
                         ),
+                    };
+                    if outcome.surface_ok {
+                        self.pending_screenshot = None;
+                        match outcome.screenshot_result {
+                            Some(Ok(())) => {
+                                if let Some(path) = screenshot_path {
+                                    self.save_toast = Some((path, std::time::Instant::now()));
+                                }
+                            }
+                            Some(Err(err)) => eprintln!("screenshot: {err}"),
+                            None => {}
+                        }
                     }
                 }
                 if let Some(window) = &self.window {
@@ -3873,12 +3926,13 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, group, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
+            let Some((kind, url, parent, group, pinned, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
                 (
                     n.tab.kind,
                     n.url.clone(),
                     n.parent.clone(),
                     n.group.clone(),
+                    n.pinned,
                     n.pos,
                     n.vel,
                 )
@@ -3887,7 +3941,15 @@ impl App {
             };
             eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
             self.tabs.remove(&tab_id);
-            self.respawn_tab(&tab_id, kind, url, parent, group, pos, vel);
+            // Same stale-state guard `close_tab`/`finish_swap` apply — see
+            // `finish_swap`'s own comment on this.
+            if self.dragging.as_deref() == Some(tab_id.as_str()) {
+                self.dragging = None;
+            }
+            if self.hovered.as_deref() == Some(tab_id.as_str()) {
+                self.hovered = None;
+            }
+            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, pos, vel);
         }
 
         for (tab_id, target, url) in swap_finishes {

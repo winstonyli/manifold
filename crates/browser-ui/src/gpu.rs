@@ -4,6 +4,18 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+/// `GpuState::render`'s result -- lets the caller tell a truly-failed
+/// screenshot save apart from one that was never attempted this frame
+/// (surface unusable), so a request isn't silently dropped just because it
+/// landed on a transient `Outdated`/`Occluded` frame.
+pub struct RenderOutcome {
+    pub surface_ok: bool,
+    /// `Some` only when a screenshot was requested AND `surface_ok` --
+    /// `Ok(())` once the PNG is actually written to disk, `Err` with a
+    /// message otherwise.
+    pub screenshot_result: Option<Result<(), String>>,
+}
+
 const SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -607,12 +619,15 @@ impl GpuState {
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
-    ) {
+    ) -> RenderOutcome {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Timeout/Occluded/Outdated/Lost/Validation: skip this frame and
-            // try again next redraw rather than treating it as fatal.
-            _ => return,
+            // try again next redraw rather than treating it as fatal. A
+            // requested screenshot was never attempted here -- the caller
+            // must not drop it, only retry on a later frame whose surface
+            // actually comes back usable.
+            _ => return RenderOutcome { surface_ok: false, screenshot_result: None },
         };
         let view = frame
             .texture
@@ -780,39 +795,43 @@ impl GpuState {
         );
         self.queue.present(frame);
 
-        if let Some((path, readback_buffer, padded_bytes_per_row)) = pending_screenshot {
+        let screenshot_result = pending_screenshot.map(|(path, readback_buffer, padded_bytes_per_row)| {
             let (tx, rx) = std::sync::mpsc::channel();
             readback_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
                 let _ = tx.send(result);
             });
             let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-            if let Ok(Ok(())) = rx.recv() {
-                let mapped = readback_buffer
-                    .get_mapped_range(..)
-                    .expect("mapped screenshot buffer");
-                let mut pixels = vec![0u8; (width * height * 4) as usize];
-                let unpadded_bytes_per_row = width * 4;
-                for row in 0..height {
-                    let src_start = (row * padded_bytes_per_row) as usize;
-                    let dst_start = (row * unpadded_bytes_per_row) as usize;
-                    pixels[dst_start..dst_start + unpadded_bytes_per_row as usize].copy_from_slice(
-                        &mapped[src_start..src_start + unpadded_bytes_per_row as usize],
-                    );
-                }
-                drop(mapped);
-                readback_buffer.unmap();
-                if matches!(
-                    self.config.format,
-                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-                ) {
-                    for px in pixels.chunks_exact_mut(4) {
-                        px.swap(0, 2);
+            match rx.recv() {
+                Ok(Ok(())) => {
+                    let mapped = readback_buffer
+                        .get_mapped_range(..)
+                        .expect("mapped screenshot buffer");
+                    let mut pixels = vec![0u8; (width * height * 4) as usize];
+                    let unpadded_bytes_per_row = width * 4;
+                    for row in 0..height {
+                        let src_start = (row * padded_bytes_per_row) as usize;
+                        let dst_start = (row * unpadded_bytes_per_row) as usize;
+                        pixels[dst_start..dst_start + unpadded_bytes_per_row as usize].copy_from_slice(
+                            &mapped[src_start..src_start + unpadded_bytes_per_row as usize],
+                        );
                     }
+                    drop(mapped);
+                    readback_buffer.unmap();
+                    if matches!(
+                        self.config.format,
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                    ) {
+                        for px in pixels.chunks_exact_mut(4) {
+                            px.swap(0, 2);
+                        }
+                    }
+                    image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8)
+                        .map_err(|err| format!("failed to save {path}: {err}"))
                 }
-                if let Err(err) = image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8) {
-                    eprintln!("screenshot: failed to save {path}: {err}");
-                }
+                _ => Err(format!("failed to read back GPU buffer for {path}")),
             }
-        }
+        });
+
+        RenderOutcome { surface_ok: true, screenshot_result }
     }
 }

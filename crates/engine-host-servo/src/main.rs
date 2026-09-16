@@ -158,7 +158,19 @@ fn main() {
                     break;
                 }
             }
-            Err(_) => break,
+            Err(_) => {
+                // The control socket dropped without a graceful `Shutdown`
+                // message — browser-ui.exe exited abnormally (force-killed,
+                // crashed) rather than running `Drop for EngineTab`'s normal
+                // teardown. Without this, nothing tells the main loop, which
+                // keeps spinning Servo's event loop and re-attempting
+                // now-dead sends forever — the same orphaned-process bug
+                // already found and fixed for engine-host-webkit's own
+                // reader thread; synthesizing `Shutdown` here reuses the
+                // same clean-exit path below for this case too.
+                let _ = tx.send(HostToEngine::Shutdown);
+                break;
+            }
         }
     });
 
@@ -225,6 +237,14 @@ fn main() {
                     height: h,
                     ..
                 } => {
+                    // A minimized window delivers a real 0x0 `inner_size()`
+                    // on Windows — nothing to render either way, and a
+                    // zero-length shared frame buffer can't be mapped at
+                    // all, so skip the resize entirely rather than
+                    // panicking on the next real frame this tab would need.
+                    if w == 0 || h == 0 {
+                        continue;
+                    }
                     width = w;
                     height = h;
                     rendering_context.resize(PhysicalSize::new(w, h));
@@ -331,17 +351,17 @@ fn main() {
 
 fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
     match event {
-        HostInputEvent::MouseMove { x, y } => Some(ServoInputEvent::MouseMove(
+        HostInputEvent::MouseMove { x, y, .. } => Some(ServoInputEvent::MouseMove(
             MouseMoveEvent::new(webview_point(x, y)),
         )),
-        HostInputEvent::MouseDown { x, y, button } => Some(ServoInputEvent::MouseButton(
+        HostInputEvent::MouseDown { x, y, button, .. } => Some(ServoInputEvent::MouseButton(
             MouseButtonEvent::new(
                 MouseButtonAction::Down,
                 translate_mouse_button(button),
                 webview_point(x, y),
             ),
         )),
-        HostInputEvent::MouseUp { x, y, button } => Some(ServoInputEvent::MouseButton(
+        HostInputEvent::MouseUp { x, y, button, .. } => Some(ServoInputEvent::MouseButton(
             MouseButtonEvent::new(
                 MouseButtonAction::Up,
                 translate_mouse_button(button),
@@ -353,6 +373,7 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
             y,
             delta_x,
             delta_y,
+            ..
         } => Some(ServoInputEvent::Wheel(WheelEvent::new(
             WheelDelta {
                 x: delta_x,

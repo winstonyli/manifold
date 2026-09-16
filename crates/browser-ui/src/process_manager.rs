@@ -385,7 +385,7 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
 
-    let child = Command::new(engine_binary_path(kind))
+    let mut child = Command::new(engine_binary_path(kind))
         .env("ENGINE_TAB_ID", tab_id)
         .env("ENGINE_SOCKET_ID", &socket_id)
         .env("ENGINE_INITIAL_URL", initial_url)
@@ -397,8 +397,21 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
     // doc comment, and accept_remote's, for why an unbounded wait here on
     // browser-ui's main/event-loop thread is a real hazard, not just
-    // theoretical caution).
-    let (to_engine, from_engine) = transport::accept_local_pair(&listeners, LOCAL_CONNECT_TIMEOUT)?;
+    // theoretical caution). On timeout (or the child crashing/exiting
+    // before connecting, e.g. missing runtime DLLs), kill it explicitly —
+    // `Child`'s own `Drop` does not, so leaving this `?` to just propagate
+    // would leak the process, exactly the kind of leftover
+    // `listen_local_pair_with_retry`'s own error message above warns
+    // about. Same cleanup `spawn_webkit_tab`'s own accept-timeout path
+    // already does.
+    let (to_engine, from_engine) = match transport::accept_local_pair(&listeners, LOCAL_CONNECT_TIMEOUT) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
     Ok(EngineTab {

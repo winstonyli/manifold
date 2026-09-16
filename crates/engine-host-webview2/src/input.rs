@@ -78,7 +78,7 @@ pub fn send_input(
         // (link navigation, button submit, etc.) all respond to normally,
         // unlike a synthetic `MouseEvent` dispatched by hand (those don't
         // trigger default actions in Chromium, only listener callbacks).
-        InputEvent::MouseUp { x, y, button: MouseButton::Right } => {
+        InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } => {
             let script = format!(
                 "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             );

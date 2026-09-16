@@ -128,7 +128,9 @@ fn main() {
     // above, stripped of its `file://` prefix to match the plain
     // filesystem paths WebView2/CEF report over the same
     // `EngineToHost::DownloadCompleted` message.
-    let pending_download: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // A queue, not a single slot -- two downloads finishing within the
+    // same ~16ms tick would otherwise silently clobber each other.
+    let pending_download: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     if let Some(context) = &web_context {
         let pending_download = pending_download.clone();
         context.connect_download_started(move |_context, download| {
@@ -154,7 +156,7 @@ fn main() {
             download.connect_finished(move |download| {
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
-                    *pending_download.borrow_mut() = Some(path);
+                    pending_download.borrow_mut().push(path);
                 }
             });
         });
@@ -182,7 +184,9 @@ fn main() {
     // request's URL *before* anything is created - grab it and always
     // return None (never actually create the popup webview; browser-ui
     // spawns a real child tab for `url` instead, once drained below).
-    let pending_open_tab: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // A queue, not a single slot -- a page opening several tabs
+    // synchronously would otherwise silently lose all but the last one.
+    let pending_open_tab: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     {
         let pending_open_tab = pending_open_tab.clone();
         // Fully-qualified: `connect_create` also exists on gtk::atk's
@@ -191,7 +195,7 @@ fn main() {
         // can't disambiguate which trait's version to use here.
         <WebView as webkit2gtk::WebViewExt>::connect_create(&webview, move |_webview, nav_action| {
             if let Some(uri) = nav_action.request().and_then(|r| r.uri()) {
-                *pending_open_tab.borrow_mut() = Some(uri.to_string());
+                pending_open_tab.borrow_mut().push(uri.to_string());
             }
             None
         });
@@ -435,7 +439,7 @@ fn main() {
             }
         }
 
-        if let Some(url) = pending_open_tab.borrow_mut().take() {
+        for url in pending_open_tab.borrow_mut().drain(..) {
             let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
         }
 
@@ -455,7 +459,7 @@ fn main() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
-        if let Some(path) = pending_download.borrow_mut().take() {
+        for path in pending_download.borrow_mut().drain(..) {
             let _ = to_host.send(&EngineToHost::DownloadCompleted { path });
         }
 

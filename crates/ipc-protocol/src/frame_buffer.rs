@@ -42,6 +42,16 @@ impl SharedFrameBuffer {
     /// cheaper than a cross-process locking protocol for how rarely a
     /// resize actually happens.
     pub fn create(name: &str, width: u32, height: u32) -> io::Result<Self> {
+        // A zero-length mapping is rejected by `memmap2` on every platform,
+        // deterministically — not the transient Windows error 1224 this
+        // retry loop exists to ride out, so retrying it 20 times would
+        // just waste ~190ms before returning the same error anyway.
+        if width == 0 || height == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("SharedFrameBuffer::create: zero-sized buffer requested ({width}x{height})"),
+            ));
+        }
         let mut last_err = None;
         for attempt in 0..20 {
             if attempt > 0 {

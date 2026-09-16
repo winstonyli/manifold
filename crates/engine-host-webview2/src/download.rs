@@ -19,7 +19,11 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{take_pwstr, DownloadStartingEventHandler, StateChangedEventHandler};
 use windows::core::PWSTR;
 
-pub type PendingDownload = Rc<RefCell<Option<String>>>;
+/// A queue, not a single slot -- two downloads completing within the same
+/// tick would otherwise silently clobber each other (each gets its own
+/// `StateChangedEventHandler` closure below, all writing into whatever this
+/// type is).
+pub type PendingDownload = Rc<RefCell<Vec<String>>>;
 
 /// Best-effort like this project's other version-gated WebView2 APIs -- an
 /// `ICoreWebView2_4`-less Runtime just means downloads on this tab proceed
@@ -28,7 +32,7 @@ pub type PendingDownload = Rc<RefCell<Option<String>>>;
 pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownload> {
     let webview4: ICoreWebView2_4 = windows::core::Interface::cast(webview)?;
 
-    let pending: PendingDownload = Rc::new(RefCell::new(None));
+    let pending: PendingDownload = Rc::new(RefCell::new(Vec::new()));
     let mut token = Default::default();
 
     let pending_for_handler = pending.clone();
@@ -48,7 +52,7 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                     {
                         let mut path = PWSTR::null();
                         if unsafe { sender.ResultFilePath(&mut path) }.is_ok() {
-                            *pending.borrow_mut() = Some(take_pwstr(path));
+                            pending.borrow_mut().push(take_pwstr(path));
                         }
                     }
                 }

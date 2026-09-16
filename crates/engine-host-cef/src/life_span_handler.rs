@@ -5,21 +5,37 @@ use cef::{rc::Rc as CefRc, *};
 
 /// Set by `on_before_popup` when the page asks to open a new tab
 /// (`target=_blank`/`window.open()`/ctrl+click) — polled and drained by
-/// the main loop each tick, same pattern as `nav_handler`'s `NavState`.
-pub type SharedPendingOpenTab = Rc<RefCell<Option<String>>>;
+/// the main loop each tick, same pattern as `nav_handler`'s `NavState`. A
+/// queue, not a single slot -- a page opening several popups synchronously
+/// (e.g. back-to-back `window.open()` calls) fires `on_before_popup` more
+/// than once before the next drain, and a single `Option` would silently
+/// lose all but the last one.
+pub type SharedPendingOpenTab = Rc<RefCell<Vec<String>>>;
 
 pub fn new_shared_pending_open_tab() -> SharedPendingOpenTab {
-    Rc::new(RefCell::new(None))
+    Rc::new(RefCell::new(Vec::new()))
+}
+
+/// Set by `on_before_close`, once CEF has actually finished tearing down
+/// the browser -- `HostToEngine::Shutdown`'s handler polls this before
+/// calling `cef::shutdown()`, per CEF's own documented contract (call
+/// `close_browser`, wait for `on_before_close`, only then shut down the
+/// whole CEF runtime).
+pub type SharedClosed = Rc<RefCell<bool>>;
+
+pub fn new_shared_closed() -> SharedClosed {
+    Rc::new(RefCell::new(false))
 }
 
 #[derive(Clone)]
 pub struct EngineLifeSpanHandler {
     pending: SharedPendingOpenTab,
+    closed: SharedClosed,
 }
 
 impl EngineLifeSpanHandler {
-    pub fn new(pending: SharedPendingOpenTab) -> Self {
-        Self { pending }
+    pub fn new(pending: SharedPendingOpenTab, closed: SharedClosed) -> Self {
+        Self { pending, closed }
     }
 }
 
@@ -46,13 +62,21 @@ wrap_life_span_handler! {
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             if let Some(url) = target_url {
-                *self.handler.pending.borrow_mut() = Some(url.to_string());
+                self.handler.pending.borrow_mut().push(url.to_string());
             }
             // Non-zero cancels popup creation - we spawn a real child tab
             // (a separate engine-host process) instead of letting CEF
             // create an in-process popup browser we have no IPC contract
             // for.
             true as _
+        }
+
+        // CEF's documented shutdown contract: `close_browser` must be
+        // called, and `cef::shutdown()` must not run until this fires --
+        // calling it earlier, with the browser/renderer still alive, risks
+        // a crash or hang inside libcef itself.
+        fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            *self.handler.closed.borrow_mut() = true;
         }
     }
 }

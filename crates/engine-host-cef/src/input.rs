@@ -121,27 +121,27 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
         return;
     };
     match event {
-        InputEvent::MouseMove { x, y } => {
+        InputEvent::MouseMove { x, y, modifiers } => {
             let mouse_event = MouseEvent {
                 x: x as i32,
                 y: y as i32,
-                modifiers: 0,
+                modifiers: modifiers_to_event_flags(modifiers),
             };
             host.send_mouse_move_event(Some(&mouse_event), 0);
         }
-        InputEvent::MouseDown { x, y, button } => {
+        InputEvent::MouseDown { x, y, button, modifiers } => {
             let mouse_event = MouseEvent {
                 x: x as i32,
                 y: y as i32,
-                modifiers: 0,
+                modifiers: modifiers_to_event_flags(modifiers),
             };
             host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 0, 1);
         }
-        InputEvent::MouseUp { x, y, button } => {
+        InputEvent::MouseUp { x, y, button, modifiers } => {
             let mouse_event = MouseEvent {
                 x: x as i32,
                 y: y as i32,
-                modifiers: 0,
+                modifiers: modifiers_to_event_flags(modifiers),
             };
             host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 1, 1);
         }
@@ -150,11 +150,12 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
             y,
             delta_x,
             delta_y,
+            modifiers,
         } => {
             let mouse_event = MouseEvent {
                 x: x as i32,
                 y: y as i32,
-                modifiers: 0,
+                modifiers: modifiers_to_event_flags(modifiers),
             };
             host.send_mouse_wheel_event(Some(&mouse_event), delta_x as i32, delta_y as i32);
         }
