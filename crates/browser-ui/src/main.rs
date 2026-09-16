@@ -3564,7 +3564,29 @@ impl ApplicationHandler<UserEvent> for App {
 
                 let egui_output = match (self.egui_state.take(), self.window.clone()) {
                     (Some(mut state), Some(window)) => {
-                        let raw_input = state.take_egui_input(window.as_ref());
+                        let mut raw_input = state.take_egui_input(window.as_ref());
+                        // `egui::Scene` (the graph view's pan/zoom container)
+                        // hardcodes ctrl+scroll as its zoom gesture and plain
+                        // scroll as pan -- not configurable via its builder,
+                        // since `register_pan_and_zoom` reads
+                        // `zoom_delta()`/`smooth_scroll_delta()` straight off
+                        // `InputState`. Forcing every `MouseWheel` event's
+                        // modifiers to ctrl+command here, before egui ever
+                        // computes those derived deltas, makes plain scroll
+                        // register as the zoom gesture instead -- the graph
+                        // already has a separate pan gesture (dragging empty
+                        // background), so losing scroll-as-pan costs nothing.
+                        // Tab view's own page-content scroll is untouched:
+                        // that's a distinct `InputEvent::Scroll` forwarded to
+                        // the focused tab's engine-host, not egui's Scene.
+                        if self.view_mode == ViewMode::Graph {
+                            for event in &mut raw_input.events {
+                                if let egui::Event::MouseWheel { modifiers, .. } = event {
+                                    modifiers.ctrl = true;
+                                    modifiers.command = true;
+                                }
+                            }
+                        }
                         let ctx = self.egui_ctx.clone();
                         let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
                         state.handle_platform_output(window.as_ref(), output.platform_output.clone());
