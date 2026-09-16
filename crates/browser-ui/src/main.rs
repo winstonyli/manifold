@@ -1375,6 +1375,45 @@ impl App {
             .collect()
     }
 
+    /// "Reset View"'s scene rect: bounds every node currently visible at
+    /// this level (tabs/downloads, plus group cards at the top level —
+    /// same level rules `tabs_at_current_level`/`downloads_at_current_level`
+    /// and `build_graph_ui`'s own `self.current_group.is_none()` group-card
+    /// gate already use) instead of always framing the same fixed
+    /// world-space rect regardless of how many nodes exist or where
+    /// they've drifted to. Each node contributes its own half-size (a
+    /// node's *card*, not just its center point, must fit on screen) plus
+    /// a flat margin so a node isn't left flush against the viewport edge.
+    /// Falls back to `default_graph_scene_rect()` when there's nothing to
+    /// fit (an empty group, or before any tab has spawned) — an empty
+    /// bounding box has no sensible center/size to frame.
+    fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
+        const MARGIN: f32 = 60.0;
+        let mut bounds = egui::Rect::NOTHING;
+        for id in self.tabs_at_current_level() {
+            if let Some(node) = self.tabs.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
+            }
+        }
+        for id in self.downloads_at_current_level() {
+            if let Some(node) = self.downloads.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, DOWNLOAD_NODE_SIZE));
+            }
+        }
+        if self.current_group.is_none() {
+            for node in self.groups.values() {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
+            }
+        }
+        if !bounds.is_finite() {
+            return default_graph_scene_rect();
+        }
+        bounds.expand(MARGIN)
+    }
+
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
     /// if `parent` is `None`), spawned invisible — it stays in Graph view
     /// rather than auto-focusing (see plan's M5 scope decision 5), and
@@ -2661,7 +2700,7 @@ impl App {
             }
         }
         if reset_view {
-            self.graph_scene_rect = default_graph_scene_rect();
+            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
 
         if self.tabs.is_empty() {
@@ -3479,17 +3518,18 @@ impl App {
             self.renaming_group = None;
         }
         // Entering/leaving a group resets the view the same way "Reset
-        // View" does -- the new level's nodes settle around the same
-        // `GRAPH_WORLD_CENTER` the level just left used, so keeping
-        // whatever pan/zoom the old level happened to be at would likely
-        // frame empty space rather than the new level's own nodes.
+        // View" does -- keeping whatever pan/zoom the old level happened
+        // to be at would likely frame empty space rather than the new
+        // level's own nodes. `current_group` is updated first so
+        // `fit_all_nodes_scene_rect` bounds the level actually being
+        // switched *to*, not the one just left.
         if let Some(id) = group_entered {
             self.current_group = Some(id);
-            self.graph_scene_rect = default_graph_scene_rect();
+            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
         if leave_group_requested {
             self.current_group = None;
-            self.graph_scene_rect = default_graph_scene_rect();
+            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
             self.renaming_group = None;
         }
         if let Some(id) = group_close_requested {
