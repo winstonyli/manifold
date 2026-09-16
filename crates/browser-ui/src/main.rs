@@ -2883,6 +2883,7 @@ impl App {
         let mut download_close_requested: Option<String> = None;
         let mut download_clicked: Option<String> = None;
         let mut pin_toggle_requested: Option<String> = None;
+        let mut remove_from_group_requested: Option<String> = None;
         let mut new_group_requested = false;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
@@ -3457,6 +3458,47 @@ impl App {
                         }
                     }
 
+                    // Remove-from-group ("eject"): only shown while
+                    // actually viewing a group's own subgraph -- pops just
+                    // this one tab back to the top level without dissolving
+                    // the whole group, which used to be the only way out
+                    // (the group's own "x" returns every member at once).
+                    // Opposite corner from the close button above so the
+                    // two hover-revealed buttons never overlap each other.
+                    let mut eject_clicked = false;
+                    if is_hovered && self.current_group.is_some() {
+                        let eject_rect =
+                            egui::Rect::from_center_size(rect.left_top(), egui::vec2(18.0, 18.0) * inv_zoom);
+                        let eject_response = ui.interact(
+                            eject_rect,
+                            egui::Id::new(("graph_node_eject", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let eject_fill = if eject_response.hovered() {
+                            ACCENT
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(eject_rect, 4.0 * inv_zoom, eject_fill);
+                        ui.painter().rect_stroke(
+                            eject_rect,
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                        overlay_painter.text(
+                            project(eject_rect.center()),
+                            egui::Align2::CENTER_CENTER,
+                            "^",
+                            egui::FontId::proportional(14.0),
+                            ui.visuals().text_color(),
+                        );
+                        if eject_response.clicked() {
+                            eject_clicked = true;
+                            remove_from_group_requested = Some(id.clone());
+                        }
+                    }
+
                     if response.dragged() {
                         self.dragging = Some(id.clone());
                         if let Some(node) = self.tabs.get_mut(&id) {
@@ -3544,11 +3586,11 @@ impl App {
                     } else if self.hovered.as_deref() == Some(id.as_str()) {
                         self.hovered = None;
                     }
-                    // Excludes a click on the pin dot -- its hit-rect
-                    // overlaps this card's corner, and without this guard
-                    // pinning a node also focuses it into Tab view (see
-                    // `pin_response`'s own doc comment).
-                    if response.clicked() && !pin_response.clicked() {
+                    // Excludes a click on the pin dot or eject button --
+                    // both hit-rects overlap this card's corners, and
+                    // without this guard either one also focuses the node
+                    // into Tab view (see `pin_response`'s own doc comment).
+                    if response.clicked() && !pin_response.clicked() && !eject_clicked {
                         clicked_focus = Some(id.clone());
                     }
                 }
@@ -3855,6 +3897,11 @@ impl App {
         if let Some(id) = pin_toggle_requested {
             if let Some(node) = self.tabs.get_mut(&id) {
                 node.pinned = !node.pinned;
+            }
+        }
+        if let Some(id) = remove_from_group_requested {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.group = None;
             }
         }
         if new_group_requested {
