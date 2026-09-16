@@ -57,6 +57,31 @@ const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 /// dragged tab is tested against on release — see `GroupNode`'s own doc
 /// comment.
 const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
+
+/// Fixed tag-color choices a group card's color swatch cycles through (see
+/// `next_group_color`) -- red/orange/yellow/green/cyan/purple, chosen for
+/// mutual distinguishability against this app's dark chrome rather than any
+/// particular meaning.
+const GROUP_COLOR_PALETTE: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(235, 87, 87),
+    egui::Color32::from_rgb(242, 153, 74),
+    egui::Color32::from_rgb(242, 201, 76),
+    egui::Color32::from_rgb(111, 207, 151),
+    egui::Color32::from_rgb(86, 204, 242),
+    egui::Color32::from_rgb(187, 107, 217),
+];
+
+/// One click on a group's color swatch advances to the next palette entry,
+/// wrapping back to `None` (the plain default `ACCENT` border) after the
+/// last -- `None` -> red -> orange -> ... -> purple -> `None`, matching how
+/// the pin dot's own binary toggle needs no separate popup/menu to operate.
+fn next_group_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
+    match current.and_then(|c| GROUP_COLOR_PALETTE.iter().position(|&p| p == c)) {
+        None => Some(GROUP_COLOR_PALETTE[0]),
+        Some(i) if i + 1 < GROUP_COLOR_PALETTE.len() => Some(GROUP_COLOR_PALETTE[i + 1]),
+        Some(_) => None,
+    }
+}
 /// Below this on-screen card width (in points), a node's label is hidden
 /// entirely rather than truncated — a card this small can't fit more than
 /// one or two letters plus "…" anyway (see `truncate_to_width`), and a
@@ -440,16 +465,20 @@ struct DownloadNode {
 /// `graph_layout::step` simulation rather than a second nested one running
 /// inside the group's own node. No nesting in this first cut — a group
 /// can't contain another group, only tabs/downloads (`TabNode::group`/
-/// `DownloadNode::group` are a single `Option<String>`, not a path) — and
-/// no animated zoom-in the way Tab<->Graph gets: `Transition` is built
-/// around morphing *one tab's* content quad between two known rects, not
-/// swapping an entire node set, so entering/leaving a group is an instant
-/// view swap for now. Groups (and membership) are session-only, same scope
-/// decision as `TabNode::pinned` — not written to `session.json`.
+/// `DownloadNode::group` are a single `Option<String>`, not a path).
+/// Entering/leaving eases the camera via `GraphCameraTween` rather than
+/// `Transition` — see that type's own doc comment for why. Groups (and
+/// membership) are session-only, same scope decision as `TabNode::pinned`
+/// — not written to `session.json`.
 struct GroupNode {
     name: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
+    /// User-chosen tag color, cycled through `GROUP_COLOR_PALETTE` by
+    /// clicking the card's own color swatch (bottom-left corner, same spot
+    /// a tab's pin dot occupies) -- `None` keeps the plain default `ACCENT`
+    /// border every group card had before this existed.
+    color: Option<egui::Color32>,
 }
 
 /// Snapshot of a tab taken by `close_tab` just before removal, enough to
@@ -2887,6 +2916,7 @@ impl App {
         let mut new_group_requested = false;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
+        let mut color_cycle_requested: Option<String> = None;
         let mut group_entered: Option<String> = None;
         let mut rename_start: Option<(String, String)> = None;
         let mut rename_commit: Option<String> = None;
@@ -3567,7 +3597,7 @@ impl App {
                                         let name = format!("Group {}", self.groups.len() + 1);
                                         self.groups.insert(
                                             group_id.clone(),
-                                            GroupNode { name, pos, vel: egui::Vec2::ZERO },
+                                            GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None },
                                         );
                                         self.group_order.push(group_id.clone());
                                         if let Some(node) = self.tabs.get_mut(&other_id) {
@@ -3736,6 +3766,7 @@ impl App {
                         );
 
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+                        let tag_color = self.groups.get(&id).and_then(|g| g.color);
                         let card_fill = if is_hovered {
                             ui.visuals().extreme_bg_color.gamma_multiply(1.35)
                         } else {
@@ -3745,7 +3776,10 @@ impl App {
                         ui.painter().rect_stroke(
                             rect,
                             6.0 * inv_zoom,
-                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 } * inv_zoom, ACCENT),
+                            egui::Stroke::new(
+                                if is_hovered { 1.5 } else { 1.0 } * inv_zoom,
+                                tag_color.unwrap_or(ACCENT),
+                            ),
                             egui::StrokeKind::Inside,
                         );
 
@@ -3814,6 +3848,34 @@ impl App {
                             if close_response.clicked() {
                                 group_close_requested = Some(id.clone());
                             }
+                        }
+
+                        // Color swatch: same bottom-left corner a tab card's
+                        // pin dot occupies (groups have no pin concept of
+                        // their own, so the spot is free). Always shown, not
+                        // just on hover -- a group's tag color is meant to
+                        // be a glanceable identifier, not a hidden control.
+                        let swatch_rect =
+                            egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
+                        let swatch_response = ui.interact(
+                            swatch_rect,
+                            egui::Id::new(("graph_group_node_swatch", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        match tag_color {
+                            Some(c) => {
+                                ui.painter().circle_filled(swatch_rect.center(), 6.0 * inv_zoom, c);
+                            }
+                            None => {
+                                ui.painter().circle_stroke(
+                                    swatch_rect.center(),
+                                    6.0 * inv_zoom,
+                                    egui::Stroke::new(1.5 * inv_zoom, ui.visuals().weak_text_color()),
+                                );
+                            }
+                        }
+                        if swatch_response.clicked() {
+                            color_cycle_requested = Some(id.clone());
                         }
 
                         if response.dragged() {
@@ -3908,7 +3970,7 @@ impl App {
             let id = self.alloc_group_id();
             let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
             let name = format!("Group {}", self.groups.len() + 1);
-            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
+            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
             self.group_order.push(id);
         }
         if group_selected_requested && !self.selected_tabs.is_empty() {
@@ -3926,7 +3988,7 @@ impl App {
                 .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
             let pos = sum / count;
             let name = format!("Group {}", self.groups.len() + 1);
-            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO });
+            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
             self.group_order.push(id.clone());
             for tab_id in self.selected_tabs.drain() {
                 if let Some(node) = self.tabs.get_mut(&tab_id) {
@@ -4010,6 +4072,11 @@ impl App {
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
+        }
+        if let Some(id) = color_cycle_requested {
+            if let Some(node) = self.groups.get_mut(&id) {
+                node.color = next_group_color(node.color);
+            }
         }
         if let Some((id, draft)) = rename_start {
             self.renaming_group = Some((id, draft));
