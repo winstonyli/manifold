@@ -2917,6 +2917,7 @@ impl App {
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
+        let mut group_merge_requested: Option<(String, String)> = None;
         let mut group_entered: Option<String> = None;
         let mut rename_start: Option<(String, String)> = None;
         let mut rename_commit: Option<String> = None;
@@ -3885,6 +3886,27 @@ impl App {
                             }
                         } else if self.dragging.as_deref() == Some(id.as_str()) {
                             self.dragging = None;
+                            // Dropping one group's card onto another merges
+                            // the dragged group's members into the target
+                            // and removes the dragged group -- same
+                            // "drop onto a card" language a tab already
+                            // uses to join a group.
+                            if let Some(dragged_pos) = self.groups.get(&id).map(|g| g.pos) {
+                                let dropped_on_group = self.groups.iter().find_map(|(other_id, other)| {
+                                    if other_id == &id {
+                                        return None;
+                                    }
+                                    egui::Rect::from_center_size(
+                                        egui::Pos2::new(other.pos.x, other.pos.y),
+                                        GROUP_NODE_SIZE,
+                                    )
+                                    .contains(egui::Pos2::new(dragged_pos.x, dragged_pos.y))
+                                    .then(|| other_id.clone())
+                                });
+                                if let Some(target_id) = dropped_on_group {
+                                    group_merge_requested = Some((id.clone(), target_id));
+                                }
+                            }
                         }
                         if response.hovered() {
                             self.hovered = Some(id.clone());
@@ -4077,6 +4099,20 @@ impl App {
             if let Some(node) = self.groups.get_mut(&id) {
                 node.color = next_group_color(node.color);
             }
+        }
+        if let Some((source_id, target_id)) = group_merge_requested {
+            for node in self.tabs.values_mut() {
+                if node.group.as_deref() == Some(source_id.as_str()) {
+                    node.group = Some(target_id.clone());
+                }
+            }
+            for node in self.downloads.values_mut() {
+                if node.group.as_deref() == Some(source_id.as_str()) {
+                    node.group = Some(target_id.clone());
+                }
+            }
+            self.groups.remove(&source_id);
+            self.group_order.retain(|g| g != &source_id);
         }
         if let Some((id, draft)) = rename_start {
             self.renaming_group = Some((id, draft));
