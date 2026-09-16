@@ -583,16 +583,26 @@ struct App {
     /// user last drilled into, same "graph view remembers its own state"
     /// treatment `graph_scene_rect`'s pan/zoom already gets.
     current_group: Option<String>,
-    /// `(group_id, draft_name)` while the toolbar's group-name button (only
-    /// shown while `current_group` is `Some`) has been clicked to rename
-    /// it — a real `egui::TextEdit` replaces the plain name button for
-    /// that one group until Enter commits or Escape cancels. Transient UI
-    /// state, not part of `GroupNode` itself.
+    /// `(group_id, draft_name)` once renaming has started -- either the
+    /// toolbar's group-name button (only shown while `current_group` is
+    /// `Some`) or the top-level right-click context menu's own "Rename"
+    /// (see `group_context_menu`) sets this the same way. A real
+    /// `egui::TextEdit` replaces whichever plain button/menu row started
+    /// it until Enter commits or Escape cancels. Transient UI state, not
+    /// part of `GroupNode` itself.
     renaming_group: Option<(String, String)>,
     /// Set for exactly one frame when `renaming_group` is first set, same
     /// one-shot `response.request_focus()` pattern as
     /// `pending_focus_address_bar`.
     pending_focus_rename: bool,
+    /// `(group_id, screen_pos)` while a top-level right-click context menu
+    /// is showing for that group's card -- Rename/color swatches/Dissolve
+    /// in one place, see `App::build_group_context_menu`. Right-click is
+    /// otherwise the rectangle-select gesture over the graph panel (see
+    /// that gesture's own doc comment in `build_graph_ui`); a press landing
+    /// on a group's card specifically opens this instead of starting a
+    /// marquee.
+    group_context_menu: Option<(String, egui::Pos2)>,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -819,6 +829,7 @@ impl Default for App {
             current_group: None,
             renaming_group: None,
             pending_focus_rename: false,
+            group_context_menu: None,
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
@@ -2428,6 +2439,127 @@ impl App {
         }
     }
 
+    /// Top-level right-click context menu for a group's card -- Rename,
+    /// a color swatch row, and Dissolve in one place, rather than the
+    /// click-name-to-rename/always-visible-swatch/hover-"x" trio spread
+    /// across the card itself. Reuses `self.renaming_group` for the Rename
+    /// flow: clicking "Rename" swaps this same menu's contents to the
+    /// `TextEdit`, exactly like the toolbar's own in-subgraph rename does,
+    /// rather than opening a second, separate text field somewhere else.
+    fn build_group_context_menu(&mut self, ui: &mut egui::Ui) {
+        let Some((id, pos)) = self.group_context_menu.clone() else { return };
+        if !self.groups.contains_key(&id) {
+            self.group_context_menu = None;
+            return;
+        }
+        let mut close = false;
+        let mut dissolve = false;
+        let is_renaming = self.renaming_group.as_ref().is_some_and(|(gid, _)| gid == &id);
+
+        let area = egui::Area::new(egui::Id::new("group_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        if is_renaming {
+                            if let Some((_, draft)) = &mut self.renaming_group {
+                                let response =
+                                    ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                                if std::mem::take(&mut self.pending_focus_rename) {
+                                    response.request_focus();
+                                }
+                                if response.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        self.renaming_group = None;
+                                    } else if let Some((gid, name)) = self.renaming_group.take() {
+                                        let trimmed = name.trim();
+                                        if !trimmed.is_empty() {
+                                            if let Some(node) = self.groups.get_mut(&gid) {
+                                                node.name = trimmed.to_string();
+                                            }
+                                        }
+                                    }
+                                    close = true;
+                                }
+                            }
+                        } else {
+                            if ui.button("Rename").clicked() {
+                                let name = self.groups.get(&id).map(|g| g.name.clone()).unwrap_or_default();
+                                self.renaming_group = Some((id.clone(), name));
+                                self.pending_focus_rename = true;
+                            }
+                            ui.add_space(4.0);
+                            ui.label("Color");
+                            ui.horizontal(|ui| {
+                                let current = self.groups.get(&id).and_then(|g| g.color);
+                                for &swatch in &GROUP_COLOR_PALETTE {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(18.0, 18.0),
+                                        egui::Sense::click(),
+                                    );
+                                    ui.painter().circle_filled(rect.center(), 8.0, swatch);
+                                    if current == Some(swatch) {
+                                        ui.painter().circle_stroke(
+                                            rect.center(),
+                                            8.0,
+                                            egui::Stroke::new(2.0, ui.visuals().text_color()),
+                                        );
+                                    }
+                                    if response.clicked() {
+                                        if let Some(node) = self.groups.get_mut(&id) {
+                                            node.color = Some(swatch);
+                                        }
+                                        close = true;
+                                    }
+                                }
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(18.0, 18.0),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().circle_stroke(
+                                    rect.center(),
+                                    8.0,
+                                    egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+                                );
+                                if response.clicked() {
+                                    if let Some(node) = self.groups.get_mut(&id) {
+                                        node.color = None;
+                                    }
+                                    close = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.separator();
+                            if ui.button("Dissolve").clicked() {
+                                dissolve = true;
+                                close = true;
+                            }
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
+        });
+        if clicked_outside && !is_renaming {
+            close = true;
+        }
+
+        if dissolve {
+            self.dissolve_group(&id);
+        }
+        if close {
+            self.group_context_menu = None;
+        }
+    }
+
     /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
     /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
     /// (unlike the context menu): it just times out.
@@ -3017,6 +3149,7 @@ impl App {
                 self.build_settings_popup(ui, rect);
             }
         }
+        self.build_group_context_menu(ui);
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
@@ -3088,11 +3221,13 @@ impl App {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
-            // Escape clears a rectangle-select selection -- Graph view has
-            // no other use for Escape (unlike Tab view, where it steps back
-            // to Graph), so this is a plain no-op the rest of the time.
+            // Escape clears a rectangle-select selection and dismisses a
+            // group's context menu -- Graph view has no other use for
+            // Escape (unlike Tab view, where it steps back to Graph), so
+            // this is a plain no-op the rest of the time.
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
+                self.group_context_menu = None;
             }
         }
 
@@ -3158,9 +3293,32 @@ impl App {
         // is irrelevant to a plain "where is the mouse" query.
         let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        if secondary_down && self.rect_select_start.is_none() {
+        let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        if secondary_pressed {
             if let Some(pos) = pointer_pos.filter(|p| scene_outer_rect.contains(*p)) {
-                self.rect_select_start = Some(pos);
+                // A press landing on a group's own card opens its context
+                // menu instead of starting a marquee -- groups aren't
+                // marquee-selectable (only tabs are, see
+                // `nearest_tab_in_direction`'s own doc comment on why
+                // `self.focused` stays tab-only), so a right-click there
+                // would otherwise just compute an empty selection.
+                let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
+                let hit_group = self.current_group.is_none()
+                    .then(|| {
+                        self.groups.iter().find_map(|(gid, g)| {
+                            egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
+                                .contains(world_pos)
+                                .then(|| gid.clone())
+                        })
+                    })
+                    .flatten();
+                if let Some(gid) = hit_group {
+                    self.group_context_menu = Some((gid, pos));
+                    self.rect_select_start = None;
+                } else {
+                    self.group_context_menu = None;
+                    self.rect_select_start = Some(pos);
+                }
             }
         }
         if let Some(start) = self.rect_select_start {
