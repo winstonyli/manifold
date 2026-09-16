@@ -1242,10 +1242,20 @@ impl App {
         kind: EngineKind,
     ) {
         let id = self.alloc_tab_id();
+        // `parent`'s own position only if it actually shares `group` --
+        // the toolbar's "+ New Tab" passes `self.current_group` as `group`
+        // but `self.focused` (unconditionally) as `parent`, and those can
+        // point at different levels (see `spawn_new_tab`'s own doc
+        // comment). Falling back to any existing member of `group` keeps
+        // the new tab near its actual new groupmates instead of near an
+        // unrelated tab at a different level; `ZERO` (same as a fresh
+        // group's own spawn point) covers a brand new, still-empty group.
         let parent_pos = parent
             .as_ref()
             .and_then(|p| self.tabs.get(p))
+            .filter(|n| n.group == group)
             .map(|n| n.pos)
+            .or_else(|| self.tabs.values().find(|n| n.group == group).map(|n| n.pos))
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
