@@ -3166,6 +3166,45 @@ impl App {
                                     if let Some(node) = self.tabs.get_mut(&id) {
                                         node.group = Some(group_id);
                                     }
+                                } else {
+                                    // Not dropped on a group -- check
+                                    // another ungrouped tab's card instead,
+                                    // creating a new group with both.
+                                    // `tabs_at_current_level()` only ever
+                                    // returns ungrouped tabs at the top
+                                    // level (its own filter is `n.group ==
+                                    // self.current_group`, i.e. `None`
+                                    // here), so anything it finds is
+                                    // already a valid drop target with no
+                                    // extra check needed.
+                                    let dropped_on_tab =
+                                        self.tabs_at_current_level().into_iter().find(|other_id| {
+                                            other_id != &id
+                                                && self.tabs.get(other_id).is_some_and(|other| {
+                                                    egui::Rect::from_center_size(
+                                                        egui::Pos2::new(other.pos.x, other.pos.y),
+                                                        GRAPH_NODE_SIZE,
+                                                    )
+                                                    .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
+                                                })
+                                        });
+                                    if let Some(other_id) = dropped_on_tab {
+                                        let group_id = self.alloc_group_id();
+                                        let pos =
+                                            self.tabs.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
+                                        let name = format!("Group {}", self.groups.len() + 1);
+                                        self.groups.insert(
+                                            group_id.clone(),
+                                            GroupNode { name, pos, vel: egui::Vec2::ZERO },
+                                        );
+                                        self.group_order.push(group_id.clone());
+                                        if let Some(node) = self.tabs.get_mut(&other_id) {
+                                            node.group = Some(group_id.clone());
+                                        }
+                                        if let Some(node) = self.tabs.get_mut(&id) {
+                                            node.group = Some(group_id);
+                                        }
+                                    }
                                 }
                             }
                         }
