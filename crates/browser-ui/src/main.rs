@@ -3861,6 +3861,12 @@ impl App {
             self.settle_current_level();
             self.graph_settled_key = Some(self.current_level_settle_key());
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            // A rectangle-selection belongs to the level it was drawn on —
+            // carrying it into a different level left the toolbar's "Group
+            // Selected"/"Close Selected" buttons acting on tabs that aren't
+            // even visible here anymore.
+            self.selected_tabs.clear();
+            self.rect_select_start = None;
         }
         if leave_group_requested {
             self.current_group = None;
@@ -3868,6 +3874,8 @@ impl App {
             self.graph_settled_key = Some(self.current_level_settle_key());
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
             self.renaming_group = None;
+            self.selected_tabs.clear();
+            self.rect_select_start = None;
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
