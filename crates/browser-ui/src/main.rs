@@ -57,6 +57,12 @@ const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 /// dragged tab is tested against on release — see `GroupNode`'s own doc
 /// comment.
 const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
+/// Below this on-screen card width (in points), a node's label is hidden
+/// entirely rather than truncated — a card this small can't fit more than
+/// one or two letters plus "…" anyway (see `truncate_to_width`), and a
+/// near-illegible sliver of text reads as noise, not information, at the
+/// zoom levels this app's `GRAPH_ZOOM_MIN` allows.
+const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
 const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
@@ -2968,23 +2974,29 @@ impl App {
                             4.0 * inv_zoom,
                             engine_color(node.tab.kind),
                         );
-                        let label_font = egui::FontId::proportional(14.0);
-                        // Available on-screen width for the label -- the
-                        // strip's own screen width (zoom shrinks the card,
-                        // but not this fixed-size text, so at low zoom the
-                        // label can be wider than the card it's on) minus
-                        // the fixed 16px left offset and a little breathing
-                        // room on the right.
-                        let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
-                        let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
-                        overlay_painter.text(
-                            project(egui::Pos2::new(title_strip.left(), title_strip.center().y))
-                                + egui::vec2(16.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            label,
-                            label_font,
-                            egui::Color32::WHITE,
-                        );
+                        // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                        // label entirely rather than truncating to a
+                        // near-illegible sliver -- the engine-color dot
+                        // above still conveys engine identity on its own.
+                        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                            let label_font = egui::FontId::proportional(14.0);
+                            // Available on-screen width for the label -- the
+                            // strip's own screen width (zoom shrinks the card,
+                            // but not this fixed-size text, so at low zoom the
+                            // label can be wider than the card it's on) minus
+                            // the fixed 16px left offset and a little breathing
+                            // room on the right.
+                            let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
+                            let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
+                            overlay_painter.text(
+                                project(egui::Pos2::new(title_strip.left(), title_strip.center().y))
+                                    + egui::vec2(16.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                label_font,
+                                egui::Color32::WHITE,
+                            );
+                        }
                     }
                     if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
                         let favicon_rect = egui::Rect::from_min_size(
@@ -3185,17 +3197,24 @@ impl App {
                             egui::FontId::proportional(18.0),
                             ui.visuals().text_color(),
                         );
-                        let filename_font = egui::FontId::proportional(14.0);
-                        let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                        let filename =
-                            truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
-                        overlay_painter.text(
-                            project(rect.center_bottom()) + egui::vec2(0.0, -8.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            filename,
-                            filename_font,
-                            ui.visuals().text_color(),
-                        );
+                        // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                        // filename entirely rather than truncating to a
+                        // near-illegible sliver -- the download-icon glyph
+                        // above still marks the node as a download on its
+                        // own.
+                        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                            let filename_font = egui::FontId::proportional(14.0);
+                            let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                            let filename =
+                                truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
+                            overlay_painter.text(
+                                project(rect.center_bottom()) + egui::vec2(0.0, -8.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                filename,
+                                filename_font,
+                                ui.visuals().text_color(),
+                            );
+                        }
                     }
 
                     if is_hovered {
@@ -3286,23 +3305,31 @@ impl App {
                                 .values()
                                 .filter(|n| n.group.as_deref() == Some(id.as_str()))
                                 .count();
-                            let name_font = egui::FontId::proportional(16.0);
-                            let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                            let name = truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
-                            overlay_painter.text(
-                                project(rect.center_top()) + egui::vec2(0.0, 14.0),
-                                egui::Align2::CENTER_TOP,
-                                name,
-                                name_font,
-                                ui.visuals().text_color(),
-                            );
-                            overlay_painter.text(
-                                project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
-                                egui::FontId::proportional(14.0),
-                                ui.visuals().weak_text_color(),
-                            );
+                            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
+                            // labels entirely rather than truncating to a
+                            // near-illegible sliver -- a group card has no
+                            // other decoration to fall back on, so it's just
+                            // a small colored card at this size.
+                            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                                let name_font = egui::FontId::proportional(16.0);
+                                let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                                let name =
+                                    truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
+                                overlay_painter.text(
+                                    project(rect.center_top()) + egui::vec2(0.0, 14.0),
+                                    egui::Align2::CENTER_TOP,
+                                    name,
+                                    name_font,
+                                    ui.visuals().text_color(),
+                                );
+                                overlay_painter.text(
+                                    project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
+                                    egui::FontId::proportional(14.0),
+                                    ui.visuals().weak_text_color(),
+                                );
+                            }
                         }
 
                         if is_hovered {
