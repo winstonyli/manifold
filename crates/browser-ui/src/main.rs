@@ -39,7 +39,12 @@ use winit::window::{Window, WindowId};
 const CHROME_HEIGHT_POINTS: f32 = 32.0;
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
-const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = 26.0;
+/// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned — a shorter
+/// value here used to fit the old bundled Ubuntu-Light font's line height
+/// but clipped button labels once `apply_fonts` switched to IBM Plex
+/// Serif's taller metrics (confirmed live: "+ New Group"/"Reset View"
+/// visibly cut off at the old 26.0).
+const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 /// Smaller than `GRAPH_NODE_SIZE` — a download node has no live thumbnail,
