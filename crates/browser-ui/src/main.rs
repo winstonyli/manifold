@@ -2761,22 +2761,43 @@ impl App {
         // borrowed from `self.graph_scene_rect` directly.
         // Everything painted inside `Scene`'s closure lives in world-space
         // coordinates that `Scene` itself then scales uniformly by the
-        // current zoom factor — a decoration sized in world units (a
-        // favicon, a dot, a button, label text) would otherwise shrink to
-        // illegible at `GRAPH_ZOOM_MIN` and balloon at `GRAPH_ZOOM_MAX`
-        // right along with the card. `inv_zoom` is the counter-scale: a
-        // decoration's world-space size becomes `desired_screen_px *
-        // inv_zoom`, so after `Scene`'s own scale multiplies it back out,
-        // it lands at a constant on-screen size regardless of zoom — using
-        // the exact same `outer_rect`/`graph_scene_rect` pair
-        // `graph_world_to_screen_transform` already derives the same scale
-        // factor from for the Tab<->Graph transition animation. The node
-        // card itself (`GRAPH_NODE_SIZE`) and the hover peek preview
-        // (`GRAPH_PEEK_SIZE`) are deliberately excluded — those represent
-        // actual zoomable content, not chrome, so they're meant to scale.
+        // current zoom factor — a *shape* (rect/circle/stroke/image) sized
+        // in world units would shrink to illegible at `GRAPH_ZOOM_MIN` and
+        // balloon at `GRAPH_ZOOM_MAX` right along with the card, so those
+        // are sized as `desired_screen_px * inv_zoom` below (vector
+        // geometry re-tessellates at any final scale with no quality
+        // loss, so this alone is enough for them). Text is different:
+        // egui rasterizes each glyph into its font atlas *at the
+        // requested world-space size*, and `Scene`'s transform then just
+        // scales that already-rasterized quad — so text sized the same
+        // `* inv_zoom` way rasterizes tiny (and blurs badly once
+        // magnified back up) at high zoom, since a small `inv_zoom` asks
+        // for a tiny atlas glyph. `overlay_painter`/`project` below paint
+        // text directly onto an *untransformed* foreground layer instead,
+        // at real fixed screen coordinates and a real fixed font size —
+        // this is the actual "achieve constant size directly" fix, not
+        // just another scale factor. `zoom_scale`/`translation` are the
+        // same pair `graph_world_to_screen_transform` already derives for
+        // the Tab<->Graph transition animation (`screen = translation +
+        // zoom_scale * world`). The node card itself (`GRAPH_NODE_SIZE`)
+        // and the hover peek preview (`GRAPH_PEEK_SIZE`) are deliberately
+        // excluded from all of this — those represent actual zoomable
+        // content, not chrome, so they're meant to scale (and blur like
+        // any other magnified image would, which is normal/expected).
         let scene_outer_rect = ui.available_rect_before_wrap();
-        let (zoom_scale, _) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         let inv_zoom = 1.0 / zoom_scale;
+        let project = move |world: egui::Pos2| -> egui::Pos2 {
+            (translation + zoom_scale * world.to_vec2()).to_pos2()
+        };
+        // Clipped to the graph panel's own rect (not `layer_painter`'s
+        // default full-content-rect) so a node near the top edge can't
+        // paint its label over the toolbar above.
+        let overlay_painter = egui::Painter::new(
+            ui.ctx().clone(),
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("graph_decoration_text")),
+            scene_outer_rect,
+        );
 
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
@@ -2906,11 +2927,12 @@ impl App {
                             4.0 * inv_zoom,
                             engine_color(node.tab.kind),
                         );
-                        ui.painter().text(
-                            egui::Pos2::new(title_strip.left() + 16.0 * inv_zoom, title_strip.center().y),
+                        overlay_painter.text(
+                            project(egui::Pos2::new(title_strip.left(), title_strip.center().y))
+                                + egui::vec2(16.0, 0.0),
                             egui::Align2::LEFT_CENTER,
                             label,
-                            egui::FontId::proportional(14.0 * inv_zoom),
+                            egui::FontId::proportional(14.0),
                             egui::Color32::WHITE,
                         );
                     }
@@ -3006,11 +3028,11 @@ impl App {
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
-                        ui.painter().text(
-                            close_rect.center(),
+                        overlay_painter.text(
+                            project(close_rect.center()),
                             egui::Align2::CENTER_CENTER,
                             "x",
-                            egui::FontId::proportional(14.0 * inv_zoom),
+                            egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
                         if close_response.clicked() {
@@ -3106,18 +3128,18 @@ impl App {
                         // elsewhere in this app to render as empty boxes in
                         // whatever font it actually has glyphs for (see the
                         // audio-indicator dot's own doc comment).
-                        ui.painter().text(
-                            rect.center_top() + egui::vec2(0.0, 10.0) * inv_zoom,
+                        overlay_painter.text(
+                            project(rect.center_top()) + egui::vec2(0.0, 10.0),
                             egui::Align2::CENTER_TOP,
                             "\u{2913}",
-                            egui::FontId::proportional(18.0 * inv_zoom),
+                            egui::FontId::proportional(18.0),
                             ui.visuals().text_color(),
                         );
-                        ui.painter().text(
-                            rect.center_bottom() + egui::vec2(0.0, -8.0) * inv_zoom,
+                        overlay_painter.text(
+                            project(rect.center_bottom()) + egui::vec2(0.0, -8.0),
                             egui::Align2::CENTER_BOTTOM,
                             filename,
-                            egui::FontId::proportional(14.0 * inv_zoom),
+                            egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
                     }
@@ -3142,11 +3164,11 @@ impl App {
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
-                        ui.painter().text(
-                            close_rect.center(),
+                        overlay_painter.text(
+                            project(close_rect.center()),
                             egui::Align2::CENTER_CENTER,
                             "x",
-                            egui::FontId::proportional(14.0 * inv_zoom),
+                            egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
                         if close_response.clicked() {
@@ -3210,18 +3232,18 @@ impl App {
                                 .values()
                                 .filter(|n| n.group.as_deref() == Some(id.as_str()))
                                 .count();
-                            ui.painter().text(
-                                rect.center_top() + egui::vec2(0.0, 14.0) * inv_zoom,
+                            overlay_painter.text(
+                                project(rect.center_top()) + egui::vec2(0.0, 14.0),
                                 egui::Align2::CENTER_TOP,
                                 &node.name,
-                                egui::FontId::proportional(16.0 * inv_zoom),
+                                egui::FontId::proportional(16.0),
                                 ui.visuals().text_color(),
                             );
-                            ui.painter().text(
-                                rect.center_bottom() + egui::vec2(0.0, -10.0) * inv_zoom,
+                            overlay_painter.text(
+                                project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
                                 egui::Align2::CENTER_BOTTOM,
                                 format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
-                                egui::FontId::proportional(14.0 * inv_zoom),
+                                egui::FontId::proportional(14.0),
                                 ui.visuals().weak_text_color(),
                             );
                         }
@@ -3248,11 +3270,11 @@ impl App {
                                 egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                                 egui::StrokeKind::Inside,
                             );
-                            ui.painter().text(
-                                close_rect.center(),
+                            overlay_painter.text(
+                                project(close_rect.center()),
                                 egui::Align2::CENTER_CENTER,
                                 "x",
-                                egui::FontId::proportional(14.0 * inv_zoom),
+                                egui::FontId::proportional(14.0),
                                 ui.visuals().text_color(),
                             );
                             if close_response.clicked() {
