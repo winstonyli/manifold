@@ -586,6 +586,13 @@ struct App {
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
     graph_scene_rect: egui::Rect,
+    /// `(level, node_count)` for the graph level `graph_settle_current_level`
+    /// last ran a settle burst for -- `build_graph_ui` compares this
+    /// against the current level/count every frame and only re-settles
+    /// (and updates this) when they differ, instead of the physics sim
+    /// running continuously. See `graph_settle_current_level`'s own doc
+    /// comment for why continuous physics was replaced with this at all.
+    graph_settled_key: Option<(Option<String>, usize)>,
 
     /// Headless mode (`--headless`): the window is created real but
     /// positioned far off-screen (NOT invisible — a genuinely invisible
@@ -765,6 +772,7 @@ impl Default for App {
             dragging: None,
             hovered: None,
             graph_scene_rect: default_graph_scene_rect(),
+            graph_settled_key: None,
             headless: false,
             pending_debug_escape: false,
             pending_debug_enter: false,
@@ -1412,6 +1420,125 @@ impl App {
             return default_graph_scene_rect();
         }
         bounds.expand(MARGIN)
+    }
+
+    /// Runs the force-directed layout to convergence for whichever level
+    /// `self.current_group` is currently viewing, then stops -- unlike the
+    /// old always-on-every-frame simulation, positions are static between
+    /// calls to this. Continuous physics had a real, user-visible cost:
+    /// every unpinned node (the drop target included) kept reacting to
+    /// forces *while* being dragged onto, so a slow drag toward a group or
+    /// another tab could chase a target that kept fleeing the incoming
+    /// drag's own repulsion -- confirmed live while building the
+    /// drag-to-group feature, where only a single fast cursor jump (no
+    /// intermediate positions for the target to react to) reliably landed
+    /// a drop. Calling this only when the visible node set actually
+    /// changes (see `graph_settled_key`) keeps the one real benefit of the
+    /// old approach -- new/remaining nodes still auto-spread apart instead
+    /// of stacking -- without anything ever moving on its own while the
+    /// user is trying to point at it.
+    fn settle_current_level(&mut self) {
+        // 90 iterations at a fixed 1/60s step is ~1.5 simulated seconds --
+        // comfortably past the "well under a second" convergence this
+        // layout already documented under continuous 60fps physics, with
+        // margin for a slightly larger graph. Trivial cost for the tens
+        // of nodes this app's graph view actually holds.
+        const SETTLE_ITERATIONS: u32 = 90;
+        const SETTLE_DT: f32 = 1.0 / 60.0;
+
+        let mut positions: HashMap<String, egui::Vec2> = self
+            .tabs
+            .iter()
+            .filter(|(_, n)| n.group == self.current_group)
+            .map(|(id, n)| (id.clone(), n.pos))
+            .chain(
+                self.downloads
+                    .iter()
+                    .filter(|(_, n)| n.group == self.current_group)
+                    .map(|(id, n)| (id.clone(), n.pos)),
+            )
+            .chain(
+                self.current_group
+                    .is_none()
+                    .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.pos)))
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        let mut velocities: HashMap<String, egui::Vec2> = self
+            .tabs
+            .iter()
+            .filter(|(_, n)| n.group == self.current_group)
+            .map(|(id, n)| (id.clone(), n.vel))
+            .chain(
+                self.downloads
+                    .iter()
+                    .filter(|(_, n)| n.group == self.current_group)
+                    .map(|(id, n)| (id.clone(), n.vel)),
+            )
+            .chain(
+                self.current_group
+                    .is_none()
+                    .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.vel)))
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        let edges: Vec<(String, String)> = self
+            .tabs
+            .iter()
+            .filter(|(_, n)| n.group == self.current_group)
+            .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
+            .chain(
+                self.downloads
+                    .iter()
+                    .filter(|(_, n)| n.group == self.current_group)
+                    .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
+            )
+            .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
+            .collect();
+        let pinned: HashSet<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, n)| n.group == self.current_group && n.pinned)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for _ in 0..SETTLE_ITERATIONS {
+            graph_layout::step(
+                &mut positions,
+                &mut velocities,
+                &edges,
+                &pinned,
+                GRAPH_WORLD_CENTER,
+                SETTLE_DT,
+            );
+        }
+
+        for (id, node) in self.tabs.iter_mut() {
+            if let Some(p) = positions.get(id) {
+                node.pos = *p;
+            }
+            if let Some(v) = velocities.get(id) {
+                node.vel = *v;
+            }
+        }
+        for (id, node) in self.downloads.iter_mut() {
+            if let Some(p) = positions.get(id) {
+                node.pos = *p;
+            }
+            if let Some(v) = velocities.get(id) {
+                node.vel = *v;
+            }
+        }
+        for (id, node) in self.groups.iter_mut() {
+            if let Some(p) = positions.get(id) {
+                node.pos = *p;
+            }
+            if let Some(v) = velocities.get(id) {
+                node.vel = *v;
+            }
+        }
     }
 
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
@@ -2721,117 +2848,26 @@ impl App {
             return;
         }
 
-        // One force-directed layout tick. Real measured dt (clamped so a
-        // hitch — e.g. spawning a new engine-host takes real wall time —
-        // can't destabilize the spring math with a huge single step). Pure
-        // world-space math, independent of the pan/zoom view below.
-        let dt = ui.input(|i| i.stable_dt).min(0.1);
-        {
-            // Tabs, download nodes, and (top level only) group nodes share
-            // one flat id space here — `graph_layout::step` doesn't
-            // distinguish node kinds, only ids and parent->child edges.
-            // Filtered to `self.current_group`'s level so a node hidden
-            // inside a different group doesn't drift under forces from
-            // siblings it can't currently see anyway (and can't be dragged
-            // into, since it isn't rendered) — see `TabNode::group`'s own
-            // doc comment. Group nodes only ever exist at the top level
-            // (no nesting in this first cut), so they're excluded entirely
-            // while viewing a group's own subgraph.
-            let mut positions: HashMap<String, egui::Vec2> = self
-                .tabs
-                .iter()
-                .filter(|(_, n)| n.group == self.current_group)
-                .map(|(id, n)| (id.clone(), n.pos))
-                .chain(
-                    self.downloads
-                        .iter()
-                        .filter(|(_, n)| n.group == self.current_group)
-                        .map(|(id, n)| (id.clone(), n.pos)),
-                )
-                .chain(
-                    self.current_group
-                        .is_none()
-                        .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.pos)))
-                        .into_iter()
-                        .flatten(),
-                )
-                .collect();
-            let mut velocities: HashMap<String, egui::Vec2> = self
-                .tabs
-                .iter()
-                .filter(|(_, n)| n.group == self.current_group)
-                .map(|(id, n)| (id.clone(), n.vel))
-                .chain(
-                    self.downloads
-                        .iter()
-                        .filter(|(_, n)| n.group == self.current_group)
-                        .map(|(id, n)| (id.clone(), n.vel)),
-                )
-                .chain(
-                    self.current_group
-                        .is_none()
-                        .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.vel)))
-                        .into_iter()
-                        .flatten(),
-                )
-                .collect();
-            // Both endpoints must be at this level -- a tab whose `parent`
-            // was dragged into a different group (or out of one) simply
-            // stops drawing/exerting that edge until they're viewed
-            // together again, rather than reaching across levels.
-            let edges: Vec<(String, String)> = self
-                .tabs
-                .iter()
-                .filter(|(_, n)| n.group == self.current_group)
-                .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
-                .chain(
-                    self.downloads
-                        .iter()
-                        .filter(|(_, n)| n.group == self.current_group)
-                        .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
-                )
-                .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
-                .collect();
-            let mut pinned: HashSet<String> = self
-                .tabs
-                .iter()
-                .filter(|(_, n)| n.group == self.current_group && n.pinned)
-                .map(|(id, _)| id.clone())
-                .collect();
-            if let Some(d) = &self.dragging {
-                pinned.insert(d.clone());
-            }
-            graph_layout::step(
-                &mut positions,
-                &mut velocities,
-                &edges,
-                &pinned,
-                GRAPH_WORLD_CENTER,
-                dt,
+        // Static layout: the force-directed sim only runs as a one-shot
+        // settle burst (`settle_current_level`) when the visible node set
+        // at this level actually changes size, not continuously every
+        // frame -- see that method's own doc comment for why continuous
+        // physics was dropped (a drop target could flee the very drag
+        // aimed at it). While a drag is in progress, skip the check
+        // entirely: the dragged node's position already updates directly
+        // from `response.drag_delta()` in the per-node loop below,
+        // independent of this, and everything else should stay exactly
+        // where it is for the whole gesture.
+        if self.dragging.is_none() {
+            let current_key = (
+                self.current_group.clone(),
+                self.tabs_at_current_level().len()
+                    + self.downloads_at_current_level().len()
+                    + if self.current_group.is_none() { self.groups.len() } else { 0 },
             );
-            for (id, node) in self.tabs.iter_mut() {
-                if let Some(p) = positions.get(id) {
-                    node.pos = *p;
-                }
-                if let Some(v) = velocities.get(id) {
-                    node.vel = *v;
-                }
-            }
-            for (id, node) in self.downloads.iter_mut() {
-                if let Some(p) = positions.get(id) {
-                    node.pos = *p;
-                }
-                if let Some(v) = velocities.get(id) {
-                    node.vel = *v;
-                }
-            }
-            for (id, node) in self.groups.iter_mut() {
-                if let Some(p) = positions.get(id) {
-                    node.pos = *p;
-                }
-                if let Some(v) = velocities.get(id) {
-                    node.vel = *v;
-                }
+            if self.graph_settled_key.as_ref() != Some(&current_key) {
+                self.settle_current_level();
+                self.graph_settled_key = Some(current_key);
             }
         }
 
