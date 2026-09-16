@@ -3744,7 +3744,18 @@ impl ApplicationHandler<UserEvent> for App {
                         // Tab view's own page-content scroll is untouched:
                         // that's a distinct `InputEvent::Scroll` forwarded to
                         // the focused tab's engine-host, not egui's Scene.
-                        if self.view_mode == ViewMode::Graph {
+                        // `egui` treats "is this scroll a zoom gesture" as a
+                        // single frame-wide flag (`InputState::begin_pass`
+                        // computes it once from the whole event list, not
+                        // per-widget or per-hover-region) -- forcing it
+                        // unconditionally would silently zero out
+                        // `smooth_scroll_delta` for *any* `ScrollArea` shown
+                        // over Graph view, not just `Scene`. Gated on
+                        // `!self.settings_open` so the one popup reachable
+                        // from Graph view (the gear button is in its toolbar
+                        // too) keeps normal scroll if it ever grows a
+                        // `ScrollArea`.
+                        if self.view_mode == ViewMode::Graph && !self.settings_open {
                             for event in &mut raw_input.events {
                                 if let egui::Event::MouseWheel { modifiers, .. } = event {
                                     modifiers.ctrl = true;
