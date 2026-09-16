@@ -219,6 +219,47 @@ fn apply_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
+/// no wider than `max_width` at `font_id`, or returns it unchanged if it
+/// already fits. Needed because graph-view node labels are now painted at
+/// a fixed screen-space font size regardless of zoom (see
+/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
+/// card shrinks well below the label's natural width, and unlike a normal
+/// egui `Label` widget (which can `.truncate()` itself during layout),
+/// text painted directly via `Painter::text` has no such built-in limit.
+/// A binary search over char-boundary indices rather than a linear
+/// shrink-by-one-char loop, since `layout_no_wrap` (one text-shaping pass)
+/// is the expensive part and a title could in principle be long.
+fn truncate_to_width(ctx: &egui::Context, text: &str, font_id: &egui::FontId, max_width: f32) -> String {
+    let width_of = |s: &str| -> f32 {
+        ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE))
+            .size()
+            .x
+    };
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if width_of(text) <= max_width {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        if width_of(&candidate) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        "…".to_owned()
+    } else {
+        chars[..lo].iter().collect::<String>() + "…"
+    }
+}
+
 fn engine_label(kind: EngineKind) -> &'static str {
     match kind {
         EngineKind::Servo => "Servo",
@@ -2927,12 +2968,21 @@ impl App {
                             4.0 * inv_zoom,
                             engine_color(node.tab.kind),
                         );
+                        let label_font = egui::FontId::proportional(14.0);
+                        // Available on-screen width for the label -- the
+                        // strip's own screen width (zoom shrinks the card,
+                        // but not this fixed-size text, so at low zoom the
+                        // label can be wider than the card it's on) minus
+                        // the fixed 16px left offset and a little breathing
+                        // room on the right.
+                        let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
+                        let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
                         overlay_painter.text(
                             project(egui::Pos2::new(title_strip.left(), title_strip.center().y))
                                 + egui::vec2(16.0, 0.0),
                             egui::Align2::LEFT_CENTER,
                             label,
-                            egui::FontId::proportional(14.0),
+                            label_font,
                             egui::Color32::WHITE,
                         );
                     }
@@ -3135,11 +3185,15 @@ impl App {
                             egui::FontId::proportional(18.0),
                             ui.visuals().text_color(),
                         );
+                        let filename_font = egui::FontId::proportional(14.0);
+                        let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                        let filename =
+                            truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
                         overlay_painter.text(
                             project(rect.center_bottom()) + egui::vec2(0.0, -8.0),
                             egui::Align2::CENTER_BOTTOM,
                             filename,
-                            egui::FontId::proportional(14.0),
+                            filename_font,
                             ui.visuals().text_color(),
                         );
                     }
@@ -3232,11 +3286,14 @@ impl App {
                                 .values()
                                 .filter(|n| n.group.as_deref() == Some(id.as_str()))
                                 .count();
+                            let name_font = egui::FontId::proportional(16.0);
+                            let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                            let name = truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
                             overlay_painter.text(
                                 project(rect.center_top()) + egui::vec2(0.0, 14.0),
                                 egui::Align2::CENTER_TOP,
-                                &node.name,
-                                egui::FontId::proportional(16.0),
+                                name,
+                                name_font,
                                 ui.visuals().text_color(),
                             );
                             overlay_painter.text(
