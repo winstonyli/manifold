@@ -1345,7 +1345,11 @@ impl App {
                                 if ui.button(&name).on_hover_text("Open").clicked() {
                                     open_session_name = Some(name.clone());
                                 }
-                                if ui.small_button("x").on_hover_text("Delete").clicked() {
+                                if ui
+                                    .small_button(egui_phosphor::regular::X)
+                                    .on_hover_text("Delete")
+                                    .clicked()
+                                {
                                     delete_session_name = Some(name.clone());
                                 }
                             });
@@ -3108,7 +3112,7 @@ impl App {
                                         {
                                             navigate_url = Some(bookmark.url.clone());
                                         }
-                                        if ui.small_button("x").clicked() {
+                                        if ui.small_button(egui_phosphor::regular::X).clicked() {
                                             remove_index = Some(index);
                                         }
                                     });
@@ -3300,7 +3304,7 @@ impl App {
                                     {
                                         reveal_id = Some(id.clone());
                                     }
-                                    if ui.small_button("x").clicked() {
+                                    if ui.small_button(egui_phosphor::regular::X).clicked() {
                                         remove_id = Some(id.clone());
                                     }
                                 });
@@ -3599,13 +3603,14 @@ impl App {
                                 None => {}
                             }
 
-                            // Plain ASCII labels, not Unicode arrow/×
-                            // glyphs — confirmed live that `▲`/`▼`/`✕`
-                            // render as empty tofu boxes with this app's
-                            // font (unlike `◀`/`▶`/`⚙` elsewhere in this
-                            // same toolbar, which do render — evidently not
-                            // in the fallback font this build actually has
-                            // glyphs for).
+                            // Prev/Next stay plain ASCII labels, not Unicode
+                            // arrow glyphs — confirmed live that `▲`/`▼`
+                            // render as empty tofu boxes with this app's own
+                            // font (unlike `◀`/`▶`/`⚙` elsewhere in this same
+                            // toolbar, which do render). Not migrated to
+                            // `egui_phosphor` alongside the close button
+                            // below -- out of scope for the cosmetic-only
+                            // "x"/"X" pass that touched everything else here.
                             let has_matches = matches!(self.find_result, Some((count, _)) if count > 0);
                             if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
                                 go_prev = true;
@@ -3613,7 +3618,14 @@ impl App {
                             if ui.add_enabled(has_matches, egui::Button::new("Next")).clicked() {
                                 go_next = true;
                             }
-                            if ui.button("X").clicked() {
+                            // Was a literal capital "X" -- confirmed live
+                            // that `✕` tofu-boxed here (same finding the
+                            // comment above already documents), so this one
+                            // used the ASCII fallback rather than a Unicode
+                            // glyph. Now the real `X` icon instead, once the
+                            // icon font was already in place for the other
+                            // close buttons in this app's chrome.
+                            if ui.button(egui_phosphor::regular::X).clicked() {
                                 close = true;
                             }
                         });
@@ -4543,13 +4555,19 @@ impl App {
                     {
                         go_forward = true;
                     }
-                    // Plain text, not a refresh-arrows glyph -- same
-                    // "risks a tofu box in this app's font" caution as
-                    // every other icon-shaped button here.
-                    if ui.button("Reload").clicked() {
+                    // Was plain text ("Reload") to avoid a refresh-arrows
+                    // glyph gamble in this app's own font -- now a real
+                    // `egui_phosphor` icon instead, same reasoning as every
+                    // other icon migrated once the icon font was already
+                    // wired in.
+                    if ui
+                        .button(egui_phosphor::regular::ARROW_CLOCKWISE)
+                        .on_hover_text("Reload")
+                        .clicked()
+                    {
                         reload_requested = true;
                     }
-                    if ui.button("Home").on_hover_text("Go to home page").clicked() {
+                    if ui.button(egui_phosphor::regular::HOUSE).on_hover_text("Go to home page").clicked() {
                         home_requested = true;
                     }
 
@@ -4594,11 +4612,21 @@ impl App {
                     // doc comment for CEF/Servo's gap. `selectable_label`
                     // gives a pressed look while muted, same minimal
                     // indicator shape the engine picker's own selected row
-                    // uses, without risking a speaker glyph this app's font
-                    // might not have (see the audio-indicator dot's own
-                    // doc comment for why that risk is real here).
+                    // uses. Icon swaps `SPEAKER_HIGH`/`SPEAKER_X` by state
+                    // -- same icon the graph-card audio indicator's own
+                    // muted case already uses, so the toolbar toggle and
+                    // the graph decoration read as the same concept.
+                    // `selectable_label`'s own selected-state styling
+                    // (accent background, dark foreground) handles the
+                    // icon's contrast automatically, same as any other
+                    // selected label here.
                     let node_muted = self.tabs.get(&focused_id).is_some_and(|n| n.muted);
-                    if ui.selectable_label(node_muted, "Muted").clicked() {
+                    let mute_icon = if node_muted {
+                        egui_phosphor::regular::SPEAKER_X
+                    } else {
+                        egui_phosphor::regular::SPEAKER_HIGH
+                    };
+                    if ui.selectable_label(node_muted, mute_icon).on_hover_text("Muted").clicked() {
                         mute_toggle = true;
                     }
                     // "Mute Others"/"Close Others"/"Pin All"/"Unpin All"
@@ -4614,14 +4642,19 @@ impl App {
                     }
                     tab_actions_button_rect = Some(tab_actions_response.rect);
 
-                    // `selectable_label`, same reasoning as `Muted` above:
-                    // a pressed look for "already bookmarked" rather than
-                    // risking a star glyph this app's font might not have.
+                    // `selectable_label`, same reasoning as `Muted` above --
+                    // a pressed look for "already bookmarked", now a real
+                    // `BOOKMARK_SIMPLE` icon instead of the plain-text
+                    // fallback a star glyph's tofu risk used to require.
                     let is_bookmarked = self
                         .tabs
                         .get(&focused_id)
                         .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-                    if ui.selectable_label(is_bookmarked, "Bookmark").clicked() {
+                    if ui
+                        .selectable_label(is_bookmarked, egui_phosphor::regular::BOOKMARK_SIMPLE)
+                        .on_hover_text("Bookmark")
+                        .clicked()
+                    {
                         toggle_bookmark_requested = true;
                     }
                     if !self.bookmarks.is_empty() {
@@ -4661,14 +4694,20 @@ impl App {
                     // `screenshot_path` -- this button is that same
                     // mechanism wired to a real default save location
                     // instead of a test-supplied path.
-                    if ui.button("Screenshot").clicked() {
+                    if ui
+                        .button(egui_phosphor::regular::CAMERA)
+                        .on_hover_text("Screenshot")
+                        .clicked()
+                    {
                         screenshot_requested = true;
                     }
                     // Hidden in headless mode, same reason Export/Import
                     // Session are: a real native file dialog blocks on
                     // OS/human input neither exists there. `PRINTTOPDF
                     // <path>` bypasses it directly for headless testing.
-                    if !self.headless && ui.button("Print to PDF").clicked() {
+                    if !self.headless
+                        && ui.button(egui_phosphor::regular::PRINTER).on_hover_text("Print to PDF").clicked()
+                    {
                         print_to_pdf_requested = true;
                     }
 
