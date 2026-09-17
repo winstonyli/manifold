@@ -5190,6 +5190,13 @@ impl App {
                             close_requested = Some(id.clone());
                         }
                     }
+                    // Middle-click anywhere on the card closes it too, same
+                    // convention a real browser's tab strip already has --
+                    // an alternative to the small "x" rather than a
+                    // replacement for it.
+                    if response.clicked_by(egui::PointerButton::Middle) {
+                        close_requested = Some(id.clone());
+                    }
 
                     // Remove-from-group ("eject"): only shown while
                     // actually viewing a group's own subgraph -- pops just
