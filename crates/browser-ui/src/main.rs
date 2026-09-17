@@ -460,6 +460,12 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
 enum ViewMode {
     Graph,
     Tab,
+    /// The gear-icon Settings page -- a real `ViewMode`, not a popup
+    /// overlaid on Tab/Graph, since the popup's fixed 200pt width
+    /// overflowed on a small window once the saved-sessions list grew (no
+    /// scroll area, unbounded height in a fixed-position `Area`). See
+    /// `App::open_settings_page`/`build_settings_page`.
+    Settings,
 }
 
 /// Which way a shrink/expand transition (see `App::transition`) is running.
@@ -1030,11 +1036,12 @@ struct App {
     /// User-configurable defaults (search engine, starting engine, zoom,
     /// home page), loaded once at startup and persisted to
     /// `%APPDATA%\multiengine-browser\settings.json` on every change — see
-    /// `settings.rs`. `settings_open` is the gear-icon popup's own
-    /// visibility, app-wide rather than per-toolbar since Tab and Graph
-    /// view never show chrome simultaneously.
+    /// `settings.rs`.
     settings: Settings,
-    settings_open: bool,
+    /// Which view `ViewMode::Settings` should return to (its own Back
+    /// button, `Escape`, or `Ctrl+G`) -- set once when the settings page is
+    /// entered, from whichever of Tab/Graph was showing at that moment.
+    settings_return_view: ViewMode,
     /// Flat `(title, url)` list, loaded once at startup and persisted to
     /// `%APPDATA%\multiengine-browser\bookmarks.json` on every change — see
     /// `bookmarks.rs`. `bookmarks_open` is the Tab-view toolbar dropdown's
@@ -1182,7 +1189,7 @@ impl Default for App {
             pending_focus_find_bar: false,
             tab_spawn_error: None,
             settings,
-            settings_open: false,
+            settings_return_view: ViewMode::Tab,
             bookmarks,
             bookmarks_open: false,
             bookmarks_filter: String::new(),
@@ -1205,7 +1212,7 @@ impl App {
     fn chrome_height_points(&self) -> f32 {
         match self.view_mode {
             ViewMode::Tab => CHROME_HEIGHT_POINTS,
-            ViewMode::Graph => GRAPH_TOOLBAR_HEIGHT_POINTS,
+            ViewMode::Graph | ViewMode::Settings => GRAPH_TOOLBAR_HEIGHT_POINTS,
         }
     }
 
@@ -1245,8 +1252,8 @@ impl App {
     /// spawning it (new tabs pick up whatever the default is *at spawn
     /// time*; this never retroactively revisits already-open tabs, matching
     /// every other "default" setting here) and again by the Settings
-    /// popup's zoom control for the currently focused tab specifically
-    /// (`build_settings_popup`), since seeing the zoom control move with no
+    /// page's zoom control for the currently focused tab specifically
+    /// (`build_settings_page`), since seeing the zoom control move with no
     /// visible effect on the tab you're looking at would be confusing.
     fn send_zoom_to(&mut self, tab_id: &str) {
         let factor = self.settings.zoom_factor;
@@ -1266,15 +1273,19 @@ impl App {
         }
     }
 
-    /// The gear-icon popup: default search engine, default starting engine,
-    /// zoom, and home page — see `settings.rs` for what each actually
-    /// controls and `App::settings`'s own doc comment for why this is one
-    /// shared popup rather than per-view state. Every control saves to disk
-    /// immediately on change (no separate "Save" step, consistent with
-    /// every other instant-apply control in this chrome, e.g. the engine
-    /// picker).
-    fn build_settings_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
-        let mut close = false;
+    /// The Settings page (`ViewMode::Settings`): default search engine,
+    /// default starting engine, zoom, and home page — see `settings.rs` for
+    /// what each actually controls and `App::settings`'s own doc comment
+    /// for why this is one shared page rather than per-view state. Every
+    /// control saves to disk immediately on change (no separate "Save"
+    /// step, consistent with every other instant-apply control in this
+    /// chrome, e.g. the engine picker). **A real page, not a popup**: the
+    /// original gear-icon dropdown was a fixed-position `Area` with no
+    /// scroll area and a fixed 200pt width -- overflowed off the bottom of
+    /// a small window once the saved-sessions list grew long enough,
+    /// reported live by a user. A full page gets the whole window to
+    /// scroll in instead of a hand-picked popup height.
+    fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut save_as_requested = false;
         let mut open_session_name: Option<String> = None;
         let mut delete_session_name: Option<String> = None;
@@ -1283,182 +1294,193 @@ impl App {
         let mut export_bookmarks_requested = false;
         let mut import_bookmarks_requested = false;
         let mut save_now_requested = false;
-        egui::Area::new(egui::Id::new("settings_popup"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
+
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close_settings_page();
+        }
+
+        egui::Panel::top("settings_toolbar")
+            .exact_size(CHROME_HEIGHT_POINTS)
+            .frame(
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(10))
-                    .show(ui, |ui| {
-                        ui.set_min_width(200.0);
-                        ui.set_max_width(200.0);
-                        ui.label(egui::RichText::new("Settings").strong().color(TEXT_PRIMARY));
-                        ui.separator();
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    if ui
+                        .button(format!("{} Back", egui_phosphor::regular::CARET_LEFT))
+                        .clicked()
+                    {
+                        self.close_settings_page();
+                    }
+                    ui.label(egui::RichText::new("Settings").strong().color(TEXT_PRIMARY));
+                });
+            });
 
-                        ui.label("Default search engine");
-                        egui::ComboBox::from_id_salt("settings_search_engine")
-                            .selected_text(self.settings.default_search_engine.label())
-                            .show_ui(ui, |ui| {
-                                for engine in SearchEngine::ALL {
-                                    let selected = self.settings.default_search_engine == engine;
-                                    if ui.selectable_label(selected, engine.label()).clicked() && !selected {
-                                        self.settings.default_search_engine = engine;
-                                        self.settings.save();
-                                    }
-                                }
-                            });
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(
-                                    "Suggestions always come from DuckDuckGo; this only picks where a search actually goes.",
-                                )
-                                .small()
-                                .weak(),
-                            )
-                            .wrap(),
-                        );
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
+                ui.set_max_width(480.0);
+                ui.add_space(12.0);
 
-                        ui.add_space(8.0);
-                        ui.label("Default starting engine (new tabs)");
-                        egui::ComboBox::from_id_salt("settings_starting_engine")
-                            .selected_text(engine_label(self.settings.default_starting_engine))
-                            .show_ui(ui, |ui| {
-                                for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-                                    let selected = self.settings.default_starting_engine == kind;
-                                    if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
-                                        self.settings.default_starting_engine = kind;
-                                        self.settings.save();
-                                    }
-                                }
-                            });
-
-                        ui.add_space(8.0);
-                        ui.label("Zoom (new tabs; also applies to the current tab now)");
-                        ui.horizontal(|ui| {
-                            if ui.button(egui_phosphor::regular::MINUS).clicked() {
-                                self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
-                                self.apply_zoom_change();
+                ui.label("Default search engine");
+                egui::ComboBox::from_id_salt("settings_search_engine")
+                    .selected_text(self.settings.default_search_engine.label())
+                    .show_ui(ui, |ui| {
+                        for engine in SearchEngine::ALL {
+                            let selected = self.settings.default_search_engine == engine;
+                            if ui.selectable_label(selected, engine.label()).clicked() && !selected {
+                                self.settings.default_search_engine = engine;
+                                self.settings.save();
                             }
-                            ui.label(format!("{:.0}%", self.settings.zoom_factor * 100.0));
-                            if ui.button(egui_phosphor::regular::PLUS).clicked() {
-                                self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
-                                self.apply_zoom_change();
-                            }
-                            if ui.button("Reset").clicked() {
-                                self.settings.zoom_factor = 1.0;
-                                self.apply_zoom_change();
-                            }
-                        });
-
-                        ui.add_space(8.0);
-                        ui.label("Home page (new tabs)");
-                        if ui
-                            .add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY))
-                            .lost_focus()
-                        {
-                            self.settings.save();
-                        }
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.label(egui::RichText::new("Sessions").strong().color(TEXT_PRIMARY));
-                        if ui
-                            .button("Save Now")
-                            .on_hover_text("Write the auto-restore session.json immediately")
-                            .clicked()
-                        {
-                            save_now_requested = true;
-                        }
-                        let last_saved = match self.last_session_save {
-                            Some(at) => format!("Last saved {}s ago", at.elapsed().as_secs()),
-                            None => "Not saved yet this run".to_string(),
-                        };
-                        ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.session_name_draft)
-                                    .desired_width(120.0)
-                                    .hint_text("Name"),
-                            );
-                            if ui.button("Save As").clicked() {
-                                save_as_requested = true;
-                            }
-                        });
-                        let names = session::Session::list_named();
-                        if names.is_empty() {
-                            ui.add(
-                                egui::Label::new(egui::RichText::new("No saved sessions").small().weak())
-                                    .wrap(),
-                            );
-                        }
-                        for name in names {
-                            ui.horizontal(|ui| {
-                                if ui.button(&name).on_hover_text("Open").clicked() {
-                                    open_session_name = Some(name.clone());
-                                }
-                                if ui
-                                    .small_button(egui_phosphor::regular::X)
-                                    .on_hover_text("Delete")
-                                    .clicked()
-                                {
-                                    delete_session_name = Some(name.clone());
-                                }
-                            });
-                        }
-                        // A real native file dialog blocks on OS/human
-                        // input -- fine for the real app (that's what a
-                        // modal dialog is for), but headless mode has
-                        // neither, so it would just hang forever with no
-                        // way to test it here. `EXPORTSESSION`/
-                        // `IMPORTSESSION` debug commands call
-                        // `build_session_snapshot().save_to`/
-                        // `session::Session::load_from` directly with an
-                        // explicit path instead, bypassing the dialog
-                        // entirely (import still stages into
-                        // `pending_import` same as a real file pick would,
-                        // so `CONFIRMIMPORT`/`CANCELIMPORT` can headlessly
-                        // test the confirm popup too), the same "headless
-                        // calls the effect directly" pattern every real-
-                        // keyboard-shortcut debug command uses.
-                        if !self.headless {
-                            ui.horizontal(|ui| {
-                                if ui.button("Export...").clicked() {
-                                    export_requested = true;
-                                }
-                                if ui.button("Import...").clicked() {
-                                    import_requested = true;
-                                }
-                            });
-                        }
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.label(egui::RichText::new("Bookmarks").strong().color(TEXT_PRIMARY));
-                        // Same "real file dialog blocks on OS/human input
-                        // neither exists in headless mode" reasoning as
-                        // Export/Import Session above -- `EXPORTBOOKMARKS`/
-                        // `IMPORTBOOKMARKS` debug commands bypass the dialog
-                        // the same way.
-                        if !self.headless {
-                            ui.horizontal(|ui| {
-                                if ui.button("Export...").clicked() {
-                                    export_bookmarks_requested = true;
-                                }
-                                if ui.button("Import...").clicked() {
-                                    import_bookmarks_requested = true;
-                                }
-                            });
-                        }
-
-                        ui.add_space(10.0);
-                        if ui.button("Close").clicked() {
-                            close = true;
                         }
                     });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "Suggestions always come from DuckDuckGo; this only picks where a search actually goes.",
+                        )
+                        .small()
+                        .weak(),
+                    )
+                    .wrap(),
+                );
+
+                ui.add_space(8.0);
+                ui.label("Default starting engine (new tabs)");
+                egui::ComboBox::from_id_salt("settings_starting_engine")
+                    .selected_text(engine_label(self.settings.default_starting_engine))
+                    .show_ui(ui, |ui| {
+                        for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
+                            let selected = self.settings.default_starting_engine == kind;
+                            if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
+                                self.settings.default_starting_engine = kind;
+                                self.settings.save();
+                            }
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.label("Zoom (new tabs; also applies to the current tab now)");
+                ui.horizontal(|ui| {
+                    if ui.button(egui_phosphor::regular::MINUS).clicked() {
+                        self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
+                        self.apply_zoom_change();
+                    }
+                    ui.label(format!("{:.0}%", self.settings.zoom_factor * 100.0));
+                    if ui.button(egui_phosphor::regular::PLUS).clicked() {
+                        self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
+                        self.apply_zoom_change();
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.settings.zoom_factor = 1.0;
+                        self.apply_zoom_change();
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.label("Home page (new tabs)");
+                if ui
+                    .add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY))
+                    .lost_focus()
+                {
+                    self.settings.save();
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Sessions").strong().color(TEXT_PRIMARY));
+                if ui
+                    .button("Save Now")
+                    .on_hover_text("Write the auto-restore session.json immediately")
+                    .clicked()
+                {
+                    save_now_requested = true;
+                }
+                let last_saved = match self.last_session_save {
+                    Some(at) => format!("Last saved {}s ago", at.elapsed().as_secs()),
+                    None => "Not saved yet this run".to_string(),
+                };
+                ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.session_name_draft)
+                            .desired_width(120.0)
+                            .hint_text("Name"),
+                    );
+                    if ui.button("Save As").clicked() {
+                        save_as_requested = true;
+                    }
+                });
+                let names = session::Session::list_named();
+                if names.is_empty() {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new("No saved sessions").small().weak())
+                            .wrap(),
+                    );
+                }
+                for name in names {
+                    ui.horizontal(|ui| {
+                        if ui.button(&name).on_hover_text("Open").clicked() {
+                            open_session_name = Some(name.clone());
+                        }
+                        if ui
+                            .small_button(egui_phosphor::regular::X)
+                            .on_hover_text("Delete")
+                            .clicked()
+                        {
+                            delete_session_name = Some(name.clone());
+                        }
+                    });
+                }
+                // A real native file dialog blocks on OS/human
+                // input -- fine for the real app (that's what a
+                // modal dialog is for), but headless mode has
+                // neither, so it would just hang forever with no
+                // way to test it here. `EXPORTSESSION`/
+                // `IMPORTSESSION` debug commands call
+                // `build_session_snapshot().save_to`/
+                // `session::Session::load_from` directly with an
+                // explicit path instead, bypassing the dialog
+                // entirely (import still stages into
+                // `pending_import` same as a real file pick would,
+                // so `CONFIRMIMPORT`/`CANCELIMPORT` can headlessly
+                // test the confirm popup too), the same "headless
+                // calls the effect directly" pattern every real-
+                // keyboard-shortcut debug command uses.
+                if !self.headless {
+                    ui.horizontal(|ui| {
+                        if ui.button("Export...").clicked() {
+                            export_requested = true;
+                        }
+                        if ui.button("Import...").clicked() {
+                            import_requested = true;
+                        }
+                    });
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Bookmarks").strong().color(TEXT_PRIMARY));
+                // Same "real file dialog blocks on OS/human input
+                // neither exists in headless mode" reasoning as
+                // Export/Import Session above -- `EXPORTBOOKMARKS`/
+                // `IMPORTBOOKMARKS` debug commands bypass the dialog
+                // the same way.
+                if !self.headless {
+                    ui.horizontal(|ui| {
+                        if ui.button("Export...").clicked() {
+                            export_bookmarks_requested = true;
+                        }
+                        if ui.button("Import...").clicked() {
+                            import_bookmarks_requested = true;
+                        }
+                    });
+                }
+
+                ui.add_space(12.0);
             });
+        });
         if save_now_requested {
             self.save_session();
         }
@@ -1472,7 +1494,7 @@ impl App {
         }
         if let Some(name) = open_session_name {
             self.load_named_session(&name);
-            close = true;
+            self.close_settings_page();
         }
         if let Some(name) = delete_session_name {
             session::Session::delete_named(&name);
@@ -1493,7 +1515,7 @@ impl App {
             {
                 if let Some(session) = session::Session::load_from(&path) {
                     self.pending_import = Some(session);
-                    close = true;
+                    self.close_settings_page();
                 }
             }
         }
@@ -1515,11 +1537,8 @@ impl App {
                     self.bookmarks = imported;
                     bookmarks::save(&self.bookmarks);
                 }
-                close = true;
+                self.close_settings_page();
             }
-        }
-        if close {
-            self.settings_open = false;
         }
     }
 
@@ -2930,6 +2949,7 @@ impl App {
     fn toggle_view_mode_shortcut(&mut self) {
         match self.view_mode {
             ViewMode::Tab => self.leave_to_graph(),
+            ViewMode::Settings => self.close_settings_page(),
             ViewMode::Graph => {
                 let Some(id) = self.focused.clone() else { return };
                 if self.tabs.contains_key(&id) {
@@ -2937,6 +2957,40 @@ impl App {
                     self.focus_tab(&id);
                 }
             }
+        }
+    }
+
+    /// Gear-icon button (Tab or Graph toolbar) / headless
+    /// `TOGGLESETTINGSPAGE` — enters the Settings page from whichever of
+    /// Tab/Graph is currently showing, remembering it in
+    /// `settings_return_view` so `close_settings_page` knows where to go
+    /// back to. A no-op if already on the Settings page (doesn't clobber
+    /// the return view with `Settings` itself).
+    fn open_settings_page(&mut self) {
+        if self.view_mode != ViewMode::Settings {
+            self.settings_return_view = self.view_mode;
+            self.view_mode = ViewMode::Settings;
+        }
+    }
+
+    /// The Settings page's own Back button / `Escape` / `Ctrl+G` — returns
+    /// to `settings_return_view`. A no-op if the Settings page isn't
+    /// showing.
+    fn close_settings_page(&mut self) {
+        if self.view_mode == ViewMode::Settings {
+            self.view_mode = self.settings_return_view;
+        }
+    }
+
+    /// Gear-icon button's actual click handler -- opens the Settings page,
+    /// or closes it back to `settings_return_view` if it's already open
+    /// (the button doubles as Back while on the page, same toggle feel the
+    /// old gear-icon popup had).
+    fn toggle_settings_page(&mut self) {
+        if self.view_mode == ViewMode::Settings {
+            self.close_settings_page();
+        } else {
+            self.open_settings_page();
         }
     }
 
@@ -4402,6 +4456,7 @@ impl App {
         match self.view_mode {
             ViewMode::Tab => self.build_tab_ui(ui),
             ViewMode::Graph => self.build_graph_ui(ui),
+            ViewMode::Settings => self.build_settings_page(ui),
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
@@ -4549,7 +4604,6 @@ impl App {
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
-        let mut settings_button_rect: Option<egui::Rect> = None;
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
         // — deferred here rather than acted on immediately inside the
@@ -4796,12 +4850,9 @@ impl App {
                         self.shortcuts_help_open = !self.shortcuts_help_open;
                     }
                     shortcuts_help_button_rect = Some(help_response.rect);
-                    let gear_response =
-                        ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
-                    if gear_response.clicked() {
-                        self.settings_open = !self.settings_open;
+                    if ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings").clicked() {
+                        self.toggle_settings_page();
                     }
-                    settings_button_rect = Some(gear_response.rect);
                     if response.changed() {
                         self.open_tab_suggestions =
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
@@ -4826,11 +4877,6 @@ impl App {
                 });
             });
 
-        if self.settings_open {
-            if let Some(rect) = settings_button_rect {
-                self.build_settings_popup(ui, rect);
-            }
-        }
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
 
         if self.find_bar_open {
@@ -5071,7 +5117,6 @@ impl App {
         let mut close_selected_requested = false;
         let mut ungroup_all_requested = false;
         let mut import_group_requested = false;
-        let mut settings_button_rect: Option<egui::Rect> = None;
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         let mut leave_group_button_rect: Option<egui::Rect> = None;
@@ -5223,19 +5268,11 @@ impl App {
                         self.shortcuts_help_open = !self.shortcuts_help_open;
                     }
                     shortcuts_help_button_rect = Some(help_response.rect);
-                    let gear_response =
-                        ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
-                    if gear_response.clicked() {
-                        self.settings_open = !self.settings_open;
+                    if ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings").clicked() {
+                        self.toggle_settings_page();
                     }
-                    settings_button_rect = Some(gear_response.rect);
                 });
             });
-        if self.settings_open {
-            if let Some(rect) = settings_button_rect {
-                self.build_settings_popup(ui, rect);
-            }
-        }
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
         if self.recently_closed_open {
             if let Some(rect) = recently_closed_button_rect {
@@ -5291,10 +5328,12 @@ impl App {
         // "act on the focused tab" path (Ctrl+W, "+ New Tab"'s parent,
         // Enter/click-to-open) already reads -- so a keyboard-selected node
         // behaves exactly like a clicked one, just without the view
-        // transition. Gated on the settings popup and group-rename text
-        // field both being closed so arrow keys still do their normal job
-        // there instead of hijacking focus underneath an open widget.
-        if !self.settings_open && self.renaming_group.is_none() && self.quick_switcher.is_none() {
+        // transition. Gated on the group-rename text field and quick-
+        // switcher both being closed so arrow keys still do their normal
+        // job there instead of hijacking focus underneath an open widget --
+        // the Settings page itself needs no such check here, since it's now
+        // a separate `ViewMode` this function never runs under at all.
+        if self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
                     Some(egui::vec2(1.0, 0.0))
@@ -7022,12 +7061,11 @@ impl ApplicationHandler<UserEvent> for App {
                         // per-widget or per-hover-region) -- forcing it
                         // unconditionally would silently zero out
                         // `smooth_scroll_delta` for *any* `ScrollArea` shown
-                        // over Graph view, not just `Scene`. Gated on
-                        // `!self.settings_open` so the one popup reachable
-                        // from Graph view (the gear button is in its toolbar
-                        // too) keeps normal scroll if it ever grows a
-                        // `ScrollArea`.
-                        if self.view_mode == ViewMode::Graph && !self.settings_open {
+                        // over Graph view, not just `Scene`. Scoped to
+                        // `ViewMode::Graph` specifically, so the Settings
+                        // page's own `ScrollArea` (a separate `ViewMode` now)
+                        // always keeps normal scroll.
+                        if self.view_mode == ViewMode::Graph {
                             for event in &mut raw_input.events {
                                 if let egui::Event::MouseWheel { modifiers, .. } = event {
                                     modifiers.ctrl = true;
