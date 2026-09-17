@@ -662,6 +662,13 @@ struct App {
     /// A press landing on a download's card opens this instead of starting
     /// a marquee, same reasoning as `group_context_menu`'s own doc comment.
     download_context_menu: Option<(String, egui::Pos2)>,
+    /// `(tab_id, screen_pos)` while a right-click context menu is showing
+    /// for that tab's card -- Pin/color/Remove from Group/Close in one
+    /// place, same "consolidate scattered card actions" idea
+    /// `group_context_menu`/`download_context_menu` already apply. A press
+    /// landing on a tab's card opens this instead of starting a marquee,
+    /// same reasoning as those two.
+    tab_context_menu: Option<(String, egui::Pos2)>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
@@ -923,6 +930,7 @@ impl Default for App {
             pending_focus_rename: false,
             group_context_menu: None,
             download_context_menu: None,
+            tab_context_menu: None,
             quick_switcher: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
@@ -3169,6 +3177,123 @@ impl App {
         }
     }
 
+    /// Right-click menu for a tab's card -- Pin/Unpin, the same 6-color
+    /// swatch row groups already have, Remove from Group (only while
+    /// actually viewing a group's own subgraph, same scope as the card's
+    /// own hover-revealed eject button), and Close. See
+    /// `App::build_group_context_menu` for the identical pattern this
+    /// mirrors.
+    fn build_tab_context_menu(&mut self, ui: &mut egui::Ui) {
+        let Some((id, pos)) = self.tab_context_menu.clone() else { return };
+        let Some((pinned, color, group)) =
+            self.tabs.get(&id).map(|n| (n.pinned, n.color, n.group.clone()))
+        else {
+            self.tab_context_menu = None;
+            return;
+        };
+        let mut close = false;
+        let mut toggle_pin = false;
+        let mut remove_from_group = false;
+        let mut close_tab_requested = false;
+        let mut set_color: Option<Option<egui::Color32>> = None;
+
+        let area = egui::Area::new(egui::Id::new("tab_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
+                            toggle_pin = true;
+                            close = true;
+                        }
+                        ui.add_space(4.0);
+                        ui.label("Color");
+                        ui.horizontal(|ui| {
+                            for &swatch in &TAG_COLOR_PALETTE {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                                ui.painter().circle_filled(rect.center(), 8.0, swatch);
+                                if color == Some(swatch) {
+                                    ui.painter().circle_stroke(
+                                        rect.center(),
+                                        8.0,
+                                        egui::Stroke::new(2.0, ui.visuals().text_color()),
+                                    );
+                                }
+                                if response.clicked() {
+                                    set_color = Some(Some(swatch));
+                                    close = true;
+                                }
+                            }
+                            let (rect, response) =
+                                ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                            ui.painter().circle_stroke(
+                                rect.center(),
+                                8.0,
+                                egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+                            );
+                            if response.clicked() {
+                                set_color = Some(None);
+                                close = true;
+                            }
+                        });
+                        if group.is_some() {
+                            ui.add_space(4.0);
+                            ui.separator();
+                            if ui.button("Remove from Group").clicked() {
+                                remove_from_group = true;
+                                close = true;
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.separator();
+                        if ui.button("Close").clicked() {
+                            close_tab_requested = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
+        });
+        if clicked_outside {
+            close = true;
+        }
+
+        if toggle_pin {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.pinned = !node.pinned;
+            }
+        }
+        if let Some(color) = set_color {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.color = color;
+            }
+        }
+        if remove_from_group {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.group = None;
+            }
+        }
+        // Closing the tab already makes its context menu meaningless, but
+        // `close_tab` doesn't know about this menu -- clear it explicitly
+        // rather than leaving a menu open for an id that no longer exists.
+        if close_tab_requested {
+            self.close_tab(&id);
+        }
+        if close {
+            self.tab_context_menu = None;
+        }
+    }
+
     /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
     /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
     /// (unlike the context menu): it just times out.
@@ -3792,6 +3917,7 @@ impl App {
         }
         self.build_group_context_menu(ui);
         self.build_download_context_menu(ui);
+        self.build_tab_context_menu(ui);
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
@@ -3965,17 +4091,35 @@ impl App {
                         })
                     })
                     .flatten();
+                let hit_tab = (hit_group.is_none() && hit_download.is_none())
+                    .then(|| {
+                        self.tabs_at_current_level().into_iter().find(|tid| {
+                            self.tabs.get(tid).is_some_and(|n| {
+                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), GRAPH_NODE_SIZE)
+                                    .contains(world_pos)
+                            })
+                        })
+                    })
+                    .flatten();
                 if let Some(gid) = hit_group {
                     self.group_context_menu = Some((gid, pos));
                     self.download_context_menu = None;
+                    self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(did) = hit_download {
                     self.download_context_menu = Some((did, pos));
                     self.group_context_menu = None;
+                    self.tab_context_menu = None;
+                    self.rect_select_start = None;
+                } else if let Some(tid) = hit_tab {
+                    self.tab_context_menu = Some((tid, pos));
+                    self.group_context_menu = None;
+                    self.download_context_menu = None;
                     self.rect_select_start = None;
                 } else {
                     self.group_context_menu = None;
                     self.download_context_menu = None;
+                    self.tab_context_menu = None;
                     self.rect_select_start = Some(pos);
                 }
             }
@@ -5172,6 +5316,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.download_context_menu = None;
+            self.tab_context_menu = None;
         }
         if leave_group_requested {
             self.current_group = None;
@@ -5186,6 +5331,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.download_context_menu = None;
+            self.tab_context_menu = None;
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
