@@ -4593,17 +4593,101 @@ impl App {
                         );
 
                         if let Some(node) = self.groups.get(&id) {
-                            let member_count = self
+                            let member_ids: Vec<String> = self
                                 .tabs
-                                .values()
-                                .filter(|n| n.group.as_deref() == Some(id.as_str()))
-                                .count();
+                                .iter()
+                                .filter(|(_, n)| n.group.as_deref() == Some(id.as_str()))
+                                .map(|(tid, _)| tid.clone())
+                                .collect();
+                            let member_count = member_ids.len();
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
                             // labels entirely rather than truncating to a
                             // near-illegible sliver -- a group card has no
                             // other decoration to fall back on, so it's just
-                            // a small colored card at this size.
-                            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                            // a small colored card (or thumbnail grid) at
+                            // this size.
+                            let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+                            if member_count > 0 {
+                                // Member thumbnails: up to 4, a 2x2 grid
+                                // filling the card above a bottom name strip
+                                // -- like a folder icon previewing its own
+                                // contents, using the exact same
+                                // `GpuState::thumbnail_id` lookup a tab's
+                                // own card already does. A cell with no
+                                // thumbnail yet (still loading) falls back
+                                // to a plain tinted square rather than
+                                // leaving a hole.
+                                let title_strip_h = 18.0 * inv_zoom;
+                                let grid_rect = egui::Rect::from_min_max(
+                                    rect.min,
+                                    egui::Pos2::new(rect.max.x, rect.max.y - title_strip_h),
+                                )
+                                .shrink(4.0 * inv_zoom);
+                                let gap = 3.0 * inv_zoom;
+                                let cell_size = egui::vec2(
+                                    (grid_rect.width() - gap) / 2.0,
+                                    (grid_rect.height() - gap) / 2.0,
+                                );
+                                for (i, member_id) in member_ids.iter().take(4).enumerate() {
+                                    let (col, row) = (i as f32 % 2.0, (i / 2) as f32);
+                                    let cell_min = grid_rect.min
+                                        + egui::vec2(col * (cell_size.x + gap), row * (cell_size.y + gap));
+                                    let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
+                                    match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
+                                        Some(tex_id) => {
+                                            ui.painter().image(
+                                                tex_id,
+                                                cell_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::Pos2::new(0.0, 0.0),
+                                                    egui::Pos2::new(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        }
+                                        None => {
+                                            ui.painter().rect_filled(
+                                                cell_rect,
+                                                2.0 * inv_zoom,
+                                                ui.visuals().extreme_bg_color.gamma_multiply(1.2),
+                                            );
+                                        }
+                                    }
+                                }
+                                if show_labels {
+                                    if member_count > 4 {
+                                        overlay_painter.text(
+                                            project(grid_rect.right_bottom()) + egui::vec2(-3.0, -3.0),
+                                            egui::Align2::RIGHT_BOTTOM,
+                                            format!("+{}", member_count - 4),
+                                            egui::FontId::proportional(12.0),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                    let title_strip = egui::Rect::from_min_max(
+                                        egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
+                                        rect.right_bottom(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        title_strip,
+                                        0.0,
+                                        egui::Color32::from_black_alpha(160),
+                                    );
+                                    let name_font = egui::FontId::proportional(13.0);
+                                    let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                                    let name =
+                                        truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
+                                    overlay_painter.text(
+                                        project(title_strip.center()),
+                                        egui::Align2::CENTER_CENTER,
+                                        name,
+                                        name_font,
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                            } else if show_labels {
+                                // Nothing to preview -- the original plain
+                                // centered name + "0 tabs" layout.
                                 let name_font = egui::FontId::proportional(16.0);
                                 let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                                 let name =
@@ -4618,7 +4702,7 @@ impl App {
                                 overlay_painter.text(
                                     project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
                                     egui::Align2::CENTER_BOTTOM,
-                                    format!("{member_count} tab{}", if member_count == 1 { "" } else { "s" }),
+                                    "0 tabs",
                                     egui::FontId::proportional(14.0),
                                     ui.visuals().weak_text_color(),
                                 );
