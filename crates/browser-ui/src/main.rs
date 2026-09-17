@@ -2579,6 +2579,7 @@ impl App {
         let (
             reopen_tab,
             new_tab,
+            close_all_level,
             close_tab,
             focus_address,
             open_find,
@@ -2597,6 +2598,10 @@ impl App {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
+                // Checked ahead of plain `Ctrl+W` below, same "extra Shift
+                // matches the plain binding too" ordering reason `Ctrl+Shift+
+                // T`/`Ctrl+Shift+G` already need.
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::W),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
@@ -2629,6 +2634,9 @@ impl App {
         }
         if new_tab {
             self.new_tab_shortcut();
+        }
+        if close_all_level {
+            self.close_all_at_current_level();
         }
         if close_tab {
             self.close_focused_tab_shortcut();
@@ -2801,6 +2809,19 @@ impl App {
     /// none is focused (Graph view with nothing selected).
     fn close_focused_tab_shortcut(&mut self) {
         if let Some(id) = self.focused.clone() {
+            self.close_tab(&id);
+        }
+    }
+
+    /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
+    /// `tabs_at_current_level` returns (top level: every ungrouped tab,
+    /// leaving groups and their members untouched; inside a group: every
+    /// member, same effect as that group's own "Close Group" context-menu
+    /// entry, just reachable without opening it). Each closes through the
+    /// normal `close_tab` path, same "just that action run once per tab"
+    /// shape `close_all_except`/`close_group` already have.
+    fn close_all_at_current_level(&mut self) {
+        for id in self.tabs_at_current_level() {
             self.close_tab(&id);
         }
     }
@@ -6640,6 +6661,7 @@ impl App {
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::NewGroup => self.new_group_shortcut(),
+            DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

@@ -178,6 +178,8 @@ pub enum DebugCommand {
     /// "Import Bookmarks..." with an explicit path, same reason as
     /// `ExportBookmarks`.
     ImportBookmarks(String),
+    /// `Ctrl+Shift+W` equivalent — see `App::close_all_at_current_level`.
+    CloseAllLevel,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -344,6 +346,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
+        "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
