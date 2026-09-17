@@ -619,6 +619,13 @@ struct App {
     /// on a group's card specifically opens this instead of starting a
     /// marquee.
     group_context_menu: Option<(String, egui::Pos2)>,
+    /// `(download_id, screen_pos)` while a right-click context menu is
+    /// showing for that download's card -- Open Containing Folder/Copy
+    /// Path/Remove from List, same "consolidate scattered card actions
+    /// into one menu" idea `group_context_menu` already applies to groups.
+    /// A press landing on a download's card opens this instead of starting
+    /// a marquee, same reasoning as `group_context_menu`'s own doc comment.
+    download_context_menu: Option<(String, egui::Pos2)>,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -851,6 +858,7 @@ impl Default for App {
             renaming_group: None,
             pending_focus_rename: false,
             group_context_menu: None,
+            download_context_menu: None,
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
@@ -1444,22 +1452,29 @@ impl App {
         }
     }
 
-    /// Graph node click on a download: opens the containing folder with
-    /// the file pre-selected, same "just show the obvious thing, no custom
-    /// UI" posture as the download itself (see `EngineToHost::
-    /// DownloadCompleted`'s doc comment). A WebKit-sourced path is a WSL2-
-    /// side path (WebKit runs inside WSL2 — see project docs), not
-    /// reachable from this Windows process as a plain path, so it's
-    /// translated to the `\\wsl.localhost\<distro>\...` UNC form Explorer
-    /// understands, using the same "Ubuntu" distro name `process_manager`
-    /// already hardcodes for spawning the WebKit engine-host.
-    fn reveal_download(&self, id: &str) {
-        let Some(node) = self.downloads.get(id) else { return };
-        let path = if let Some(posix) = node.path.strip_prefix('/') {
+    /// A WebKit-sourced download path is a WSL2-side path (WebKit runs
+    /// inside WSL2 — see project docs), not reachable from this Windows
+    /// process as a plain path, so it's translated to the
+    /// `\\wsl.localhost\<distro>\...` UNC form both Explorer and a pasted
+    /// clipboard path understand, using the same "Ubuntu" distro name
+    /// `process_manager` already hardcodes for spawning the WebKit
+    /// engine-host. Shared by `reveal_download` and the download context
+    /// menu's "Copy Path".
+    fn windows_path_for_download(&self, id: &str) -> Option<String> {
+        let node = self.downloads.get(id)?;
+        Some(if let Some(posix) = node.path.strip_prefix('/') {
             format!("\\\\wsl.localhost\\Ubuntu\\{}", posix.replace('/', "\\"))
         } else {
             node.path.clone()
-        };
+        })
+    }
+
+    /// Graph node click on a download: opens the containing folder with
+    /// the file pre-selected, same "just show the obvious thing, no custom
+    /// UI" posture as the download itself (see `EngineToHost::
+    /// DownloadCompleted`'s doc comment).
+    fn reveal_download(&self, id: &str) {
+        let Some(path) = self.windows_path_for_download(id) else { return };
         let _ = std::process::Command::new("explorer.exe")
             .arg(format!("/select,{path}"))
             .spawn();
@@ -2671,6 +2686,69 @@ impl App {
         }
     }
 
+    /// Right-click menu for a download's card -- Open Containing Folder
+    /// (same effect as a plain click, see `reveal_download`), Copy Path,
+    /// Remove from List (same effect as the card's own close "x", see
+    /// `remove_download_node`). See `App::build_group_context_menu` for the
+    /// identical pattern this mirrors.
+    fn build_download_context_menu(&mut self, ui: &mut egui::Ui) {
+        let Some((id, pos)) = self.download_context_menu.clone() else { return };
+        if !self.downloads.contains_key(&id) {
+            self.download_context_menu = None;
+            return;
+        }
+        let mut close = false;
+        let mut reveal = false;
+        let mut remove = false;
+
+        let area = egui::Area::new(egui::Id::new("download_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(170.0);
+                        if ui.button("Open Containing Folder").clicked() {
+                            reveal = true;
+                            close = true;
+                        }
+                        if ui.button("Copy Path").clicked() {
+                            if let Some(path) = self.windows_path_for_download(&id) {
+                                ui.ctx().copy_text(path);
+                            }
+                            close = true;
+                        }
+                        ui.separator();
+                        if ui.button("Remove from List").clicked() {
+                            remove = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
+        });
+        if clicked_outside {
+            close = true;
+        }
+
+        if reveal {
+            self.reveal_download(&id);
+        }
+        if remove {
+            self.remove_download_node(&id);
+        }
+        if close {
+            self.download_context_menu = None;
+        }
+    }
+
     /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
     /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
     /// (unlike the context menu): it just times out.
@@ -3273,6 +3351,7 @@ impl App {
             }
         }
         self.build_group_context_menu(ui);
+        self.build_download_context_menu(ui);
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
@@ -3435,11 +3514,27 @@ impl App {
                         })
                     })
                     .flatten();
+                let hit_download = hit_group.is_none()
+                    .then(|| {
+                        self.downloads_at_current_level().into_iter().find(|did| {
+                            self.downloads.get(did).is_some_and(|d| {
+                                egui::Rect::from_center_size(egui::Pos2::new(d.pos.x, d.pos.y), DOWNLOAD_NODE_SIZE)
+                                    .contains(world_pos)
+                            })
+                        })
+                    })
+                    .flatten();
                 if let Some(gid) = hit_group {
                     self.group_context_menu = Some((gid, pos));
+                    self.download_context_menu = None;
+                    self.rect_select_start = None;
+                } else if let Some(did) = hit_download {
+                    self.download_context_menu = Some((did, pos));
+                    self.group_context_menu = None;
                     self.rect_select_start = None;
                 } else {
                     self.group_context_menu = None;
+                    self.download_context_menu = None;
                     self.rect_select_start = Some(pos);
                 }
             }
@@ -4515,6 +4610,7 @@ impl App {
             // even visible here anymore.
             self.selected_tabs.clear();
             self.rect_select_start = None;
+            self.download_context_menu = None;
         }
         if leave_group_requested {
             self.current_group = None;
@@ -4528,6 +4624,7 @@ impl App {
             self.renaming_group = None;
             self.selected_tabs.clear();
             self.rect_select_start = None;
+            self.download_context_menu = None;
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
