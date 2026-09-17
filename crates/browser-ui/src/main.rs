@@ -661,6 +661,13 @@ struct App {
     /// doc comment.
     groups: HashMap<String, GroupNode>,
     group_order: Vec<String>,
+    /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
+    /// button -- while `true`, every non-empty group card falls back to
+    /// the plain centered name+count layout an empty group already uses,
+    /// skipping the 2x2 member-thumbnail grid. A denser overview for a
+    /// graph with many/large groups, purely a rendering toggle -- doesn't
+    /// touch `groups`/membership at all. Session-only, resets on restart.
+    groups_collapsed: bool,
     /// `None` while viewing the top level; `Some(group_id)` while a
     /// group's own subgraph has been drilled into (see `GroupNode`'s doc
     /// comment) — only meaningful when `view_mode == Graph`, but not reset
@@ -1002,6 +1009,7 @@ impl Default for App {
             download_order: Vec::new(),
             groups: HashMap::new(),
             group_order: Vec::new(),
+            groups_collapsed: false,
             current_group: None,
             renaming_group: None,
             pending_focus_rename: false,
@@ -4606,6 +4614,12 @@ impl App {
                     {
                         ungroup_all_requested = true;
                     }
+                    if self.current_group.is_none() && !self.group_order.is_empty() {
+                        let label = if self.groups_collapsed { "Expand Groups" } else { "Collapse Groups" };
+                        if ui.button(label).clicked() {
+                            self.groups_collapsed = !self.groups_collapsed;
+                        }
+                    }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
@@ -5719,7 +5733,7 @@ impl App {
                             // a small colored card (or thumbnail grid) at
                             // this size.
                             let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
-                            if member_count > 0 {
+                            if member_count > 0 && !self.groups_collapsed {
                                 // Member thumbnails: up to 4, a 2x2 grid
                                 // filling the card above a bottom name strip
                                 // -- like a folder icon previewing its own
@@ -5798,8 +5812,12 @@ impl App {
                                     );
                                 }
                             } else if show_labels {
-                                // Nothing to preview -- the original plain
-                                // centered name + "0 tabs" layout.
+                                // Nothing to preview (empty group), or
+                                // previews deliberately hidden by "Collapse
+                                // Groups" -- the original plain centered
+                                // name + tab-count layout, count included
+                                // either way so a collapsed non-empty group
+                                // doesn't read as empty.
                                 let name_font = egui::FontId::proportional(16.0);
                                 let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                                 let name =
@@ -5811,10 +5829,15 @@ impl App {
                                     name_font,
                                     ui.visuals().text_color(),
                                 );
+                                let count_label = format!(
+                                    "{} tab{}",
+                                    member_count,
+                                    if member_count == 1 { "" } else { "s" }
+                                );
                                 overlay_painter.text(
                                     project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
                                     egui::Align2::CENTER_BOTTOM,
-                                    "0 tabs",
+                                    count_label,
                                     egui::FontId::proportional(14.0),
                                     ui.visuals().weak_text_color(),
                                 );
