@@ -2336,6 +2336,7 @@ impl App {
             prev_tab,
             next_tab,
             quick_switch,
+            view_toggle,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2355,6 +2356,7 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::G),
             )
         });
 
@@ -2391,6 +2393,35 @@ impl App {
         if quick_switch {
             self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
             self.pending_focus_quick_switcher = true;
+        }
+        // Neutralized while the quick-switcher is open, same reasoning as
+        // its own Escape/arrow handling in `build_quick_switcher` -- a
+        // `Ctrl+G` typed while it's open shouldn't also flip the view
+        // underneath it.
+        if view_toggle && self.quick_switcher.is_none() {
+            self.toggle_view_mode_shortcut();
+        }
+    }
+
+    /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
+    /// view isn't currently showing. Tab -> Graph reuses `leave_to_graph`'s
+    /// own shrink animation. Graph -> Tab jumps to `self.focused` directly
+    /// (`focus_tab`, not the graph node's expand animation) and updates
+    /// `current_group` to match it first -- same reasoning the quick-
+    /// switcher's own jump has: `self.focused` isn't guaranteed to be a tab
+    /// at the level currently being viewed (e.g. after `Ctrl+Tab` cycling
+    /// or a quick-switcher jump into a different group), so there's no
+    /// reliable on-screen node to animate from.
+    fn toggle_view_mode_shortcut(&mut self) {
+        match self.view_mode {
+            ViewMode::Tab => self.leave_to_graph(),
+            ViewMode::Graph => {
+                let Some(id) = self.focused.clone() else { return };
+                if self.tabs.contains_key(&id) {
+                    self.current_group = self.tabs.get(&id).and_then(|n| n.group.clone());
+                    self.focus_tab(&id);
+                }
+            }
         }
     }
 
@@ -5666,6 +5697,7 @@ impl App {
             DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
+            DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
