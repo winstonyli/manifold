@@ -783,6 +783,14 @@ struct App {
     /// currently hovered (drives the peek-preview popup).
     dragging: Option<String>,
     hovered: Option<String>,
+    /// Set to `self.hovered` by an Escape press while a hover-peek preview
+    /// is showing, so that preview can be dismissed early without needing
+    /// the pointer to actually move away -- the peek drawing code skips
+    /// rendering while this matches the current `hovered` id. Cleared
+    /// whenever `hovered` changes to anything else (including `None`), so
+    /// hovering the same or a different node again always shows a fresh
+    /// peek.
+    peek_suppressed: Option<String>,
     /// Graph view rectangle-select: `Some` (holding the screen-space anchor
     /// point) for exactly the duration of a right-button drag over the
     /// graph panel -- the right button specifically, since the primary
@@ -1045,6 +1053,7 @@ impl Default for App {
             dropdown_highlighted: None,
             dragging: None,
             hovered: None,
+            peek_suppressed: None,
             rect_select_start: None,
             selected_tabs: HashSet::new(),
             graph_scene_rect: default_graph_scene_rect(),
@@ -2766,6 +2775,14 @@ impl App {
         if let Some(node) = self.tabs.get_mut(&id) {
             node.tab.send(&HostToEngine::Reload);
         }
+    }
+
+    /// Graph view's own `Escape` handling / headless `DISMISSPEEK` —
+    /// dismisses the currently-hovered node's peek preview early, without
+    /// needing the pointer to move away first. See `peek_suppressed`'s own
+    /// doc comment for why this can't just clear `hovered` directly.
+    fn dismiss_hover_peek(&mut self) {
+        self.peek_suppressed = self.hovered.clone();
     }
 
     /// `F2` / headless `RENAMEGROUP` — starts renaming whichever group's
@@ -4845,13 +4862,21 @@ impl App {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
-            // Escape clears a rectangle-select selection and dismisses a
-            // group's context menu -- Graph view has no other use for
-            // Escape (unlike Tab view, where it steps back to Graph), so
-            // this is a plain no-op the rest of the time.
+            // Escape clears a rectangle-select selection, dismisses a
+            // group's context menu, and dismisses a hover-peek preview
+            // early -- `self.hovered` itself is left alone (clearing it
+            // here would just get overwritten later this same frame by the
+            // node loop below re-detecting the pointer still sitting over
+            // it) and `peek_suppressed` is set instead, checked by the peek
+            // drawing code further down so it skips rendering for this
+            // specific id without needing the pointer to actually move
+            // away first. Graph view has no other use for Escape (unlike
+            // Tab view, where it steps back to Graph), so this is a plain
+            // no-op the rest of the time.
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
                 self.group_context_menu = None;
+                self.dismiss_hover_peek();
             }
         }
 
@@ -6055,8 +6080,16 @@ impl App {
                 // directly in this same world-space layer (not a separate
                 // `egui::Area`, which would paint in un-transformed screen
                 // space) so it pans/zooms together with its node and simply
-                // ends up on top by paint order, drawn after every node above.
-                if let Some(hovered_id) = self.hovered.clone() {
+                // ends up on top by paint order, drawn after every node
+                // above. Skipped while `peek_suppressed` matches -- an
+                // Escape press dismissing this exact node's peek early,
+                // see that field's own doc comment.
+                if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
+                    self.peek_suppressed = None;
+                }
+                if let Some(hovered_id) =
+                    self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()))
+                {
                     let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
                     let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
                     if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
@@ -6881,6 +6914,7 @@ impl App {
                 self.pending_import = None;
             }
             DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
+            DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }

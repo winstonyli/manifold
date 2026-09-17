@@ -188,6 +188,10 @@ pub enum DebugCommand {
     CancelImport,
     /// `F2` equivalent — see `App::rename_current_group_shortcut`.
     RenameGroup,
+    /// Graph view's `Escape`-dismisses-peek equivalent — see
+    /// `App::dismiss_hover_peek`. Separate from plain `Escape` since that
+    /// command is Tab-view-only (see its own doc comment).
+    DismissPeek,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -358,6 +362,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
         "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
+        "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
