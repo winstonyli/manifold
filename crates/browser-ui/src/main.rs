@@ -456,6 +456,23 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
         .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
 }
 
+/// A soft colored glow behind a graph card (tab or group), grown outward
+/// from its own rect with decreasing alpha -- used instead of a plain black
+/// drop-shadow, which was tried first and found live to be invisible
+/// against this app's near-black `BG` (nothing darker to contrast against).
+/// Tinted the card's own border/tag color rather than a neutral shade, so
+/// it doubles as an echo of that color-coding; no offset (radiates evenly
+/// outward) since it isn't meant to imply a directional light source.
+fn draw_card_glow(painter: &egui::Painter, rect: egui::Rect, base_corner_radius: f32, color: egui::Color32, inv_zoom: f32) {
+    for (alpha, grow) in [(85u8, 3.5_f32), (38u8, 8.5)] {
+        painter.rect_filled(
+            rect.expand(grow * inv_zoom),
+            (base_corner_radius + grow) * inv_zoom,
+            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+        );
+    }
+}
+
 /// A parent-child graph edge, bowed into a gentle quadratic-bezier curve
 /// instead of a straight `line_segment` -- purely cosmetic softening, not
 /// port-based routing (this graph's nodes are free-positioned by physics,
@@ -5749,7 +5766,6 @@ impl App {
                     } else {
                         ui.visuals().extreme_bg_color
                     };
-                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     // A tag color only shows through in the resting state --
                     // focused/hovered stay their own established colors so
                     // "this is the open tab"/"this is what you're pointing
@@ -5761,6 +5777,8 @@ impl App {
                     } else {
                         (1.0, tag_color.unwrap_or(ui.visuals().weak_text_color()))
                     };
+                    draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom);
+                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     ui.painter().rect_stroke(
                         rect,
                         6.0 * inv_zoom,
@@ -6420,14 +6438,14 @@ impl App {
                         } else {
                             ui.visuals().extreme_bg_color
                         };
+                        let border_color =
+                            tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT });
+                        draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom);
                         ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                         ui.painter().rect_stroke(
                             rect,
                             6.0 * inv_zoom,
-                            egui::Stroke::new(
-                                if is_hovered { 1.5 } else { 1.0 } * inv_zoom,
-                                tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT }),
-                            ),
+                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 } * inv_zoom, border_color),
                             egui::StrokeKind::Inside,
                         );
 
