@@ -5649,13 +5649,20 @@ impl App {
                             egui::Sense::click(),
                         );
                         if node_muted {
-                            // Muted stays a plain static dot -- nothing is
-                            // actually playing to animate, and a still-red
-                            // dot reads as "silenced" more clearly than a
-                            // frozen waveform would.
-                            ui.painter().circle_filled(
-                                audio_rect.center(),
-                                4.0 * inv_zoom,
+                            // Muted stays static -- nothing is actually
+                            // playing to animate. A real `SPEAKER_X` icon
+                            // rather than a plain red dot (migrated
+                            // alongside the pin/eject icons): a bare dot
+                            // only meant "muted" once you'd learned the
+                            // convention, where the icon states it. Text,
+                            // so drawn on `overlay_painter` like the pin/
+                            // eject icons, not `ui.painter()` like the
+                            // waveform's own vector bars below.
+                            overlay_painter.text(
+                                project(audio_rect.center()),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::SPEAKER_X,
+                                egui::FontId::proportional(12.0),
                                 egui::Color32::from_rgb(220, 60, 60),
                             );
                         } else {
@@ -5712,13 +5719,22 @@ impl App {
                     // hover-only like the close button) so a pinned node's
                     // state stays legible at a glance. A pinned node is
                     // excluded from the force-directed layout entirely —
-                    // see `TabNode::pinned`'s own doc comment — filled vs.
-                    // outline-only conveys the state without risking a pin
-                    // glyph this app's font might not have. This hit-rect is
-                    // centered exactly on the card's corner (so it overlaps
-                    // `rect` below) — the `response.clicked()` check further
-                    // down excludes `pin_response.clicked()` so a pin click
-                    // doesn't also focus the node into Tab view.
+                    // see `TabNode::pinned`'s own doc comment. A real
+                    // `PUSH_PIN` icon (accent-colored when pinned, weak gray
+                    // otherwise) rather than a plain dot -- migrated once
+                    // `egui_phosphor` was already wired in for the Graph
+                    // toolbar's own icons, since a pin glyph reads its own
+                    // meaning at a glance where a dot only did once you'd
+                    // learned "filled = pinned" as a convention. Same corner
+                    // decoration as the title-strip text/eject/close "x",
+                    // so drawn on the untransformed `overlay_painter` layer
+                    // for crisp text at any zoom rather than `ui.painter()`
+                    // (see that layer's own doc comment for why). This
+                    // hit-rect is centered exactly on the card's corner (so
+                    // it overlaps `rect` below) — the `response.clicked()`
+                    // check further down excludes `pin_response.clicked()`
+                    // so a pin click doesn't also focus the node into Tab
+                    // view.
                     let node_pinned = self.tabs.get(&id).is_some_and(|n| n.pinned);
                     let pin_rect =
                         egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
@@ -5732,15 +5748,13 @@ impl App {
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    if node_pinned {
-                        ui.painter().circle_filled(pin_rect.center(), 5.0 * inv_zoom, pin_color);
-                    } else {
-                        ui.painter().circle_stroke(
-                            pin_rect.center(),
-                            5.0 * inv_zoom,
-                            egui::Stroke::new(1.5 * inv_zoom, pin_color),
-                        );
-                    }
+                    overlay_painter.text(
+                        project(pin_rect.center()),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::regular::PUSH_PIN,
+                        egui::FontId::proportional(14.0),
+                        pin_color,
+                    );
                     if pin_response.clicked() {
                         pin_toggle_requested = Some(id.clone());
                     }
@@ -5752,6 +5766,11 @@ impl App {
                     // the graph at a glance was worth the tiny risk of "hover,
                     // then move a few px to reach the button" (same tradeoff
                     // real browser tab strips make for their own close buttons).
+                    // Its "x" glyph (here, and on the group/download node's
+                    // identical close button further down) is `egui_phosphor::
+                    // regular::X` now, not the plain ASCII letter it used to be
+                    // — cosmetic polish once the icon font was already wired
+                    // in for the pin/eject/mute icons above.
                     if is_hovered {
                         let close_rect =
                             egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
@@ -5775,7 +5794,7 @@ impl App {
                         overlay_painter.text(
                             project(close_rect.center()),
                             egui::Align2::CENTER_CENTER,
-                            "x",
+                            egui_phosphor::regular::X,
                             egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
@@ -5819,10 +5838,15 @@ impl App {
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
+                        // `SIGN_OUT` rather than the bare "^" this used to
+                        // be -- migrated for the same reason the pin dot
+                        // was: a caret is genuinely ambiguous here (reads
+                        // as "expand" as easily as "leave"), where a real
+                        // "step out" icon states its own meaning.
                         overlay_painter.text(
                             project(eject_rect.center()),
                             egui::Align2::CENTER_CENTER,
-                            "^",
+                            egui_phosphor::regular::SIGN_OUT,
                             egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
@@ -6086,7 +6110,7 @@ impl App {
                         overlay_painter.text(
                             project(close_rect.center()),
                             egui::Align2::CENTER_CENTER,
-                            "x",
+                            egui_phosphor::regular::X,
                             egui::FontId::proportional(14.0),
                             ui.visuals().text_color(),
                         );
@@ -6311,7 +6335,7 @@ impl App {
                             overlay_painter.text(
                                 project(close_rect.center()),
                                 egui::Align2::CENTER_CENTER,
-                                "x",
+                                egui_phosphor::regular::X,
                                 egui::FontId::proportional(14.0),
                                 ui.visuals().text_color(),
                             );
