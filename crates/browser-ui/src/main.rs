@@ -3039,6 +3039,18 @@ impl App {
         }
     }
 
+    /// Tab view's "Pin All"/"Unpin All" buttons: sets every open tab's
+    /// `pinned` flag to `pin`, regardless of its current state. One-shot
+    /// actions, not toggles -- same "just run the single-tab effect once
+    /// per tab" shape as `mute_all_except`, minus the "except" since pinning
+    /// has no natural tab to exclude the way muting excludes the one
+    /// they're presumably still listening to.
+    fn set_all_pinned(&mut self, pin: bool) {
+        for node in self.tabs.values_mut() {
+            node.pinned = pin;
+        }
+    }
+
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
@@ -3909,6 +3921,8 @@ impl App {
         let mut mute_toggle = false;
         let mut mute_others_requested = false;
         let mut close_others_requested = false;
+        let mut pin_all_requested = false;
+        let mut unpin_all_requested = false;
         let mut toggle_bookmark_requested = false;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut history_button_rect: Option<egui::Rect> = None;
@@ -4028,6 +4042,12 @@ impl App {
                     }
                     if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
                         close_others_requested = true;
+                    }
+                    if ui.button("Pin All").on_hover_text("Pin every open tab").clicked() {
+                        pin_all_requested = true;
+                    }
+                    if ui.button("Unpin All").on_hover_text("Unpin every open tab").clicked() {
+                        unpin_all_requested = true;
                     }
 
                     // `selectable_label`, same reasoning as `Muted` above:
@@ -4315,6 +4335,12 @@ impl App {
         }
         if close_others_requested {
             self.close_all_except(&focused_id);
+        }
+        if pin_all_requested {
+            self.set_all_pinned(true);
+        }
+        if unpin_all_requested {
+            self.set_all_pinned(false);
         }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
