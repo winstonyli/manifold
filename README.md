@@ -157,6 +157,8 @@ Switching between Graph and Tab view (clicking a node, or the "Graph"/Escape but
 
 **Duplicate Tab**: a new "Duplicate" entry in the tab context menu (right-click a tab's card) -- spawns a new tab at the same url and engine, sharing the original's parent and group, a sibling rather than a child of the tab it duplicated. Reuses the existing `spawn_new_tab_with_kind`. Verified live: right-clicked a tab, picked Duplicate, confirmed a new tab appeared (minimap's dot count went from 1 to 2) showing the same page content.
 
+**`Ctrl+D` duplicate-tab shortcut**: keyboard parity for the context menu's own "Duplicate" entry, applied to the focused tab -- `App::duplicate_focused_tab_shortcut` is a one-line wrapper calling the exact same `duplicate_tab` the menu entry already uses. New headless `DUPLICATETAB` debug command. Verified live: one tab open, sent `DUPLICATETAB`, and confirmed a second node appeared showing the same page content, same as picking Duplicate from the context menu.
+
 **Close Others**: a new Tab-view toolbar button next to "Mute Others" -- closes every open tab except the focused one, each through the normal `close_tab` path (teardown, reparenting, the `closed_tabs` stack all still apply), not a bulk shortcut around it. Verified live: three tabs open, clicked Close Others on the middle one, confirmed exactly one tab remained and "Recently Closed (2)" reflected both others closing normally.
 
 **Copy URL**: a new entry in the tab context menu, same `ui.ctx().copy_text` mechanism the download context menu's own Copy Path already uses. Verified live: opened the menu, confirmed the entry, clicked it and confirmed the menu closed cleanly with no error and the tab itself untouched.

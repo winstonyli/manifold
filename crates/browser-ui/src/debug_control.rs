@@ -204,6 +204,8 @@ pub enum DebugCommand {
     /// "Import Group..." with an explicit path, same reason as
     /// `ExportGroup`.
     ImportGroup(String),
+    /// `Ctrl+D` equivalent — see `App::duplicate_focused_tab_shortcut`.
+    DuplicateTab,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -378,6 +380,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
         "EXPORTGROUP" => Some(DebugCommand::ExportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTGROUP" => Some(DebugCommand::ImportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "DUPLICATETAB" => Some(DebugCommand::DuplicateTab),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),

@@ -2676,6 +2676,7 @@ impl App {
             pin_toggle,
             reload,
             rename_group,
+            duplicate_tab,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2709,6 +2710,7 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::R)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::F5),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::F2),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
             )
         });
 
@@ -2767,6 +2769,9 @@ impl App {
         }
         if rename_group {
             self.rename_current_group_shortcut();
+        }
+        if duplicate_tab {
+            self.duplicate_focused_tab_shortcut();
         }
     }
 
@@ -2920,6 +2925,15 @@ impl App {
     fn close_focused_tab_shortcut(&mut self) {
         if let Some(id) = self.focused.clone() {
             self.close_tab(&id);
+        }
+    }
+
+    /// `Ctrl+D` / headless `DUPLICATETAB` — keyboard parity for the tab
+    /// context menu's own "Duplicate" entry, applied to the focused tab. A
+    /// no-op if none is focused (Graph view with nothing selected).
+    fn duplicate_focused_tab_shortcut(&mut self) {
+        if let Some(id) = self.focused.clone() {
+            self.duplicate_tab(&id);
         }
     }
 
@@ -7153,6 +7167,7 @@ impl App {
                     self.import_group_export(export);
                 }
             }
+            DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
