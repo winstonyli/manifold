@@ -196,6 +196,14 @@ pub enum DebugCommand {
     /// `App::dismiss_hover_peek`. Separate from plain `Escape` since that
     /// command is Tab-view-only (see its own doc comment).
     DismissPeek,
+    /// "Export Group..." with an explicit path instead of a real file
+    /// dialog, same "bypass the dialog entirely" reason as
+    /// `ExportSession` — exports whichever group's context menu is
+    /// currently open (see `App::group_context_menu`).
+    ExportGroup(String),
+    /// "Import Group..." with an explicit path, same reason as
+    /// `ExportGroup`.
+    ImportGroup(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -368,6 +376,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
         "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
+        "EXPORTGROUP" => Some(DebugCommand::ExportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "IMPORTGROUP" => Some(DebugCommand::ImportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),

@@ -2,6 +2,7 @@ mod bookmarks;
 mod debug_control;
 mod gpu;
 mod graph_layout;
+mod group_export;
 mod pdf;
 mod process_manager;
 mod session;
@@ -3734,6 +3735,7 @@ impl App {
         let mut close = false;
         let mut dissolve = false;
         let mut close_group = false;
+        let mut export_group_requested = false;
         let is_renaming = self.renaming_group.as_ref().is_some_and(|(gid, _)| gid == &id);
 
         let area = egui::Area::new(egui::Id::new("group_context_menu"))
@@ -3824,6 +3826,16 @@ impl App {
                                 close_group = true;
                                 close = true;
                             }
+                            // Real modal file dialog blocks on OS/human
+                            // input neither exists in headless mode, same
+                            // reasoning Export/Import Session and Bookmarks
+                            // already have -- `EXPORTGROUP <path>` calls the
+                            // same underlying save directly instead, against
+                            // whichever group's context menu is open.
+                            if !self.headless && ui.button("Export Group...").clicked() {
+                                export_group_requested = true;
+                                close = true;
+                            }
                         }
                     });
             });
@@ -3841,6 +3853,18 @@ impl App {
         }
         if close_group {
             self.close_group(&id);
+        }
+        if export_group_requested {
+            if let Some(export) = self.export_group(&id) {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_file_name(format!("{}.json", export.name))
+                    .add_filter("Group", &["json"])
+                    .save_file()
+                {
+                    group_export::save_to(&export, &path);
+                    self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+                }
+            }
         }
         if close {
             self.group_context_menu = None;
@@ -3865,6 +3889,78 @@ impl App {
             self.close_tab(&tid);
         }
         self.dissolve_group(id);
+    }
+
+    /// Builds an exportable snapshot of `group_id`'s own subtree -- its
+    /// name, tag color, and every member tab's url/engine/position, with
+    /// `parent` links preserved only between members of this same group
+    /// (see `group_export::GroupExportTab`'s own doc comment). `None` if
+    /// the group doesn't exist.
+    fn export_group(&self, group_id: &str) -> Option<group_export::GroupExport> {
+        let group = self.groups.get(group_id)?;
+        let member_ids: std::collections::HashSet<&str> = self
+            .tabs
+            .iter()
+            .filter(|(_, n)| n.group.as_deref() == Some(group_id))
+            .map(|(id, _)| id.as_str())
+            .collect();
+        let tabs = self
+            .tabs
+            .iter()
+            .filter(|(id, _)| member_ids.contains(id.as_str()))
+            .map(|(id, node)| group_export::GroupExportTab {
+                id: id.clone(),
+                parent: node.parent.clone().filter(|p| member_ids.contains(p.as_str())),
+                url: node.url.clone(),
+                engine: node.tab.kind,
+                pos_x: node.pos.x,
+                pos_y: node.pos.y,
+            })
+            .collect();
+        Some(group_export::GroupExport {
+            name: group.name.clone(),
+            color: group.color.map(|c| (c.r(), c.g(), c.b())),
+            tabs,
+        })
+    }
+
+    /// Recreates an exported group at the top level -- a new `GroupNode`
+    /// plus each member tab, spawned via the normal async path. Every tab
+    /// gets a freshly allocated id (`alloc_tab_id`) rather than reusing the
+    /// exported one, since importing into an already-running session can't
+    /// assume the old ids are free; `parent` links are remapped through the
+    /// same old-id -> new-id map built while allocating them. Uses
+    /// `SpawnPurpose::Restore` so imported tabs never steal focus, same as
+    /// startup session restore.
+    fn import_group_export(&mut self, export: group_export::GroupExport) {
+        let group_id = self.alloc_group_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&group_id);
+        let color = export.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b));
+        self.groups.insert(
+            group_id.clone(),
+            GroupNode { name: export.name, pos, vel: egui::Vec2::ZERO, color },
+        );
+        self.group_order.push(group_id.clone());
+
+        let id_map: std::collections::HashMap<String, String> =
+            export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_tab_id())).collect();
+        for tab in export.tabs {
+            let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
+            let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
+            let pos = egui::vec2(tab.pos_x, tab.pos_y);
+            self.spawn_tab_async(
+                new_id,
+                parent,
+                Some(group_id.clone()),
+                false,
+                None,
+                tab.url,
+                pos,
+                egui::Vec2::ZERO,
+                SpawnPurpose::Restore,
+                tab.engine,
+            );
+        }
     }
 
     /// Right-click menu for a download's card -- Open Containing Folder
@@ -4769,6 +4865,7 @@ impl App {
         let mut group_selected_requested = false;
         let mut close_selected_requested = false;
         let mut ungroup_all_requested = false;
+        let mut import_group_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         let mut leave_group_button_rect: Option<egui::Rect> = None;
@@ -4825,6 +4922,16 @@ impl App {
                     }
                     if self.current_group.is_none() && ui.button("+ New Group").clicked() {
                         new_group_requested = true;
+                    }
+                    // Same "real file dialog blocks on OS/human input
+                    // neither exists in headless mode" reasoning as every
+                    // other Export/Import button -- `IMPORTGROUP <path>`
+                    // calls the same underlying import directly instead.
+                    if self.current_group.is_none()
+                        && !self.headless
+                        && ui.button("Import Group...").clicked()
+                    {
+                        import_group_requested = true;
                     }
                     if self.current_group.is_none()
                         && !self.group_order.is_empty()
@@ -6333,6 +6440,13 @@ impl App {
                 self.dissolve_group(&id);
             }
         }
+        if import_group_requested {
+            if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {
+                if let Some(export) = group_export::load_from(&path) {
+                    self.import_group_export(export);
+                }
+            }
+        }
         // Applied before `leave_group_requested` below: the "◀ Groups"
         // button and the rename `TextEdit` share one toolbar row, so
         // clicking "◀ Groups" while renaming causes the text field to lose
@@ -7027,6 +7141,18 @@ impl App {
                 }
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
+            DebugCommand::ExportGroup(path) => {
+                if let Some((group_id, _)) = self.group_context_menu.clone() {
+                    if let Some(export) = self.export_group(&group_id) {
+                        group_export::save_to(&export, std::path::Path::new(&path));
+                    }
+                }
+            }
+            DebugCommand::ImportGroup(path) => {
+                if let Some(export) = group_export::load_from(std::path::Path::new(&path)) {
+                    self.import_group_export(export);
+                }
+            }
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
