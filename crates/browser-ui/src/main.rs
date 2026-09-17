@@ -463,8 +463,20 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
 /// Tinted the card's own border/tag color rather than a neutral shade, so
 /// it doubles as an echo of that color-coding; no offset (radiates evenly
 /// outward) since it isn't meant to imply a directional light source.
-fn draw_card_glow(painter: &egui::Painter, rect: egui::Rect, base_corner_radius: f32, color: egui::Color32, inv_zoom: f32) {
+/// `intensity` (1.0 = normal) scales the alpha only, not the spread --
+/// a hover "lift" cue, brightening the existing glow rather than resizing
+/// the card itself, which would misalign it against its own thumbnail/
+/// label content (drawn at the card's un-hovered rect).
+fn draw_card_glow(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    base_corner_radius: f32,
+    color: egui::Color32,
+    inv_zoom: f32,
+    intensity: f32,
+) {
     for (alpha, grow) in [(85u8, 3.5_f32), (38u8, 8.5)] {
+        let alpha = ((alpha as f32) * intensity).min(255.0) as u8;
         painter.rect_filled(
             rect.expand(grow * inv_zoom),
             (base_corner_radius + grow) * inv_zoom,
@@ -5777,7 +5789,11 @@ impl App {
                     } else {
                         (1.0, tag_color.unwrap_or(ui.visuals().weak_text_color()))
                     };
-                    draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom);
+                    let hover_t = ui.ctx().animate_bool_responsive(
+                        egui::Id::new(("graph_node_glow_hover", id.as_str())),
+                        is_hovered,
+                    );
+                    draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
                     ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     ui.painter().rect_stroke(
                         rect,
@@ -6440,7 +6456,11 @@ impl App {
                         };
                         let border_color =
                             tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT });
-                        draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom);
+                        let hover_t = ui.ctx().animate_bool_responsive(
+                            egui::Id::new(("graph_group_glow_hover", id.as_str())),
+                            is_hovered,
+                        );
+                        draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
                         ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                         ui.painter().rect_stroke(
                             rect,
