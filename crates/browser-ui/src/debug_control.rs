@@ -180,6 +180,12 @@ pub enum DebugCommand {
     ImportBookmarks(String),
     /// `Ctrl+Shift+W` equivalent — see `App::close_all_at_current_level`.
     CloseAllLevel,
+    /// Clicks the "Import Session..." confirm popup's own Import button —
+    /// see `App::pending_import`.
+    ConfirmImport,
+    /// Clicks the confirm popup's Cancel button, same reason as
+    /// `ConfirmImport`.
+    CancelImport,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -347,6 +353,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
+        "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
+        "CANCELIMPORT" => Some(DebugCommand::CancelImport),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),

@@ -712,6 +712,12 @@ struct App {
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
+    /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
+    /// staged here rather than applied immediately -- `build_import_confirm_
+    /// popup` shows its tab count against the currently running session's
+    /// own, so replacing a real working session with an accidentally-wrong
+    /// file is a deliberate second click, not a silent one-shot dialog pick.
+    pending_import: Option<session::Session>,
     /// The settings popup's "Save Session As..." name field -- kept across
     /// popup open/close within the running session (not persisted), same
     /// convenience the group-rename draft gets.
@@ -1017,6 +1023,7 @@ impl Default for App {
             download_context_menu: None,
             tab_context_menu: None,
             quick_switcher: None,
+            pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
             graph_zoom_pct: 100.0,
@@ -1290,10 +1297,14 @@ impl App {
                         // way to test it here. `EXPORTSESSION`/
                         // `IMPORTSESSION` debug commands call
                         // `build_session_snapshot().save_to`/
-                        // `import_session_from` directly with an explicit
-                        // path instead, bypassing the dialog entirely, the
-                        // same "headless calls the effect directly" pattern
-                        // every real-keyboard-shortcut debug command uses.
+                        // `session::Session::load_from` directly with an
+                        // explicit path instead, bypassing the dialog
+                        // entirely (import still stages into
+                        // `pending_import` same as a real file pick would,
+                        // so `CONFIRMIMPORT`/`CANCELIMPORT` can headlessly
+                        // test the confirm popup too), the same "headless
+                        // calls the effect directly" pattern every real-
+                        // keyboard-shortcut debug command uses.
                         if !self.headless {
                             ui.horizontal(|ui| {
                                 if ui.button("Export...").clicked() {
@@ -1362,8 +1373,10 @@ impl App {
             if let Some(path) =
                 rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file()
             {
-                self.import_session_from(&path);
-                close = true;
+                if let Some(session) = session::Session::load_from(&path) {
+                    self.pending_import = Some(session);
+                    close = true;
+                }
             }
         }
         if export_bookmarks_requested {
@@ -1642,22 +1655,14 @@ impl App {
         self.replace_running_session(session);
     }
 
-    /// "Import Session..." (settings popup, via a real file picker): same
-    /// as `load_named_session`, just reading an arbitrary path instead of
-    /// a name in the app's own `sessions/` folder.
-    fn import_session_from(&mut self, path: &std::path::Path) {
-        let Some(session) = session::Session::load_from(path) else { return };
-        self.replace_running_session(session);
-    }
-
     /// Tears down every currently-open tab/download/group -- each
     /// `TabNode`'s own `Drop` handles process shutdown+kill, the same
     /// mechanism `close_tab` already relies on, so clearing the map is
     /// enough, no per-tab teardown call needed -- then replays `session`
     /// via `apply_session`, same as startup replays `session.json`. Shared
-    /// by `load_named_session` and `import_session_from`; a no-op for an
-    /// empty session, so a bad/empty load can't wipe a perfectly good
-    /// running one.
+    /// by `load_named_session` and the "Import Session..." confirm popup's
+    /// own Import button (see `pending_import`); a no-op for an empty
+    /// session, so a bad/empty load can't wipe a perfectly good running one.
     fn replace_running_session(&mut self, session: session::Session) {
         if session.tabs.is_empty() {
             return;
@@ -3989,6 +3994,74 @@ impl App {
             ViewMode::Graph => self.build_graph_ui(ui),
         }
         self.build_quick_switcher(ui);
+        self.build_import_confirm_popup(ui);
+    }
+
+    /// "Import Session..." confirm popup -- shown whenever `pending_import`
+    /// is staged (a real file pick, or headless `IMPORTSESSION`), comparing
+    /// the picked file's tab count against the currently running session's
+    /// own before actually replacing anything, so swapping in the wrong
+    /// file is a deliberate second click rather than a silent one-shot
+    /// dialog pick. Import applies it via the same `replace_running_session`
+    /// `load_named_session` already uses; Cancel just discards the staged
+    /// session, leaving the running one untouched.
+    fn build_import_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(session) = &self.pending_import else { return };
+        let incoming = session.tabs.len();
+        let current = self.tabs.len();
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Area::new(egui::Id::new("import_confirm_popup"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_min_width(240.0);
+                        ui.label(egui::RichText::new("Import Session").strong());
+                        ui.add_space(6.0);
+                        ui.label(format!(
+                            "Current session: {} tab{}",
+                            current,
+                            if current == 1 { "" } else { "s" }
+                        ));
+                        ui.label(format!(
+                            "Importing: {} tab{}",
+                            incoming,
+                            if incoming == 1 { "" } else { "s" }
+                        ));
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Importing replaces every currently open tab.")
+                                    .small()
+                                    .weak(),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Import").clicked() {
+                                confirm = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                cancel = true;
+                            }
+                        });
+                    });
+            });
+        if confirm {
+            if let Some(session) = self.pending_import.take() {
+                self.replace_running_session(session);
+            }
+        }
+        if cancel {
+            self.pending_import = None;
+        }
     }
 
     fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
@@ -6774,7 +6847,17 @@ impl App {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));
             }
             DebugCommand::ImportSession(path) => {
-                self.import_session_from(std::path::Path::new(&path));
+                if let Some(session) = session::Session::load_from(std::path::Path::new(&path)) {
+                    self.pending_import = Some(session);
+                }
+            }
+            DebugCommand::ConfirmImport => {
+                if let Some(session) = self.pending_import.take() {
+                    self.replace_running_session(session);
+                }
+            }
+            DebugCommand::CancelImport => {
+                self.pending_import = None;
             }
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
