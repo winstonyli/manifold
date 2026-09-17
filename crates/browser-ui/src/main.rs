@@ -5192,12 +5192,60 @@ impl App {
                             egui::Id::new(("graph_node_audio", id.as_str())),
                             egui::Sense::click(),
                         );
-                        let dot_color = if node_muted {
-                            egui::Color32::from_rgb(220, 60, 60)
+                        if node_muted {
+                            // Muted stays a plain static dot -- nothing is
+                            // actually playing to animate, and a still-red
+                            // dot reads as "silenced" more clearly than a
+                            // frozen waveform would.
+                            ui.painter().circle_filled(
+                                audio_rect.center(),
+                                4.0 * inv_zoom,
+                                egui::Color32::from_rgb(220, 60, 60),
+                            );
                         } else {
-                            egui::Color32::from_rgb(80, 200, 120)
-                        };
-                        ui.painter().circle_filled(audio_rect.center(), 4.0 * inv_zoom, dot_color);
+                            // Actually playing: a tiny 3-bar waveform
+                            // instead of a static dot -- painter-drawn
+                            // rects, not a speaker/equalizer glyph, same
+                            // "this app's font can't be trusted with
+                            // symbol glyphs" reasoning as everywhere else.
+                            // Animated off the real OS clock (`SystemTime`)
+                            // rather than `ui.input(|i| i.time)` — found
+                            // live that the latter reads as frozen across
+                            // separate headless `SCREENSHOT`-triggered
+                            // redraws despite each one genuinely re-running
+                            // this code (confirmed via the also-fresh
+                            // `audio_playing` state each time), while
+                            // `SystemTime::now()` reliably ticks between
+                            // them. Three bars on staggered sine phases so
+                            // they don't all move in lockstep. This app
+                            // already requests a redraw unconditionally at
+                            // the end of every frame (see `RedrawRequested`'s
+                            // own handling), so nothing further is needed
+                            // to keep it animating on its own.
+                            let waveform_color = egui::Color32::from_rgb(80, 200, 120);
+                            let t = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs_f64())
+                                .unwrap_or(0.0);
+                            let bar_w = 2.5 * inv_zoom;
+                            let gap = 1.5 * inv_zoom;
+                            let max_h = 10.0 * inv_zoom;
+                            let min_h = 3.0 * inv_zoom;
+                            let total_w = bar_w * 3.0 + gap * 2.0;
+                            let base_x = audio_rect.center().x - total_w / 2.0;
+                            let base_y = audio_rect.center().y + max_h / 2.0;
+                            for i in 0..3 {
+                                let phase = i as f64 * 1.7;
+                                let h = min_h
+                                    + (max_h - min_h) * 0.5 * (1.0 + (t * 6.0 + phase).sin() as f32);
+                                let x = base_x + i as f32 * (bar_w + gap);
+                                let bar_rect = egui::Rect::from_min_max(
+                                    egui::Pos2::new(x, base_y - h),
+                                    egui::Pos2::new(x + bar_w, base_y),
+                                );
+                                ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
+                            }
+                        }
                         if audio_response.clicked() {
                             audio_clicked = true;
                             mute_toggle_requested = Some(id.clone());
