@@ -1261,7 +1261,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_min_width(200.0);
                         ui.set_max_width(200.0);
-                        ui.label(egui::RichText::new("Settings").strong());
+                        ui.label(egui::RichText::new("Settings").strong().color(TEXT_PRIMARY));
                         ui.separator();
 
                         ui.label("Default search engine");
@@ -1330,7 +1330,7 @@ impl App {
 
                         ui.add_space(10.0);
                         ui.separator();
-                        ui.label(egui::RichText::new("Sessions").strong());
+                        ui.label(egui::RichText::new("Sessions").strong().color(TEXT_PRIMARY));
                         if ui
                             .button("Save Now")
                             .on_hover_text("Write the auto-restore session.json immediately")
@@ -1402,7 +1402,7 @@ impl App {
 
                         ui.add_space(10.0);
                         ui.separator();
-                        ui.label(egui::RichText::new("Bookmarks").strong());
+                        ui.label(egui::RichText::new("Bookmarks").strong().color(TEXT_PRIMARY));
                         // Same "real file dialog blocks on OS/human input
                         // neither exists in headless mode" reasoning as
                         // Export/Import Session above -- `EXPORTBOOKMARKS`/
@@ -3117,7 +3117,7 @@ impl App {
                                     continue;
                                 }
                                 if let Some(name) = folder {
-                                    ui.label(egui::RichText::new(name).small().strong());
+                                    ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
                                 }
                                 for (index, bookmark) in rows {
                                     let (index, bookmark) = (*index, *bookmark);
@@ -3844,7 +3844,7 @@ impl App {
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_width(360.0);
-                        ui.strong("Keyboard Shortcuts");
+                        ui.label(egui::RichText::new("Keyboard Shortcuts").strong().color(TEXT_PRIMARY));
                         ui.separator();
                         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                             egui::Grid::new("shortcuts_help_grid")
@@ -4447,7 +4447,7 @@ impl App {
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_min_width(240.0);
-                        ui.label(egui::RichText::new("Import Session").strong());
+                        ui.label(egui::RichText::new("Import Session").strong().color(TEXT_PRIMARY));
                         ui.add_space(6.0);
                         ui.label(format!(
                             "Current session: {} tab{}",
