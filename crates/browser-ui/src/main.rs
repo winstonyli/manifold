@@ -3790,6 +3790,7 @@ impl App {
         let mut go_back = false;
         let mut go_forward = false;
         let mut reload_requested = false;
+        let mut home_requested = false;
         let mut swap_to = None;
         let mut navigate = None;
         let mut back_to_graph = false;
@@ -3857,6 +3858,9 @@ impl App {
                     // every other icon-shaped button here.
                     if ui.button("Reload").clicked() {
                         reload_requested = true;
+                    }
+                    if ui.button("Home").on_hover_text("Go to home page").clicked() {
+                        home_requested = true;
                     }
 
                     // Tab identity (was a separate strip above the toolbar,
@@ -4177,6 +4181,10 @@ impl App {
         }
         if reload_requested {
             self.reload_focused_tab_shortcut();
+        }
+        if home_requested {
+            let home_page = self.settings.home_page.clone();
+            self.navigate_tab(&focused_id, home_page);
         }
         if let Some(kind) = swap_to {
             self.start_swap_to(&focused_id, kind);
