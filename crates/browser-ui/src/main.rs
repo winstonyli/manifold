@@ -229,8 +229,19 @@ fn apply_style(ctx: &egui::Context) {
     // dark/light styles internally) applies the same tweaks regardless of
     // which theme the OS/window ends up reporting — this app's chrome is
     // dark-only in practice, but there's no "just style whatever's active"
-    // entry point, so set both identically.
+    // entry point, so set both identically. **Found live**: this used to
+    // only tweak specific widget-state fields on top of whichever preset
+    // (`Visuals::dark()`/`Visuals::light()`) egui already had loaded for
+    // that style slot — under a light OS theme, every field this function
+    // doesn't explicitly touch (heading/`.strong()` text color among them)
+    // kept the light preset's own near-black default, invisible against
+    // this app's always-dark backgrounds (`BG`/`TOOLBAR_FILL`/etc. are
+    // forced dark regardless of OS theme). Resetting to `Visuals::dark()`
+    // first, for both style slots, means every untouched field starts from
+    // a coherent dark-appropriate default before the cosmetic overrides
+    // below apply on top.
     ctx.all_styles_mut(|style| {
+        style.visuals = egui::Visuals::dark();
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
 
