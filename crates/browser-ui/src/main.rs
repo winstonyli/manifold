@@ -134,19 +134,23 @@ fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Opti
 /// A free function (not a method) so callers can still freely capture
 /// `&mut self` in `add_contents` -- an `&mut self` method here would
 /// conflict with that same borrow. Returns the drawn area's own rect, for
-/// the caller's own `clicked_outside_popup` check.
+/// the caller's own `clicked_outside_popup` check. `fade` (0.0-1.0, from the
+/// caller's own `ctx.animate_bool` on its own open flag) sets the whole
+/// popup's opacity, so it fades in/out instead of popping instantly.
 fn build_list_popup_frame(
     ctx: &egui::Context,
     id: &str,
     anchor_rect: egui::Rect,
     min_width: f32,
     max_width: f32,
+    fade: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
     egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            ui.set_opacity(fade);
             egui::Frame::default()
                 .fill(TOOLBAR_FILL)
                 .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -1616,10 +1620,11 @@ impl App {
     /// exactly that tab and remove it from the list. `Ctrl+Shift+T`/
     /// `REOPENTAB` only ever reaches the *last* entry; this is the way to
     /// reopen an older one without reopening everything after it first.
-    fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+    fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut reopen_index: Option<usize> = None;
-        let area_rect = build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, |ui| {
+        let area_rect =
+            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
                     engine_dot(ui, closed.kind, 8.0);
@@ -3211,14 +3216,15 @@ impl App {
     /// folder alphabetically) -- a single level, not a real tree, same
     /// scope limit `Bookmark::folder`'s own doc comment states. Same
     /// Area/Frame pattern as `build_recently_closed_popup`.
-    fn build_bookmarks_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+    fn build_bookmarks_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut remove_index: Option<usize> = None;
         let mut folder_rename_start: Option<(String, String)> = None;
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
-        let area_rect = build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, |ui| {
+        let area_rect =
+            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.bookmarks_filter)
                     .desired_width(f32::INFINITY)
@@ -3356,11 +3362,12 @@ impl App {
     /// tab there, "Clear" to empty the whole list. Same Area/Frame pattern
     /// as `build_bookmarks_popup`/`build_recently_closed_popup`, scrollable
     /// since history can grow much longer than either of those.
-    fn build_history_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+    fn build_history_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
-        let area_rect = build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, |ui| {
+        let area_rect =
+            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.history_filter)
                     .desired_width(f32::INFINITY)
@@ -3410,11 +3417,12 @@ impl App {
     /// folder (same as `reveal_download`), "x" to remove it from the list
     /// (same as `remove_download_node`). Exists so a completed download can
     /// be found without first switching to Graph view.
-    fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+    fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
-        let area_rect = build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, |ui| {
+        let area_rect =
+            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                 for id in self.download_order.iter().rev() {
                     let Some(node) = self.downloads.get(id) else { continue };
@@ -3457,7 +3465,7 @@ impl App {
     /// toolbar as cramped -- confirmed live, text touching the window edge
     /// even at 1300pt wide). Same anchored Area/Frame pattern
     /// `build_downloads_popup` already uses.
-    fn build_tab_actions_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, focused_id: &str) {
+    fn build_tab_actions_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, focused_id: &str, fade: f32) {
         let mut close = false;
         let mut mute_others = false;
         let mut close_others = false;
@@ -3467,6 +3475,7 @@ impl App {
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -4462,18 +4471,34 @@ impl App {
 
     /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
     /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
-    /// (unlike the context menu): it just times out.
+    /// (unlike the context menu): it just times out. Fades in over its
+    /// first `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather
+    /// than popping on and cutting off instantly -- driven directly off
+    /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
+    /// so it's already redrawing every frame regardless; no extra
+    /// `request_repaint` needed for a time-based fade to animate smoothly),
+    /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
+    /// this already has a real wall-clock lifetime to derive opacity from
+    /// directly.
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
+        const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
+        const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
         let Some((path, shown_at)) = &self.save_toast else { return };
-        if shown_at.elapsed() >= SAVE_TOAST_DURATION {
+        let elapsed = shown_at.elapsed();
+        if elapsed >= SAVE_TOAST_DURATION {
             self.save_toast = None;
             return;
         }
+        let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
+        let remaining = SAVE_TOAST_DURATION.saturating_sub(elapsed);
+        let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);
+        let opacity = fade_in.min(fade_out);
         let path = path.clone();
         egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(opacity);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -5112,24 +5137,41 @@ impl App {
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
         }
-        if self.bookmarks_open {
+        // Each dropdown fades in/out (`ui.set_opacity` inside the popup's
+        // own Area) off `ctx.animate_bool` on its own open flag -- read
+        // every frame regardless of open state (not just while open), since
+        // egui's animation manager needs continuous polling to track real
+        // elapsed time; polling only while open made it jump straight to
+        // its target the instant re-opened instead of visibly easing, the
+        // gap while closed having gone untracked. The underlying data
+        // (self.bookmarks/history/downloads, the toolbar buttons) all
+        // outlive the `_open` flag going false, so drawing continues
+        // correctly through the fade-out too, not just fade-in.
+        let bookmarks_fade =
+            ui.ctx().animate_bool(egui::Id::new("bookmarks_popup_fade"), self.bookmarks_open);
+        if bookmarks_fade > 0.0 {
             if let Some(rect) = bookmarks_button_rect {
-                self.build_bookmarks_popup(ui, rect);
+                self.build_bookmarks_popup(ui, rect, bookmarks_fade);
             }
         }
-        if self.history_open {
+        let history_fade = ui.ctx().animate_bool(egui::Id::new("history_popup_fade"), self.history_open);
+        if history_fade > 0.0 {
             if let Some(rect) = history_button_rect {
-                self.build_history_popup(ui, rect);
+                self.build_history_popup(ui, rect, history_fade);
             }
         }
-        if self.downloads_open {
+        let downloads_fade =
+            ui.ctx().animate_bool(egui::Id::new("downloads_popup_fade"), self.downloads_open);
+        if downloads_fade > 0.0 {
             if let Some(rect) = downloads_button_rect {
-                self.build_downloads_popup(ui, rect);
+                self.build_downloads_popup(ui, rect, downloads_fade);
             }
         }
-        if self.tab_actions_open {
+        let tab_actions_fade =
+            ui.ctx().animate_bool(egui::Id::new("tab_actions_popup_fade"), self.tab_actions_open);
+        if tab_actions_fade > 0.0 {
             if let Some(rect) = tab_actions_button_rect {
-                self.build_tab_actions_popup(ui, rect, &focused_id);
+                self.build_tab_actions_popup(ui, rect, &focused_id, tab_actions_fade);
             }
         }
         if screenshot_requested {
@@ -5342,9 +5384,12 @@ impl App {
                 });
             });
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
-        if self.recently_closed_open {
+        let recently_closed_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
+        if recently_closed_fade > 0.0 {
             if let Some(rect) = recently_closed_button_rect {
-                self.build_recently_closed_popup(ui, rect);
+                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
             }
         }
         self.build_group_context_menu(ui);
@@ -6729,36 +6774,49 @@ impl App {
                 if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
                     self.peek_suppressed = None;
                 }
-                if let Some(hovered_id) =
-                    self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()))
-                {
-                    let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
-                    let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
-                    if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
-                        let rect = egui::Rect::from_min_size(
-                            egui::Pos2::new(
-                                node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
-                                node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
-                            ),
-                            GRAPH_PEEK_SIZE,
-                        );
-                        ui.painter()
-                            .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-                        ui.painter().image(
-                            tex_id,
-                            rect,
-                            egui::Rect::from_min_max(
-                                egui::Pos2::new(0.0, 0.0),
-                                egui::Pos2::new(1.0, 1.0),
-                            ),
-                            egui::Color32::WHITE,
-                        );
-                        ui.painter().rect_stroke(
-                            rect,
-                            6.0,
-                            egui::Stroke::new(1.5, ACCENT),
-                            egui::StrokeKind::Inside,
-                        );
+                let peek_target =
+                    self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
+                // Polled every frame regardless of `peek_target`, same
+                // "continuous polling, not just while shown" reasoning the
+                // dropdown popups' own fade needs -- a plain `if let Some`
+                // gate here would only ever call `animate_bool` while a
+                // peek is actually showing, and the real-elapsed-time gap
+                // since the last poll (however long the pointer sat
+                // elsewhere) would make it jump straight to fully visible
+                // the instant it reappears instead of visibly fading in.
+                let peek_fade =
+                    ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
+                if peek_fade > 0.0 {
+                    if let Some(hovered_id) = peek_target {
+                        let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
+                        let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
+                        if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
+                            let rect = egui::Rect::from_min_size(
+                                egui::Pos2::new(
+                                    node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
+                                    node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
+                                ),
+                                GRAPH_PEEK_SIZE,
+                            );
+                            ui.set_opacity(peek_fade);
+                            ui.painter()
+                                .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                            ui.painter().image(
+                                tex_id,
+                                rect,
+                                egui::Rect::from_min_max(
+                                    egui::Pos2::new(0.0, 0.0),
+                                    egui::Pos2::new(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                            ui.painter().rect_stroke(
+                                rect,
+                                6.0,
+                                egui::Stroke::new(1.5, ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                     }
                 }
             });
