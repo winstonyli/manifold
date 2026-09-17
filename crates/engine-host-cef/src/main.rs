@@ -175,6 +175,9 @@ fn main() {
                         browser.go_forward();
                     }
                 }
+                HostToEngine::Reload => {
+                    browser.reload();
+                }
                 HostToEngine::Resize {
                     width: w,
                     height: h,

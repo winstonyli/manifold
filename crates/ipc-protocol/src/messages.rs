@@ -85,6 +85,12 @@ pub enum HostToEngine {
     Navigate { url: String, referrer: Option<String> },
     GoBack,
     GoForward,
+    /// Reloads the currently loaded page — every engine here exposes a
+    /// plain no-argument reload on its own embedding API (`WebView::
+    /// reload`/`Browser::reload`/`WebViewExt::reload`/`ICoreWebView2::
+    /// Reload`), unlike `GoBack`/`GoForward`'s can-go-back/forward guard,
+    /// so there's nothing to check before sending this.
+    Reload,
     Resize { width: u32, height: u32, dpi_scale: f64 },
     Input(InputEvent),
     SetZoom { factor: f64 },

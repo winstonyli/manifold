@@ -2488,6 +2488,7 @@ impl App {
             quick_switch,
             view_toggle,
             pin_toggle,
+            reload,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2509,6 +2510,8 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::G),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::P),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::R)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::F5),
             )
         });
 
@@ -2556,6 +2559,9 @@ impl App {
         if pin_toggle {
             self.pin_focused_tab_shortcut();
         }
+        if reload {
+            self.reload_focused_tab_shortcut();
+        }
     }
 
     /// `Ctrl+P` / headless `TOGGLEPIN` — pins/unpins the focused tab, same
@@ -2565,6 +2571,17 @@ impl App {
         let Some(id) = self.focused.clone() else { return };
         if let Some(node) = self.tabs.get_mut(&id) {
             node.pinned = !node.pinned;
+        }
+    }
+
+    /// `Ctrl+R`/`F5` / headless `RELOAD` — reloads the focused tab. Every
+    /// engine exposes a plain no-argument reload (see `HostToEngine::
+    /// Reload`'s own doc comment), so there's no can-reload guard the way
+    /// `GoBack`/`GoForward` need one.
+    fn reload_focused_tab_shortcut(&mut self) {
+        let Some(id) = self.focused.clone() else { return };
+        if let Some(node) = self.tabs.get_mut(&id) {
+            node.tab.send(&HostToEngine::Reload);
         }
     }
 
@@ -3693,6 +3710,7 @@ impl App {
 
         let mut go_back = false;
         let mut go_forward = false;
+        let mut reload_requested = false;
         let mut swap_to = None;
         let mut navigate = None;
         let mut back_to_graph = false;
@@ -3753,6 +3771,12 @@ impl App {
                         .clicked()
                     {
                         go_forward = true;
+                    }
+                    // Plain text, not a refresh-arrows glyph -- same
+                    // "risks a tofu box in this app's font" caution as
+                    // every other icon-shaped button here.
+                    if ui.button("Reload").clicked() {
+                        reload_requested = true;
                     }
 
                     // Tab identity (was a separate strip above the toolbar,
@@ -4062,6 +4086,9 @@ impl App {
             if let Some(node) = self.tabs.get_mut(&focused_id) {
                 node.tab.send(&HostToEngine::GoForward);
             }
+        }
+        if reload_requested {
+            self.reload_focused_tab_shortcut();
         }
         if let Some(kind) = swap_to {
             self.start_swap_to(&focused_id, kind);
@@ -6272,6 +6299,7 @@ impl App {
             }
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
+            DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

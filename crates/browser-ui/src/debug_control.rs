@@ -162,6 +162,8 @@ pub enum DebugCommand {
     PrintToPdf(String),
     /// `Ctrl+P` equivalent — see `App::pin_focused_tab_shortcut`.
     TogglePin,
+    /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
+    Reload,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -326,6 +328,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
+        "RELOAD" => Some(DebugCommand::Reload),
         _ => None,
     }
 }

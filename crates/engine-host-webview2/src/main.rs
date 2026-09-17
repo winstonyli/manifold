@@ -181,6 +181,9 @@ fn main() {
                         let _ = webview.GoBack();
                     }
                 },
+                HostToEngine::Reload => unsafe {
+                    let _ = webview.Reload();
+                },
                 HostToEngine::GoForward => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoForward(&mut can_go);

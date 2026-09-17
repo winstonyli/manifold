@@ -232,6 +232,9 @@ fn main() {
                 HostToEngine::GoForward => {
                     webview.go_forward(1);
                 }
+                HostToEngine::Reload => {
+                    webview.reload();
+                }
                 HostToEngine::Resize {
                     width: w,
                     height: h,

@@ -317,6 +317,9 @@ fn main() {
                         webview.go_forward();
                     }
                 }
+                HostToEngine::Reload => {
+                    webview.reload();
+                }
                 HostToEngine::Resize {
                     width: w,
                     height: h,
