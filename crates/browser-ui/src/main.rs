@@ -112,6 +112,22 @@ fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
     !filter_matches(filter, haystacks)
 }
 
+/// Every dropdown/popup (bookmarks, history, downloads, tab actions, tab
+/// context menu, group context menu, recently-closed) closes itself on a
+/// click landing outside both its own area and, where one exists, the
+/// button that opened it -- this was the same `ui.input(|i| ...)` check
+/// reimplemented at each of the ~9 call sites. `anchor_rect` is `None` at
+/// the sites that never had one (the anchor button already consumes its
+/// own click before this runs, so there's nothing left to exclude).
+fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Option<egui::Rect>) -> bool {
+    ui.input(|i| {
+        i.pointer.any_click()
+            && i.pointer.interact_pos().is_some_and(|pos| {
+                !area_rect.contains(pos) && anchor_rect.map_or(true, |r| !r.contains(pos))
+            })
+    })
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -1501,12 +1517,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|pos| !area.response.rect.contains(pos) && !anchor_rect.contains(pos))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
         if let Some(index) = reopen_index {
             let closed = self.closed_tabs.remove(index);
@@ -3162,10 +3173,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
         if let Some((url, draft)) = folder_rename_start {
             self.renaming_bookmark_folder = Some((url, draft));
@@ -3247,10 +3255,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused.clone() {
@@ -3313,10 +3318,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
         if let Some(id) = reveal_id {
             self.reveal_download(&id);
@@ -3374,10 +3376,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
         if mute_others {
             self.mute_all_except(focused_id);
@@ -3816,12 +3815,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|pos| !area.response.rect.contains(pos))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
         if clicked_outside {
             close = true;
         }
@@ -3957,10 +3951,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
         if clicked_outside && !is_renaming {
             close = true;
         }
@@ -4124,10 +4115,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
         if clicked_outside {
             close = true;
         }
@@ -4246,10 +4234,7 @@ impl App {
                     });
             });
 
-        let clicked_outside = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
-        });
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
         if clicked_outside {
             close = true;
         }
