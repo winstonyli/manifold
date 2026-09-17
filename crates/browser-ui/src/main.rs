@@ -1,3 +1,4 @@
+mod bookmarks;
 mod debug_control;
 mod gpu;
 mod graph_layout;
@@ -881,6 +882,12 @@ struct App {
     /// view never show chrome simultaneously.
     settings: Settings,
     settings_open: bool,
+    /// Flat `(title, url)` list, loaded once at startup and persisted to
+    /// `%APPDATA%\multiengine-browser\bookmarks.json` on every change — see
+    /// `bookmarks.rs`. `bookmarks_open` is the Tab-view toolbar dropdown's
+    /// own visibility, see `App::build_bookmarks_popup`.
+    bookmarks: Vec<bookmarks::Bookmark>,
+    bookmarks_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -916,6 +923,7 @@ impl Default for App {
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
         let settings = Settings::load();
+        let bookmarks = bookmarks::load();
         Self {
             window: None,
             gpu: None,
@@ -978,6 +986,8 @@ impl Default for App {
             tab_spawn_error: None,
             settings,
             settings_open: false,
+            bookmarks,
+            bookmarks_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -2585,6 +2595,80 @@ impl App {
         }
     }
 
+    /// Tab view's "Bookmark" toggle: adds `id`'s current title/url if not
+    /// already bookmarked (matched by url), removes it if it is. Persists
+    /// immediately, same "no separate Save step" posture every other
+    /// instant-apply control in this chrome already has.
+    fn toggle_bookmark(&mut self, id: &str) {
+        let Some(node) = self.tabs.get(id) else { return };
+        let url = node.url.clone();
+        if let Some(index) = self.bookmarks.iter().position(|b| b.url == url) {
+            self.bookmarks.remove(index);
+        } else {
+            let title = if node.title.is_empty() { url.clone() } else { node.title.clone() };
+            self.bookmarks.push(bookmarks::Bookmark { title, url });
+        }
+        bookmarks::save(&self.bookmarks);
+    }
+
+    /// Tab view's "Bookmarks (N)" dropdown -- every saved bookmark, click
+    /// one to navigate the focused tab there, "x" to remove it. Same
+    /// Area/Frame pattern as `build_recently_closed_popup`.
+    fn build_bookmarks_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+        let mut close = false;
+        let mut navigate_url: Option<String> = None;
+        let mut remove_index: Option<usize> = None;
+        let area = egui::Area::new(egui::Id::new("bookmarks_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(220.0);
+                        ui.set_max_width(320.0);
+                        for (index, bookmark) in self.bookmarks.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
+                                    .clicked()
+                                {
+                                    navigate_url = Some(bookmark.url.clone());
+                                }
+                                if ui.small_button("x").clicked() {
+                                    remove_index = Some(index);
+                                }
+                            });
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
+        });
+
+        if let Some(url) = navigate_url {
+            if let Some(id) = self.focused.clone() {
+                self.navigate_tab(&id, url);
+            }
+            close = true;
+        }
+        if let Some(index) = remove_index {
+            self.bookmarks.remove(index);
+            bookmarks::save(&self.bookmarks);
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close || self.bookmarks.is_empty() {
+            self.bookmarks_open = false;
+        }
+    }
+
     /// Tab view's "Mute Others" button: mutes every open tab except
     /// `keep_id`, regardless of any already-muted state, without touching
     /// `keep_id`'s own mute state either way. A one-shot action, not a
@@ -3428,6 +3512,8 @@ impl App {
         let mut back_to_graph = false;
         let mut mute_toggle = false;
         let mut mute_others_requested = false;
+        let mut toggle_bookmark_requested = false;
+        let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -3530,6 +3616,25 @@ impl App {
                     }
                     if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
                         mute_others_requested = true;
+                    }
+
+                    // `selectable_label`, same reasoning as `Muted` above:
+                    // a pressed look for "already bookmarked" rather than
+                    // risking a star glyph this app's font might not have.
+                    let is_bookmarked = self
+                        .tabs
+                        .get(&focused_id)
+                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
+                    if ui.selectable_label(is_bookmarked, "Bookmark").clicked() {
+                        toggle_bookmark_requested = true;
+                    }
+                    if !self.bookmarks.is_empty() {
+                        let label = format!("Bookmarks ({})", self.bookmarks.len());
+                        let response = ui.button(label);
+                        if response.clicked() {
+                            self.bookmarks_open = !self.bookmarks_open;
+                        }
+                        bookmarks_button_rect = Some(response.rect);
                     }
 
                     // Full window (chrome + content), same composited
@@ -3759,6 +3864,14 @@ impl App {
         }
         if mute_others_requested {
             self.mute_all_except(&focused_id);
+        }
+        if toggle_bookmark_requested {
+            self.toggle_bookmark(&focused_id);
+        }
+        if self.bookmarks_open {
+            if let Some(rect) = bookmarks_button_rect {
+                self.build_bookmarks_popup(ui, rect);
+            }
         }
         if screenshot_requested {
             // No toast here -- the save hasn't happened yet. `save_toast`
