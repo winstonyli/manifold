@@ -4510,11 +4510,22 @@ impl App {
                     if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
                         close_others_requested = true;
                     }
-                    if ui.button("Pin All").on_hover_text("Pin every open tab").clicked() {
-                        pin_all_requested = true;
-                    }
-                    if ui.button("Unpin All").on_hover_text("Unpin every open tab").clicked() {
-                        unpin_all_requested = true;
+                    // One toggling button rather than two separate ones --
+                    // same "label swaps with state" pattern "Collapse
+                    // Groups"/"Expand Groups" already uses. "All pinned"
+                    // needs at least one tab (an empty set vacuously
+                    // satisfies `all()`, which would otherwise show "Unpin
+                    // All" with nothing open to unpin).
+                    let all_pinned = !self.tabs.is_empty() && self.tabs.values().all(|n| n.pinned);
+                    let pin_all_label = if all_pinned { "Unpin All" } else { "Pin All" };
+                    let pin_all_hover =
+                        if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
+                    if ui.button(pin_all_label).on_hover_text(pin_all_hover).clicked() {
+                        if all_pinned {
+                            unpin_all_requested = true;
+                        } else {
+                            pin_all_requested = true;
+                        }
                     }
 
                     // `selectable_label`, same reasoning as `Muted` above:
