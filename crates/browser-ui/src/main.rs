@@ -1043,6 +1043,8 @@ impl App {
         let mut save_as_requested = false;
         let mut open_session_name: Option<String> = None;
         let mut delete_session_name: Option<String> = None;
+        let mut export_requested = false;
+        let mut import_requested = false;
         egui::Area::new(egui::Id::new("settings_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -1152,6 +1154,27 @@ impl App {
                                 }
                             });
                         }
+                        // A real native file dialog blocks on OS/human
+                        // input -- fine for the real app (that's what a
+                        // modal dialog is for), but headless mode has
+                        // neither, so it would just hang forever with no
+                        // way to test it here. `EXPORTSESSION`/
+                        // `IMPORTSESSION` debug commands call
+                        // `build_session_snapshot().save_to`/
+                        // `import_session_from` directly with an explicit
+                        // path instead, bypassing the dialog entirely, the
+                        // same "headless calls the effect directly" pattern
+                        // every real-keyboard-shortcut debug command uses.
+                        if !self.headless {
+                            ui.horizontal(|ui| {
+                                if ui.button("Export...").clicked() {
+                                    export_requested = true;
+                                }
+                                if ui.button("Import...").clicked() {
+                                    import_requested = true;
+                                }
+                            });
+                        }
 
                         ui.add_space(10.0);
                         if ui.button("Close").clicked() {
@@ -1173,6 +1196,24 @@ impl App {
         }
         if let Some(name) = delete_session_name {
             session::Session::delete_named(&name);
+        }
+        if export_requested {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("session.json")
+                .add_filter("Session", &["json"])
+                .save_file()
+            {
+                self.build_session_snapshot().save_to(&path);
+                self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+            }
+        }
+        if import_requested {
+            if let Some(path) =
+                rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file()
+            {
+                self.import_session_from(&path);
+                close = true;
+            }
         }
         if close {
             self.settings_open = false;
@@ -1401,16 +1442,32 @@ impl App {
         }
     }
 
-    /// "Open Session" (settings popup): tears down every currently-open
-    /// tab/download/group -- each `TabNode`'s own `Drop` handles process
-    /// shutdown+kill, the same mechanism `close_tab` already relies on, so
-    /// clearing the map is enough, no per-tab teardown call needed -- then
-    /// replays the named save via `apply_session`, same as startup replays
-    /// `session.json`. A no-op if the name doesn't exist or its file is
-    /// empty/corrupt, so a bad load can't wipe a perfectly good running
-    /// session.
+    /// "Open Session" (settings popup): loads a named save and replaces the
+    /// running session with it. A no-op if the name doesn't exist or its
+    /// file is empty/corrupt, so a bad load can't wipe a perfectly good
+    /// running session.
     fn load_named_session(&mut self, name: &str) {
         let Some(session) = session::Session::load_named(name) else { return };
+        self.replace_running_session(session);
+    }
+
+    /// "Import Session..." (settings popup, via a real file picker): same
+    /// as `load_named_session`, just reading an arbitrary path instead of
+    /// a name in the app's own `sessions/` folder.
+    fn import_session_from(&mut self, path: &std::path::Path) {
+        let Some(session) = session::Session::load_from(path) else { return };
+        self.replace_running_session(session);
+    }
+
+    /// Tears down every currently-open tab/download/group -- each
+    /// `TabNode`'s own `Drop` handles process shutdown+kill, the same
+    /// mechanism `close_tab` already relies on, so clearing the map is
+    /// enough, no per-tab teardown call needed -- then replays `session`
+    /// via `apply_session`, same as startup replays `session.json`. Shared
+    /// by `load_named_session` and `import_session_from`; a no-op for an
+    /// empty session, so a bad/empty load can't wipe a perfectly good
+    /// running one.
+    fn replace_running_session(&mut self, session: session::Session) {
         if session.tabs.is_empty() {
             return;
         }
@@ -5698,6 +5755,12 @@ impl App {
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
+            DebugCommand::ExportSession(path) => {
+                self.build_session_snapshot().save_to(std::path::Path::new(&path));
+            }
+            DebugCommand::ImportSession(path) => {
+                self.import_session_from(std::path::Path::new(&path));
+            }
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

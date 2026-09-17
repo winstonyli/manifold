@@ -150,6 +150,13 @@ pub enum DebugCommand {
     GraphFilterText(String),
     /// `Ctrl+G` equivalent — see `App::toggle_view_mode_shortcut`.
     ToggleView,
+    /// "Export..." with an explicit path instead of a real file dialog —
+    /// headless mode has no OS/human to answer one, so this bypasses it
+    /// entirely and calls the same underlying save directly.
+    ExportSession(String),
+    /// "Import..." with an explicit path, same "bypass the real file
+    /// dialog" reason as `ExportSession`.
+    ImportSession(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -310,6 +317,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
         "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
+        "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
+        "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         _ => None,
     }
 }
