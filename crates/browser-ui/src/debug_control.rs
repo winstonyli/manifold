@@ -186,6 +186,8 @@ pub enum DebugCommand {
     /// Clicks the confirm popup's Cancel button, same reason as
     /// `ConfirmImport`.
     CancelImport,
+    /// `F2` equivalent — see `App::rename_current_group_shortcut`.
+    RenameGroup,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -355,6 +357,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
+        "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),

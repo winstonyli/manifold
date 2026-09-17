@@ -2652,6 +2652,7 @@ impl App {
             view_toggle,
             pin_toggle,
             reload,
+            rename_group,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2684,6 +2685,7 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::P),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::R)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::F5),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::F2),
             )
         });
 
@@ -2740,6 +2742,9 @@ impl App {
         if reload {
             self.reload_focused_tab_shortcut();
         }
+        if rename_group {
+            self.rename_current_group_shortcut();
+        }
     }
 
     /// `Ctrl+P` / headless `TOGGLEPIN` — pins/unpins the focused tab, same
@@ -2761,6 +2766,22 @@ impl App {
         if let Some(node) = self.tabs.get_mut(&id) {
             node.tab.send(&HostToEngine::Reload);
         }
+    }
+
+    /// `F2` / headless `RENAMEGROUP` — starts renaming whichever group's
+    /// own subgraph is currently being viewed, same effect as clicking its
+    /// name button in the Graph toolbar (see that button's own click
+    /// handler, which this mirrors exactly). A no-op at the top level
+    /// (`current_group` is `None` there, nothing to rename) or while
+    /// already renaming.
+    fn rename_current_group_shortcut(&mut self) {
+        let Some(group_id) = self.current_group.clone() else { return };
+        if self.renaming_group.is_some() {
+            return;
+        }
+        let Some(name) = self.groups.get(&group_id).map(|g| g.name.clone()) else { return };
+        self.renaming_group = Some((group_id, name));
+        self.pending_focus_rename = true;
     }
 
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
@@ -6859,6 +6880,7 @@ impl App {
             DebugCommand::CancelImport => {
                 self.pending_import = None;
             }
+            DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
