@@ -1140,6 +1140,8 @@ impl App {
         let mut delete_session_name: Option<String> = None;
         let mut export_requested = false;
         let mut import_requested = false;
+        let mut export_bookmarks_requested = false;
+        let mut import_bookmarks_requested = false;
         let mut save_now_requested = false;
         egui::Area::new(egui::Id::new("settings_popup"))
             .fixed_pos(anchor_rect.left_bottom())
@@ -1285,6 +1287,25 @@ impl App {
                         }
 
                         ui.add_space(10.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new("Bookmarks").strong());
+                        // Same "real file dialog blocks on OS/human input
+                        // neither exists in headless mode" reasoning as
+                        // Export/Import Session above -- `EXPORTBOOKMARKS`/
+                        // `IMPORTBOOKMARKS` debug commands bypass the dialog
+                        // the same way.
+                        if !self.headless {
+                            ui.horizontal(|ui| {
+                                if ui.button("Export...").clicked() {
+                                    export_bookmarks_requested = true;
+                                }
+                                if ui.button("Import...").clicked() {
+                                    import_bookmarks_requested = true;
+                                }
+                            });
+                        }
+
+                        ui.add_space(10.0);
                         if ui.button("Close").clicked() {
                             close = true;
                         }
@@ -1323,6 +1344,27 @@ impl App {
                 rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file()
             {
                 self.import_session_from(&path);
+                close = true;
+            }
+        }
+        if export_bookmarks_requested {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("bookmarks.json")
+                .add_filter("Bookmarks", &["json"])
+                .save_file()
+            {
+                bookmarks::save_to(&self.bookmarks, &path);
+                self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+            }
+        }
+        if import_bookmarks_requested {
+            if let Some(path) =
+                rfd::FileDialog::new().add_filter("Bookmarks", &["json"]).pick_file()
+            {
+                if let Some(imported) = bookmarks::load_from(&path) {
+                    self.bookmarks = imported;
+                    bookmarks::save(&self.bookmarks);
+                }
                 close = true;
             }
         }
@@ -6565,6 +6607,15 @@ impl App {
             }
             DebugCommand::ImportSession(path) => {
                 self.import_session_from(std::path::Path::new(&path));
+            }
+            DebugCommand::ExportBookmarks(path) => {
+                bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
+            }
+            DebugCommand::ImportBookmarks(path) => {
+                if let Some(imported) = bookmarks::load_from(std::path::Path::new(&path)) {
+                    self.bookmarks = imported;
+                    bookmarks::save(&self.bookmarks);
+                }
             }
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),

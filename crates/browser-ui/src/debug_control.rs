@@ -172,6 +172,12 @@ pub enum DebugCommand {
     /// Sets the Bookmarks popup's own filter box directly, same reason as
     /// `HistoryFilterText`.
     BookmarksFilterText(String),
+    /// "Export Bookmarks..." with an explicit path instead of a real file
+    /// dialog, same "bypass the dialog entirely" reason as `ExportSession`.
+    ExportBookmarks(String),
+    /// "Import Bookmarks..." with an explicit path, same reason as
+    /// `ExportBookmarks`.
+    ImportBookmarks(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -336,6 +342,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
         "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
+        "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
