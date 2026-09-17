@@ -1273,12 +1273,12 @@ impl App {
                         ui.add_space(8.0);
                         ui.label("Zoom (new tabs; also applies to the current tab now)");
                         ui.horizontal(|ui| {
-                            if ui.button("\u{2212}").clicked() {
+                            if ui.button(egui_phosphor::regular::MINUS).clicked() {
                                 self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
                                 self.apply_zoom_change();
                             }
                             ui.label(format!("{:.0}%", self.settings.zoom_factor * 100.0));
-                            if ui.button("+").clicked() {
+                            if ui.button(egui_phosphor::regular::PLUS).clicked() {
                                 self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
                                 self.apply_zoom_change();
                             }
@@ -4511,14 +4511,23 @@ impl App {
                         back_to_graph = true;
                     }
                     let node = &self.tabs[&focused_id];
+                    // `◀`/`▶` were already a proven-safe Unicode gamble
+                    // (confirmed live elsewhere in this app), not a real
+                    // problem -- migrated to `egui_phosphor::CARET_LEFT`/
+                    // `CARET_RIGHT` anyway once the icon font was already
+                    // in place, for the same visual consistency the other
+                    // icon migrations this session already have.
                     if ui
-                        .add_enabled(node.can_go_back, egui::Button::new("\u{25c0}"))
+                        .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::regular::CARET_LEFT))
                         .clicked()
                     {
                         go_back = true;
                     }
                     if ui
-                        .add_enabled(node.can_go_forward, egui::Button::new("\u{25b6}"))
+                        .add_enabled(
+                            node.can_go_forward,
+                            egui::Button::new(egui_phosphor::regular::CARET_RIGHT),
+                        )
                         .clicked()
                     {
                         go_forward = true;
@@ -4677,7 +4686,8 @@ impl App {
                     }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
-                    let gear_response = ui.button("\u{2699}").on_hover_text("Settings");
+                    let gear_response =
+                        ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
                     if gear_response.clicked() {
                         self.settings_open = !self.settings_open;
                     }
@@ -5094,7 +5104,8 @@ impl App {
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                     }
-                    let gear_response = ui.button("\u{2699}").on_hover_text("Settings");
+                    let gear_response =
+                        ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
                     if gear_response.clicked() {
                         self.settings_open = !self.settings_open;
                     }
@@ -6055,15 +6066,16 @@ impl App {
 
                     if let Some(node) = self.downloads.get(&id) {
                         let filename = download_filename(&node.path);
-                        // A plain painter-drawn glyph rather than a Unicode
-                        // file icon — several symbol glyphs are confirmed
-                        // elsewhere in this app to render as empty boxes in
-                        // whatever font it actually has glyphs for (see the
-                        // audio-indicator dot's own doc comment).
+                        // `egui_phosphor::DOWNLOAD_SIMPLE` -- was a raw
+                        // Unicode arrow-to-bar glyph (`\u{2913}`) that
+                        // happened to render, despite this comment's own
+                        // claim of avoiding exactly that gamble; migrated
+                        // to a real icon for consistency once the icon
+                        // font was already in place for everything else.
                         overlay_painter.text(
                             project(rect.center_top()) + egui::vec2(0.0, 10.0),
                             egui::Align2::CENTER_TOP,
-                            "\u{2913}",
+                            egui_phosphor::regular::DOWNLOAD_SIMPLE,
                             egui::FontId::proportional(18.0),
                             ui.visuals().text_color(),
                         );
