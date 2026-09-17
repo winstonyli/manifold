@@ -635,13 +635,40 @@ impl GpuState {
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
     ) -> RenderOutcome {
+        // Sync texture-atlas deltas (font glyphs, etc.) to the GPU-side
+        // renderer, and clear them, *before* checking whether this frame's
+        // surface can even be acquired. `TexturesDelta` panics on `Drop` if
+        // any `.set`/`.free` entry was never consumed, and this used to run
+        // only after a successful `get_current_texture()` below -- so a
+        // transient Occluded/Outdated/Timeout status on a frame that also
+        // introduced a new glyph (e.g. an icon font's first use) dropped
+        // `egui_output`'s `FullOutput` uncleared right at the early return,
+        // panicking with "Dropped TexturesDelta with 1 unapplied deltas".
+        // The atlas sync itself needs no surface -- only presentation does.
+        let egui_output = egui_output.map(|(ctx, mut full_output)| {
+            for (id, deltas) in &full_output.textures_delta.set {
+                for delta in deltas {
+                    self.egui_renderer
+                        .update_texture(&self.device, &self.queue, *id, delta);
+                }
+            }
+            for id in &full_output.textures_delta.free {
+                self.egui_renderer.free_texture(id);
+            }
+            full_output.textures_delta.clear();
+            (ctx, full_output)
+        });
+
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Timeout/Occluded/Outdated/Lost/Validation: skip this frame and
             // try again next redraw rather than treating it as fatal. A
             // requested screenshot was never attempted here -- the caller
             // must not drop it, only retry on a later frame whose surface
-            // actually comes back usable.
+            // actually comes back usable. `egui_output`'s texture delta was
+            // already applied and cleared above, so dropping it here now is
+            // safe -- only the shapes (tessellated below, never touched
+            // yet) go unused this frame.
             _ => return RenderOutcome { surface_ok: false, screenshot_result: None },
         };
         let view = frame
@@ -664,13 +691,7 @@ impl GpuState {
         // and reused for both the on-screen pass and, if requested, the
         // offscreen screenshot pass below.
         let mut extra_command_buffers = Vec::new();
-        let egui_draw = if let Some((ctx, mut full_output)) = egui_output {
-            for (id, deltas) in &full_output.textures_delta.set {
-                for delta in deltas {
-                    self.egui_renderer
-                        .update_texture(&self.device, &self.queue, *id, delta);
-                }
-            }
+        let egui_draw = if let Some((ctx, full_output)) = egui_output {
             let clipped_primitives =
                 ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -684,16 +705,6 @@ impl GpuState {
                 &clipped_primitives,
                 &screen_descriptor,
             );
-            for id in &full_output.textures_delta.free {
-                self.egui_renderer.free_texture(id);
-            }
-            // `TexturesDelta` asserts on `Drop` that it was actually
-            // consumed (not just borrowed-and-ignored) — the loops above
-            // only read `.set`/`.free` by reference, so without this the
-            // very first frame with any texture delta (egui's font atlas,
-            // uploaded on frame one) panics as soon as `full_output` goes
-            // out of scope at the end of this block.
-            full_output.textures_delta.clear();
             Some((clipped_primitives, screen_descriptor))
         } else {
             None
