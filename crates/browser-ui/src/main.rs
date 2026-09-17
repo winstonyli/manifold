@@ -4267,6 +4267,7 @@ impl App {
         let mut reset_view = false;
         let mut group_selected_requested = false;
         let mut close_selected_requested = false;
+        let mut ungroup_all_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
@@ -4320,6 +4321,12 @@ impl App {
                     }
                     if self.current_group.is_none() && ui.button("+ New Group").clicked() {
                         new_group_requested = true;
+                    }
+                    if self.current_group.is_none()
+                        && !self.group_order.is_empty()
+                        && ui.button("Ungroup All").clicked()
+                    {
+                        ungroup_all_requested = true;
                     }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
@@ -5718,6 +5725,11 @@ impl App {
         if close_selected_requested {
             for id in std::mem::take(&mut self.selected_tabs) {
                 self.close_tab(&id);
+            }
+        }
+        if ungroup_all_requested {
+            for id in std::mem::take(&mut self.group_order) {
+                self.dissolve_group(&id);
             }
         }
         // Applied before `leave_group_requested` below: the "◀ Groups"
