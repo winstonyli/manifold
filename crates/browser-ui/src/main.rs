@@ -881,6 +881,13 @@ struct App {
     /// simplicity as `find_result`.
     save_toast: Option<(String, std::time::Instant)>,
 
+    /// When the auto-restore `session.json` was last written -- shown in
+    /// the settings popup's Sessions section next to a "Save Now" button,
+    /// so a save that's actually continuous (every mutation calls
+    /// `save_session`, not a timer) has some visible confirmation instead
+    /// of being purely invisible. `None` until the first save this run.
+    last_session_save: Option<std::time::Instant>,
+
     find_bar_open: bool,
     find_text: String,
     /// Resets to `false` on every `close_find_bar` — a fresh find session
@@ -1023,6 +1030,7 @@ impl Default for App {
             closed_tabs: Vec::new(),
             context_menu: None,
             save_toast: None,
+            last_session_save: None,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -1123,6 +1131,7 @@ impl App {
         let mut delete_session_name: Option<String> = None;
         let mut export_requested = false;
         let mut import_requested = false;
+        let mut save_now_requested = false;
         egui::Area::new(egui::Id::new("settings_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -1205,6 +1214,18 @@ impl App {
                         ui.add_space(10.0);
                         ui.separator();
                         ui.label(egui::RichText::new("Sessions").strong());
+                        if ui
+                            .button("Save Now")
+                            .on_hover_text("Write the auto-restore session.json immediately")
+                            .clicked()
+                        {
+                            save_now_requested = true;
+                        }
+                        let last_saved = match self.last_session_save {
+                            Some(at) => format!("Last saved {}s ago", at.elapsed().as_secs()),
+                            None => "Not saved yet this run".to_string(),
+                        };
+                        ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
                         ui.horizontal(|ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.session_name_draft)
@@ -1260,6 +1281,9 @@ impl App {
                         }
                     });
             });
+        if save_now_requested {
+            self.save_session();
+        }
         if save_as_requested {
             let name = sanitize_session_name(&self.session_name_draft);
             if !name.is_empty() {
@@ -1443,8 +1467,9 @@ impl App {
     /// own doc comment for what is/isn't portable across a restart.
     /// Fire-and-forget, same as `Settings::save` — a failed write is
     /// logged, never fatal.
-    fn save_session(&self) {
+    fn save_session(&mut self) {
         self.build_session_snapshot().save();
+        self.last_session_save = Some(std::time::Instant::now());
     }
 
     /// The `session::Session` value both the auto-restore `save_session`
