@@ -2457,6 +2457,24 @@ impl App {
         }
     }
 
+    /// Tab view's "Mute Others" button: mutes every open tab except
+    /// `keep_id`, regardless of any already-muted state, without touching
+    /// `keep_id`'s own mute state either way. A one-shot action, not a
+    /// toggle -- a second click would just mute everything again, a no-op
+    /// for anything already muted.
+    fn mute_all_except(&mut self, keep_id: &str) {
+        let other_ids: Vec<String> =
+            self.tabs.keys().filter(|id| id.as_str() != keep_id).cloned().collect();
+        for id in other_ids {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                if !node.muted {
+                    node.muted = true;
+                    node.tab.send(&HostToEngine::SetMuted { muted: true });
+                }
+            }
+        }
+    }
+
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
@@ -3164,6 +3182,7 @@ impl App {
         let mut navigate = None;
         let mut back_to_graph = false;
         let mut mute_toggle = false;
+        let mut mute_others_requested = false;
         let mut screenshot_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
@@ -3263,6 +3282,9 @@ impl App {
                     let node_muted = self.tabs.get(&focused_id).is_some_and(|n| n.muted);
                     if ui.selectable_label(node_muted, "Muted").clicked() {
                         mute_toggle = true;
+                    }
+                    if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
+                        mute_others_requested = true;
                     }
 
                     // Full window (chrome + content), same composited
@@ -3489,6 +3511,9 @@ impl App {
         }
         if mute_toggle {
             self.toggle_muted(&focused_id);
+        }
+        if mute_others_requested {
+            self.mute_all_except(&focused_id);
         }
         if screenshot_requested {
             // No toast here -- the save hasn't happened yet. `save_toast`
