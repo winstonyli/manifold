@@ -520,6 +520,19 @@ struct ContextMenuState {
     href: String,
 }
 
+/// `Ctrl+K`'s tab quick-switcher: substring-search-by-title-or-url across
+/// *every* open tab regardless of level/group (unlike the graph views'
+/// own level-scoped listings — jumping to a tab buried in a different
+/// group is the whole point of this), then jump straight to whichever one
+/// is selected. `selected` indexes into whatever `App::quick_switcher_
+/// matches` currently returns for `query` -- clamped on every keystroke
+/// since the match list can shrink out from under a previously valid
+/// index (e.g. a query that used to match 5 tabs now matches 2).
+struct QuickSwitcher {
+    query: String,
+    selected: usize,
+}
+
 /// The event loop's real user-event type: headless debug commands, plus
 /// `TabSpawned` — see its own doc comment for why engine-host spawning needs
 /// to be async in the first place.
@@ -626,6 +639,13 @@ struct App {
     /// A press landing on a download's card opens this instead of starting
     /// a marquee, same reasoning as `group_context_menu`'s own doc comment.
     download_context_menu: Option<(String, egui::Pos2)>,
+    /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
+    /// own doc comment and `App::build_quick_switcher`.
+    quick_switcher: Option<QuickSwitcher>,
+    /// Set for exactly one frame when `quick_switcher` is first opened,
+    /// same one-shot `response.request_focus()` pattern as
+    /// `pending_focus_address_bar`/`pending_focus_find_bar`.
+    pending_focus_quick_switcher: bool,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -859,6 +879,8 @@ impl Default for App {
             pending_focus_rename: false,
             group_context_menu: None,
             download_context_menu: None,
+            quick_switcher: None,
+            pending_focus_quick_switcher: false,
             focused: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
@@ -2182,6 +2204,7 @@ impl App {
             open_devtools,
             prev_tab,
             next_tab,
+            quick_switch,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2200,6 +2223,7 @@ impl App {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::F12),
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
             )
         });
 
@@ -2232,6 +2256,10 @@ impl App {
         }
         if next_tab || prev_tab {
             self.cycle_focused_tab(next_tab);
+        }
+        if quick_switch {
+            self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+            self.pending_focus_quick_switcher = true;
         }
     }
 
@@ -2515,6 +2543,149 @@ impl App {
         }
         if close {
             self.close_find_bar();
+        }
+    }
+
+    /// `self.tab_order`, filtered by a case-insensitive substring match
+    /// against title-or-url — factored out so the quick-switcher's render
+    /// function and its Enter-key jump always agree on the exact same list
+    /// (computed once per frame, not separately in each place that needs
+    /// it).
+    fn quick_switcher_matches(&self, query: &str) -> Vec<String> {
+        let query = query.to_lowercase();
+        self.tab_order
+            .iter()
+            .filter(|id| {
+                self.tabs.get(id.as_str()).is_some_and(|n| {
+                    query.is_empty()
+                        || n.title.to_lowercase().contains(&query)
+                        || n.url.to_lowercase().contains(&query)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Moves the quick-switcher's selection by `delta` (+1/-1), clamped to
+    /// the current match list — shared by the real ArrowUp/ArrowDown
+    /// handling in `build_quick_switcher` and the headless `QUICKSWITCHUP`/
+    /// `QUICKSWITCHDOWN` debug commands (see `debug_control`'s own doc
+    /// comment on why a real `KeyEvent` can't be synthesized).
+    fn quick_switcher_move(&mut self, delta: i32) {
+        let Some(query) = self.quick_switcher.as_ref().map(|s| s.query.clone()) else { return };
+        let len = self.quick_switcher_matches(&query).len();
+        let Some(switcher) = &mut self.quick_switcher else { return };
+        if len == 0 {
+            switcher.selected = 0;
+        } else if delta > 0 {
+            switcher.selected = (switcher.selected + 1).min(len - 1);
+        } else {
+            switcher.selected = switcher.selected.saturating_sub(1);
+        }
+    }
+
+    /// Jumps to whichever match is currently selected and closes the
+    /// switcher — shared by the real Enter handling in
+    /// `build_quick_switcher` and headless `QUICKSWITCHENTER`. See
+    /// `build_quick_switcher`'s own doc comment for why this calls
+    /// `focus_tab` directly rather than the graph-node expand animation.
+    fn quick_switcher_confirm(&mut self) {
+        let Some(switcher) = &self.quick_switcher else { return };
+        let matches = self.quick_switcher_matches(&switcher.query);
+        if let Some(id) = matches.get(switcher.selected).cloned() {
+            let group = self.tabs.get(&id).and_then(|n| n.group.clone());
+            self.current_group = group;
+            self.focus_tab(&id);
+        }
+        self.quick_switcher = None;
+    }
+
+    /// `Ctrl+K`'s tab quick-switcher: a centered search box plus a
+    /// scrollable list of matches (see `quick_switcher_matches`), arrow
+    /// keys move the selection, Enter jumps to it, Escape closes. Called
+    /// from `build_ui` itself rather than `build_tab_ui`/`build_graph_ui`
+    /// so it works the same from either view.
+    fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
+        if self.quick_switcher.is_none() {
+            return;
+        }
+
+        // Read once, outside the `Area`, so arrow/Enter/Escape work
+        // regardless of whether the search field inside currently has
+        // egui focus — same reasoning the address-bar dropdown's own
+        // arrow-key handling already documents.
+        let (arrow_down, arrow_up, enter, escape) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if arrow_down {
+            self.quick_switcher_move(1);
+        }
+        if arrow_up {
+            self.quick_switcher_move(-1);
+        }
+        if escape {
+            self.quick_switcher = None;
+        }
+        if enter {
+            self.quick_switcher_confirm();
+        }
+        let Some(switcher) = &self.quick_switcher else { return };
+        let query = switcher.query.clone();
+        let selected_index = switcher.selected;
+        let matches = self.quick_switcher_matches(&query);
+        let mut jump_to: Option<String> = None;
+
+        egui::Area::new(egui::Id::new("quick_switcher"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_width(360.0);
+                        if let Some(switcher) = &mut self.quick_switcher {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut switcher.query)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("Search open tabs..."),
+                            );
+                            if std::mem::take(&mut self.pending_focus_quick_switcher) {
+                                response.request_focus();
+                            }
+                        }
+                        ui.separator();
+                        if matches.is_empty() {
+                            ui.label("No matching tabs");
+                        }
+                        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                            for (i, id) in matches.iter().enumerate() {
+                                let Some(node) = self.tabs.get(id) else { continue };
+                                let label = if node.title.is_empty() {
+                                    node.url.clone()
+                                } else {
+                                    node.title.clone()
+                                };
+                                if ui.selectable_label(i == selected_index, label).clicked() {
+                                    jump_to = Some(id.clone());
+                                }
+                            }
+                        });
+                    });
+            });
+
+        if let Some(id) = jump_to {
+            let group = self.tabs.get(&id).and_then(|n| n.group.clone());
+            self.current_group = group;
+            self.focus_tab(&id);
+            self.quick_switcher = None;
         }
     }
 
@@ -2814,6 +2985,7 @@ impl App {
             ViewMode::Tab => self.build_tab_ui(ui),
             ViewMode::Graph => self.build_graph_ui(ui),
         }
+        self.build_quick_switcher(ui);
     }
 
     fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
@@ -3160,8 +3332,14 @@ impl App {
         // into the same real-Escape check rather than getting its own
         // branch, so headless testing exercises the exact same dismiss-vs-
         // leave-to-graph logic a real keypress would.
-        let escape_pressed =
-            ui.input(|i| i.key_pressed(egui::Key::Escape)) || std::mem::take(&mut self.pending_debug_escape);
+        // Neutralized while the quick-switcher is open: it does its own,
+        // separate Escape check in `build_quick_switcher` to close itself,
+        // and `key_pressed` is a non-consuming peek -- without this, the
+        // same Escape press would also fire this chain (leaving to Graph,
+        // or dismissing the address-bar dropdown) underneath it.
+        let escape_pressed = (ui.input(|i| i.key_pressed(egui::Key::Escape))
+            || std::mem::take(&mut self.pending_debug_escape))
+            && self.quick_switcher.is_none();
         if back_to_graph
             || (!has_suggestions && !self.find_bar_open && self.context_menu.is_none() && escape_pressed)
         {
@@ -3401,7 +3579,7 @@ impl App {
         // transition. Gated on the settings popup and group-rename text
         // field both being closed so arrow keys still do their normal job
         // there instead of hijacking focus underneath an open widget.
-        if !self.settings_open && self.renaming_group.is_none() {
+        if !self.settings_open && self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
                     Some(egui::vec2(1.0, 0.0))
@@ -5191,6 +5369,20 @@ impl App {
                     let _ = window.request_inner_size(PhysicalSize::new(width, height));
                 }
             }
+            DebugCommand::QuickSwitchOpen => {
+                self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+                self.pending_focus_quick_switcher = true;
+            }
+            DebugCommand::QuickSwitchText(text) => {
+                if let Some(switcher) = &mut self.quick_switcher {
+                    switcher.query = text;
+                    switcher.selected = 0;
+                }
+            }
+            DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
+            DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
+            DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
+            DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

@@ -130,6 +130,17 @@ pub enum DebugCommand {
     Screenshot(String),
     Resize(u32, u32),
     Quit,
+    /// `Ctrl+K` equivalent — see `App::handle_global_shortcuts`.
+    QuickSwitchOpen,
+    /// Sets the quick-switcher's search text directly, same "direct call,
+    /// not a synthetic key event" reason as `AddressBar`/`FindText`.
+    QuickSwitchText(String),
+    /// Up/Down/Enter in the quick-switcher — see `App::quick_switcher_
+    /// move`/`quick_switcher_confirm`.
+    QuickSwitchDown,
+    QuickSwitchUp,
+    QuickSwitchEnter,
+    QuickSwitchEscape,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -281,6 +292,12 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SCREENSHOT" => Some(DebugCommand::Screenshot(rest.to_string())).filter(|_| !rest.is_empty()),
         "RESIZE" => Some(DebugCommand::Resize(parts.next()?.parse().ok()?, parts.next()?.parse().ok()?)),
         "QUIT" => Some(DebugCommand::Quit),
+        "QUICKSWITCHOPEN" => Some(DebugCommand::QuickSwitchOpen),
+        "QUICKSWITCHTEXT" => Some(DebugCommand::QuickSwitchText(rest.to_string())),
+        "QUICKSWITCHDOWN" => Some(DebugCommand::QuickSwitchDown),
+        "QUICKSWITCHUP" => Some(DebugCommand::QuickSwitchUp),
+        "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
+        "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
         _ => None,
     }
 }
