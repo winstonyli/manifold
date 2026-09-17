@@ -5615,6 +5615,54 @@ impl App {
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
             .show(ui, &mut scene_rect, |ui| {
+                // Dot grid first, under everything -- a fixed-world-spacing
+                // reference so panning/zooming reads as moving through a
+                // real space rather than an empty void, the same idea every
+                // node-graph editor (Blender, Figma, ComfyUI) uses. Spacing
+                // is in *world* units (dots get farther apart on screen
+                // when zoomed in, closer together zoomed out -- the
+                // intended feel), while the dot's own radius is scaled by
+                // `inv_zoom` so it stays a constant ~1.5 screen px
+                // regardless of zoom. Reads `self.graph_scene_rect` (the
+                // previous frame's visible world rect) rather than the
+                // local `scene_rect` above -- that one is already mutably
+                // borrowed for the whole `show` call, including this
+                // closure, so it can't also be read from in here. One frame
+                // of lag, same as `graph_zoom_pct`'s own toolbar readout --
+                // imperceptible at any real frame rate.
+                //
+                // Spacing is adaptive (doubled/halved in world units, never
+                // below a 20 screen-px floor) rather than a fixed 40 world
+                // units -- a fixed spacing looks right near 100% zoom but
+                // turns into tens of thousands of `circle_filled` calls a
+                // frame at `GRAPH_ZOOM_MIN` (0.15x: a full-HD window's
+                // visible world rect alone would need ~57,000 dots at 40
+                // world units apart), a real per-frame cost this avoids by
+                // keeping on-screen density roughly constant regardless of
+                // zoom level instead.
+                let mut grid_spacing = 40.0_f32;
+                while grid_spacing * zoom_scale < 20.0 {
+                    grid_spacing *= 2.0;
+                }
+                while grid_spacing * zoom_scale > 80.0 {
+                    grid_spacing /= 2.0;
+                }
+                let dot_color = ui.visuals().weak_text_color().gamma_multiply(0.35);
+                let visible = self.graph_scene_rect;
+                let start_x = (visible.min.x / grid_spacing).floor() as i32;
+                let end_x = (visible.max.x / grid_spacing).ceil() as i32;
+                let start_y = (visible.min.y / grid_spacing).floor() as i32;
+                let end_y = (visible.max.y / grid_spacing).ceil() as i32;
+                for gx in start_x..=end_x {
+                    for gy in start_y..=end_y {
+                        ui.painter().circle_filled(
+                            egui::pos2(gx as f32 * grid_spacing, gy as f32 * grid_spacing),
+                            1.5 * inv_zoom,
+                            dot_color,
+                        );
+                    }
+                }
+
                 // Edges first so node cards paint on top of the lines feeding them.
                 // Both endpoints must share the currently-viewed level —
                 // see the physics block's own edge filter above for why.
