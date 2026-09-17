@@ -160,6 +160,8 @@ pub enum DebugCommand {
     /// "Print to PDF" with an explicit path instead of a real file dialog —
     /// same "bypass the dialog entirely" reason as `ExportSession`.
     PrintToPdf(String),
+    /// `Ctrl+P` equivalent — see `App::pin_focused_tab_shortcut`.
+    TogglePin,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -323,6 +325,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
+        "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         _ => None,
     }
 }

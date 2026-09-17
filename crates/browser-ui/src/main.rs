@@ -2434,6 +2434,7 @@ impl App {
             next_tab,
             quick_switch,
             view_toggle,
+            pin_toggle,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2454,6 +2455,7 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::G),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::P),
             )
         });
 
@@ -2497,6 +2499,19 @@ impl App {
         // underneath it.
         if view_toggle && self.quick_switcher.is_none() {
             self.toggle_view_mode_shortcut();
+        }
+        if pin_toggle {
+            self.pin_focused_tab_shortcut();
+        }
+    }
+
+    /// `Ctrl+P` / headless `TOGGLEPIN` — pins/unpins the focused tab, same
+    /// effect as its graph card's own pin dot or the tab context menu's
+    /// Pin/Unpin entry.
+    fn pin_focused_tab_shortcut(&mut self) {
+        let Some(id) = self.focused.clone() else { return };
+        if let Some(node) = self.tabs.get_mut(&id) {
+            node.pinned = !node.pinned;
         }
     }
 
@@ -6096,6 +6111,7 @@ impl App {
                 self.import_session_from(std::path::Path::new(&path));
             }
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
+            DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
