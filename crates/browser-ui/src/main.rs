@@ -304,6 +304,16 @@ fn apply_fonts(ctx: &egui::Context) {
     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         family.insert(0, "IBMPlexSerif".to_owned());
     }
+    // A real icon font, not a symbol glyph gamble -- IBM Plex Serif's own
+    // doc comment above notes a theoretical fallback chain to egui's
+    // bundled emoji/symbol font, but this project has repeatedly confirmed
+    // live that several such glyphs still render as empty tofu boxes
+    // regardless (see the pin/mute/audio-indicator dots, all painter-drawn
+    // shapes specifically to dodge this). Phosphor's own codepoints live
+    // in a private-use range no other font in this chain defines, so
+    // there's no coverage ambiguity: every `egui_phosphor::regular::*`
+    // constant used in this app's chrome is guaranteed to resolve here.
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
 }
 
@@ -4994,7 +5004,22 @@ impl App {
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
                     }
-                    if self.current_group.is_none() && ui.button("+ New Group").clicked() {
+                    // These four buttons used to carry full text labels
+                    // ("+ New Group", "Import Group...", "Ungroup All",
+                    // "Collapse Groups"/"Expand Groups") and, together with
+                    // "+ New Tab"/"Reset View", made this toolbar cramped
+                    // enough to confirm live (text touching the window
+                    // edge at 1300pt wide). Switched to `egui_phosphor`
+                    // icons instead of folding into a dropdown -- each
+                    // stays a one-click action, just narrower, with the
+                    // old label preserved as a hover tooltip so the action
+                    // is still discoverable.
+                    if self.current_group.is_none()
+                        && ui
+                            .button(egui_phosphor::regular::FOLDER_PLUS)
+                            .on_hover_text("New Group")
+                            .clicked()
+                    {
                         new_group_requested = true;
                     }
                     // Same "real file dialog blocks on OS/human input
@@ -5003,19 +5028,29 @@ impl App {
                     // calls the same underlying import directly instead.
                     if self.current_group.is_none()
                         && !self.headless
-                        && ui.button("Import Group...").clicked()
+                        && ui
+                            .button(egui_phosphor::regular::UPLOAD_SIMPLE)
+                            .on_hover_text("Import Group...")
+                            .clicked()
                     {
                         import_group_requested = true;
                     }
                     if self.current_group.is_none()
                         && !self.group_order.is_empty()
-                        && ui.button("Ungroup All").clicked()
+                        && ui
+                            .button(egui_phosphor::regular::FOLDER_MINUS)
+                            .on_hover_text("Ungroup All")
+                            .clicked()
                     {
                         ungroup_all_requested = true;
                     }
                     if self.current_group.is_none() && !self.group_order.is_empty() {
-                        let label = if self.groups_collapsed { "Expand Groups" } else { "Collapse Groups" };
-                        if ui.button(label).clicked() {
+                        let (icon, hover) = if self.groups_collapsed {
+                            (egui_phosphor::regular::CORNERS_OUT, "Expand Groups")
+                        } else {
+                            (egui_phosphor::regular::CORNERS_IN, "Collapse Groups")
+                        };
+                        if ui.button(icon).on_hover_text(hover).clicked() {
                             self.groups_collapsed = !self.groups_collapsed;
                         }
                     }
