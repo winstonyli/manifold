@@ -675,6 +675,17 @@ struct App {
     /// than making the graph reflow the way actually removing non-matches
     /// would. Empty means no filtering. See `App::graph_node_dimmed`.
     graph_filter: String,
+    /// Graph view's own camera zoom, as a percentage for the toolbar's
+    /// readout -- `100.0` means `graph_world_to_screen_transform`'s scale
+    /// is `1.0` (one world unit per screen point), same "100% = no
+    /// scaling" meaning Tab view's own zoom already uses. Updated once
+    /// `build_graph_ui` recomputes the real transform later in the same
+    /// frame the toolbar (which needs it before that point) is built, so
+    /// the toolbar always shows the *previous* frame's value -- one frame
+    /// of lag, imperceptible at any real frame rate, and far simpler than
+    /// restructuring draw order to compute the transform before the
+    /// toolbar panel has even reserved its own screen space.
+    graph_zoom_pct: f32,
     /// Set for exactly one frame when `quick_switcher` is first opened,
     /// same one-shot `response.request_focus()` pattern as
     /// `pending_focus_address_bar`/`pending_focus_find_bar`.
@@ -915,6 +926,7 @@ impl Default for App {
             quick_switcher: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
+            graph_zoom_pct: 100.0,
             pending_focus_quick_switcher: false,
             focused: None,
             view_mode: ViewMode::Tab,
@@ -3724,6 +3736,7 @@ impl App {
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
+                    ui.label(format!("{}%", self.graph_zoom_pct.round() as i32));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.graph_filter)
                             .desired_width(120.0)
@@ -3897,6 +3910,7 @@ impl App {
         // any other magnified image would, which is normal/expected).
         let scene_outer_rect = ui.available_rect_before_wrap();
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        self.graph_zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
         let project = move |world: egui::Pos2| -> egui::Pos2 {
             (translation + zoom_scale * world.to_vec2()).to_pos2()
