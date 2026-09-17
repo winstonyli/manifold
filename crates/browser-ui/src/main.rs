@@ -456,6 +456,29 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
         .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
 }
 
+/// A parent-child graph edge, bowed into a gentle quadratic-bezier curve
+/// instead of a straight `line_segment` -- purely cosmetic softening, not
+/// port-based routing (this graph's nodes are free-positioned by physics,
+/// not laid out left-to-right with fixed input/output sides, so a "smart"
+/// horizontal S-curve like most node editors use would look wrong here;
+/// a curve that just bows perpendicular to the straight line works for an
+/// edge in any direction). Bow amount is proportional to edge length
+/// (capped at 30 world units) so short edges between adjacent nodes don't
+/// over-bow into an ugly loop.
+fn draw_graph_edge(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, stroke: egui::Stroke) {
+    let delta = to - from;
+    let dist = delta.length();
+    let bow = (dist * 0.15).min(30.0);
+    let perp = egui::vec2(-delta.y, delta.x) / dist.max(0.0001) * bow;
+    let control = from + delta * 0.5 + perp;
+    painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+        [from, control, to],
+        false,
+        egui::Color32::TRANSPARENT,
+        stroke,
+    ));
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Graph,
@@ -5677,11 +5700,10 @@ impl App {
                         continue;
                     };
                     let _ = id;
-                    ui.painter().line_segment(
-                        [
-                            egui::Pos2::new(parent.pos.x, parent.pos.y),
-                            egui::Pos2::new(node.pos.x, node.pos.y),
-                        ],
+                    draw_graph_edge(
+                        ui.painter(),
+                        egui::Pos2::new(parent.pos.x, parent.pos.y),
+                        egui::Pos2::new(node.pos.x, node.pos.y),
                         egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
                     );
                 }
@@ -5697,11 +5719,10 @@ impl App {
                     let Some(parent) = self.tabs.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
-                    ui.painter().line_segment(
-                        [
-                            egui::Pos2::new(parent.pos.x, parent.pos.y),
-                            egui::Pos2::new(node.pos.x, node.pos.y),
-                        ],
+                    draw_graph_edge(
+                        ui.painter(),
+                        egui::Pos2::new(parent.pos.x, parent.pos.y),
+                        egui::Pos2::new(node.pos.x, node.pos.y),
                         egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
                     );
                 }
