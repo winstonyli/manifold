@@ -95,7 +95,22 @@ pub struct GpuState {
 impl GpuState {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // `backends` explicitly restricted to `PRIMARY` (Vulkan/Metal/DX12/
+        // WebGPU) rather than `new_without_display_handle()`'s own default
+        // of `Backends::all()`, which also includes `GL` (on Windows, an
+        // ANGLE-backed secondary/legacy tier). Found live: this app's own
+        // `Instance::new()` was taking ~640ms on its own -- over 40% of a
+        // ~1.5s total time-to-first-frame -- and is the single largest
+        // contributor to a "extreme lag on startup" report, confirmed via
+        // temporary per-phase timing instrumentation through the rest of
+        // `GpuState::new`/`resumed()`. Loading/probing an extra backend
+        // tier this app never needs (it only ever ends up on Vulkan or
+        // DX12 in practice, per `adapter.get_info()`) is pure waste --
+        // `PRIMARY` is wgpu's own recommended set for exactly this reason.
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let surface = instance
             .create_surface(window.clone())
             .expect("create wgpu surface");
