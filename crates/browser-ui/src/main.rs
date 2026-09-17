@@ -86,6 +86,19 @@ fn sanitize_session_name(raw: &str) -> String {
     raw.trim().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect::<String>()
 }
 
+/// Graph toolbar filter box: `true` when `self.graph_filter` is non-empty
+/// and none of `haystacks` contains it (case-insensitive) -- the node
+/// should be painted dimmed. Always `false` while the filter is empty, so
+/// an untouched graph never pays the dimming cost.
+fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return false;
+    }
+    let filter = filter.to_lowercase();
+    !haystacks.iter().any(|h| h.to_lowercase().contains(&filter))
+}
+
 fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
     match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
         None => Some(TAG_COLOR_PALETTE[0]),
@@ -656,6 +669,12 @@ struct App {
     /// popup open/close within the running session (not persisted), same
     /// convenience the group-rename draft gets.
     session_name_draft: String,
+    /// Graph view's own toolbar filter box -- dims (doesn't hide) any
+    /// tab/download/group whose title/url/path/name doesn't contain this
+    /// case-insensitively, keeping edges and spatial layout intact rather
+    /// than making the graph reflow the way actually removing non-matches
+    /// would. Empty means no filtering. See `App::graph_node_dimmed`.
+    graph_filter: String,
     /// Set for exactly one frame when `quick_switcher` is first opened,
     /// same one-shot `response.request_focus()` pattern as
     /// `pending_focus_address_bar`/`pending_focus_find_bar`.
@@ -895,6 +914,7 @@ impl Default for App {
             download_context_menu: None,
             quick_switcher: None,
             session_name_draft: String::new(),
+            graph_filter: String::new(),
             pending_focus_quick_switcher: false,
             focused: None,
             view_mode: ViewMode::Tab,
@@ -3616,6 +3636,11 @@ impl App {
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.graph_filter)
+                            .desired_width(120.0)
+                            .hint_text("Filter..."),
+                    );
                     if !self.closed_tabs.is_empty() {
                         let label = format!("Recently Closed ({})", self.closed_tabs.len());
                         let response = ui.button(label);
@@ -4432,6 +4457,22 @@ impl App {
                     {
                         clicked_focus = Some(id.clone());
                     }
+
+                    // Graph toolbar filter: painted last (on the same
+                    // untransformed foreground layer the text above used,
+                    // so it covers that too, not just the thumbnail/
+                    // borders below it) rather than threading a dim factor
+                    // through every draw call above -- one extra scrim
+                    // covers the whole card in one shot.
+                    if let Some(node) = self.tabs.get(&id) {
+                        if graph_filter_dims(&self.graph_filter, &[&node.title, &node.url]) {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                6.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }
+                    }
                 }
 
                 // Download nodes: no thumbnail/title-strip/audio-dot
@@ -4553,6 +4594,16 @@ impl App {
                     }
                     if response.clicked() {
                         download_clicked = Some(id.clone());
+                    }
+
+                    if let Some(node) = self.downloads.get(&id) {
+                        if graph_filter_dims(&self.graph_filter, &[&node.path]) {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                6.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }
                     }
                 }
 
@@ -4807,6 +4858,16 @@ impl App {
                         }
                         if response.double_clicked() {
                             group_entered = Some(id.clone());
+                        }
+
+                        if let Some(node) = self.groups.get(&id) {
+                            if graph_filter_dims(&self.graph_filter, &[&node.name]) {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    6.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }
                         }
                     }
                 }
@@ -5604,6 +5665,7 @@ impl App {
             DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
             DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
+            DebugCommand::GraphFilterText(text) => self.graph_filter = text,
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

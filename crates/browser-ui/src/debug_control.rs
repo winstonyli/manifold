@@ -145,6 +145,9 @@ pub enum DebugCommand {
     /// same "direct call, not a synthetic key event" reason as
     /// `AddressBar`/`FindText`.
     SessionNameText(String),
+    /// Sets the Graph view toolbar's filter box directly, same "direct
+    /// call, not a synthetic key event" reason as `AddressBar`/`FindText`.
+    GraphFilterText(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -303,6 +306,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
         "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
         "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
+        "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
         _ => None,
     }
 }
