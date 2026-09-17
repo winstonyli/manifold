@@ -3473,6 +3473,12 @@ impl App {
                             duplicate_requested = true;
                             close = true;
                         }
+                        if ui.button("Copy URL").clicked() {
+                            if let Some(url) = self.tabs.get(&id).map(|n| n.url.clone()) {
+                                ui.ctx().copy_text(url);
+                            }
+                            close = true;
+                        }
                         ui.add_space(4.0);
                         ui.label("Color");
                         ui.horizontal(|ui| {
