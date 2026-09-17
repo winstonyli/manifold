@@ -188,6 +188,10 @@ pub enum DebugCommand {
     CancelImport,
     /// `F2` equivalent — see `App::rename_current_group_shortcut`.
     RenameGroup,
+    /// Sets the bookmarks popup's own folder-rename draft directly, same
+    /// "direct call, not a synthetic key event" reason as `AddressBar`/
+    /// `GraphFilterText` — a no-op if nothing is currently being renamed.
+    BookmarkFolderText(String),
     /// Graph view's `Escape`-dismisses-peek equivalent — see
     /// `App::dismiss_hover_peek`. Separate from plain `Escape` since that
     /// command is Tab-view-only (see its own doc comment).
@@ -362,6 +366,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
         "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
+        "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),

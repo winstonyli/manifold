@@ -1,9 +1,10 @@
-//! Bookmarks: a flat list of `(title, url)` pairs, persisted to
+//! Bookmarks: a flat list of `(title, url, folder)` entries, persisted to
 //! `%APPDATA%\multiengine-browser\bookmarks.json` — same "missing/corrupt
 //! file just means empty, never fails to start" posture `settings.rs`/
-//! `session.rs` already have. No folders/tags in this first cut, just a
-//! flat list; the toolbar dropdown that shows them is small enough that
-//! organizing it further hasn't been worth the extra state yet.
+//! `session.rs` already have. `folder` is a single optional level, not a
+//! real tree -- the toolbar dropdown groups by it (unfoldered entries
+//! first, then each named folder), but a folder can't contain another
+//! folder.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,11 @@ use std::path::{Path, PathBuf};
 pub struct Bookmark {
     pub title: String,
     pub url: String,
+    /// `None` (or missing entirely in an older `bookmarks.json`, via
+    /// `#[serde(default)]`) means unfoldered -- shown first in the
+    /// dropdown, ahead of every named folder.
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 fn bookmarks_path() -> Option<PathBuf> {

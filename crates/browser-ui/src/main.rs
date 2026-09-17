@@ -960,6 +960,17 @@ struct App {
     /// popup is opened, same "fresh state each open" reasoning
     /// `find_match_case` resetting on a new find session already has.
     bookmarks_filter: String,
+    /// `(bookmark_url, draft)` while a bookmark's folder label in the
+    /// popup is being renamed -- keyed by url (a bookmark's own natural
+    /// identity, same as `toggle_bookmark`'s own match) rather than index,
+    /// so it can't end up pointing at the wrong row if the list reorders.
+    /// Same "real `TextEdit` replaces the label, Enter/blur commits,
+    /// Escape cancels" shape `renaming_group` already has.
+    renaming_bookmark_folder: Option<(String, String)>,
+    /// Set for exactly one frame when `renaming_bookmark_folder` is first
+    /// set, same one-shot `response.request_focus()` pattern as
+    /// `pending_focus_rename`.
+    pending_focus_bookmark_folder: bool,
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
@@ -1084,6 +1095,8 @@ impl Default for App {
             bookmarks,
             bookmarks_open: false,
             bookmarks_filter: String::new(),
+            renaming_bookmark_folder: None,
+            pending_focus_bookmark_folder: false,
             history: Vec::new(),
             history_open: false,
             history_filter: String::new(),
@@ -2967,18 +2980,24 @@ impl App {
             self.bookmarks.remove(index);
         } else {
             let title = if node.title.is_empty() { url.clone() } else { node.title.clone() };
-            self.bookmarks.push(bookmarks::Bookmark { title, url });
+            self.bookmarks.push(bookmarks::Bookmark { title, url, folder: None });
         }
         bookmarks::save(&self.bookmarks);
     }
 
     /// Tab view's "Bookmarks (N)" dropdown -- every saved bookmark, click
-    /// one to navigate the focused tab there, "x" to remove it. Same
+    /// one to navigate the focused tab there, "x" to remove it. Grouped by
+    /// `Bookmark::folder` (unfoldered entries first, then each named
+    /// folder alphabetically) -- a single level, not a real tree, same
+    /// scope limit `Bookmark::folder`'s own doc comment states. Same
     /// Area/Frame pattern as `build_recently_closed_popup`.
     fn build_bookmarks_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut remove_index: Option<usize> = None;
+        let mut folder_rename_start: Option<(String, String)> = None;
+        let mut folder_rename_commit: Option<String> = None;
+        let mut folder_rename_cancel = false;
         let area = egui::Area::new(egui::Id::new("bookmarks_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -2997,25 +3016,96 @@ impl App {
                                 .hint_text("Filter..."),
                         );
                         let query = self.bookmarks_filter.to_lowercase();
+                        let matches: Vec<(usize, &bookmarks::Bookmark)> = self
+                            .bookmarks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, b)| {
+                                query.is_empty()
+                                    || b.title.to_lowercase().contains(&query)
+                                    || b.url.to_lowercase().contains(&query)
+                            })
+                            .collect();
+                        let mut folders: Vec<&str> = matches
+                            .iter()
+                            .filter_map(|(_, b)| b.folder.as_deref())
+                            .collect();
+                        folders.sort_unstable();
+                        folders.dedup();
+                        // `None` (unfoldered) first, then each named folder
+                        // alphabetically -- `folders` is already sorted.
+                        let groups: Vec<Option<&str>> =
+                            std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
                         egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                            for (index, bookmark) in self.bookmarks.iter().enumerate() {
-                                if !query.is_empty()
-                                    && !bookmark.title.to_lowercase().contains(&query)
-                                    && !bookmark.url.to_lowercase().contains(&query)
-                                {
+                            for folder in groups {
+                                let rows: Vec<&(usize, &bookmarks::Bookmark)> = matches
+                                    .iter()
+                                    .filter(|(_, b)| b.folder.as_deref() == folder)
+                                    .collect();
+                                if rows.is_empty() {
                                     continue;
                                 }
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
-                                        .clicked()
-                                    {
-                                        navigate_url = Some(bookmark.url.clone());
+                                if let Some(name) = folder {
+                                    ui.label(egui::RichText::new(name).small().strong());
+                                }
+                                for (index, bookmark) in rows {
+                                    let (index, bookmark) = (*index, *bookmark);
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add(
+                                                egui::Label::new(&bookmark.title)
+                                                    .truncate()
+                                                    .sense(egui::Sense::click()),
+                                            )
+                                            .clicked()
+                                        {
+                                            navigate_url = Some(bookmark.url.clone());
+                                        }
+                                        if ui.small_button("x").clicked() {
+                                            remove_index = Some(index);
+                                        }
+                                    });
+                                    let is_renaming = self
+                                        .renaming_bookmark_folder
+                                        .as_ref()
+                                        .is_some_and(|(url, _)| url == &bookmark.url);
+                                    if is_renaming {
+                                        if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                                            let response = ui.add(
+                                                egui::TextEdit::singleline(draft)
+                                                    .desired_width(140.0)
+                                                    .hint_text("Folder (blank for none)")
+                                                    .font(egui::TextStyle::Small),
+                                            );
+                                            if std::mem::take(&mut self.pending_focus_bookmark_folder) {
+                                                response.request_focus();
+                                            }
+                                            if response.lost_focus() {
+                                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                                    folder_rename_cancel = true;
+                                                } else {
+                                                    folder_rename_commit = Some(draft.clone());
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let label = bookmark.folder.as_deref().unwrap_or("No folder");
+                                        if ui
+                                            .add(
+                                                egui::Label::new(egui::RichText::new(label).small().weak())
+                                                    .sense(egui::Sense::click()),
+                                            )
+                                            .on_hover_text("Click to set folder")
+                                            .clicked()
+                                        {
+                                            folder_rename_start = Some((
+                                                bookmark.url.clone(),
+                                                bookmark.folder.clone().unwrap_or_default(),
+                                            ));
+                                        }
                                     }
-                                    if ui.small_button("x").clicked() {
-                                        remove_index = Some(index);
-                                    }
-                                });
+                                    ui.add_space(2.0);
+                                }
                             }
                         });
                     });
@@ -3026,6 +3116,22 @@ impl App {
                 && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
         });
 
+        if let Some((url, draft)) = folder_rename_start {
+            self.renaming_bookmark_folder = Some((url, draft));
+            self.pending_focus_bookmark_folder = true;
+        }
+        if folder_rename_cancel {
+            self.renaming_bookmark_folder = None;
+        }
+        if let Some(draft) = folder_rename_commit {
+            if let Some((url, _)) = self.renaming_bookmark_folder.take() {
+                let trimmed = draft.trim();
+                if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
+                    bookmark.folder = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                    bookmarks::save(&self.bookmarks);
+                }
+            }
+        }
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused.clone() {
                 self.navigate_tab(&id, url);
@@ -3036,11 +3142,12 @@ impl App {
             self.bookmarks.remove(index);
             bookmarks::save(&self.bookmarks);
         }
-        if clicked_outside {
+        if clicked_outside && self.renaming_bookmark_folder.is_none() {
             close = true;
         }
         if close || self.bookmarks.is_empty() {
             self.bookmarks_open = false;
+            self.renaming_bookmark_folder = None;
         }
     }
 
@@ -6914,6 +7021,11 @@ impl App {
                 self.pending_import = None;
             }
             DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
+            DebugCommand::BookmarkFolderText(text) => {
+                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                    *draft = text;
+                }
+            }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
