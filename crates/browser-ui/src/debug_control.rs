@@ -166,6 +166,8 @@ pub enum DebugCommand {
     Reload,
     /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
     NewGroup,
+    /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
+    ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
     /// not a synthetic key event" reason as `GraphFilterText`.
     HistoryFilterText(String),
@@ -385,6 +387,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
+        "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         _ => None,
     }
 }

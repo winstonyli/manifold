@@ -760,6 +760,9 @@ struct App {
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
+    /// `F1` / headless `TOGGLESHORTCUTSHELP` -- whether the keyboard-
+    /// shortcut reference popup is showing. See `App::build_shortcuts_help`.
+    shortcuts_help_open: bool,
     /// A session picked via "Import Session..." (or headless `IMPORTSESSION`),
     /// staged here rather than applied immediately -- `build_import_confirm_
     /// popup` shows its tab count against the currently running session's
@@ -1095,6 +1098,7 @@ impl Default for App {
             download_context_menu: None,
             tab_context_menu: None,
             quick_switcher: None,
+            shortcuts_help_open: false,
             pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
@@ -2729,6 +2733,7 @@ impl App {
             reload,
             rename_group,
             duplicate_tab,
+            shortcuts_help,
         ) = ui.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
@@ -2763,6 +2768,7 @@ impl App {
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::F5),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::F2),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::F1),
             )
         });
 
@@ -2824,6 +2830,9 @@ impl App {
         }
         if duplicate_tab {
             self.duplicate_focused_tab_shortcut();
+        }
+        if shortcuts_help {
+            self.shortcuts_help_open = !self.shortcuts_help_open;
         }
     }
 
@@ -3788,6 +3797,79 @@ impl App {
         }
     }
 
+    /// `F1` / headless `TOGGLESHORTCUTSHELP` -- a centered reference popup
+    /// listing every global keyboard shortcut `handle_global_shortcuts`
+    /// handles, so a shortcut added to that function doesn't just live in a
+    /// code comment nobody using the app ever sees. Static content (no
+    /// state to stage/commit), so unlike the quick-switcher this is just a
+    /// plain `Area`/`Frame` with a scrollable list and a Close button.
+    fn build_shortcuts_help(&mut self, ui: &mut egui::Ui, anchor_rect: Option<egui::Rect>) {
+        if !self.shortcuts_help_open {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.shortcuts_help_open = false;
+            return;
+        }
+
+        const SHORTCUTS: &[(&str, &str)] = &[
+            ("Ctrl+T", "New tab"),
+            ("Ctrl+W", "Close focused tab"),
+            ("Ctrl+Shift+W", "Close all tabs at the current level"),
+            ("Ctrl+Shift+T", "Reopen last closed tab"),
+            ("Ctrl+D", "Duplicate focused tab"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+            ("Ctrl+K", "Quick switcher (jump to any open tab)"),
+            ("Ctrl+G", "Toggle Tab / Graph view"),
+            ("Ctrl+Shift+G", "New group"),
+            ("F2", "Rename the group currently being viewed"),
+            ("Ctrl+P", "Pin / unpin focused tab"),
+            ("Ctrl+L", "Focus the address bar"),
+            ("Ctrl+F", "Find in page"),
+            ("Ctrl+R / F5", "Reload focused tab"),
+            ("Ctrl+= / Ctrl+-", "Zoom in / out"),
+            ("Ctrl+0", "Reset zoom"),
+            ("F12", "Open devtools"),
+            ("F1", "Toggle this shortcut reference"),
+        ];
+
+        let area = egui::Area::new(egui::Id::new("shortcuts_help"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(360.0);
+                        ui.strong("Keyboard Shortcuts");
+                        ui.separator();
+                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                            egui::Grid::new("shortcuts_help_grid")
+                                .num_columns(2)
+                                .spacing(egui::vec2(16.0, 6.0))
+                                .show(ui, |ui| {
+                                    for (keys, desc) in SHORTCUTS {
+                                        ui.monospace(*keys);
+                                        ui.label(*desc);
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                        ui.separator();
+                        if ui.button("Close").clicked() {
+                            self.shortcuts_help_open = false;
+                        }
+                    });
+            });
+
+        if clicked_outside_popup(ui, area.response.rect, anchor_rect) {
+            self.shortcuts_help_open = false;
+        }
+    }
+
     /// The minimal right-click context menu: one "Open in new tab" item at
     /// `self.context_menu`'s position, if a menu is currently showing.
     /// Dismissed by clicking the item (and acting on it), a click anywhere
@@ -4483,6 +4565,7 @@ impl App {
         let mut print_to_pdf_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
+        let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
         // — deferred here rather than acted on immediately inside the
         // toolbar closure below, since deciding what Enter *does* (accept
@@ -4721,6 +4804,13 @@ impl App {
                     }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
+                    let help_response = ui
+                        .button(egui_phosphor::regular::QUESTION)
+                        .on_hover_text("Keyboard Shortcuts (F1)");
+                    if help_response.clicked() {
+                        self.shortcuts_help_open = !self.shortcuts_help_open;
+                    }
+                    shortcuts_help_button_rect = Some(help_response.rect);
                     let gear_response =
                         ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
                     if gear_response.clicked() {
@@ -4756,6 +4846,7 @@ impl App {
                 self.build_settings_popup(ui, rect);
             }
         }
+        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
 
         if self.find_bar_open {
             self.build_find_bar(ui);
@@ -4996,6 +5087,7 @@ impl App {
         let mut ungroup_all_requested = false;
         let mut import_group_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
+        let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         let mut leave_group_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
@@ -5139,6 +5231,13 @@ impl App {
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                     }
+                    let help_response = ui
+                        .button(egui_phosphor::regular::QUESTION)
+                        .on_hover_text("Keyboard Shortcuts (F1)");
+                    if help_response.clicked() {
+                        self.shortcuts_help_open = !self.shortcuts_help_open;
+                    }
+                    shortcuts_help_button_rect = Some(help_response.rect);
                     let gear_response =
                         ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings");
                     if gear_response.clicked() {
@@ -5152,6 +5251,7 @@ impl App {
                 self.build_settings_popup(ui, rect);
             }
         }
+        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
         if self.recently_closed_open {
             if let Some(rect) = recently_closed_button_rect {
                 self.build_recently_closed_popup(ui, rect);
@@ -7348,6 +7448,9 @@ impl App {
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::NewGroup => self.new_group_shortcut(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
+            DebugCommand::ToggleShortcutsHelp => {
+                self.shortcuts_help_open = !self.shortcuts_help_open;
+            }
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
