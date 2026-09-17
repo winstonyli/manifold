@@ -2094,6 +2094,19 @@ impl App {
     /// background tabs render nothing until focused anyway. Also used for
     /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
+    /// Tab context menu's "Duplicate": a new tab at `id`'s current url and
+    /// engine, sharing its parent and group -- a sibling, not a child of
+    /// `id` itself, matching what "duplicate" means in a real browser's
+    /// own tab strip.
+    fn duplicate_tab(&mut self, id: &str) {
+        let Some((parent, group, url, kind)) =
+            self.tabs.get(id).map(|n| (n.parent.clone(), n.group.clone(), n.url.clone(), n.tab.kind))
+        else {
+            return;
+        };
+        self.spawn_new_tab_with_kind(parent, group, &url, kind);
+    }
+
     fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
         self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine);
     }
@@ -3426,6 +3439,7 @@ impl App {
         let mut toggle_pin = false;
         let mut remove_from_group = false;
         let mut close_tab_requested = false;
+        let mut duplicate_requested = false;
         let mut set_color: Option<Option<egui::Color32>> = None;
 
         let area = egui::Area::new(egui::Id::new("tab_context_menu"))
@@ -3441,6 +3455,10 @@ impl App {
                         ui.set_min_width(150.0);
                         if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
                             toggle_pin = true;
+                            close = true;
+                        }
+                        if ui.button("Duplicate").clicked() {
+                            duplicate_requested = true;
                             close = true;
                         }
                         ui.add_space(4.0);
@@ -3513,6 +3531,9 @@ impl App {
             if let Some(node) = self.tabs.get_mut(&id) {
                 node.group = None;
             }
+        }
+        if duplicate_requested {
+            self.duplicate_tab(&id);
         }
         // Closing the tab already makes its context menu meaningless, but
         // `close_tab` doesn't know about this menu -- clear it explicitly
