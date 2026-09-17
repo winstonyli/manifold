@@ -141,6 +141,10 @@ pub enum DebugCommand {
     QuickSwitchUp,
     QuickSwitchEnter,
     QuickSwitchEscape,
+    /// Sets the settings popup's "Save Session As..." name field directly,
+    /// same "direct call, not a synthetic key event" reason as
+    /// `AddressBar`/`FindText`.
+    SessionNameText(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -298,6 +302,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "QUICKSWITCHUP" => Some(DebugCommand::QuickSwitchUp),
         "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
         "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
+        "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
         _ => None,
     }
 }

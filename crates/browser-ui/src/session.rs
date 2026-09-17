@@ -13,7 +13,7 @@
 //! a restored tab is a fresh navigation to its last known url, not a
 //! resumed one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::process_manager::{engine_kind_serde, EngineKind};
 
@@ -39,9 +39,27 @@ pub struct Session {
     pub next_tab_id: u64,
 }
 
-fn session_path() -> Option<PathBuf> {
+fn session_dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("multiengine-browser").join("session.json"))
+    Some(PathBuf::from(appdata).join("multiengine-browser"))
+}
+
+fn session_path() -> Option<PathBuf> {
+    Some(session_dir()?.join("session.json"))
+}
+
+/// Where a named "Save Session As..." save lands — a subdirectory of the
+/// same app-data folder the auto-restore `session.json` already lives in,
+/// so both are covered by the same "just a file, back it up/delete it
+/// yourself" posture. `name` is trusted to already be sanitized by the
+/// caller (see `App::sanitize_session_name`) — this only joins it onto the
+/// directory.
+fn named_sessions_dir() -> Option<PathBuf> {
+    Some(session_dir()?.join("sessions"))
+}
+
+fn named_session_path(name: &str) -> Option<PathBuf> {
+    Some(named_sessions_dir()?.join(format!("{name}.json")))
 }
 
 impl Session {
@@ -49,15 +67,25 @@ impl Session {
     /// just return `None` — the caller falls back to spawning a single
     /// fresh root tab, same posture as `Settings::load`'s own fallback.
     pub fn load() -> Option<Self> {
-        let path = session_path()?;
-        let contents = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&contents).ok()
+        Self::load_from(&session_path()?)
     }
 
     pub fn save(&self) {
         let Some(path) = session_path() else {
             return;
         };
+        self.save_to(&path);
+    }
+
+    /// Same read as `load`, just from an arbitrary path — the named-session
+    /// "Open Session" list reads back whatever `save_as` wrote.
+    pub fn load_from(path: &Path) -> Option<Self> {
+        let contents = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&contents).ok()
+    }
+
+    /// Same write as `save`, just to an arbitrary path.
+    pub fn save_to(&self, path: &Path) {
         if let Some(dir) = path.parent() {
             if let Err(err) = std::fs::create_dir_all(dir) {
                 eprintln!("session: failed to create {}: {err}", dir.display());
@@ -66,11 +94,46 @@ impl Session {
         }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
+                if let Err(err) = std::fs::write(path, json) {
                     eprintln!("session: failed to write {}: {err}", path.display());
                 }
             }
             Err(err) => eprintln!("session: failed to serialize: {err}"),
+        }
+    }
+
+    /// "Save Session As `name`" — writes to `sessions/<name>.json` rather
+    /// than the auto-restore `session.json`, so a named save never gets
+    /// silently overwritten by ordinary "every change that matters"
+    /// auto-saving the way `session.json` itself is.
+    pub fn save_as(&self, name: &str) {
+        let Some(path) = named_session_path(name) else { return };
+        self.save_to(&path);
+    }
+
+    /// Loads a previously named-saved session back, by name.
+    pub fn load_named(name: &str) -> Option<Self> {
+        Self::load_from(&named_session_path(name)?)
+    }
+
+    /// Every saved name in `sessions/`, alphabetical — the "Open Session"
+    /// list. A missing directory (nothing saved yet) is just an empty
+    /// list, not an error.
+    pub fn list_named() -> Vec<String> {
+        let Some(dir) = named_sessions_dir() else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Deletes a named save — the "Open Session" list's own delete button.
+    pub fn delete_named(name: &str) {
+        if let Some(path) = named_session_path(name) {
+            let _ = std::fs::remove_file(path);
         }
     }
 }

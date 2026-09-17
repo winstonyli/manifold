@@ -76,6 +76,16 @@ const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
 /// wrapping back to `None` (the plain default border) after the last --
 /// `None` -> red -> orange -> ... -> purple -> `None`, matching how the pin
 /// dot's own binary toggle needs no separate popup/menu to operate.
+/// Strips a "Save Session As..." name down to characters safe to use
+/// verbatim as a filename (`sessions/<name>.json`) -- alphanumeric, space,
+/// hyphen, underscore only. No path separators or `.` survive, so there's
+/// no path-traversal or extension-confusion risk from typed input, and no
+/// separate validation step is needed before treating the result as a bare
+/// file stem.
+fn sanitize_session_name(raw: &str) -> String {
+    raw.trim().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect::<String>()
+}
+
 fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
     match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
         None => Some(TAG_COLOR_PALETTE[0]),
@@ -642,6 +652,10 @@ struct App {
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
+    /// The settings popup's "Save Session As..." name field -- kept across
+    /// popup open/close within the running session (not persisted), same
+    /// convenience the group-rename draft gets.
+    session_name_draft: String,
     /// Set for exactly one frame when `quick_switcher` is first opened,
     /// same one-shot `response.request_focus()` pattern as
     /// `pending_focus_address_bar`/`pending_focus_find_bar`.
@@ -880,6 +894,7 @@ impl Default for App {
             group_context_menu: None,
             download_context_menu: None,
             quick_switcher: None,
+            session_name_draft: String::new(),
             pending_focus_quick_switcher: false,
             focused: None,
             view_mode: ViewMode::Tab,
@@ -1005,6 +1020,9 @@ impl App {
     /// picker).
     fn build_settings_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
         let mut close = false;
+        let mut save_as_requested = false;
+        let mut open_session_name: Option<String> = None;
+        let mut delete_session_name: Option<String> = None;
         egui::Area::new(egui::Id::new("settings_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -1085,11 +1103,57 @@ impl App {
                         }
 
                         ui.add_space(10.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new("Sessions").strong());
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.session_name_draft)
+                                    .desired_width(120.0)
+                                    .hint_text("Name"),
+                            );
+                            if ui.button("Save As").clicked() {
+                                save_as_requested = true;
+                            }
+                        });
+                        let names = session::Session::list_named();
+                        if names.is_empty() {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new("No saved sessions").small().weak())
+                                    .wrap(),
+                            );
+                        }
+                        for name in names {
+                            ui.horizontal(|ui| {
+                                if ui.button(&name).on_hover_text("Open").clicked() {
+                                    open_session_name = Some(name.clone());
+                                }
+                                if ui.small_button("x").on_hover_text("Delete").clicked() {
+                                    delete_session_name = Some(name.clone());
+                                }
+                            });
+                        }
+
+                        ui.add_space(10.0);
                         if ui.button("Close").clicked() {
                             close = true;
                         }
                     });
             });
+        if save_as_requested {
+            let name = sanitize_session_name(&self.session_name_draft);
+            if !name.is_empty() {
+                self.build_session_snapshot().save_as(&name);
+                self.save_toast = Some((format!("session '{name}'"), std::time::Instant::now()));
+                self.session_name_draft.clear();
+            }
+        }
+        if let Some(name) = open_session_name {
+            self.load_named_session(&name);
+            close = true;
+        }
+        if let Some(name) = delete_session_name {
+            session::Session::delete_named(&name);
+        }
         if close {
             self.settings_open = false;
         }
@@ -1223,6 +1287,13 @@ impl App {
     /// Fire-and-forget, same as `Settings::save` — a failed write is
     /// logged, never fatal.
     fn save_session(&self) {
+        self.build_session_snapshot().save();
+    }
+
+    /// The `session::Session` value both the auto-restore `save_session`
+    /// and "Save Session As..." serialize -- factored out so the two never
+    /// drift into building this differently.
+    fn build_session_snapshot(&self) -> session::Session {
         let tabs = self
             .tab_order
             .iter()
@@ -1244,7 +1315,6 @@ impl App {
             view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
             next_tab_id: self.next_tab_id,
         }
-        .save();
     }
 
     /// Startup: replays a saved `session::Session` instead of spawning one
@@ -1266,6 +1336,18 @@ impl App {
         if session.tabs.is_empty() {
             return false;
         }
+        self.apply_session(session);
+        true
+    }
+
+    /// Replays a `session::Session`'s tabs/focus/view-mode -- shared by
+    /// startup's `restore_session` (loads `session.json`) and runtime's
+    /// `load_named_session` ("Open Session", loads a named save). Callers
+    /// are responsible for checking `session.tabs.is_empty()` themselves
+    /// first (each wants a different fallback for that case) and, for a
+    /// runtime load, for tearing down whatever was open before calling
+    /// this.
+    fn apply_session(&mut self, session: session::Session) {
         self.next_tab_id = session.next_tab_id;
         let valid_focus = session
             .focused
@@ -1297,7 +1379,36 @@ impl App {
                 tab.engine,
             );
         }
-        true
+    }
+
+    /// "Open Session" (settings popup): tears down every currently-open
+    /// tab/download/group -- each `TabNode`'s own `Drop` handles process
+    /// shutdown+kill, the same mechanism `close_tab` already relies on, so
+    /// clearing the map is enough, no per-tab teardown call needed -- then
+    /// replays the named save via `apply_session`, same as startup replays
+    /// `session.json`. A no-op if the name doesn't exist or its file is
+    /// empty/corrupt, so a bad load can't wipe a perfectly good running
+    /// session.
+    fn load_named_session(&mut self, name: &str) {
+        let Some(session) = session::Session::load_named(name) else { return };
+        if session.tabs.is_empty() {
+            return;
+        }
+        self.tabs.clear();
+        self.tab_order.clear();
+        self.downloads.clear();
+        self.download_order.clear();
+        self.groups.clear();
+        self.group_order.clear();
+        self.focused = None;
+        self.current_group = None;
+        self.dragging = None;
+        self.hovered = None;
+        self.selected_tabs.clear();
+        self.rect_select_start = None;
+        self.graph_settled_key = None;
+        self.apply_session(session);
+        self.save_session();
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -5383,6 +5494,7 @@ impl App {
             DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
             DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
             DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
+            DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
