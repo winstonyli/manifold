@@ -532,6 +532,17 @@ struct ClosedTab {
 /// list is bounded too.
 const MAX_CLOSED_TABS: usize = 10;
 
+/// One entry in `App::history` -- see that field's own doc comment.
+struct HistoryEntry {
+    title: String,
+    url: String,
+}
+
+/// How many `App::history` remembers before dropping the oldest -- same
+/// "bounded, not a slow leak in a long-running session" reasoning as
+/// `MAX_CLOSED_TABS`.
+const MAX_HISTORY_ENTRIES: usize = 200;
+
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::EngineToHost::
 /// ContextMenuLink`'s doc comment for why this is the one action
@@ -897,6 +908,15 @@ struct App {
     /// own visibility, see `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
     bookmarks_open: bool,
+    /// Every distinct `(title, url)` this session has actually navigated
+    /// to, most-recent-last, capped at `MAX_HISTORY_ENTRIES` (oldest
+    /// dropped first) -- recorded once per real URL change in
+    /// `EngineToHost::NavigationStateChanged`'s own handling, so it covers
+    /// in-page navigation (clicked links) the same as address-bar entries,
+    /// not just the latter. Session-only, cleared on restart -- unlike
+    /// bookmarks, nothing here is ever written to disk.
+    history: Vec<HistoryEntry>,
+    history_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -998,6 +1018,8 @@ impl Default for App {
             settings_open: false,
             bookmarks,
             bookmarks_open: false,
+            history: Vec::new(),
+            history_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -1313,6 +1335,24 @@ impl App {
     }
 
     fn navigate_tab(&mut self, tab_id: &str, url: String) {
+        if let Some(node) = self.tabs.get_mut(tab_id) {
+            // Recorded here, not left to `NavigationStateChanged`'s own
+            // history-recording: this sets `node.url` immediately
+            // (synchronously, before the engine round-trips its own
+            // confirmation), so that handler's own `node.url != url` check
+            // would already be false by the time its event arrives,
+            // silently missing every address-bar-driven navigation. Title
+            // isn't known yet at this point (the page hasn't loaded), so
+            // this entry shows as its bare url until superseded by a later
+            // one -- `build_history_popup` already falls back to the url
+            // for an empty title.
+            if node.url != url {
+                self.history.push(HistoryEntry { title: String::new(), url: url.clone() });
+                if self.history.len() > MAX_HISTORY_ENTRIES {
+                    self.history.remove(0);
+                }
+            }
+        }
         if let Some(node) = self.tabs.get_mut(tab_id) {
             node.url = url.clone();
             node.tab
@@ -2716,6 +2756,66 @@ impl App {
         }
     }
 
+    /// Tab view's "History (N)" dropdown -- every entry in `self.history`,
+    /// most-recently-visited first, click a title to navigate the focused
+    /// tab there, "Clear" to empty the whole list. Same Area/Frame pattern
+    /// as `build_bookmarks_popup`/`build_recently_closed_popup`, scrollable
+    /// since history can grow much longer than either of those.
+    fn build_history_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+        let mut close = false;
+        let mut navigate_url: Option<String> = None;
+        let mut clear_requested = false;
+        let area = egui::Area::new(egui::Id::new("history_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(220.0);
+                        ui.set_max_width(320.0);
+                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                            for entry in self.history.iter().rev() {
+                                let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                                if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked()
+                                {
+                                    navigate_url = Some(entry.url.clone());
+                                }
+                            }
+                        });
+                        ui.separator();
+                        if ui.button("Clear").clicked() {
+                            clear_requested = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
+        });
+
+        if let Some(url) = navigate_url {
+            if let Some(id) = self.focused.clone() {
+                self.navigate_tab(&id, url);
+            }
+            close = true;
+        }
+        if clear_requested {
+            self.history.clear();
+            close = true;
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close || self.history.is_empty() {
+            self.history_open = false;
+        }
+    }
+
     /// Tab view's "Mute Others" button: mutes every open tab except
     /// `keep_id`, regardless of any already-muted state, without touching
     /// `keep_id`'s own mute state either way. A one-shot action, not a
@@ -3561,6 +3661,7 @@ impl App {
         let mut mute_others_requested = false;
         let mut toggle_bookmark_requested = false;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
+        let mut history_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
@@ -3683,6 +3784,14 @@ impl App {
                             self.bookmarks_open = !self.bookmarks_open;
                         }
                         bookmarks_button_rect = Some(response.rect);
+                    }
+                    if !self.history.is_empty() {
+                        let label = format!("History ({})", self.history.len());
+                        let response = ui.button(label);
+                        if response.clicked() {
+                            self.history_open = !self.history_open;
+                        }
+                        history_button_rect = Some(response.rect);
                     }
 
                     // Full window (chrome + content), same composited
@@ -3926,6 +4035,11 @@ impl App {
         if self.bookmarks_open {
             if let Some(rect) = bookmarks_button_rect {
                 self.build_bookmarks_popup(ui, rect);
+            }
+        }
+        if self.history_open {
+            if let Some(rect) = history_button_rect {
+                self.build_history_popup(ui, rect);
             }
         }
         if screenshot_requested {
@@ -6212,6 +6326,10 @@ impl App {
                     } => {
                         if node.url != url {
                             nav_url_changed = true;
+                            self.history.push(HistoryEntry { title: title.clone(), url: url.clone() });
+                            if self.history.len() > MAX_HISTORY_ENTRIES {
+                                self.history.remove(0);
+                            }
                         }
                         node.url = url;
                         node.title = title;
