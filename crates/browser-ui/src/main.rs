@@ -3444,6 +3444,7 @@ impl App {
         }
         let mut close = false;
         let mut dissolve = false;
+        let mut close_group = false;
         let is_renaming = self.renaming_group.as_ref().is_some_and(|(gid, _)| gid == &id);
 
         let area = egui::Area::new(egui::Id::new("group_context_menu"))
@@ -3530,6 +3531,10 @@ impl App {
                                 dissolve = true;
                                 close = true;
                             }
+                            if ui.button("Close Group").clicked() {
+                                close_group = true;
+                                close = true;
+                            }
                         }
                     });
             });
@@ -3545,9 +3550,32 @@ impl App {
         if dissolve {
             self.dissolve_group(&id);
         }
+        if close_group {
+            self.close_group(&id);
+        }
         if close {
             self.group_context_menu = None;
         }
+    }
+
+    /// Closes every tab member of a group (each through the normal
+    /// `close_tab` path -- teardown, reparenting, the `closed_tabs` stack
+    /// all still apply, same as `close_all_except`/`close_selected`), then
+    /// dissolves the now-tabless group itself. A download member is never
+    /// closed by this (downloads have no "closed" state of their own,
+    /// see `App::close_tab`'s own scope) -- `dissolve_group` returns it to
+    /// the top level exactly as a plain Dissolve already would.
+    fn close_group(&mut self, id: &str) {
+        let member_ids: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, node)| node.group.as_deref() == Some(id))
+            .map(|(tid, _)| tid.clone())
+            .collect();
+        for tid in member_ids {
+            self.close_tab(&tid);
+        }
+        self.dissolve_group(id);
     }
 
     /// Right-click menu for a download's card -- Open Containing Folder
