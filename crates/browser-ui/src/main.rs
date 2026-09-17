@@ -3491,6 +3491,62 @@ impl App {
             }
         }
 
+        // Minimap: a small fixed overview in the graph panel's bottom-right
+        // corner, screen-space (drawn via `overlay_painter`, so it's
+        // unaffected by Scene's own pan/zoom the same way node labels are)
+        // showing every current-level node as a dot and the main view's
+        // current viewport as an outlined rect. World bounds reuse
+        // `fit_all_nodes_scene_rect()` -- the same extent "Reset View" and
+        // entering/leaving a group already frame to, so the minimap and the
+        // main view always agree on "the whole graph". Clicking anywhere in
+        // it recenters the main viewport there without changing zoom.
+        let minimap_size = egui::vec2(160.0, 110.0);
+        let minimap_rect = egui::Rect::from_min_size(
+            scene_outer_rect.right_bottom() - minimap_size - egui::Vec2::splat(12.0),
+            minimap_size,
+        );
+        let world_bounds = self.fit_all_nodes_scene_rect();
+        let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
+            .min(minimap_rect.height() / world_bounds.height().max(1.0));
+        let world_to_minimap = |p: egui::Pos2| -> egui::Pos2 {
+            minimap_rect.center() + (p - world_bounds.center()) * minimap_scale
+        };
+        overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
+        for id in self.tabs_at_current_level() {
+            if let Some(node) = self.tabs.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 2.0, ui.visuals().text_color());
+            }
+        }
+        for id in self.downloads_at_current_level() {
+            if let Some(node) = self.downloads.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 2.0, ui.visuals().weak_text_color());
+            }
+        }
+        if self.current_group.is_none() {
+            for node in self.groups.values() {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 3.0, ACCENT);
+            }
+        }
+        let viewport_rect = egui::Rect::from_two_pos(
+            world_to_minimap(self.graph_scene_rect.min),
+            world_to_minimap(self.graph_scene_rect.max),
+        )
+        .intersect(minimap_rect);
+        overlay_painter.rect_stroke(
+            viewport_rect,
+            0.0,
+            egui::Stroke::new(1.5, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+        overlay_painter.rect_stroke(
+            minimap_rect,
+            4.0,
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+            egui::StrokeKind::Inside,
+        );
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
@@ -4265,6 +4321,36 @@ impl App {
                 }
             });
         self.graph_scene_rect = scene_rect;
+
+        // Minimap click-to-recenter: deliberately registered *after*
+        // `Scene::show` above (not alongside the minimap's own drawing,
+        // which runs before it) -- egui resolves overlapping hit-testing in
+        // the same layer by allocation order, last-registered on top, so an
+        // `interact()` added before Scene's own background pan sense would
+        // lose the minimap's screen area to it. `world_bounds`/
+        // `minimap_rect`/`minimap_scale` are the same locals the drawing
+        // above already computed.
+        // Read raw pointer state rather than `ui.interact()`: Scene's own
+        // background pan sense already covers this whole panel (it's
+        // allocated over `scene_outer_rect`, which the minimap sits inside)
+        // and wins egui's hit-testing for any widget added here, so a
+        // normal `interact()`-based click never actually saw the pointer --
+        // confirmed live via temporary logging showing zero hover events
+        // even with the cursor sitting directly over the minimap. The same
+        // "read `ui.input` directly, ignore widget hit-testing entirely"
+        // fix the rectangle-select marquee already needed for an identical
+        // reason (see that code's own doc comment).
+        let minimap_clicked = ui.input(|i| {
+            i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| minimap_rect.contains(p))
+        });
+        if minimap_clicked {
+            if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let world_click =
+                    world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
+                self.graph_scene_rect =
+                    egui::Rect::from_center_size(world_click, self.graph_scene_rect.size());
+            }
+        }
 
         if let Some(parent) = new_tab_parent {
             let home_page = self.settings.home_page.clone();
