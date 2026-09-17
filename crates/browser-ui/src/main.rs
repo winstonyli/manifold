@@ -101,6 +101,15 @@ fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
     !haystacks.iter().any(|h| h.to_lowercase().contains(&filter))
 }
 
+/// The bare filename portion of a download's full path, for display --
+/// shared by the graph card's own label and the "Downloads (N)" toolbar
+/// dropdown so the two never show it differently. Falls back to the whole
+/// path if it has no separable filename component (shouldn't normally
+/// happen for a real downloaded file's path).
+fn download_filename(path: &str) -> &str {
+    std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
+}
+
 fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
     match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
         None => Some(TAG_COLOR_PALETTE[0]),
@@ -917,6 +926,12 @@ struct App {
     /// bookmarks, nothing here is ever written to disk.
     history: Vec<HistoryEntry>,
     history_open: bool,
+    /// Whether the Tab-view toolbar's "Downloads (N)" dropdown is open --
+    /// lists `self.downloads` (the same data the graph view's own download
+    /// nodes/context menu already show) so a completed download can be
+    /// found without first switching to Graph view. See `App::
+    /// build_downloads_popup`.
+    downloads_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -1020,6 +1035,7 @@ impl Default for App {
             bookmarks_open: false,
             history: Vec::new(),
             history_open: false,
+            downloads_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -2846,6 +2862,69 @@ impl App {
         }
     }
 
+    /// Tab view's "Downloads (N)" dropdown -- every entry in
+    /// `self.downloads` (the same data the graph view's own download
+    /// nodes/context menu show, see `App::download_context_menu`), most-
+    /// recently-downloaded first, click a filename to open its containing
+    /// folder (same as `reveal_download`), "x" to remove it from the list
+    /// (same as `remove_download_node`). Exists so a completed download can
+    /// be found without first switching to Graph view.
+    fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
+        let mut close = false;
+        let mut reveal_id: Option<String> = None;
+        let mut remove_id: Option<String> = None;
+        let area = egui::Area::new(egui::Id::new("downloads_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(220.0);
+                        ui.set_max_width(320.0);
+                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                            for id in self.download_order.iter().rev() {
+                                let Some(node) = self.downloads.get(id) else { continue };
+                                ui.horizontal(|ui| {
+                                    let filename = download_filename(&node.path);
+                                    if ui
+                                        .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
+                                        .clicked()
+                                    {
+                                        reveal_id = Some(id.clone());
+                                    }
+                                    if ui.small_button("x").clicked() {
+                                        remove_id = Some(id.clone());
+                                    }
+                                });
+                            }
+                        });
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
+        });
+
+        if let Some(id) = reveal_id {
+            self.reveal_download(&id);
+            close = true;
+        }
+        if let Some(id) = remove_id {
+            self.remove_download_node(&id);
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close || self.downloads.is_empty() {
+            self.downloads_open = false;
+        }
+    }
+
     /// Tab view's "Mute Others" button: mutes every open tab except
     /// `keep_id`, regardless of any already-muted state, without touching
     /// `keep_id`'s own mute state either way. A one-shot action, not a
@@ -3720,6 +3799,7 @@ impl App {
         let mut toggle_bookmark_requested = false;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut history_button_rect: Option<egui::Rect> = None;
+        let mut downloads_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
@@ -3859,6 +3939,14 @@ impl App {
                             self.history_open = !self.history_open;
                         }
                         history_button_rect = Some(response.rect);
+                    }
+                    if !self.downloads.is_empty() {
+                        let label = format!("Downloads ({})", self.downloads.len());
+                        let response = ui.button(label);
+                        if response.clicked() {
+                            self.downloads_open = !self.downloads_open;
+                        }
+                        downloads_button_rect = Some(response.rect);
                     }
 
                     // Full window (chrome + content), same composited
@@ -4113,6 +4201,11 @@ impl App {
         if self.history_open {
             if let Some(rect) = history_button_rect {
                 self.build_history_popup(ui, rect);
+            }
+        }
+        if self.downloads_open {
+            if let Some(rect) = downloads_button_rect {
+                self.build_downloads_popup(ui, rect);
             }
         }
         if screenshot_requested {
@@ -5119,10 +5212,7 @@ impl App {
                     );
 
                     if let Some(node) = self.downloads.get(&id) {
-                        let filename = std::path::Path::new(&node.path)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&node.path);
+                        let filename = download_filename(&node.path);
                         // A plain painter-drawn glyph rather than a Unicode
                         // file icon — several symbol glyphs are confirmed
                         // elsewhere in this app to render as empty boxes in
