@@ -2847,6 +2847,18 @@ impl App {
         }
     }
 
+    /// Tab view's "Close Others" button: closes every open tab except
+    /// `keep_id` through the normal `close_tab` path (teardown, reparenting,
+    /// the `closed_tabs` stack all still apply -- this is just that same
+    /// action run once per other tab, not a bulk shortcut around it).
+    fn close_all_except(&mut self, keep_id: &str) {
+        let other_ids: Vec<String> =
+            self.tab_order.iter().filter(|id| id.as_str() != keep_id).cloned().collect();
+        for id in other_ids {
+            self.close_tab(&id);
+        }
+    }
+
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
@@ -3680,6 +3692,7 @@ impl App {
         let mut back_to_graph = false;
         let mut mute_toggle = false;
         let mut mute_others_requested = false;
+        let mut close_others_requested = false;
         let mut toggle_bookmark_requested = false;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut history_button_rect: Option<egui::Rect> = None;
@@ -3786,6 +3799,9 @@ impl App {
                     }
                     if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
                         mute_others_requested = true;
+                    }
+                    if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
+                        close_others_requested = true;
                     }
 
                     // `selectable_label`, same reasoning as `Muted` above:
@@ -4049,6 +4065,9 @@ impl App {
         }
         if mute_others_requested {
             self.mute_all_except(&focused_id);
+        }
+        if close_others_requested {
+            self.close_all_except(&focused_id);
         }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
