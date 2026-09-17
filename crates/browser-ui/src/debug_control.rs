@@ -164,6 +164,8 @@ pub enum DebugCommand {
     TogglePin,
     /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
     Reload,
+    /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
+    NewGroup,
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -329,6 +331,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
+        "NEWGROUP" => Some(DebugCommand::NewGroup),
         _ => None,
     }
 }

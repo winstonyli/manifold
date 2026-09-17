@@ -2502,6 +2502,7 @@ impl App {
             prev_tab,
             next_tab,
             quick_switch,
+            new_group,
             view_toggle,
             pin_toggle,
             reload,
@@ -2524,6 +2525,11 @@ impl App {
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
+                // Checked ahead of plain `Ctrl+G` below -- `matches_logically`
+                // ignores an extra Shift, so checking `Ctrl+G` first would
+                // consume a `Ctrl+Shift+G` press as if it were plain
+                // `Ctrl+G`, same ordering reason `Ctrl+Shift+T` already needs.
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::G),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::G),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::P),
                 i.consume_key(egui::Modifiers::CTRL, egui::Key::R)
@@ -2565,6 +2571,9 @@ impl App {
             self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
             self.pending_focus_quick_switcher = true;
         }
+        if new_group {
+            self.new_group_shortcut();
+        }
         // Neutralized while the quick-switcher is open, same reasoning as
         // its own Escape/arrow handling in `build_quick_switcher` -- a
         // `Ctrl+G` typed while it's open shouldn't also flip the view
@@ -2599,6 +2608,21 @@ impl App {
         if let Some(node) = self.tabs.get_mut(&id) {
             node.tab.send(&HostToEngine::Reload);
         }
+    }
+
+    /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
+    /// creates an empty group at the top level. No-ops while viewing a
+    /// group's own subgraph, same "no nesting" restriction "+ New Group"'s
+    /// own button already enforces by only rendering there.
+    fn new_group_shortcut(&mut self) {
+        if self.current_group.is_some() {
+            return;
+        }
+        let id = self.alloc_group_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        let name = format!("Group {}", self.groups.len() + 1);
+        self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
+        self.group_order.push(id);
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
@@ -5693,11 +5717,7 @@ impl App {
             self.toggle_muted(&id);
         }
         if new_group_requested {
-            let id = self.alloc_group_id();
-            let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-            let name = format!("Group {}", self.groups.len() + 1);
-            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
-            self.group_order.push(id);
+            self.new_group_shortcut();
         }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
@@ -6410,6 +6430,7 @@ impl App {
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
+            DebugCommand::NewGroup => self.new_group_shortcut(),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
