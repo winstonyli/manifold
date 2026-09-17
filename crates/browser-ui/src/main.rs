@@ -58,11 +58,12 @@ const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 /// comment.
 const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 
-/// Fixed tag-color choices a group card's color swatch cycles through (see
-/// `next_group_color`) -- red/orange/yellow/green/cyan/purple, chosen for
-/// mutual distinguishability against this app's dark chrome rather than any
-/// particular meaning.
-const GROUP_COLOR_PALETTE: [egui::Color32; 6] = [
+/// Fixed tag-color choices a group or tab card's color swatch cycles
+/// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
+/// chosen for mutual distinguishability against this app's dark chrome
+/// rather than any particular meaning. Shared by `GroupNode::color` and
+/// `TabNode::color`.
+const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
     egui::Color32::from_rgb(235, 87, 87),
     egui::Color32::from_rgb(242, 153, 74),
     egui::Color32::from_rgb(242, 201, 76),
@@ -71,14 +72,14 @@ const GROUP_COLOR_PALETTE: [egui::Color32; 6] = [
     egui::Color32::from_rgb(187, 107, 217),
 ];
 
-/// One click on a group's color swatch advances to the next palette entry,
-/// wrapping back to `None` (the plain default `ACCENT` border) after the
-/// last -- `None` -> red -> orange -> ... -> purple -> `None`, matching how
-/// the pin dot's own binary toggle needs no separate popup/menu to operate.
-fn next_group_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
-    match current.and_then(|c| GROUP_COLOR_PALETTE.iter().position(|&p| p == c)) {
-        None => Some(GROUP_COLOR_PALETTE[0]),
-        Some(i) if i + 1 < GROUP_COLOR_PALETTE.len() => Some(GROUP_COLOR_PALETTE[i + 1]),
+/// One click on a card's color swatch advances to the next palette entry,
+/// wrapping back to `None` (the plain default border) after the last --
+/// `None` -> red -> orange -> ... -> purple -> `None`, matching how the pin
+/// dot's own binary toggle needs no separate popup/menu to operate.
+fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
+    match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
+        None => Some(TAG_COLOR_PALETTE[0]),
+        Some(i) if i + 1 < TAG_COLOR_PALETTE.len() => Some(TAG_COLOR_PALETTE[i + 1]),
         Some(_) => None,
     }
 }
@@ -433,6 +434,12 @@ struct TabNode {
     swap_target: Option<EngineKind>,
     pos: egui::Vec2,
     vel: egui::Vec2,
+    /// User-chosen tag color, cycled through `TAG_COLOR_PALETTE` by
+    /// clicking the card's own color swatch (bottom-right corner -- the one
+    /// corner of a tab card not already claimed by the pin dot, close "x",
+    /// or (inside a group) the eject button). `None` keeps the card's plain
+    /// default border. Session-only, same scope decision as `pinned`.
+    color: Option<egui::Color32>,
 }
 
 /// A completed download shown as its own graph node, edged to the tab it
@@ -474,7 +481,7 @@ struct GroupNode {
     name: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
-    /// User-chosen tag color, cycled through `GROUP_COLOR_PALETTE` by
+    /// User-chosen tag color, cycled through `TAG_COLOR_PALETTE` by
     /// clicking the card's own color swatch (bottom-left corner, same spot
     /// a tab's pin dot occupies) -- `None` keeps the plain default `ACCENT`
     /// border every group card had before this existed.
@@ -559,6 +566,9 @@ struct TabSpawnOutcome {
     /// tab stays pinned — see `TabNode::pinned`'s own doc comment. Always
     /// `false` for a genuinely new tab (`SpawnPurpose::New`/`Root`).
     pinned: bool,
+    /// Same "carried through respawn, `None` for a genuinely new tab"
+    /// treatment as `pinned` above, but for `TabNode::color`.
+    color: Option<egui::Color32>,
     url: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
@@ -1249,6 +1259,7 @@ impl App {
                 tab.parent,
                 None,
                 false,
+                None,
                 tab.url,
                 pos,
                 egui::Vec2::ZERO,
@@ -1267,7 +1278,7 @@ impl App {
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
-        self.spawn_tab_async(id, None, None, false, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
+        self.spawn_tab_async(id, None, None, false, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
     }
 
     /// Runs `process_manager::spawn_tab` on a background thread and posts
@@ -1282,6 +1293,7 @@ impl App {
         parent: Option<String>,
         group: Option<String>,
         pinned: bool,
+        color: Option<egui::Color32>,
         url: String,
         pos: egui::Vec2,
         vel: egui::Vec2,
@@ -1299,6 +1311,7 @@ impl App {
                 parent,
                 group,
                 pinned,
+                color,
                 url,
                 pos,
                 vel,
@@ -1315,7 +1328,7 @@ impl App {
     /// Focus/visibility for `Respawn` is decided here, at completion time —
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
-        let TabSpawnOutcome { id, parent, group, pinned, url, pos, vel, purpose, result } = outcome;
+        let TabSpawnOutcome { id, parent, group, pinned, color, url, pos, vel, purpose, result } = outcome;
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
@@ -1355,6 +1368,7 @@ impl App {
                         swap_target: None,
                         pos,
                         vel,
+                        color,
                     },
                 );
                 if !self.tab_order.iter().any(|t| t == &id) {
@@ -1807,7 +1821,7 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        self.spawn_tab_async(id, parent, group, false, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
+        self.spawn_tab_async(id, parent, group, false, None, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
     }
 
     /// Peek-click commits focus: the tab losing focus (if any, and if
@@ -2071,10 +2085,10 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, group, pinned, pos, vel)) = self
+        let Some((parent, group, pinned, color, pos, vel)) = self
             .tabs
             .get(tab_id)
-            .map(|n| (n.parent.clone(), n.group.clone(), n.pinned, n.pos, n.vel))
+            .map(|n| (n.parent.clone(), n.group.clone(), n.pinned, n.color, n.pos, n.vel))
         else {
             return;
         };
@@ -2093,7 +2107,7 @@ impl App {
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
         }
-        self.respawn_tab(tab_id, target, url, parent, group, pinned, pos, vel);
+        self.respawn_tab(tab_id, target, url, parent, group, pinned, color, pos, vel);
     }
 
     /// Shared by swap-finish and crash recovery: (re)spawn `kind` at `url`
@@ -2108,13 +2122,25 @@ impl App {
         parent: Option<String>,
         group: Option<String>,
         pinned: bool,
+        color: Option<egui::Color32>,
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
         if self.focused.as_deref() == Some(tab_id) {
             self.pending_respawn_focus = Some(tab_id.to_string());
         }
-        self.spawn_tab_async(tab_id.to_string(), parent, group, pinned, url, pos, vel, SpawnPurpose::Respawn, kind);
+        self.spawn_tab_async(
+            tab_id.to_string(),
+            parent,
+            group,
+            pinned,
+            color,
+            url,
+            pos,
+            vel,
+            SpawnPurpose::Respawn,
+            kind,
+        );
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
@@ -2571,7 +2597,7 @@ impl App {
                             ui.label("Color");
                             ui.horizontal(|ui| {
                                 let current = self.groups.get(&id).and_then(|g| g.color);
-                                for &swatch in &GROUP_COLOR_PALETTE {
+                                for &swatch in &TAG_COLOR_PALETTE {
                                     let (rect, response) = ui.allocate_exact_size(
                                         egui::vec2(18.0, 18.0),
                                         egui::Sense::click(),
@@ -3118,6 +3144,7 @@ impl App {
         let mut download_clicked: Option<String> = None;
         let mut pin_toggle_requested: Option<String> = None;
         let mut remove_from_group_requested: Option<String> = None;
+        let mut tab_color_cycle_requested: Option<String> = None;
         let mut new_group_requested = false;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
@@ -3527,6 +3554,7 @@ impl App {
                     let is_focused = self.focused.as_deref() == Some(id.as_str());
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
                     let is_selected = self.selected_tabs.contains(&id);
+                    let tag_color = self.tabs.get(&id).and_then(|n| n.color);
 
                     let card_fill = if is_hovered {
                         ui.visuals().extreme_bg_color.gamma_multiply(1.35)
@@ -3534,12 +3562,16 @@ impl App {
                         ui.visuals().extreme_bg_color
                     };
                     ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
+                    // A tag color only shows through in the resting state --
+                    // focused/hovered stay their own established colors so
+                    // "this is the open tab"/"this is what you're pointing
+                    // at" remain the strongest, least ambiguous signals.
                     let (border_width, border_color) = if is_focused {
                         (2.5, ACCENT)
                     } else if is_hovered {
                         (1.5, ui.visuals().text_color())
                     } else {
-                        (1.0, ui.visuals().weak_text_color())
+                        (1.0, tag_color.unwrap_or(ui.visuals().weak_text_color()))
                     };
                     ui.painter().rect_stroke(
                         rect,
@@ -3775,6 +3807,36 @@ impl App {
                         }
                     }
 
+                    // Color swatch: the one corner not already claimed by
+                    // the pin dot, close "x", or (inside a group) the eject
+                    // button. Always shown, not hover-gated, same
+                    // "glanceable identifier" reasoning as a group's own
+                    // swatch.
+                    let swatch_rect =
+                        egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
+                    let swatch_response = ui.interact(
+                        swatch_rect,
+                        egui::Id::new(("graph_node_swatch", id.as_str())),
+                        egui::Sense::click(),
+                    );
+                    let mut swatch_clicked = false;
+                    match tag_color {
+                        Some(c) => {
+                            ui.painter().circle_filled(swatch_rect.center(), 6.0 * inv_zoom, c);
+                        }
+                        None => {
+                            ui.painter().circle_stroke(
+                                swatch_rect.center(),
+                                6.0 * inv_zoom,
+                                egui::Stroke::new(1.5 * inv_zoom, ui.visuals().weak_text_color()),
+                            );
+                        }
+                    }
+                    if swatch_response.clicked() {
+                        swatch_clicked = true;
+                        tab_color_cycle_requested = Some(id.clone());
+                    }
+
                     if response.dragged() {
                         self.dragging = Some(id.clone());
                         if let Some(node) = self.tabs.get_mut(&id) {
@@ -3862,11 +3924,12 @@ impl App {
                     } else if self.hovered.as_deref() == Some(id.as_str()) {
                         self.hovered = None;
                     }
-                    // Excludes a click on the pin dot or eject button --
-                    // both hit-rects overlap this card's corners, and
-                    // without this guard either one also focuses the node
-                    // into Tab view (see `pin_response`'s own doc comment).
-                    if response.clicked() && !pin_response.clicked() && !eject_clicked {
+                    // Excludes a click on the pin dot, eject button, or
+                    // color swatch -- all three hit-rects overlap this
+                    // card's corners, and without this guard any of them
+                    // also focuses the node into Tab view (see
+                    // `pin_response`'s own doc comment).
+                    if response.clicked() && !pin_response.clicked() && !eject_clicked && !swatch_clicked {
                         clicked_focus = Some(id.clone());
                     }
                 }
@@ -4233,6 +4296,11 @@ impl App {
                 node.group = None;
             }
         }
+        if let Some(id) = tab_color_cycle_requested {
+            if let Some(node) = self.tabs.get_mut(&id) {
+                node.color = next_tag_color(node.color);
+            }
+        }
         if new_group_requested {
             let id = self.alloc_group_id();
             let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
@@ -4342,7 +4410,7 @@ impl App {
         }
         if let Some(id) = color_cycle_requested {
             if let Some(node) = self.groups.get_mut(&id) {
-                node.color = next_group_color(node.color);
+                node.color = next_tag_color(node.color);
             }
         }
         if let Some((source_id, target_id)) = group_merge_requested {
@@ -5057,13 +5125,14 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, group, pinned, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
+            let Some((kind, url, parent, group, pinned, color, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
                 (
                     n.tab.kind,
                     n.url.clone(),
                     n.parent.clone(),
                     n.group.clone(),
                     n.pinned,
+                    n.color,
                     n.pos,
                     n.vel,
                 )
@@ -5080,7 +5149,7 @@ impl App {
             if self.hovered.as_deref() == Some(tab_id.as_str()) {
                 self.hovered = None;
             }
-            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, pos, vel);
+            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, color, pos, vel);
         }
 
         for (tab_id, target, url) in swap_finishes {
