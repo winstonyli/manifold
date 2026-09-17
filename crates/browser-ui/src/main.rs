@@ -2,6 +2,7 @@ mod bookmarks;
 mod debug_control;
 mod gpu;
 mod graph_layout;
+mod pdf;
 mod process_manager;
 mod session;
 mod settings;
@@ -825,6 +826,14 @@ struct App {
     /// Set by a headless `SCREENSHOT` command; consumed on the next
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
+    /// "Print to PDF": the target `.pdf` path, set alongside
+    /// `pending_screenshot` (a temp PNG) so the underlying GPU capture
+    /// mechanism doesn't need to know PDF exists at all -- once that
+    /// screenshot actually completes (see `RedrawRequested`'s handling of
+    /// `RenderOutcome::screenshot_result`), the temp PNG is converted via
+    /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
+    /// including for an ordinary "Screenshot" button click.
+    pending_print_to_pdf: Option<String>,
 
     /// Find-in-page: tied to the focused tab only, not persisted per-tab —
     /// closes (and sends `FindStop`) on tab switch/close, same "don't try
@@ -975,6 +984,7 @@ impl Default for App {
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
+            pending_print_to_pdf: None,
             closed_tabs: Vec::new(),
             context_menu: None,
             save_toast: None,
@@ -2595,6 +2605,28 @@ impl App {
         }
     }
 
+    /// "Print to PDF": routes through the exact same GPU screenshot
+    /// capture `pending_screenshot` already drives (a temp PNG, cleaned up
+    /// once converted), rather than teaching `gpu::GpuState` anything
+    /// about PDF -- `RedrawRequested`'s handling of `RenderOutcome::
+    /// screenshot_result` checks `pending_print_to_pdf` once that capture
+    /// actually completes and does the PNG-to-PDF conversion there. Called
+    /// by both the real toolbar button (after a real file-picker chooses
+    /// `pdf_path`) and the headless `PRINTTOPDF` debug command (which
+    /// supplies `pdf_path` directly, bypassing the picker).
+    fn start_print_to_pdf(&mut self, pdf_path: String) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let temp_png = std::env::temp_dir().join(format!("multiengine-browser-print-{timestamp}.png"));
+        self.pending_screenshot = Some(temp_png.to_string_lossy().into_owned());
+        self.pending_print_to_pdf = Some(pdf_path);
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     /// Tab view's "Bookmark" toggle: adds `id`'s current title/url if not
     /// already bookmarked (matched by url), removes it if it is. Persists
     /// immediately, same "no separate Save step" posture every other
@@ -3515,6 +3547,7 @@ impl App {
         let mut toggle_bookmark_requested = false;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
+        let mut print_to_pdf_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut settings_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
@@ -3645,6 +3678,13 @@ impl App {
                     // instead of a test-supplied path.
                     if ui.button("Screenshot").clicked() {
                         screenshot_requested = true;
+                    }
+                    // Hidden in headless mode, same reason Export/Import
+                    // Session are: a real native file dialog blocks on
+                    // OS/human input neither exists there. `PRINTTOPDF
+                    // <path>` bypasses it directly for headless testing.
+                    if !self.headless && ui.button("Print to PDF").clicked() {
+                        print_to_pdf_requested = true;
                     }
 
                     // Reserve room for the gear button after the address
@@ -3882,6 +3922,13 @@ impl App {
             self.pending_screenshot = Some(path.to_string_lossy().to_string());
             if let Some(window) = &self.window {
                 window.request_redraw();
+            }
+        }
+        if print_to_pdf_requested {
+            if let Some(path) =
+                rfd::FileDialog::new().set_file_name("page.pdf").add_filter("PDF", &["pdf"]).save_file()
+            {
+                self.start_print_to_pdf(path.to_string_lossy().into_owned());
             }
         }
         if let Some(text) = navigate {
@@ -5769,7 +5816,21 @@ impl ApplicationHandler<UserEvent> for App {
                         match outcome.screenshot_result {
                             Some(Ok(())) => {
                                 if let Some(path) = screenshot_path {
-                                    self.save_toast = Some((path, std::time::Instant::now()));
+                                    if let Some(pdf_path) = self.pending_print_to_pdf.take() {
+                                        match pdf::write_image_as_pdf(
+                                            std::path::Path::new(&path),
+                                            std::path::Path::new(&pdf_path),
+                                        ) {
+                                            Ok(()) => {
+                                                self.save_toast =
+                                                    Some((pdf_path, std::time::Instant::now()));
+                                            }
+                                            Err(err) => eprintln!("print to pdf: {err}"),
+                                        }
+                                        let _ = std::fs::remove_file(&path);
+                                    } else {
+                                        self.save_toast = Some((path, std::time::Instant::now()));
+                                    }
                                 }
                             }
                             Some(Err(err)) => eprintln!("screenshot: {err}"),
@@ -6034,6 +6095,7 @@ impl App {
             DebugCommand::ImportSession(path) => {
                 self.import_session_from(std::path::Path::new(&path));
             }
+            DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::Quit => {
                 // See `quit_after_next_redraw`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a

@@ -7,7 +7,7 @@ edition.workspace = true
 egui = "0.36.2"
 egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 pollster = "1.0.1"
 rfd = "0.15"
