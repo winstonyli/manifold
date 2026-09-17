@@ -128,6 +128,40 @@ fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Opti
     })
 }
 
+/// The `Area`/`Frame` shell every toolbar list-dropdown (Recently Closed,
+/// Bookmarks, History, Downloads) wraps its own contents in -- pinned below
+/// `anchor_rect`, same fill/stroke/corner-radius/margin, same min/max width.
+/// A free function (not a method) so callers can still freely capture
+/// `&mut self` in `add_contents` -- an `&mut self` method here would
+/// conflict with that same borrow. Returns the drawn area's own rect, for
+/// the caller's own `clicked_outside_popup` check.
+fn build_list_popup_frame(
+    ctx: &egui::Context,
+    id: &str,
+    anchor_rect: egui::Rect,
+    min_width: f32,
+    max_width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
+    egui::Area::new(egui::Id::new(id))
+        .fixed_pos(anchor_rect.left_bottom())
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(TOOLBAR_FILL)
+                .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                .corner_radius(4u8)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_min_width(min_width);
+                    ui.set_max_width(max_width);
+                    add_contents(ui);
+                });
+        })
+        .response
+        .rect
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -1498,30 +1532,18 @@ impl App {
     fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect) {
         let mut close = false;
         let mut reopen_index: Option<usize> = None;
-        let area = egui::Area::new(egui::Id::new("recently_closed_popup"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        ui.set_max_width(320.0);
-                        for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
-                            ui.horizontal(|ui| {
-                                engine_dot(ui, closed.kind, 8.0);
-                                if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click())).clicked() {
-                                    reopen_index = Some(index);
-                                }
-                            });
-                        }
-                    });
-            });
+        let area_rect = build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, |ui| {
+            for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
+                ui.horizontal(|ui| {
+                    engine_dot(ui, closed.kind, 8.0);
+                    if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click())).clicked() {
+                        reopen_index = Some(index);
+                    }
+                });
+            }
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(index) = reopen_index {
             let closed = self.closed_tabs.remove(index);
@@ -3074,115 +3096,103 @@ impl App {
         let mut folder_rename_start: Option<(String, String)> = None;
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
-        let area = egui::Area::new(egui::Id::new("bookmarks_popup"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        ui.set_max_width(320.0);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.bookmarks_filter)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("Filter..."),
-                        );
-                        let matches: Vec<(usize, &bookmarks::Bookmark)> = self
-                            .bookmarks
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
-                            .collect();
-                        let mut folders: Vec<&str> = matches
-                            .iter()
-                            .filter_map(|(_, b)| b.folder.as_deref())
-                            .collect();
-                        folders.sort_unstable();
-                        folders.dedup();
-                        // `None` (unfoldered) first, then each named folder
-                        // alphabetically -- `folders` is already sorted.
-                        let groups: Vec<Option<&str>> =
-                            std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
-                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                            for folder in groups {
-                                let rows: Vec<&(usize, &bookmarks::Bookmark)> = matches
-                                    .iter()
-                                    .filter(|(_, b)| b.folder.as_deref() == folder)
-                                    .collect();
-                                if rows.is_empty() {
-                                    continue;
-                                }
-                                if let Some(name) = folder {
-                                    ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
-                                }
-                                for (index, bookmark) in rows {
-                                    let (index, bookmark) = (*index, *bookmark);
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add(
-                                                egui::Label::new(&bookmark.title)
-                                                    .truncate()
-                                                    .sense(egui::Sense::click()),
-                                            )
-                                            .clicked()
-                                        {
-                                            navigate_url = Some(bookmark.url.clone());
-                                        }
-                                        if ui.small_button(egui_phosphor::regular::X).clicked() {
-                                            remove_index = Some(index);
-                                        }
-                                    });
-                                    let is_renaming = self
-                                        .renaming_bookmark_folder
-                                        .as_ref()
-                                        .is_some_and(|(url, _)| url == &bookmark.url);
-                                    if is_renaming {
-                                        if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
-                                            let response = ui.add(
-                                                egui::TextEdit::singleline(draft)
-                                                    .desired_width(140.0)
-                                                    .hint_text("Folder (blank for none)")
-                                                    .font(egui::TextStyle::Small),
-                                            );
-                                            if std::mem::take(&mut self.pending_focus_bookmark_folder) {
-                                                response.request_focus();
-                                            }
-                                            if response.lost_focus() {
-                                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                                    folder_rename_cancel = true;
-                                                } else {
-                                                    folder_rename_commit = Some(draft.clone());
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        let label = bookmark.folder.as_deref().unwrap_or("No folder");
-                                        if ui
-                                            .add(
-                                                egui::Label::new(egui::RichText::new(label).small().weak())
-                                                    .sense(egui::Sense::click()),
-                                            )
-                                            .on_hover_text("Click to set folder")
-                                            .clicked()
-                                        {
-                                            folder_rename_start = Some((
-                                                bookmark.url.clone(),
-                                                bookmark.folder.clone().unwrap_or_default(),
-                                            ));
-                                        }
-                                    }
-                                    ui.add_space(2.0);
-                                }
+        let area_rect = build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.bookmarks_filter)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Filter..."),
+            );
+            let matches: Vec<(usize, &bookmarks::Bookmark)> = self
+                .bookmarks
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
+                .collect();
+            let mut folders: Vec<&str> = matches
+                .iter()
+                .filter_map(|(_, b)| b.folder.as_deref())
+                .collect();
+            folders.sort_unstable();
+            folders.dedup();
+            // `None` (unfoldered) first, then each named folder
+            // alphabetically -- `folders` is already sorted.
+            let groups: Vec<Option<&str>> =
+                std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
+            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                for folder in groups {
+                    let rows: Vec<&(usize, &bookmarks::Bookmark)> = matches
+                        .iter()
+                        .filter(|(_, b)| b.folder.as_deref() == folder)
+                        .collect();
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    if let Some(name) = folder {
+                        ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
+                    }
+                    for (index, bookmark) in rows {
+                        let (index, bookmark) = (*index, *bookmark);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Label::new(&bookmark.title)
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                )
+                                .clicked()
+                            {
+                                navigate_url = Some(bookmark.url.clone());
+                            }
+                            if ui.small_button(egui_phosphor::regular::X).clicked() {
+                                remove_index = Some(index);
                             }
                         });
-                    });
+                        let is_renaming = self
+                            .renaming_bookmark_folder
+                            .as_ref()
+                            .is_some_and(|(url, _)| url == &bookmark.url);
+                        if is_renaming {
+                            if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(draft)
+                                        .desired_width(140.0)
+                                        .hint_text("Folder (blank for none)")
+                                        .font(egui::TextStyle::Small),
+                                );
+                                if std::mem::take(&mut self.pending_focus_bookmark_folder) {
+                                    response.request_focus();
+                                }
+                                if response.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        folder_rename_cancel = true;
+                                    } else {
+                                        folder_rename_commit = Some(draft.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            let label = bookmark.folder.as_deref().unwrap_or("No folder");
+                            if ui
+                                .add(
+                                    egui::Label::new(egui::RichText::new(label).small().weak())
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text("Click to set folder")
+                                .clicked()
+                            {
+                                folder_rename_start = Some((
+                                    bookmark.url.clone(),
+                                    bookmark.folder.clone().unwrap_or_default(),
+                                ));
+                            }
+                        }
+                        ui.add_space(2.0);
+                    }
+                }
             });
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some((url, draft)) = folder_rename_start {
             self.renaming_bookmark_folder = Some((url, draft));
@@ -3228,43 +3238,30 @@ impl App {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
-        let area = egui::Area::new(egui::Id::new("history_popup"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        ui.set_max_width(320.0);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.history_filter)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("Filter..."),
-                        );
-                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                            for entry in self.history.iter().rev() {
-                                let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                                if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
-                                    continue;
-                                }
-                                if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked()
-                                {
-                                    navigate_url = Some(entry.url.clone());
-                                }
-                            }
-                        });
-                        ui.separator();
-                        if ui.button("Clear").clicked() {
-                            clear_requested = true;
-                        }
-                    });
+        let area_rect = build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.history_filter)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Filter..."),
+            );
+            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                for entry in self.history.iter().rev() {
+                    let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                    if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
+                        continue;
+                    }
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                        navigate_url = Some(entry.url.clone());
+                    }
+                }
             });
+            ui.separator();
+            if ui.button("Clear").clicked() {
+                clear_requested = true;
+            }
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused.clone() {
@@ -3295,39 +3292,27 @@ impl App {
         let mut close = false;
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
-        let area = egui::Area::new(egui::Id::new("downloads_popup"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        ui.set_max_width(320.0);
-                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                            for id in self.download_order.iter().rev() {
-                                let Some(node) = self.downloads.get(id) else { continue };
-                                ui.horizontal(|ui| {
-                                    let filename = download_filename(&node.path);
-                                    if ui
-                                        .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
-                                        .clicked()
-                                    {
-                                        reveal_id = Some(id.clone());
-                                    }
-                                    if ui.small_button(egui_phosphor::regular::X).clicked() {
-                                        remove_id = Some(id.clone());
-                                    }
-                                });
-                            }
-                        });
+        let area_rect = build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, |ui| {
+            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                for id in self.download_order.iter().rev() {
+                    let Some(node) = self.downloads.get(id) else { continue };
+                    ui.horizontal(|ui| {
+                        let filename = download_filename(&node.path);
+                        if ui
+                            .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
+                            .clicked()
+                        {
+                            reveal_id = Some(id.clone());
+                        }
+                        if ui.small_button(egui_phosphor::regular::X).clicked() {
+                            remove_id = Some(id.clone());
+                        }
                     });
+                }
             });
+        });
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+        let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(id) = reveal_id {
             self.reveal_download(&id);
