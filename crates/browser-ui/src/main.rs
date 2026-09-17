@@ -2291,6 +2291,18 @@ impl App {
         }
     }
 
+    /// Toggles `id`'s mute state and sends the real `SetMuted` — shared by
+    /// Tab view's "Muted" toolbar button and Graph view's own audio-dot
+    /// click (see `TabNode::muted`'s doc comment for the WebView2/WebKit-
+    /// only caveat).
+    fn toggle_muted(&mut self, id: &str) {
+        if let Some(node) = self.tabs.get_mut(id) {
+            node.muted = !node.muted;
+            let muted = node.muted;
+            node.tab.send(&HostToEngine::SetMuted { muted });
+        }
+    }
+
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
@@ -3109,11 +3121,7 @@ impl App {
             self.start_swap_to(&focused_id, kind);
         }
         if mute_toggle {
-            if let Some(node) = self.tabs.get_mut(&focused_id) {
-                node.muted = !node.muted;
-                let muted = node.muted;
-                node.tab.send(&HostToEngine::SetMuted { muted });
-            }
+            self.toggle_muted(&focused_id);
         }
         if screenshot_requested {
             // No toast here -- the save hasn't happened yet. `save_toast`
@@ -3145,6 +3153,7 @@ impl App {
         let mut pin_toggle_requested: Option<String> = None;
         let mut remove_from_group_requested: Option<String> = None;
         let mut tab_color_cycle_requested: Option<String> = None;
+        let mut mute_toggle_requested: Option<String> = None;
         let mut new_group_requested = false;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
@@ -3730,20 +3739,41 @@ impl App {
                             egui::Color32::WHITE,
                         );
                     }
-                    // Audio-playing indicator: a plain colored dot (like the
-                    // engine-identity one below the thumbnail), not a
-                    // speaker glyph — confirmed elsewhere in this project
-                    // that several Unicode symbol glyphs render as empty
-                    // boxes in this app's font, so a painter-drawn shape is
-                    // the reliable choice, not text. Only ever true for
-                    // WebView2/WebKit tabs — see `TabNode::audio_playing`'s
-                    // doc comment.
-                    if self.tabs.get(&id).is_some_and(|n| n.audio_playing) {
-                        ui.painter().circle_filled(
+                    // Audio-playing/muted indicator: a plain colored dot
+                    // (like the engine-identity one below the thumbnail),
+                    // not a speaker glyph — confirmed elsewhere in this
+                    // project that several Unicode symbol glyphs render as
+                    // empty boxes in this app's font, so a painter-drawn
+                    // shape is the reliable choice, not text. `audio_playing`
+                    // is only ever true for WebView2/WebKit tabs — see
+                    // `TabNode::audio_playing`'s doc comment — but the dot
+                    // also shows (and stays clickable) whenever `muted` is
+                    // set, even after audio stops, so there's always a way
+                    // to see and undo a mute from Graph view without first
+                    // switching to Tab view.
+                    let node_muted = self.tabs.get(&id).is_some_and(|n| n.muted);
+                    let node_audio_playing = self.tabs.get(&id).is_some_and(|n| n.audio_playing);
+                    let mut audio_clicked = false;
+                    if node_audio_playing || node_muted {
+                        let audio_rect = egui::Rect::from_center_size(
                             rect.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom,
-                            4.0 * inv_zoom,
-                            egui::Color32::from_rgb(80, 200, 120),
+                            egui::vec2(16.0, 16.0) * inv_zoom,
                         );
+                        let audio_response = ui.interact(
+                            audio_rect,
+                            egui::Id::new(("graph_node_audio", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let dot_color = if node_muted {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            egui::Color32::from_rgb(80, 200, 120)
+                        };
+                        ui.painter().circle_filled(audio_rect.center(), 4.0 * inv_zoom, dot_color);
+                        if audio_response.clicked() {
+                            audio_clicked = true;
+                            mute_toggle_requested = Some(id.clone());
+                        }
                     }
 
                     // Pin toggle: bottom-left corner, always visible (not
@@ -3981,11 +4011,16 @@ impl App {
                         self.hovered = None;
                     }
                     // Excludes a click on the pin dot, eject button, or
-                    // color swatch -- all three hit-rects overlap this
-                    // card's corners, and without this guard any of them
-                    // also focuses the node into Tab view (see
+                    // color swatch, or audio dot -- all their hit-rects
+                    // overlap this card's corners, and without this guard
+                    // any of them also focuses the node into Tab view (see
                     // `pin_response`'s own doc comment).
-                    if response.clicked() && !pin_response.clicked() && !eject_clicked && !swatch_clicked {
+                    if response.clicked()
+                        && !pin_response.clicked()
+                        && !eject_clicked
+                        && !swatch_clicked
+                        && !audio_clicked
+                    {
                         clicked_focus = Some(id.clone());
                     }
                 }
@@ -4386,6 +4421,9 @@ impl App {
             if let Some(node) = self.tabs.get_mut(&id) {
                 node.color = next_tag_color(node.color);
             }
+        }
+        if let Some(id) = mute_toggle_requested {
+            self.toggle_muted(&id);
         }
         if new_group_requested {
             let id = self.alloc_group_id();
