@@ -924,6 +924,10 @@ struct App {
     /// own visibility, see `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
     bookmarks_open: bool,
+    /// The bookmarks popup's own filter box text -- cleared each time the
+    /// popup is opened, same "fresh state each open" reasoning
+    /// `find_match_case` resetting on a new find session already has.
+    bookmarks_filter: String,
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
@@ -933,6 +937,9 @@ struct App {
     /// bookmarks, nothing here is ever written to disk.
     history: Vec<HistoryEntry>,
     history_open: bool,
+    /// The history popup's own filter box text -- same "cleared on each
+    /// open" reasoning as `bookmarks_filter`.
+    history_filter: String,
     /// Whether the Tab-view toolbar's "Downloads (N)" dropdown is open --
     /// lists `self.downloads` (the same data the graph view's own download
     /// nodes/context menu already show) so a completed download can be
@@ -1041,8 +1048,10 @@ impl Default for App {
             settings_open: false,
             bookmarks,
             bookmarks_open: false,
+            bookmarks_filter: String::new(),
             history: Vec::new(),
             history_open: false,
+            history_filter: String::new(),
             downloads_open: false,
             recently_closed_open: false,
             transition: None,
@@ -2812,19 +2821,33 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_min_width(220.0);
                         ui.set_max_width(320.0);
-                        for (index, bookmark) in self.bookmarks.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
-                                    .clicked()
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.bookmarks_filter)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Filter..."),
+                        );
+                        let query = self.bookmarks_filter.to_lowercase();
+                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                            for (index, bookmark) in self.bookmarks.iter().enumerate() {
+                                if !query.is_empty()
+                                    && !bookmark.title.to_lowercase().contains(&query)
+                                    && !bookmark.url.to_lowercase().contains(&query)
                                 {
-                                    navigate_url = Some(bookmark.url.clone());
+                                    continue;
                                 }
-                                if ui.small_button("x").clicked() {
-                                    remove_index = Some(index);
-                                }
-                            });
-                        }
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
+                                        .clicked()
+                                    {
+                                        navigate_url = Some(bookmark.url.clone());
+                                    }
+                                    if ui.small_button("x").clicked() {
+                                        remove_index = Some(index);
+                                    }
+                                });
+                            }
+                        });
                     });
             });
 
@@ -2872,9 +2895,21 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_min_width(220.0);
                         ui.set_max_width(320.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.history_filter)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Filter..."),
+                        );
+                        let query = self.history_filter.to_lowercase();
                         egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                             for entry in self.history.iter().rev() {
                                 let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                                if !query.is_empty()
+                                    && !entry.title.to_lowercase().contains(&query)
+                                    && !entry.url.to_lowercase().contains(&query)
+                                {
+                                    continue;
+                                }
                                 if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked()
                                 {
                                     navigate_url = Some(entry.url.clone());
@@ -3982,6 +4017,9 @@ impl App {
                         let response = ui.button(label);
                         if response.clicked() {
                             self.bookmarks_open = !self.bookmarks_open;
+                            if self.bookmarks_open {
+                                self.bookmarks_filter.clear();
+                            }
                         }
                         bookmarks_button_rect = Some(response.rect);
                     }
@@ -3990,6 +4028,9 @@ impl App {
                         let response = ui.button(label);
                         if response.clicked() {
                             self.history_open = !self.history_open;
+                            if self.history_open {
+                                self.history_filter.clear();
+                            }
                         }
                         history_button_rect = Some(response.rect);
                     }
@@ -6445,6 +6486,8 @@ impl App {
             DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
+            DebugCommand::HistoryFilterText(text) => self.history_filter = text,
+            DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
             DebugCommand::ExportSession(path) => {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));

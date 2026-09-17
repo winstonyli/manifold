@@ -166,6 +166,12 @@ pub enum DebugCommand {
     Reload,
     /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
     NewGroup,
+    /// Sets the History popup's own filter box directly, same "direct call,
+    /// not a synthetic key event" reason as `GraphFilterText`.
+    HistoryFilterText(String),
+    /// Sets the Bookmarks popup's own filter box directly, same reason as
+    /// `HistoryFilterText`.
+    BookmarksFilterText(String),
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -325,6 +331,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
         "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
         "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
+        "HISTORYFILTERTEXT" => Some(DebugCommand::HistoryFilterText(rest.to_string())),
+        "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
         "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
