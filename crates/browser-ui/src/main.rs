@@ -4388,6 +4388,7 @@ impl App {
         let mut ungroup_all_requested = false;
         let mut settings_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
+        let mut leave_group_button_rect: Option<egui::Rect> = None;
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .frame(
@@ -4403,9 +4404,11 @@ impl App {
                         // first cut — see `GroupNode`'s doc comment), and
                         // the group's name replaces the empty space "+ New
                         // Tab"/"Reset View" already fill at the top level.
-                        if ui.button("\u{25c0} Groups").clicked() {
+                        let leave_group_response = ui.button("\u{25c0} Groups");
+                        if leave_group_response.clicked() {
                             leave_group_requested = true;
                         }
+                        leave_group_button_rect = Some(leave_group_response.rect);
                         let is_renaming =
                             self.renaming_group.as_ref().is_some_and(|(id, _)| id == group_id);
                         if is_renaming {
@@ -5271,6 +5274,20 @@ impl App {
                                     }
                                 }
                             }
+                        } else if leave_group_button_rect
+                            .is_some_and(|rect| ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)))
+                        {
+                            // Dragging a group member onto the "◀ Groups"
+                            // back button ejects it to the top level --
+                            // the button's rect is screen-space (it's a
+                            // toolbar widget), so this checks the raw
+                            // pointer position directly rather than the
+                            // node's world-space `pos` the top-level
+                            // group-card/tab-card drop targets above use.
+                            // Same effect as the hover-revealed eject
+                            // button, just reached by dragging the card
+                            // itself out through the way back instead.
+                            remove_from_group_requested = Some(id.clone());
                         }
                     }
                     if response.hovered() {
