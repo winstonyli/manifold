@@ -173,6 +173,17 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// dark gray-on-gray.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
 
+/// A group card's border tints this color once its member count exceeds
+/// `GROUP_OVERLOAD_THRESHOLD` -- a cheap glanceable "this one's gotten big"
+/// cue, the same severity-red used nowhere else in this app's chrome so it
+/// reads unambiguously as a warning rather than just another tag color.
+/// Only applies while the group has no explicit tag color of its own (see
+/// its use below) -- a deliberate user choice always wins over this
+/// automatic one, same precedent tag colors already have over the plain
+/// default `ACCENT` border.
+const GROUP_OVERLOAD_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
+const GROUP_OVERLOAD_THRESHOLD: usize = 8;
+
 /// The window/content-area base — behind every panel, the darkest layer.
 /// Distinct from `TOOLBAR_FILL` on purpose: egui's own default has exactly
 /// one dark gray for everything (panels, buttons, the app background all
@@ -5550,6 +5561,14 @@ impl App {
 
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
                         let tag_color = self.groups.get(&id).and_then(|g| g.color);
+                        let member_ids: Vec<String> = self
+                            .tabs
+                            .iter()
+                            .filter(|(_, n)| n.group.as_deref() == Some(id.as_str()))
+                            .map(|(tid, _)| tid.clone())
+                            .collect();
+                        let member_count = member_ids.len();
+                        let overloaded = member_count > GROUP_OVERLOAD_THRESHOLD;
                         let card_fill = if is_hovered {
                             ui.visuals().extreme_bg_color.gamma_multiply(1.35)
                         } else {
@@ -5561,19 +5580,12 @@ impl App {
                             6.0 * inv_zoom,
                             egui::Stroke::new(
                                 if is_hovered { 1.5 } else { 1.0 } * inv_zoom,
-                                tag_color.unwrap_or(ACCENT),
+                                tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT }),
                             ),
                             egui::StrokeKind::Inside,
                         );
 
                         if let Some(node) = self.groups.get(&id) {
-                            let member_ids: Vec<String> = self
-                                .tabs
-                                .iter()
-                                .filter(|(_, n)| n.group.as_deref() == Some(id.as_str()))
-                                .map(|(tid, _)| tid.clone())
-                                .collect();
-                            let member_count = member_ids.len();
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
                             // labels entirely rather than truncating to a
                             // near-illegible sliver -- a group card has no
