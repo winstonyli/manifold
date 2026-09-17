@@ -89,17 +89,27 @@ fn sanitize_session_name(raw: &str) -> String {
     raw.trim().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect::<String>()
 }
 
-/// Graph toolbar filter box: `true` when `self.graph_filter` is non-empty
-/// and none of `haystacks` contains it (case-insensitive) -- the node
-/// should be painted dimmed. Always `false` while the filter is empty, so
-/// an untouched graph never pays the dimming cost.
-fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
+/// Case-insensitive substring match against any of `haystacks` -- shared
+/// by the Graph toolbar's own filter (via `graph_filter_dims` below) and
+/// the History/Bookmarks popup filter boxes, so the three don't each
+/// reimplement the same `to_lowercase().contains()` check slightly
+/// differently. An empty `filter` always matches (nothing typed yet, so
+/// nothing should be filtered out).
+fn filter_matches(filter: &str, haystacks: &[&str]) -> bool {
     let filter = filter.trim();
     if filter.is_empty() {
-        return false;
+        return true;
     }
     let filter = filter.to_lowercase();
-    !haystacks.iter().any(|h| h.to_lowercase().contains(&filter))
+    haystacks.iter().any(|h| h.to_lowercase().contains(&filter))
+}
+
+/// Graph toolbar filter box: `true` when the node should be painted
+/// dimmed -- exactly the negation of `filter_matches`, kept as its own
+/// named function since "dims" (not "doesn't match") is the meaning every
+/// call site actually cares about.
+fn graph_filter_dims(filter: &str, haystacks: &[&str]) -> bool {
+    !filter_matches(filter, haystacks)
 }
 
 /// The bare filename portion of a download's full path, for display --
@@ -3036,16 +3046,11 @@ impl App {
                                 .desired_width(f32::INFINITY)
                                 .hint_text("Filter..."),
                         );
-                        let query = self.bookmarks_filter.to_lowercase();
                         let matches: Vec<(usize, &bookmarks::Bookmark)> = self
                             .bookmarks
                             .iter()
                             .enumerate()
-                            .filter(|(_, b)| {
-                                query.is_empty()
-                                    || b.title.to_lowercase().contains(&query)
-                                    || b.url.to_lowercase().contains(&query)
-                            })
+                            .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
                             .collect();
                         let mut folders: Vec<&str> = matches
                             .iter()
@@ -3198,14 +3203,10 @@ impl App {
                                 .desired_width(f32::INFINITY)
                                 .hint_text("Filter..."),
                         );
-                        let query = self.history_filter.to_lowercase();
                         egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                             for entry in self.history.iter().rev() {
                                 let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                                if !query.is_empty()
-                                    && !entry.title.to_lowercase().contains(&query)
-                                    && !entry.url.to_lowercase().contains(&query)
-                                {
+                                if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
                                     continue;
                                 }
                                 if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked()
