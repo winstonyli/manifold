@@ -1987,6 +1987,51 @@ impl App {
         bounds.expand(MARGIN)
     }
 
+    /// `root_id` plus every descendant reachable through `parent` links,
+    /// restricted to the same level `root_id` itself is on (`node.group`
+    /// must match) -- a descendant that ended up in a different group is
+    /// invisible at this level, and would otherwise pull the fit rect
+    /// toward an off-screen position. Not the most efficient traversal
+    /// (checks every tab per frontier node), but this graph's tab counts
+    /// stay small enough that it's not worth a real adjacency structure.
+    fn subtree_ids(&self, root_id: &str) -> Vec<String> {
+        let Some(level_group) = self.tabs.get(root_id).map(|n| n.group.clone()) else {
+            return Vec::new();
+        };
+        let mut result = vec![root_id.to_string()];
+        let mut frontier = vec![root_id.to_string()];
+        while let Some(current) = frontier.pop() {
+            for (id, node) in &self.tabs {
+                if node.parent.as_deref() == Some(current.as_str())
+                    && node.group == level_group
+                    && !result.contains(id)
+                {
+                    result.push(id.clone());
+                    frontier.push(id.clone());
+                }
+            }
+        }
+        result
+    }
+
+    /// The tab context menu's "Fit Subtree" entry -- same margin/fallback
+    /// shape as `fit_all_nodes_scene_rect`, just scoped to `subtree_ids`
+    /// instead of the whole level.
+    fn fit_subtree_scene_rect(&self, root_id: &str) -> egui::Rect {
+        const MARGIN: f32 = 60.0;
+        let mut bounds = egui::Rect::NOTHING;
+        for id in self.subtree_ids(root_id) {
+            if let Some(node) = self.tabs.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
+            }
+        }
+        if !bounds.is_finite() {
+            return default_graph_scene_rect();
+        }
+        bounds.expand(MARGIN)
+    }
+
     /// `(level, node_count)` for whichever level `self.current_group` is
     /// currently viewing -- the key `build_graph_ui`'s settle-check
     /// compares against `graph_settled_key`, factored out so every call
@@ -3746,6 +3791,7 @@ impl App {
         let mut remove_from_group = false;
         let mut close_tab_requested = false;
         let mut duplicate_requested = false;
+        let mut fit_subtree_requested = false;
         let mut set_color: Option<Option<egui::Color32>> = None;
 
         let area = egui::Area::new(egui::Id::new("tab_context_menu"))
@@ -3771,6 +3817,14 @@ impl App {
                             if let Some(url) = self.tabs.get(&id).map(|n| n.url.clone()) {
                                 ui.ctx().copy_text(url);
                             }
+                            close = true;
+                        }
+                        if ui
+                            .button("Fit Subtree")
+                            .on_hover_text("Zoom the graph to frame just this tab and its children")
+                            .clicked()
+                        {
+                            fit_subtree_requested = true;
                             close = true;
                         }
                         ui.add_space(4.0);
@@ -3846,6 +3900,9 @@ impl App {
         }
         if duplicate_requested {
             self.duplicate_tab(&id);
+        }
+        if fit_subtree_requested {
+            self.graph_scene_rect = self.fit_subtree_scene_rect(&id);
         }
         // Closing the tab already makes its context menu meaningless, but
         // `close_tab` doesn't know about this menu -- clear it explicitly
