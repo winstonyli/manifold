@@ -990,6 +990,11 @@ struct App {
     /// found without first switching to Graph view. See `App::
     /// build_downloads_popup`.
     downloads_open: bool,
+    /// Whether the Tab-view toolbar's "Tab actions" dropdown is open --
+    /// consolidates "Mute Others"/"Close Others"/the "Pin All"/"Unpin All"
+    /// toggle into one popup instead of three always-visible buttons. See
+    /// `App::build_tab_actions_popup`.
+    tab_actions_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -1102,6 +1107,7 @@ impl Default for App {
             history_open: false,
             history_filter: String::new(),
             downloads_open: false,
+            tab_actions_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -3301,6 +3307,69 @@ impl App {
         }
     }
 
+    /// Tab view's "Tab actions" dropdown -- "Mute Others", "Close Others",
+    /// and the "Pin All"/"Unpin All" toggle in one popup, folded from three
+    /// always-visible toolbar buttons (a later session pass flagged the
+    /// toolbar as cramped -- confirmed live, text touching the window edge
+    /// even at 1300pt wide). Same anchored Area/Frame pattern
+    /// `build_downloads_popup` already uses.
+    fn build_tab_actions_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, focused_id: &str) {
+        let mut close = false;
+        let mut mute_others = false;
+        let mut close_others = false;
+        let mut toggle_pin_all = false;
+        let all_pinned = !self.tabs.is_empty() && self.tabs.values().all(|n| n.pinned);
+        let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(140.0);
+                        if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
+                            mute_others = true;
+                            close = true;
+                        }
+                        if ui.button("Close Others").on_hover_text("Close every other open tab").clicked()
+                        {
+                            close_others = true;
+                            close = true;
+                        }
+                        let label = if all_pinned { "Unpin All" } else { "Pin All" };
+                        let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
+                        if ui.button(label).on_hover_text(hover).clicked() {
+                            toggle_pin_all = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor_rect.contains(p))
+        });
+
+        if mute_others {
+            self.mute_all_except(focused_id);
+        }
+        if close_others {
+            self.close_all_except(focused_id);
+        }
+        if toggle_pin_all {
+            self.set_all_pinned(!all_pinned);
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close {
+            self.tab_actions_open = false;
+        }
+    }
+
     /// Tab view's "Mute Others" button: mutes every open tab except
     /// `keep_id`, regardless of any already-muted state, without touching
     /// `keep_id`'s own mute state either way. A one-shot action, not a
@@ -4386,11 +4455,8 @@ impl App {
         let mut navigate = None;
         let mut back_to_graph = false;
         let mut mute_toggle = false;
-        let mut mute_others_requested = false;
-        let mut close_others_requested = false;
-        let mut pin_all_requested = false;
-        let mut unpin_all_requested = false;
         let mut toggle_bookmark_requested = false;
+        let mut tab_actions_button_rect: Option<egui::Rect> = None;
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut history_button_rect: Option<egui::Rect> = None;
         let mut downloads_button_rect: Option<egui::Rect> = None;
@@ -4504,29 +4570,18 @@ impl App {
                     if ui.selectable_label(node_muted, "Muted").clicked() {
                         mute_toggle = true;
                     }
-                    if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
-                        mute_others_requested = true;
+                    // "Mute Others"/"Close Others"/"Pin All"/"Unpin All"
+                    // folded into one dropdown -- a later session pass
+                    // flagged the toolbar as cramped with all three as
+                    // always-visible buttons (confirmed live: text touching
+                    // the window edge even at 1300pt wide). Same anchored
+                    // Area/Frame popup pattern "Bookmarks (N)"/"History (N)"
+                    // already use.
+                    let tab_actions_response = ui.button("Tab actions");
+                    if tab_actions_response.clicked() {
+                        self.tab_actions_open = !self.tab_actions_open;
                     }
-                    if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
-                        close_others_requested = true;
-                    }
-                    // One toggling button rather than two separate ones --
-                    // same "label swaps with state" pattern "Collapse
-                    // Groups"/"Expand Groups" already uses. "All pinned"
-                    // needs at least one tab (an empty set vacuously
-                    // satisfies `all()`, which would otherwise show "Unpin
-                    // All" with nothing open to unpin).
-                    let all_pinned = !self.tabs.is_empty() && self.tabs.values().all(|n| n.pinned);
-                    let pin_all_label = if all_pinned { "Unpin All" } else { "Pin All" };
-                    let pin_all_hover =
-                        if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
-                    if ui.button(pin_all_label).on_hover_text(pin_all_hover).clicked() {
-                        if all_pinned {
-                            unpin_all_requested = true;
-                        } else {
-                            pin_all_requested = true;
-                        }
-                    }
+                    tab_actions_button_rect = Some(tab_actions_response.rect);
 
                     // `selectable_label`, same reasoning as `Muted` above:
                     // a pressed look for "already bookmarked" rather than
@@ -4808,18 +4863,6 @@ impl App {
         if mute_toggle {
             self.toggle_muted(&focused_id);
         }
-        if mute_others_requested {
-            self.mute_all_except(&focused_id);
-        }
-        if close_others_requested {
-            self.close_all_except(&focused_id);
-        }
-        if pin_all_requested {
-            self.set_all_pinned(true);
-        }
-        if unpin_all_requested {
-            self.set_all_pinned(false);
-        }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
         }
@@ -4836,6 +4879,11 @@ impl App {
         if self.downloads_open {
             if let Some(rect) = downloads_button_rect {
                 self.build_downloads_popup(ui, rect);
+            }
+        }
+        if self.tab_actions_open {
+            if let Some(rect) = tab_actions_button_rect {
+                self.build_tab_actions_popup(ui, rect, &focused_id);
             }
         }
         if screenshot_requested {
