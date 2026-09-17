@@ -456,6 +456,22 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
         .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
 }
 
+/// Per-channel linear interpolation between two colors -- `egui`/`epaint`
+/// has no built-in `Color32::lerp`. Used to ease a card's border color
+/// between its resting and hovered tint instead of snapping instantly,
+/// matching the same eased feel `animate_bool_responsive` already gives
+/// the hover glow.
+fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp_u8 = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(
+        lerp_u8(a.r(), b.r()),
+        lerp_u8(a.g(), b.g()),
+        lerp_u8(a.b(), b.b()),
+        lerp_u8(a.a(), b.a()),
+    )
+}
+
 /// A soft colored glow behind a graph card (tab or group), grown outward
 /// from its own rect with decreasing alpha -- used instead of a plain black
 /// drop-shadow, which was tried first and found live to be invisible
@@ -5773,26 +5789,29 @@ impl App {
                     let is_selected = self.selected_tabs.contains(&id);
                     let tag_color = self.tabs.get(&id).and_then(|n| n.color);
 
-                    let card_fill = if is_hovered {
-                        ui.visuals().extreme_bg_color.gamma_multiply(1.35)
-                    } else {
-                        ui.visuals().extreme_bg_color
-                    };
-                    // A tag color only shows through in the resting state --
-                    // focused/hovered stay their own established colors so
-                    // "this is the open tab"/"this is what you're pointing
-                    // at" remain the strongest, least ambiguous signals.
-                    let (border_width, border_color) = if is_focused {
-                        (2.5, ACCENT)
-                    } else if is_hovered {
-                        (1.5, ui.visuals().text_color())
-                    } else {
-                        (1.0, tag_color.unwrap_or(ui.visuals().weak_text_color()))
-                    };
+                    // Shared by the fill/border/glow eases below -- one
+                    // hover transition, not three separately-timed ones.
                     let hover_t = ui.ctx().animate_bool_responsive(
-                        egui::Id::new(("graph_node_glow_hover", id.as_str())),
+                        egui::Id::new(("graph_node_hover", id.as_str())),
                         is_hovered,
                     );
+                    let card_fill = ui.visuals().extreme_bg_color.gamma_multiply(1.0 + hover_t * 0.35);
+                    // A tag color only shows through in the resting state --
+                    // focused stays its own established color so "this is
+                    // the open tab" remains the strongest, least ambiguous
+                    // signal (not eased -- a hard override regardless of
+                    // whichever hover state it happens to be transitioning
+                    // through). The resting<->hovered width/color themselves
+                    // now ease via `hover_t` instead of snapping.
+                    let resting_color = tag_color.unwrap_or(ui.visuals().weak_text_color());
+                    let (border_width, border_color) = if is_focused {
+                        (2.5, ACCENT)
+                    } else {
+                        (
+                            1.0 + hover_t * 0.5,
+                            lerp_color32(resting_color, ui.visuals().text_color(), hover_t),
+                        )
+                    };
                     draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
                     ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                     ui.painter().rect_stroke(
@@ -6449,23 +6468,21 @@ impl App {
                             .collect();
                         let member_count = member_ids.len();
                         let overloaded = member_count > GROUP_OVERLOAD_THRESHOLD;
-                        let card_fill = if is_hovered {
-                            ui.visuals().extreme_bg_color.gamma_multiply(1.35)
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        let border_color =
-                            tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT });
+                        // Shared by the fill/border/glow eases below -- one
+                        // hover transition, not three separately-timed ones.
                         let hover_t = ui.ctx().animate_bool_responsive(
-                            egui::Id::new(("graph_group_glow_hover", id.as_str())),
+                            egui::Id::new(("graph_group_hover", id.as_str())),
                             is_hovered,
                         );
+                        let card_fill = ui.visuals().extreme_bg_color.gamma_multiply(1.0 + hover_t * 0.35);
+                        let border_color =
+                            tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT });
                         draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
                         ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
                         ui.painter().rect_stroke(
                             rect,
                             6.0 * inv_zoom,
-                            egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 } * inv_zoom, border_color),
+                            egui::Stroke::new((1.0 + hover_t * 0.5) * inv_zoom, border_color),
                             egui::StrokeKind::Inside,
                         );
 
