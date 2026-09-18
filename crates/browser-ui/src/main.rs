@@ -495,6 +495,42 @@ fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
+/// A toolbar icon button whose hover fill/text color eases in/out instead
+/// of snapping -- egui's stock `Button` picks its resting/hovered colors
+/// fresh every frame with no built-in transition of its own (same reason
+/// the graph cards needed their own `hover_t` easing earlier this
+/// session). `id` must be unique per button *concept*, not per call site --
+/// the same id reused across, say, the Tab and Graph toolbars' own gear
+/// buttons is fine, since only one of those toolbars is ever showing in a
+/// given frame to begin with. One frame of hover-state lag: this frame's
+/// color comes from *last* frame's hover (stashed in `ctx` memory), since
+/// a button's fill has to be picked before `ui.add` reveals whether the
+/// pointer is actually over its not-yet-laid-out rect -- imperceptible at
+/// any real frame rate, same "acceptable one-frame lag" the zoom-%
+/// toolbar readout and the dot-grid background already accept elsewhere.
+/// Deliberately scoped to a handful of toolbar icon buttons (Reload/Home/
+/// Screenshot/Print-to-PDF/Settings/Keyboard-Shortcuts/Settings-page-Back)
+/// rather than every `ui.button` call in the app -- see README.md's own
+/// "Toolbar icon-button hover easing" paragraph for why a full sweep
+/// wasn't attempted.
+fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
+    let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
+    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let bg = lerp_color32(
+        ui.visuals().widgets.inactive.weak_bg_fill,
+        ui.visuals().widgets.hovered.weak_bg_fill,
+        hover_t,
+    );
+    let fg = lerp_color32(
+        ui.visuals().widgets.inactive.fg_stroke.color,
+        ui.visuals().widgets.hovered.fg_stroke.color,
+        hover_t,
+    );
+    let response = ui.add(egui::Button::new(egui::RichText::new(label.into()).color(fg)).fill(bg));
+    ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
+    response
+}
+
 /// The actual shapes `draw_card_glow` paints -- split out so a caller whose
 /// rect isn't known until *after* its content is laid out (the save toast:
 /// an `egui::Frame` that auto-sizes to its own label) can still put the
@@ -1460,9 +1496,12 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if ui
-                        .button(format!("{} Back", egui_phosphor::regular::CARET_LEFT))
-                        .clicked()
+                    if icon_button_eased(
+                        ui,
+                        egui::Id::new("icon_btn_settings_back"),
+                        format!("{} Back", egui_phosphor::regular::CARET_LEFT),
+                    )
+                    .clicked()
                     {
                         self.close_settings_page();
                     }
@@ -4937,14 +4976,20 @@ impl App {
                     // `egui_phosphor` icon instead, same reasoning as every
                     // other icon migrated once the icon font was already
                     // wired in.
-                    if ui
-                        .button(egui_phosphor::regular::ARROW_CLOCKWISE)
-                        .on_hover_text("Reload")
-                        .clicked()
+                    if icon_button_eased(
+                        ui,
+                        egui::Id::new("icon_btn_reload"),
+                        egui_phosphor::regular::ARROW_CLOCKWISE,
+                    )
+                    .on_hover_text("Reload")
+                    .clicked()
                     {
                         reload_requested = true;
                     }
-                    if ui.button(egui_phosphor::regular::HOUSE).on_hover_text("Go to home page").clicked() {
+                    if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::regular::HOUSE)
+                        .on_hover_text("Go to home page")
+                        .clicked()
+                    {
                         home_requested = true;
                     }
 
@@ -5071,8 +5116,7 @@ impl App {
                     // `screenshot_path` -- this button is that same
                     // mechanism wired to a real default save location
                     // instead of a test-supplied path.
-                    if ui
-                        .button(egui_phosphor::regular::CAMERA)
+                    if icon_button_eased(ui, egui::Id::new("icon_btn_screenshot"), egui_phosphor::regular::CAMERA)
                         .on_hover_text("Screenshot")
                         .clicked()
                     {
@@ -5083,7 +5127,9 @@ impl App {
                     // OS/human input neither exists there. `PRINTTOPDF
                     // <path>` bypasses it directly for headless testing.
                     if !self.headless
-                        && ui.button(egui_phosphor::regular::PRINTER).on_hover_text("Print to PDF").clicked()
+                        && icon_button_eased(ui, egui::Id::new("icon_btn_pdf"), egui_phosphor::regular::PRINTER)
+                            .on_hover_text("Print to PDF")
+                            .clicked()
                     {
                         print_to_pdf_requested = true;
                     }
@@ -5113,14 +5159,20 @@ impl App {
                     }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
-                    let help_response = ui
-                        .button(egui_phosphor::regular::QUESTION)
-                        .on_hover_text("Keyboard Shortcuts (F1)");
+                    let help_response = icon_button_eased(
+                        ui,
+                        egui::Id::new("icon_btn_shortcuts_help"),
+                        egui_phosphor::regular::QUESTION,
+                    )
+                    .on_hover_text("Keyboard Shortcuts (F1)");
                     if help_response.clicked() {
                         self.shortcuts_help_open = !self.shortcuts_help_open;
                     }
                     shortcuts_help_button_rect = Some(help_response.rect);
-                    if ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings").clicked() {
+                    if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
+                        .on_hover_text("Settings")
+                        .clicked()
+                    {
                         self.toggle_settings_page();
                     }
                     if response.changed() {
@@ -5549,14 +5601,20 @@ impl App {
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                     }
-                    let help_response = ui
-                        .button(egui_phosphor::regular::QUESTION)
-                        .on_hover_text("Keyboard Shortcuts (F1)");
+                    let help_response = icon_button_eased(
+                        ui,
+                        egui::Id::new("icon_btn_shortcuts_help"),
+                        egui_phosphor::regular::QUESTION,
+                    )
+                    .on_hover_text("Keyboard Shortcuts (F1)");
                     if help_response.clicked() {
                         self.shortcuts_help_open = !self.shortcuts_help_open;
                     }
                     shortcuts_help_button_rect = Some(help_response.rect);
-                    if ui.button(egui_phosphor::regular::GEAR).on_hover_text("Settings").clicked() {
+                    if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
+                        .on_hover_text("Settings")
+                        .clicked()
+                    {
                         self.toggle_settings_page();
                     }
                 });
