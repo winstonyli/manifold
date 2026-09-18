@@ -4,6 +4,7 @@ mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod group_export;
+mod image_redirect_fetch;
 mod pdf;
 mod pdf_fetch;
 mod process_manager;
@@ -15,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
+use image_redirect_fetch::ImageRedirectFetcher;
 use pdf_fetch::PdfFetcher;
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
@@ -1407,6 +1409,8 @@ struct App {
     favicon_fetcher: FaviconFetcher,
     /// See `PdfPayload::outcome`'s own doc comment.
     pdf_fetcher: PdfFetcher,
+    /// See `image_redirect_fetch`'s own module doc comment.
+    image_redirect_fetcher: ImageRedirectFetcher,
     /// Origins already resolved (successfully or not) by `favicon_fetcher`
     /// -- checked before requesting again, so a failed origin (no
     /// `/favicon.ico`, a network error, undecodable bytes) isn't refetched
@@ -1751,6 +1755,7 @@ impl Default for App {
             suggestion_fetcher: SuggestionFetcher::new(),
             favicon_fetcher: FaviconFetcher::new(),
             pdf_fetcher: PdfFetcher::new(),
+            image_redirect_fetcher: ImageRedirectFetcher::new(),
             favicon_resolved: HashSet::new(),
             dropdown_highlighted: None,
             dragging: None,
@@ -3865,6 +3870,49 @@ impl App {
         );
         self.node_order.push(id);
         true
+    }
+
+    /// Converts a tab whose page turned out to be a raw image response into
+    /// a real `Image` graph node at the same position -- see `ipc_protocol::
+    /// EngineToHost::ImagePage`'s own doc comment. `path` is wherever
+    /// `image_redirect_fetch` already saved the downloaded bytes; reuses
+    /// `insert_image_node_with_id` verbatim, so a redirected image is
+    /// indistinguishable from one added via "+ Image" from this point on.
+    /// Reparents the tab's own children to its own parent and clears the
+    /// same dragging/hovered/focused guards `close_tab` does -- but doesn't
+    /// push to `closed_tabs`, since this isn't a user-initiated close to
+    /// remember as reopenable.
+    fn redirect_tab_to_image(&mut self, tab_id: &str, path: String) {
+        let Some((parent, group, pos)) =
+            self.nodes.get(tab_id).map(|n| (n.parent.clone(), n.group.clone(), n.pos))
+        else {
+            return;
+        };
+        for node in self.nodes.values_mut() {
+            if node.parent.as_deref() == Some(tab_id) {
+                node.parent = parent.clone();
+            }
+        }
+        self.nodes.remove(tab_id);
+        self.node_order.retain(|t| t != tab_id);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_thumbnail(tab_id);
+        }
+        if self.dragging.as_deref() == Some(tab_id) {
+            self.dragging = None;
+        }
+        if self.hovered.as_deref() == Some(tab_id) {
+            self.hovered = None;
+        }
+        if self.focused.as_deref() == Some(tab_id) {
+            self.focused = None;
+            self.view_mode = ViewMode::Graph;
+            self.find_bar_open = false;
+            self.find_result = None;
+        }
+        let id = self.alloc_image_id();
+        self.insert_image_node_with_id(id, path, pos, group);
+        self.save_session();
     }
 
     /// Inserts a new PDF node with a fresh id at the current level,
@@ -9989,6 +10037,15 @@ impl App {
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
+        // `(tab_id, url)` pairs to hand to `image_redirect_fetcher` once
+        // this whole per-tab loop finishes -- deferred for the same reason
+        // as `download_events` below (`node` holds a live mutable borrow of
+        // this one `self.nodes` entry for the whole drain; the actual
+        // tab-to-image-node conversion, once the fetch completes, needs
+        // `self.nodes.remove`/`insert`, so even just *starting* the fetch
+        // here stays consistent with that rule rather than being a special
+        // case).
+        let mut image_page_tabs: Vec<(String, String)> = Vec::new();
         // Download events, deferred the same way as `frame_updates`/
         // `crashes`/etc. above rather than applied inline: unlike before the
         // Tab/Download merge onto one shared `self.nodes` map, `node` here
@@ -10099,6 +10156,9 @@ impl App {
                     }
                     EngineToHost::JsonBody { body } => {
                         node.json_body = Some(body);
+                    }
+                    EngineToHost::ImagePage => {
+                        image_page_tabs.push((tab_id.clone(), node.url.clone()));
                     }
                     EngineToHost::ContextMenuLink { x, y, href } => {
                         // Content-area coordinates -> window point space:
@@ -10238,6 +10298,15 @@ impl App {
             self.spawn_new_tab(parent, group, &url);
         }
 
+        // See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment --
+        // kicks off `browser-ui`'s own independent fetch of this tab's
+        // current url; the actual tab-to-image-node conversion happens once
+        // that completes, in `image_redirect_fetcher`'s own `tick()` drain
+        // below, not here.
+        for (tab_id, url) in image_page_tabs {
+            self.image_redirect_fetcher.request(tab_id, url);
+        }
+
         for (origin, result) in self.favicon_fetcher.tick() {
             self.favicon_resolved.insert(origin.clone());
             if let Some(image) = result {
@@ -10275,6 +10344,21 @@ impl App {
                         pdf.outcome = Some(Err(err));
                     }
                 }
+            }
+        }
+
+        for result in self.image_redirect_fetcher.tick() {
+            // The tab may have been closed, or navigated somewhere else,
+            // while this fetch was still in flight -- only convert it if
+            // it's still the same tab still showing the same url that
+            // triggered the fetch in the first place.
+            let still_current = self
+                .nodes
+                .get(&result.tab_id)
+                .and_then(|n| n.as_tab())
+                .is_some_and(|t| t.url == result.url);
+            if let (true, Some(path)) = (still_current, result.path) {
+                self.redirect_tab_to_image(&result.tab_id, path);
             }
         }
 

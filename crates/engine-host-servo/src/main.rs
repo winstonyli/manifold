@@ -62,6 +62,11 @@ struct Delegate {
     /// this method's `&self` borrow has ended -- can hold an owned clone of
     /// just this one cell, not the whole `Delegate`.
     json_body: Rc<RefCell<Option<String>>>,
+    /// See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment -- same
+    /// `evaluate_javascript` call as `json_body`, just the other branch of
+    /// the same `document.contentType` check, `Rc`-wrapped for the same
+    /// reason.
+    image_page: Rc<RefCell<bool>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -108,17 +113,24 @@ impl WebViewDelegate for Delegate {
         nav.dirty = true;
         drop(nav);
 
-        // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
-        // Unlike WebKit/WebView2's `ExecuteScript`, Servo's own
+        // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own doc
+        // comments. Unlike WebKit/WebView2's `ExecuteScript`, Servo's own
         // `evaluate_javascript` hands back a real structured `JSValue`, not
-        // a JSON-encoded string -- no unescaping step needed here.
+        // a JSON-encoded string -- no unescaping step needed here. The
+        // `"json\n"` prefix still disambiguates the two outcomes over this
+        // one script round trip, same as the other two script-eval engines.
         if complete {
             let json_body = self.json_body.clone();
+            let image_page = self.image_page.clone();
             webview.evaluate_javascript(
-                "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
                 move |result| {
                     if let Ok(JSValue::String(text)) = result {
-                        *json_body.borrow_mut() = Some(text);
+                        if let Some(body) = text.strip_prefix("json\n") {
+                            *json_body.borrow_mut() = Some(body.to_string());
+                        } else if text == "image" {
+                            *image_page.borrow_mut() = true;
+                        }
                     }
                 },
             );
@@ -218,6 +230,7 @@ fn main() {
         }),
         context_menu_link: RefCell::new(None),
         json_body: Rc::new(RefCell::new(None)),
+        image_page: Rc::new(RefCell::new(false)),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -352,6 +365,10 @@ fn main() {
 
         if let Some(body) = delegate.json_body.borrow_mut().take() {
             let _ = control.send(&EngineToHost::JsonBody { body });
+        }
+
+        if std::mem::take(&mut *delegate.image_page.borrow_mut()) {
+            let _ = control.send(&EngineToHost::ImagePage);
         }
 
         if visible && *delegate.frame_ready.borrow() {

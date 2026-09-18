@@ -235,11 +235,12 @@ fn main() {
         });
     }
 
-    // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment --
-    // filled in once per navigation, right after `loading` transitions
-    // true -> false below, by the same `document.contentType` script-eval
-    // check every engine that sends this message uses.
+    // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own doc
+    // comments -- filled in once per navigation, right after `loading`
+    // transitions true -> false below, by the same `document.contentType`
+    // script-eval check every engine that sends either message uses.
     let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let pending_image_page: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
 
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
@@ -434,19 +435,29 @@ fn main() {
                 loading: nav_now.4,
             });
             // Loading just finished -- check once whether the page that
-            // loaded is a raw JSON response (see `EngineToHost::JsonBody`'s
-            // own doc comment for why this checks `document.contentType`
-            // rather than guessing from the url).
+            // loaded is a raw JSON or image response (see `EngineToHost::
+            // JsonBody`/`ImagePage`'s own doc comments for why this checks
+            // `document.contentType` rather than guessing from the url).
+            // The `"json\n"` prefix disambiguates the two outcomes over one
+            // script-eval round trip -- safe since it's prepended here
+            // before any real page content, never something a real JSON
+            // body could itself start with by coincidence.
             if was_loading && !nav_now.4 {
-                let pending = pending_json_body.clone();
+                let pending_json = pending_json_body.clone();
+                let pending_image = pending_image_page.clone();
                 webview.run_javascript(
-                    "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                    "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
                     gtk::gio::Cancellable::NONE,
                     move |result| {
                         if let Ok(js_result) = result {
                             if let Some(value) = js_result.js_value() {
                                 if value.is_string() {
-                                    *pending.borrow_mut() = Some(value.to_str().to_string());
+                                    let text = value.to_str().to_string();
+                                    if let Some(body) = text.strip_prefix("json\n") {
+                                        *pending_json.borrow_mut() = Some(body.to_string());
+                                    } else if text == "image" {
+                                        *pending_image.borrow_mut() = true;
+                                    }
                                 }
                             }
                         }
@@ -465,6 +476,10 @@ fn main() {
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::JsonBody { body });
+        }
+
+        if std::mem::take(&mut *pending_image_page.borrow_mut()) {
+            let _ = to_host.send(&EngineToHost::ImagePage);
         }
 
         if let Some(playing) = pending_audio_playing.borrow_mut().take() {

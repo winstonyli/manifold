@@ -47,6 +47,15 @@ pub fn new_shared_json_body() -> SharedJsonBody {
     Rc::new(RefCell::new(None))
 }
 
+/// See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment -- same
+/// `NavigationCompleted` handler as `SharedJsonBody`, just the other branch
+/// of the same `document.contentType` check.
+pub type SharedImagePage = Rc<RefCell<bool>>;
+
+pub fn new_shared_image_page() -> SharedImagePage {
+    Rc::new(RefCell::new(false))
+}
+
 /// The raw COM binding's `CanGoBack`/`CanGoForward` are `[out, retval]
 /// BOOL` params, not idiomatic return values -- this is the shared
 /// out-param dance for both.
@@ -67,7 +76,12 @@ fn can_go_forward(webview: &ICoreWebView2) -> bool {
 /// never explicitly removed -- matches this project's other engine-hosts,
 /// which live exactly as long as the process and never unregister handlers
 /// either (nothing to clean up, the whole process exits on `Shutdown`).
-pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState, json_body: SharedJsonBody) {
+pub fn register_handlers(
+    webview: &ICoreWebView2,
+    state: SharedNavState,
+    json_body: SharedJsonBody,
+    image_page: SharedImagePage,
+) {
     let mut token = Default::default();
 
     {
@@ -99,6 +113,7 @@ pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState, json_bo
         let webview_for_query = webview.clone();
         let webview_for_json = webview.clone();
         let json_body = json_body.clone();
+        let image_page = image_page.clone();
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
@@ -113,26 +128,35 @@ pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState, json_bo
             s.dirty = true;
             drop(s);
 
-            // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
-            // `ExecuteScript`'s own return value comes back JSON-encoded
-            // (an already-quoted-and-escaped string, or the literal text
-            // `null`) -- `serde_json::from_str::<Option<String>>` decodes
-            // both cases correctly and un-escapes real page content
+            // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own
+            // doc comments. `ExecuteScript`'s own return value comes back
+            // JSON-encoded (an already-quoted-and-escaped string, or the
+            // literal text `null`) -- `serde_json::from_str::<Option<String>>`
+            // decodes both cases correctly and un-escapes real page content
             // (quotes/newlines/etc a JSON body can genuinely contain),
             // unlike `input.rs`'s own plain strip-outer-quotes trick, which
             // only stays safe there because a link href effectively never
-            // contains a literal `"`.
+            // contains a literal `"`. The `"json\n"` prefix disambiguates
+            // the JSON-body and image-page outcomes over this one script
+            // round trip -- safe since it's prepended before any real page
+            // content, never something a real JSON body could itself start
+            // with by coincidence.
             let json_body = json_body.clone();
+            let image_page = image_page.clone();
             let exec_handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                 if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
-                    *json_body.borrow_mut() = Some(text);
+                    if let Some(body) = text.strip_prefix("json\n") {
+                        *json_body.borrow_mut() = Some(body.to_string());
+                    } else if text == "image" {
+                        *image_page.borrow_mut() = true;
+                    }
                 }
                 Ok(())
             }));
             unsafe {
                 let _ = webview_for_json.ExecuteScript(
                     &HSTRING::from(
-                        "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                        "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
                     ),
                     &exec_handler,
                 );

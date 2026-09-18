@@ -17,7 +17,7 @@ use cef::*;
 use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::{ClientBuilder, new_shared_json_body};
+use client::{ClientBuilder, new_shared_image_page, new_shared_json_body};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
@@ -121,6 +121,7 @@ fn main() {
     let closed = new_shared_closed();
     let context_menu_link = new_shared_context_menu_link();
     let json_body = new_shared_json_body();
+    let image_page = new_shared_image_page();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -146,6 +147,7 @@ fn main() {
             closed.clone(),
             context_menu_link.clone(),
             json_body.clone(),
+            image_page.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -314,6 +316,10 @@ fn main() {
 
         if let Some(body) = json_body.borrow_mut().take() {
             let _ = control.send(&EngineToHost::JsonBody { body });
+        }
+
+        if std::mem::take(&mut *image_page.borrow_mut()) {
+            let _ = control.send(&EngineToHost::ImagePage);
         }
 
         for event in download_path.borrow_mut().queue.drain(..) {

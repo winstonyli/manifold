@@ -278,4 +278,21 @@ pub enum EngineToHost {
     /// URL changes for real, same as any other per-navigation state — see
     /// `App::json_body`'s own doc comment.
     JsonBody { body: String },
+    /// The page that just finished loading is a raw image response --
+    /// detected the exact same way as `JsonBody` (once the load finishes, a
+    /// script/`V8Context` eval reads `document.contentType`), just checking
+    /// for an `image/` prefix instead of an exact `application/json` match.
+    /// Carries no data of its own: unlike `JsonBody`, `browser-ui` doesn't
+    /// try to read the image's bytes back out of the engine at all -- it
+    /// does its own independent `GET` of this tab's current url (same
+    /// "browser-ui does its own uniform HTTP fetch, engine-agnostic" posture
+    /// `favicon_fetch` already established for favicons) and, once that
+    /// succeeds, replaces the tab with a real `Image` graph node at the same
+    /// position -- turning "navigated straight to a picture" into the same
+    /// outcome a user picking that same file via "+ Image" would get,
+    /// rather than leaving it sitting there as an ordinary tab showing
+    /// whichever native image-viewer page each engine happens to render for
+    /// a direct image response. Sent by all four engines (the same
+    /// detection path `JsonBody` uses on each).
+    ImagePage,
 }
