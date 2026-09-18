@@ -1117,6 +1117,14 @@ struct App {
     download_context_menu: Option<(String, egui::Pos2)>,
     /// Same fade-out role as `group_context_menu_cache`, for `download_context_menu`.
     download_context_menu_cache: Option<(String, egui::Pos2)>,
+    /// `(note_id, screen_pos)` while a right-click context menu is showing
+    /// for that note's card -- Remove from Group/Delete, same "consolidate
+    /// scattered card actions" idea every other kind's own context menu
+    /// already applies. A press landing on a note's card opens this instead
+    /// of starting a marquee, same reasoning as the others.
+    note_context_menu: Option<(String, egui::Pos2)>,
+    /// Same fade-out role as `group_context_menu_cache`, for `note_context_menu`.
+    note_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `(tab_id, screen_pos)` while a right-click context menu is showing
     /// for that tab's card -- Pin/color/Remove from Group/Close in one
     /// place, same "consolidate scattered card actions" idea
@@ -1510,6 +1518,8 @@ impl Default for App {
             group_context_menu_cache: None,
             download_context_menu: None,
             download_context_menu_cache: None,
+            note_context_menu: None,
+            note_context_menu_cache: None,
             tab_context_menu: None,
             tab_context_menu_cache: None,
             quick_switcher: None,
@@ -4937,6 +4947,85 @@ impl App {
         }
     }
 
+    /// Right-click menu for a note's card -- Copy Text, Remove from Group
+    /// (only while the note actually has one), and Delete. Same
+    /// consolidate-scattered-card-actions pattern (and identical
+    /// `fade_popup_state`/`clicked_outside_popup` shape) as
+    /// `build_download_context_menu`, which this closely mirrors.
+    fn build_note_context_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.note_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("note_context_menu_fade"),
+            &current,
+            &mut self.note_context_menu_cache,
+        ) else {
+            return;
+        };
+        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
+            self.note_context_menu = None;
+            return;
+        };
+        let mut close = false;
+        let mut copy_text = false;
+        let mut remove_from_group = false;
+        let mut delete = false;
+
+        let area = egui::Area::new(egui::Id::new("note_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        if ui.button("Copy Text").clicked() {
+                            copy_text = true;
+                            close = true;
+                        }
+                        if has_group {
+                            ui.separator();
+                            if ui.button("Remove from Group").clicked() {
+                                remove_from_group = true;
+                                close = true;
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Delete").clicked() {
+                            delete = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
+        if clicked_outside {
+            close = true;
+        }
+
+        if copy_text {
+            if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
+                ui.ctx().copy_text(text);
+            }
+        }
+        if remove_from_group {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.group = None;
+            }
+        }
+        if delete {
+            self.remove_node(&id);
+            self.save_session();
+        }
+        if close {
+            self.note_context_menu = None;
+        }
+    }
+
     /// Right-click menu for a tab's card -- Pin/Unpin, the same 6-color
     /// swatch row groups already have, Remove from Group (only while
     /// actually viewing a group's own subgraph, same scope as the card's
@@ -6246,7 +6335,17 @@ impl App {
                         })
                     })
                     .flatten();
-                let hit_tab = (hit_group.is_none() && hit_download.is_none())
+                let hit_note = (hit_group.is_none() && hit_download.is_none())
+                    .then(|| {
+                        self.notes_at_current_level().into_iter().find(|nid| {
+                            self.nodes.get(nid).is_some_and(|n| {
+                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), NOTE_NODE_SIZE)
+                                    .contains(world_pos)
+                            })
+                        })
+                    })
+                    .flatten();
+                let hit_tab = (hit_group.is_none() && hit_download.is_none() && hit_note.is_none())
                     .then(|| {
                         self.tabs_at_current_level().into_iter().find(|tid| {
                             self.nodes.get(tid).is_some_and(|n| {
@@ -6259,21 +6358,31 @@ impl App {
                 if let Some(gid) = hit_group {
                     self.group_context_menu = Some((gid, pos));
                     self.download_context_menu = None;
+                    self.note_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(did) = hit_download {
                     self.download_context_menu = Some((did, pos));
                     self.group_context_menu = None;
+                    self.note_context_menu = None;
+                    self.tab_context_menu = None;
+                    self.rect_select_start = None;
+                } else if let Some(nid) = hit_note {
+                    self.note_context_menu = Some((nid, pos));
+                    self.group_context_menu = None;
+                    self.download_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(tid) = hit_tab {
                     self.tab_context_menu = Some((tid, pos));
                     self.group_context_menu = None;
                     self.download_context_menu = None;
+                    self.note_context_menu = None;
                     self.rect_select_start = None;
                 } else {
                     self.group_context_menu = None;
                     self.download_context_menu = None;
+                    self.note_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = Some(pos);
                 }
@@ -7391,6 +7500,32 @@ impl App {
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
                         self.dragging = None;
+                        // Dropping a note onto a group's card joins that
+                        // group -- same "drop onto a card" gesture a tab
+                        // already has, only meaningful at the top level
+                        // where notes and groups are rendered (and can
+                        // overlap) together. Unlike a tab, dropping a note
+                        // on another ungrouped note doesn't auto-create a
+                        // new group -- that's a tab-specific convenience
+                        // this doesn't try to match.
+                        if self.current_group.is_none() {
+                            if let Some(note_pos) = self.nodes.get(&id).map(|n| n.pos) {
+                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                                    self.nodes.get(gid).is_some_and(|g| {
+                                        egui::Rect::from_center_size(
+                                            egui::Pos2::new(g.pos.x, g.pos.y),
+                                            GROUP_NODE_SIZE,
+                                        )
+                                        .contains(egui::Pos2::new(note_pos.x, note_pos.y))
+                                    })
+                                });
+                                if let Some(group_id) = dropped_on_group {
+                                    if let Some(node) = self.nodes.get_mut(&id) {
+                                        node.group = Some(group_id);
+                                    }
+                                }
+                            }
+                        }
                         self.save_session();
                     }
                     if is_hovered {
@@ -7561,7 +7696,7 @@ impl App {
                                     ui.visuals().text_color(),
                                 );
                                 let count_label = format!(
-                                    "{} tab{}",
+                                    "{} member{}",
                                     member_count,
                                     if member_count == 1 { "" } else { "s" }
                                 );
@@ -7932,6 +8067,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.download_context_menu = None;
+            self.note_context_menu = None;
             self.tab_context_menu = None;
         }
         if leave_group_requested {
@@ -7947,6 +8083,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.download_context_menu = None;
+            self.note_context_menu = None;
             self.tab_context_menu = None;
         }
         if let Some(id) = group_close_requested {
@@ -7986,6 +8123,7 @@ impl App {
         }
         self.build_group_context_menu(ui);
         self.build_download_context_menu(ui);
+        self.build_note_context_menu(ui);
         self.build_tab_context_menu(ui);
     }
 }
