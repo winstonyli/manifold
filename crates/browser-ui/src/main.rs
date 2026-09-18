@@ -5911,18 +5911,16 @@ impl App {
                     }
                 });
             });
-        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
-        let recently_closed_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
-        if recently_closed_fade > 0.0 {
-            if let Some(rect) = recently_closed_button_rect {
-                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
-            }
-        }
-        self.build_group_context_menu(ui);
-        self.build_download_context_menu(ui);
-        self.build_tab_context_menu(ui);
+        // `build_shortcuts_help`/`build_recently_closed_popup`/the three
+        // context menus below are all deferred to the very end of this
+        // function (past the Scene/`overlay_painter` node-rendering block),
+        // not called here where their button rects are computed -- found
+        // live that a card's title/pin-icon decorations (painted via
+        // `overlay_painter`, a *separate* `Order::Foreground` layer created
+        // further down) rendered on top of these popups, since within one
+        // egui `Order` tier, layers paint in the order they're first
+        // touched each frame, and `overlay_painter` didn't exist yet at
+        // this point in the function.
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
@@ -7663,11 +7661,6 @@ impl App {
                     node.group = Some(target_id.clone());
                 }
             }
-            for node in self.nodes.values_mut() {
-                if node.group.as_deref() == Some(source_id.as_str()) {
-                    node.group = Some(target_id.clone());
-                }
-            }
             self.nodes.remove(&source_id);
             self.node_order.retain(|g| g != &source_id);
         }
@@ -7675,6 +7668,23 @@ impl App {
             self.renaming_group = Some((id, draft));
             self.pending_focus_rename = true;
         }
+
+        // Built last, now that `overlay_painter`'s node-decoration layer
+        // above already exists this frame -- see this function's own note
+        // by `shortcuts_help_button_rect`/`recently_closed_button_rect` for
+        // why these can't be built back where those rects are computed.
+        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
+        let recently_closed_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
+        if recently_closed_fade > 0.0 {
+            if let Some(rect) = recently_closed_button_rect {
+                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
+            }
+        }
+        self.build_group_context_menu(ui);
+        self.build_download_context_menu(ui);
+        self.build_tab_context_menu(ui);
     }
 }
 
