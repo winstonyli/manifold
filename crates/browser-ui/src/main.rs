@@ -938,6 +938,12 @@ struct TabSpawnOutcome {
 
 struct App {
     window: Option<Arc<Window>>,
+    /// The OS window title `update_window_title` last actually set --
+    /// compared against each frame's freshly computed title so `Window::
+    /// set_title` (a real OS call) is only made on an actual change, not
+    /// once a frame regardless (this app's winit loop runs `ControlFlow::
+    /// Poll`, redrawing continuously).
+    last_window_title: String,
     gpu: Option<GpuState>,
     tabs: HashMap<String, TabNode>,
     /// Stable iteration/z-order for graph rendering and hit-testing — a
@@ -1359,6 +1365,7 @@ impl Default for App {
         let bookmarks = bookmarks::load();
         Self {
             window: None,
+            last_window_title: "multiengine-browser".to_string(),
             gpu: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
@@ -1454,6 +1461,34 @@ impl App {
         match self.view_mode {
             ViewMode::Tab => CHROME_HEIGHT_POINTS,
             ViewMode::Graph | ViewMode::Settings => GRAPH_TOOLBAR_HEIGHT_POINTS,
+        }
+    }
+
+    /// Keeps the OS window title in sync with the focused tab's own title
+    /// -- previously hardcoded to `"multiengine-browser"` regardless of
+    /// what was open, unlike every real browser's own "the window
+    /// represents the page you're looking at" convention. Reflects
+    /// `self.focused` regardless of `view_mode` (it's "the last tab you
+    /// were looking at" even from Graph/Settings, same reasoning
+    /// `self.focused` already uses as the default parent for a new tab
+    /// there). Falls back to the url if the title hasn't arrived yet
+    /// (early in a fresh navigation), and to the plain app name if nothing
+    /// is focused at all (no tabs open, or a tab that's since vanished).
+    /// Called once a frame; only actually calls `Window::set_title` when
+    /// the computed title changed from `last_window_title`.
+    fn update_window_title(&mut self) {
+        let Some(window) = &self.window else { return };
+        let title = self
+            .focused
+            .as_ref()
+            .and_then(|id| self.tabs.get(id))
+            .map(|n| if n.title.is_empty() { n.url.as_str() } else { n.title.as_str() })
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("{t} — multiengine-browser"))
+            .unwrap_or_else(|| "multiengine-browser".to_string());
+        if title != self.last_window_title {
+            window.set_title(&title);
+            self.last_window_title = title;
         }
     }
 
@@ -7698,6 +7733,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                             }
                         }
+                        self.update_window_title();
                         let ctx = self.egui_ctx.clone();
                         let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
                         state.handle_platform_output(window.as_ref(), output.platform_output.clone());
