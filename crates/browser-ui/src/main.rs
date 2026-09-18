@@ -6640,6 +6640,35 @@ impl App {
         }
     }
 
+    /// The trailing "Keyboard Shortcuts (F1)" / Settings-gear pair that sits
+    /// at the end of *both* Tab view's and Graph view's own toolbar --
+    /// identical in both (same icons, same click behavior) since either
+    /// view needs a way to reach shortcuts help and Settings regardless of
+    /// which one it is. Was two hand-copied blocks before this; now drawn
+    /// once here and called from both `build_tab_ui`/`build_graph_ui`.
+    /// Returns the help button's own rect, which each caller still needs
+    /// for its own `build_shortcuts_help(ui, shortcuts_help_button_rect)`
+    /// call further down (unaffected by this -- that popup itself isn't
+    /// duplicated, just the button that opens it).
+    fn build_help_settings_cluster(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let help_response = icon_button_eased(
+            ui,
+            egui::Id::new("icon_btn_shortcuts_help"),
+            egui_phosphor::regular::QUESTION,
+        )
+        .on_hover_text("Keyboard Shortcuts (F1)");
+        if help_response.clicked() {
+            self.shortcuts_help_open = !self.shortcuts_help_open;
+        }
+        if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
+            .on_hover_text("Settings")
+            .clicked()
+        {
+            self.toggle_settings_page();
+        }
+        help_response.rect
+    }
+
     fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
         let Some(focused_id) = self.focused.clone() else {
             self.view_mode = ViewMode::Graph;
@@ -6980,22 +7009,7 @@ impl App {
                     }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
-                    let help_response = icon_button_eased(
-                        ui,
-                        egui::Id::new("icon_btn_shortcuts_help"),
-                        egui_phosphor::regular::QUESTION,
-                    )
-                    .on_hover_text("Keyboard Shortcuts (F1)");
-                    if help_response.clicked() {
-                        self.shortcuts_help_open = !self.shortcuts_help_open;
-                    }
-                    shortcuts_help_button_rect = Some(help_response.rect);
-                    if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
-                        .on_hover_text("Settings")
-                        .clicked()
-                    {
-                        self.toggle_settings_page();
-                    }
+                    shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                     if response.changed() {
                         self.open_tab_suggestions =
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
@@ -7512,22 +7526,7 @@ impl App {
                     if let Some(err) = &self.tab_spawn_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                     }
-                    let help_response = icon_button_eased(
-                        ui,
-                        egui::Id::new("icon_btn_shortcuts_help"),
-                        egui_phosphor::regular::QUESTION,
-                    )
-                    .on_hover_text("Keyboard Shortcuts (F1)");
-                    if help_response.clicked() {
-                        self.shortcuts_help_open = !self.shortcuts_help_open;
-                    }
-                    shortcuts_help_button_rect = Some(help_response.rect);
-                    if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
-                        .on_hover_text("Settings")
-                        .clicked()
-                    {
-                        self.toggle_settings_page();
-                    }
+                    shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                 });
             });
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
