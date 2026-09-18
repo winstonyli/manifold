@@ -20,6 +20,16 @@ pub const JSON_BODY_RESULT: &str = "json-body-result";
 /// other branch; carries no argument list of its own since `browser-ui`
 /// doesn't need anything back beyond "yes, this is an image."
 pub const IMAGE_PAGE_RESULT: &str = "image-page-result";
+/// See `ipc_protocol::EngineToHost::AudioPlayingChanged`'s own doc comment
+/// for why CEF never sent this before -- a real native read would need the
+/// same all-or-nothing `AudioHandler` `HostToEngine::SetMuted`'s own doc
+/// comment already rules out. This is a *different*, lighter mechanism:
+/// `nav_handler.rs`'s own polling timer sends `CHECK_AUDIO_PLAYING`
+/// periodically (not once per navigation, unlike `CHECK_JSON_BODY` --
+/// there's no single event to hook, audio can start/stop at any time), and
+/// the reply is a real boolean argument, not a string.
+pub const CHECK_AUDIO_PLAYING: &str = "check-audio-playing";
+pub const AUDIO_PLAYING_RESULT: &str = "audio-playing-result";
 
 #[derive(Clone)]
 pub struct EngineRenderProcessHandler {}
@@ -46,7 +56,18 @@ wrap_render_process_handler! {
             let (Some(frame), Some(message)) = (frame, message) else {
                 return 0;
             };
-            if CefString::from(&message.name()).to_string() != CHECK_JSON_BODY {
+            let name = CefString::from(&message.name()).to_string();
+            if name == CHECK_AUDIO_PLAYING {
+                if let Some(mut reply) = process_message_create(Some(&AUDIO_PLAYING_RESULT.into())) {
+                    if let Some(args) = reply.argument_list() {
+                        let playing = frame.v8_context().is_some_and(|context| eval_audio_playing(&context));
+                        args.set_bool(0, playing as i32);
+                    }
+                    frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
+                }
+                return 1;
+            }
+            if name != CHECK_JSON_BODY {
                 return 0;
             }
 
@@ -103,6 +124,31 @@ fn eval_page_kind(context: &V8Context) -> Option<PageKind> {
     };
     context.exit();
     kind
+}
+
+/// Same media-element-only approximation `HostToEngine::SetMuted`'s own CEF
+/// handler uses for the write side: true if any `<video>`/`<audio>` element
+/// is currently playing and not muted. Misses audio the page produces
+/// through the Web Audio API alone, with no media element behind it (some
+/// games/synths) -- a real native read (WebView2/WebKit's own passive
+/// property) has no such gap, but doesn't exist for CEF at all without the
+/// full `AudioHandler` `ipc_protocol::EngineToHost::AudioPlayingChanged`'s
+/// own doc comment already rules out as disproportionate. This covers the
+/// common case (YouTube, most players) without that cost.
+fn eval_audio_playing(context: &V8Context) -> bool {
+    context.enter();
+    let mut retval: Option<V8Value> = None;
+    let mut exception: Option<V8Exception> = None;
+    let ok = context.eval(
+        Some(&"Array.from(document.querySelectorAll('video,audio')).some(function(el){return !el.paused&&!el.muted;});".into()),
+        None,
+        0,
+        Some(&mut retval),
+        Some(&mut exception),
+    );
+    let playing = ok != 0 && retval.is_some_and(|v| v.is_bool() != 0 && v.bool_value() != 0);
+    context.exit();
+    playing
 }
 
 fn eval_string(context: &V8Context, code: &str) -> Option<String> {

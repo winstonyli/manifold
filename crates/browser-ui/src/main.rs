@@ -6721,8 +6721,9 @@ impl App {
                             }
                         });
 
-                    // WebView2/WebKit only — see `HostToEngine::SetMuted`'s
-                    // doc comment for CEF/Servo's gap. `selectable_label`
+                    // WebView2/WebKit/CEF -- Servo only, now, per
+                    // `HostToEngine::SetMuted`'s own doc comment.
+                    // `selectable_label`
                     // gives a pressed look while muted, same minimal
                     // indicator shape the engine picker's own selected row
                     // uses. Icon swaps `SPEAKER_HIGH`/`SPEAKER_X` by state

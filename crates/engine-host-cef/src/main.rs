@@ -17,16 +17,23 @@ use cef::*;
 use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::{ClientBuilder, new_shared_image_page, new_shared_json_body};
+use client::{ClientBuilder, new_shared_audio_playing, new_shared_image_page, new_shared_json_body};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::new_shared_nav_state;
 use render_handler::EngineRenderHandler;
+use render_process_handler::CHECK_AUDIO_PLAYING;
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
+/// How often to poll for audio-playing state -- see `ipc_protocol::
+/// EngineToHost::AudioPlayingChanged`'s own doc comment for why CEF needs a
+/// poll at all instead of a real native event. A full second is generous
+/// (nothing here needs sub-second precision) against the real cost of an
+/// extra `V8Context::eval` round trip every tick.
+const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 fn main() {
     // Matches cefsimple's shared::load_cef(): initializes the CEF API
@@ -122,6 +129,9 @@ fn main() {
     let context_menu_link = new_shared_context_menu_link();
     let json_body = new_shared_json_body();
     let image_page = new_shared_image_page();
+    let audio_playing = new_shared_audio_playing();
+    let mut last_reported_audio_playing = false;
+    let mut last_audio_poll = std::time::Instant::now();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -148,6 +158,7 @@ fn main() {
             context_menu_link.clone(),
             json_body.clone(),
             image_page.clone(),
+            audio_playing.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -265,12 +276,26 @@ fn main() {
                         host.show_dev_tools(None, None, None, None);
                     }
                 }
-                // CEF's only equivalent would be a full `AudioHandler`
-                // taking over raw PCM delivery entirely -- see
-                // `ipc_protocol::HostToEngine::SetMuted`'s doc comment for
-                // why that's out of scope for a toggle this minor. Silent
-                // no-op, same per-engine gap as the audio indicator itself.
-                HostToEngine::SetMuted { .. } => {}
+                // A real native mute would still mean the full `AudioHandler`
+                // `ipc_protocol::HostToEngine::SetMuted`'s own doc comment
+                // rules out -- but muting is a *write*, unlike the audio-
+                // playing indicator's read, so it doesn't need a value back
+                // at all: `Frame::execute_java_script` (fire-and-forget,
+                // already available on every engine) just sets `.muted` on
+                // every `<video>`/`<audio>` element directly. Same
+                // media-element-only approximation the audio-playing check
+                // below uses -- misses audio from the Web Audio API alone
+                // with no element behind it, but covers the common case
+                // (YouTube, most players) a `<video>`/`<audio>` tag actually
+                // backs.
+                HostToEngine::SetMuted { muted } => {
+                    if let Some(frame) = browser.main_frame() {
+                        let code = format!(
+                            "document.querySelectorAll('video,audio').forEach(function(el){{el.muted={muted};}});"
+                        );
+                        frame.execute_java_script(Some(&code.as_str().into()), None, 0);
+                    }
+                }
                 HostToEngine::Shutdown => {
                     // Must call `close_browser` and wait for
                     // `LifeSpanHandler::on_before_close` before
@@ -320,6 +345,30 @@ fn main() {
 
         if std::mem::take(&mut *image_page.borrow_mut()) {
             let _ = control.send(&EngineToHost::ImagePage);
+        }
+
+        // See `AUDIO_PLAYING_POLL_INTERVAL`'s own doc comment for why this
+        // is a poll, not a real event -- fires regardless of `visible`
+        // (background-tab audio still needs an accurate indicator, same as
+        // every other engine's own passive native read).
+        if last_audio_poll.elapsed() >= AUDIO_PLAYING_POLL_INTERVAL {
+            last_audio_poll = std::time::Instant::now();
+            if let Some(frame) = browser.main_frame() {
+                if let Some(mut message) = process_message_create(Some(&CHECK_AUDIO_PLAYING.into())) {
+                    frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                }
+            }
+        }
+        // Only sent on an actual change, matching `EngineToHost::
+        // AudioPlayingChanged`'s own documented contract -- `audio_playing`
+        // itself is overwritten on every reply regardless (see
+        // `SharedAudioPlaying`'s own doc comment), so the dedupe has to
+        // happen here, not there.
+        if let Some(playing) = *audio_playing.borrow() {
+            if playing != last_reported_audio_playing {
+                last_reported_audio_playing = playing;
+                let _ = control.send(&EngineToHost::AudioPlayingChanged { playing });
+            }
         }
 
         for event in download_path.borrow_mut().queue.drain(..) {

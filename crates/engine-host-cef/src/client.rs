@@ -15,7 +15,7 @@ use crate::nav_handler::{
     DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
-use crate::render_process_handler::{IMAGE_PAGE_RESULT, JSON_BODY_RESULT};
+use crate::render_process_handler::{AUDIO_PLAYING_RESULT, IMAGE_PAGE_RESULT, JSON_BODY_RESULT};
 
 /// The renderer subprocess's own answer to a `check-json-body`
 /// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
@@ -37,6 +37,18 @@ pub fn new_shared_image_page() -> SharedImagePage {
     Rc::new(RefCell::new(false))
 }
 
+/// The renderer's latest `check-audio-playing` reply -- unlike
+/// `SharedJsonBody`/`SharedImagePage`, this is always overwritten with
+/// every reply (never cleared to `None` in between), since `nav_handler.rs`'s
+/// polling timer sends a request continuously rather than once per
+/// navigation; `main.rs`'s own drain loop is what dedupes against the
+/// last-known value before ever emitting `EngineToHost::AudioPlayingChanged`.
+pub type SharedAudioPlaying = Rc<RefCell<Option<bool>>>;
+
+pub fn new_shared_audio_playing() -> SharedAudioPlaying {
+    Rc::new(RefCell::new(None))
+}
+
 wrap_client! {
     pub struct ClientBuilder {
         render_handler: RenderHandler,
@@ -48,6 +60,7 @@ wrap_client! {
         context_menu_handler: ContextMenuHandler,
         json_body: SharedJsonBody,
         image_page: SharedImagePage,
+        audio_playing: SharedAudioPlaying,
     }
 
     impl Client {
@@ -68,6 +81,12 @@ wrap_client! {
             }
             if name == IMAGE_PAGE_RESULT {
                 *self.image_page.borrow_mut() = true;
+                return 1;
+            }
+            if name == AUDIO_PLAYING_RESULT {
+                if let Some(args) = message.argument_list() {
+                    *self.audio_playing.borrow_mut() = Some(args.bool(0) != 0);
+                }
                 return 1;
             }
             0
@@ -114,6 +133,7 @@ impl ClientBuilder {
         context_menu_link: SharedContextMenuLink,
         json_body: SharedJsonBody,
         image_page: SharedImagePage,
+        audio_playing: SharedAudioPlaying,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
@@ -125,6 +145,7 @@ impl ClientBuilder {
             ContextMenuHandlerBuilder::build(EngineContextMenuHandler::new(context_menu_link)),
             json_body,
             image_page,
+            audio_playing,
         )
     }
 }

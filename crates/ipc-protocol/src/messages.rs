@@ -134,12 +134,16 @@ pub enum HostToEngine {
     /// SetIsMuted` — the same interface `IsDocumentPlayingAudio` already
     /// uses) and WebKitGTK (`WebView::set_is_muted`, needing the
     /// `webkit2gtk` Cargo feature bumped to `v2_30`) both have a real
-    /// native mute API. CEF's only equivalent would again be a full
-    /// `AudioHandler` taking over raw PCM delivery (see
-    /// `AudioPlayingChanged`'s doc comment for why that's out of scope for
-    /// a toggle this minor); Servo's embedding API has no audio control at
-    /// all. Silent no-op on both, same per-engine gap as the audio
-    /// indicator itself.
+    /// native mute API. CEF has no such API short of the same full
+    /// `AudioHandler` `AudioPlayingChanged`'s own doc comment already rules
+    /// out -- but unlike that read, muting is a plain write, so it doesn't
+    /// need `AudioHandler`, or even the `V8Context`/`ProcessMessage` round
+    /// trip the audio-playing poll needs: `Frame::execute_java_script`
+    /// (fire-and-forget, no return value required either) just sets
+    /// `.muted` directly on every `<video>`/`<audio>` element, the same
+    /// media-element-only approximation `AudioPlayingChanged`'s own CEF
+    /// path uses. Servo's embedding API has no audio control at all --
+    /// silent no-op there only.
     SetMuted { muted: bool },
     Shutdown,
 }
@@ -193,19 +197,26 @@ pub enum EngineToHost {
     FindResult { count: u32, active_index: u32 },
     /// Whether this tab's page is currently producing audio — shown as a
     /// speaker icon on its graph node. Only sent when the value actually
-    /// changes (a real native event/notify property on the engine side),
-    /// not polled. WebView2 (`ICoreWebView2_8::IsDocumentPlayingAudio`/
+    /// changes. WebView2 (`ICoreWebView2_8::IsDocumentPlayingAudio`/
     /// `add_IsDocumentPlayingAudioChanged`) and WebKitGTK (`WebView::
     /// is_playing_audio`/its `is-playing-audio` GObject notify) both have a
-    /// real *passive* API for this — reading/observing a value Chromium/
-    /// WebKit already track internally, no different in kind from reading
-    /// `title`. CEF's only equivalent is registering a `Client::
-    /// audio_handler()`, which takes over delivering every raw PCM audio
-    /// packet to the app instead of playing it through the normal OS audio
-    /// output — a real audio-routing feature, not a passive read, and a
-    /// much bigger and riskier change than a tab icon warrants (get it
-    /// wrong and CEF tabs go silent), so CEF tabs never send this. Servo's
-    /// embedding API has no such property at all.
+    /// real *passive* native API for this — reading/observing a value
+    /// Chromium/WebKit already track internally, no different in kind from
+    /// reading `title`, so those two never poll for it. CEF has no such API
+    /// short of registering a `Client::audio_handler()`, which takes over
+    /// delivering every raw PCM audio packet to the app instead of playing
+    /// it through normal OS audio output — a real audio-routing feature,
+    /// not a passive read, and a much bigger and riskier change than a tab
+    /// icon warrants (get it wrong and CEF tabs go silent). CEF sends this
+    /// too, by a different and much lighter route instead: a periodic
+    /// `V8Context::eval` (`engine-host-cef`'s own polling timer, see
+    /// `AUDIO_PLAYING_POLL_INTERVAL`) checking whether any `<video>`/
+    /// `<audio>` element is currently playing and unmuted -- a real
+    /// approximation, not the same guarantee the other two engines'
+    /// passive reads give (misses audio the page produces through the Web
+    /// Audio API alone with no media element behind it), but covers the
+    /// common case without the `AudioHandler` risk. Servo's embedding API
+    /// has no such property at all, passive or otherwise.
     AudioPlayingChanged { playing: bool },
     /// A right-click landed on a link — `href` is its resolved absolute
     /// target URL. `browser-ui` shows a minimal single-item "Open in new
