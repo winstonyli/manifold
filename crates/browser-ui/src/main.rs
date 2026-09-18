@@ -7521,6 +7521,37 @@ impl App {
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         let mut leave_group_button_rect: Option<egui::Rect> = None;
+
+        // Computed once per frame and reused everywhere below that only
+        // needs "every node of kind X at this level" unconditionally --
+        // **found during a performance audit**: each of these seven
+        // `*_at_current_level` accessors used to get called at least three
+        // separate times per frame from this one function alone (the
+        // toolbar's own group-count gates, the settle-key check, the
+        // minimap's dot-drawing pass, and the main card-rendering loop),
+        // each call redoing the identical `O(n)` `self.node_order` scan
+        // and allocating a fresh `Vec<String>` -- real, entirely avoidable
+        // cost that ran unconditionally every frame regardless of whether
+        // anything actually changed, since this app already redraws every
+        // frame. `self.current_group` can't change until `group_entered`/
+        // `leave_group_requested` are applied at the very end of this same
+        // function, so every unconditional per-frame use below sees the
+        // exact same, correct-for-this-frame level throughout. Left as
+        // fresh calls: the two `current_level_settle_key()` call sites
+        // that run *after* a group change is applied further down (they
+        // need a genuinely new key for the new level, not this frame's
+        // stale one) and the handful of conditional sites deeper in this
+        // function (drag-and-drop-into-group checks, the right-click
+        // hit-test chain) that don't run every idle frame, so caching them
+        // here would have added surface area without the same payoff.
+        let tabs_at_level = self.tabs_at_current_level();
+        let downloads_at_level = self.downloads_at_current_level();
+        let notes_at_level = self.notes_at_current_level();
+        let images_at_level = self.images_at_current_level();
+        let pdfs_at_level = self.pdfs_at_current_level();
+        let jsons_at_level = self.jsons_at_current_level();
+        let groups_at_level = self.groups_at_current_level();
+
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .frame(
@@ -7641,7 +7672,7 @@ impl App {
                     {
                         import_group_requested = true;
                     }
-                    if !self.groups_at_current_level().is_empty()
+                    if !groups_at_level.is_empty()
                         && ui
                             .button(egui_phosphor::regular::FOLDER_MINUS)
                             .on_hover_text("Ungroup All")
@@ -7649,7 +7680,7 @@ impl App {
                     {
                         ungroup_all_requested = true;
                     }
-                    if !self.groups_at_current_level().is_empty() {
+                    if !groups_at_level.is_empty() {
                         let (icon, hover) = if self.groups_collapsed {
                             (egui_phosphor::regular::CORNERS_OUT, "Expand Groups")
                         } else {
@@ -7744,7 +7775,19 @@ impl App {
         // independent of this, and everything else should stay exactly
         // where it is for the whole gesture.
         if self.dragging.is_none() {
-            let current_key = self.current_level_settle_key();
+            // Same formula `current_level_settle_key()` computes, just
+            // built from this frame's already-cached lists instead of
+            // redoing all seven scans a second time.
+            let current_key = (
+                self.current_group.clone(),
+                tabs_at_level.len()
+                    + downloads_at_level.len()
+                    + notes_at_level.len()
+                    + images_at_level.len()
+                    + pdfs_at_level.len()
+                    + jsons_at_level.len()
+                    + groups_at_level.len(),
+            );
             if self.graph_settled_key.as_ref() != Some(&current_key) {
                 self.settle_current_level();
                 self.graph_settled_key = Some(current_key);
@@ -8128,43 +8171,43 @@ impl App {
             minimap_rect.center() + (p - world_bounds.center()) * minimap_scale
         };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
-        for id in self.tabs_at_current_level() {
+        for id in tabs_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ui.visuals().text_color());
             }
         }
-        for id in self.downloads_at_current_level() {
+        for id in downloads_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ui.visuals().weak_text_color());
             }
         }
-        for id in self.notes_at_current_level() {
+        for id in notes_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, NOTE_CARD_COLOR);
             }
         }
-        for id in self.images_at_current_level() {
+        for id in images_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ACCENT);
             }
         }
-        for id in self.pdfs_at_current_level() {
+        for id in pdfs_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ACCENT);
             }
         }
-        for id in self.jsons_at_current_level() {
+        for id in jsons_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ACCENT);
             }
         }
-        for id in self.groups_at_current_level() {
+        for id in groups_at_level.clone() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 3.0, ACCENT);
@@ -8286,7 +8329,7 @@ impl App {
                     );
                 }
 
-                for id in self.tabs_at_current_level() {
+                for id in tabs_at_level.clone() {
                     let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                         continue;
                     };
@@ -8903,7 +8946,7 @@ impl App {
                 // machinery (no live content behind them), just a card with
                 // the filename and a click-to-reveal/close affordance,
                 // reusing the same interact/hover/drag pattern as tab nodes.
-                for id in self.downloads_at_current_level() {
+                for id in downloads_at_level.clone() {
                     let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                         continue;
                     };
@@ -9082,7 +9125,7 @@ impl App {
                 // close-button reveal and `self.hovered` bookkeeping, so
                 // hovering the text body still counts even though it isn't
                 // the drag handle.
-                for id in self.notes_at_current_level() {
+                for id in notes_at_level.clone() {
                     let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                         continue;
                     };
@@ -9260,7 +9303,7 @@ impl App {
                 // `image_node_card_size` (the decoded picture's real aspect
                 // ratio, capped at `IMAGE_NODE_MAX_SIZE`), not a fixed size
                 // the way every other kind's card is.
-                for id in self.images_at_current_level() {
+                for id in images_at_level.clone() {
                     let Some((node_pos, image_size, tex_id)) = self.nodes.get(&id).and_then(|n| {
                         let image = n.as_image()?;
                         Some((
@@ -9364,7 +9407,7 @@ impl App {
                 // texture in `GpuState::images` -- the exact same map an
                 // `Image` node's texture lives in, since a rendered PDF page
                 // is just another RGBA bitmap by the time it's on the GPU).
-                for id in self.pdfs_at_current_level() {
+                for id in pdfs_at_level.clone() {
                     let Some((node_pos, size, state)) = self.nodes.get(&id).and_then(|n| {
                         let pdf = n.as_pdf()?;
                         let size = pdf_card_size(pdf);
@@ -9493,7 +9536,7 @@ impl App {
                 // an icon plus `json_summary`'s own compact shape label.
                 // Double-click opens the full tree in `build_json_viewer`,
                 // the same popup a tab's own "View as JSON" already uses.
-                for id in self.jsons_at_current_level() {
+                for id in jsons_at_level.clone() {
                     let Some((node_pos, summary, path)) = self.nodes.get(&id).and_then(|n| {
                         let json = n.as_json()?;
                         Some((n.pos, json_summary(&json.value), json.path.clone()))
@@ -9574,7 +9617,7 @@ impl App {
                 // Double-click drills into the group's own subgraph; a
                 // dragged tab dropped onto one joins it (handled above, in
                 // the tab loop, since that's where the drag-release fires).
-                for id in self.groups_at_current_level() {
+                for id in groups_at_level.clone() {
                         let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                             continue;
                         };
