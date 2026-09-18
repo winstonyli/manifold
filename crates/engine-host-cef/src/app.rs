@@ -3,6 +3,8 @@ use cef::{
 };
 use std::cell::RefCell;
 
+use crate::render_process_handler::{EngineRenderProcessHandler, RenderProcessHandlerBuilder};
+
 /// Top-level CEF app callbacks. Mirrors tauri-apps/cef-rs's `examples/osr`
 /// reference: append the switches that make windowless (OSR) rendering
 /// behave in a headless-friendly way (no crash-restore UI, no error
@@ -45,6 +47,16 @@ wrap_app! {
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
             Some(BrowserProcessHandlerBuilder::build(
                 EngineBrowserProcessHandler::new(),
+            ))
+        }
+
+        // Only ever actually invoked by CEF inside a renderer subprocess --
+        // this same `App` is also handed to the browser-process `initialize`
+        // call (see `main.rs`), where CEF never calls this getter at all, so
+        // returning a real handler unconditionally is harmless there.
+        fn render_process_handler(&self) -> Option<cef::RenderProcessHandler> {
+            Some(RenderProcessHandlerBuilder::build(
+                EngineRenderProcessHandler::new(),
             ))
         }
     }

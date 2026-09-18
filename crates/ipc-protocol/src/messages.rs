@@ -265,15 +265,17 @@ pub enum EngineToHost {
     /// then, reads back `document.body.innerText` -- `document.contentType`
     /// is a real DOM property every engine here already exposes to script,
     /// reflecting the actual HTTP response header, not a guess from the
-    /// URL's own file extension. Sent by WebKit/WebView2/Servo, which all
-    /// already have (or, for Servo, expose but hadn't yet used) a script-
+    /// URL's own file extension. Sent by WebKit/WebView2/Servo via a script-
     /// eval-with-a-result-callback API -- see `ContextMenuLink`'s own doc
-    /// comment for the same three-way split. CEF's `execute_java_script`
-    /// has no way to return a value at all (would need a real V8 extension
-    /// to bind a native callback the script could call into, a much bigger
-    /// change than this feature warrants on its own) — deferred, so CEF
-    /// tabs never send this. Cleared (an empty page) whenever the same
-    /// tab's own URL changes for real, same as any other per-navigation
-    /// state — see `App::json_body`'s own doc comment.
+    /// comment for the same three-way split. CEF's `execute_java_script` has
+    /// no way to return a value at all, but CEF sends this too, by a
+    /// different route: a `RenderProcessHandler` in the renderer subprocess
+    /// runs the same two checks via `V8Context::eval` and hands the result
+    /// back to the browser process over a `ProcessMessage` -- no V8
+    /// extension needed, just CEF's own real mechanism for a renderer to
+    /// return a value at all (see `engine-host-cef`'s `render_process_
+    /// handler.rs`). Cleared (an empty page) whenever the same tab's own
+    /// URL changes for real, same as any other per-navigation state — see
+    /// `App::json_body`'s own doc comment.
     JsonBody { body: String },
 }

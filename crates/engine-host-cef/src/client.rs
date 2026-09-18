@@ -1,4 +1,7 @@
-use cef::{rc::Rc, *};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use cef::{rc::Rc as CefRc, *};
 
 use crate::context_menu_handler::{
     ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink,
@@ -12,6 +15,19 @@ use crate::nav_handler::{
     DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
+use crate::render_process_handler::JSON_BODY_RESULT;
+
+/// The renderer subprocess's own answer to a `check-json-body`
+/// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
+/// on_process_message_received` below is where a reply *arrives* in the
+/// browser process; `main.rs`'s own poll loop drains it into
+/// `EngineToHost::JsonBody`, same "shared-RefCell-drained-by-the-main-loop"
+/// shape `find_handler.rs`/`download_handler.rs` already use.
+pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
+
+pub fn new_shared_json_body() -> SharedJsonBody {
+    Rc::new(RefCell::new(None))
+}
 
 wrap_client! {
     pub struct ClientBuilder {
@@ -22,9 +38,27 @@ wrap_client! {
         find_handler: FindHandler,
         download_handler: DownloadHandler,
         context_menu_handler: ContextMenuHandler,
+        json_body: SharedJsonBody,
     }
 
     impl Client {
+        fn on_process_message_received(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _source_process: ProcessId,
+            message: Option<&mut ProcessMessage>,
+        ) -> ::std::os::raw::c_int {
+            let Some(message) = message else { return 0 };
+            if CefString::from(&message.name()).to_string() != JSON_BODY_RESULT {
+                return 0;
+            }
+            if let Some(args) = message.argument_list() {
+                *self.json_body.borrow_mut() = Some(CefString::from(&args.string(0)).to_string());
+            }
+            1
+        }
+
         fn render_handler(&self) -> Option<cef::RenderHandler> {
             Some(self.render_handler.clone())
         }
@@ -64,6 +98,7 @@ impl ClientBuilder {
         download_path: SharedDownloadPath,
         closed: SharedClosed,
         context_menu_link: SharedContextMenuLink,
+        json_body: SharedJsonBody,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
@@ -73,6 +108,7 @@ impl ClientBuilder {
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
             ContextMenuHandlerBuilder::build(EngineContextMenuHandler::new(context_menu_link)),
+            json_body,
         )
     }
 }

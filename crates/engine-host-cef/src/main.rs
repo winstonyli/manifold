@@ -7,6 +7,7 @@ mod input;
 mod life_span_handler;
 mod nav_handler;
 mod render_handler;
+mod render_process_handler;
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -16,7 +17,7 @@ use cef::*;
 use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::ClientBuilder;
+use client::{ClientBuilder, new_shared_json_body};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
@@ -37,10 +38,18 @@ fn main() {
     let type_switch = CefString::from("type");
     let is_browser_process = cmd.has_switch(Some(&type_switch)) != 1;
 
-    // Matches cefsimple's shared::run_main(): the first execute_process
-    // call passes no App at all (None) — the real App is only handed to
-    // initialize(), below, for the actual browser process.
-    let ret = execute_process(Some(args.as_main_args()), None, std::ptr::null_mut());
+    // Unlike cefsimple's shared::run_main() (which passes no App at all to
+    // this first execute_process call, since its own App has nothing a
+    // subprocess needs), this one now does need a real App here too: a
+    // renderer subprocess is this same exe re-launched by CEF with
+    // `--type=renderer`, and only the App passed to *this* call ever gets
+    // asked for a `render_process_handler` (see `app.rs` and
+    // `render_process_handler.rs`, added for CEF's side of JSON viewing).
+    // Harmless for the actual browser-process invocation below despite
+    // being the same instance -- CEF never calls that getter outside a
+    // renderer subprocess.
+    let mut cef_app = AppBuilder::build(EngineApp::new());
+    let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
 
     if !is_browser_process {
         // A CEF subprocess (renderer/gpu/utility/...): execute_process has
@@ -64,7 +73,6 @@ fn main() {
     let initial_url = std::env::var("ENGINE_INITIAL_URL")
         .unwrap_or_else(|_| "https://example.com".to_string());
 
-    let mut cef_app = AppBuilder::build(EngineApp::new());
     let settings = Settings {
         windowless_rendering_enabled: true as _,
         external_message_pump: true as _,
@@ -112,6 +120,7 @@ fn main() {
     let download_path = new_shared_download_path();
     let closed = new_shared_closed();
     let context_menu_link = new_shared_context_menu_link();
+    let json_body = new_shared_json_body();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -136,6 +145,7 @@ fn main() {
             download_path.clone(),
             closed.clone(),
             context_menu_link.clone(),
+            json_body.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -300,6 +310,10 @@ fn main() {
 
         if let Some((x, y, href)) = context_menu_link.borrow_mut().take() {
             let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+        }
+
+        if let Some(body) = json_body.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
         for event in download_path.borrow_mut().queue.drain(..) {

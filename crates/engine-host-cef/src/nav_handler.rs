@@ -117,16 +117,33 @@ wrap_load_handler! {
     impl LoadHandler {
         fn on_loading_state_change(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             is_loading: ::std::os::raw::c_int,
             can_go_back: ::std::os::raw::c_int,
             can_go_forward: ::std::os::raw::c_int,
         ) {
-            let mut state = self.handler.state.borrow_mut();
-            state.loading = is_loading != 0;
-            state.can_go_back = can_go_back != 0;
-            state.can_go_forward = can_go_forward != 0;
-            state.dirty = true;
+            {
+                let mut state = self.handler.state.borrow_mut();
+                state.loading = is_loading != 0;
+                state.can_go_back = can_go_back != 0;
+                state.can_go_forward = can_go_forward != 0;
+                state.dirty = true;
+            }
+            // CEF fires this only on a real transition, not per-frame -- so
+            // `is_loading == 0` here already *is* the "loading: true -> false"
+            // edge WebKit's own poll loop has to detect manually. Ask the
+            // renderer whether the page that just finished loading is raw
+            // JSON; see `render_process_handler.rs` for the reply side and
+            // `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
+            if is_loading == 0 {
+                if let Some(frame) = browser.and_then(|b| b.main_frame()) {
+                    if let Some(mut message) =
+                        process_message_create(Some(&crate::render_process_handler::CHECK_JSON_BODY.into()))
+                    {
+                        frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                    }
+                }
+            }
         }
     }
 }
