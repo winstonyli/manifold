@@ -66,7 +66,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
-            default_starting_engine: EngineKind::Servo,
+            default_starting_engine: EngineKind::Webview2,
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
         }
