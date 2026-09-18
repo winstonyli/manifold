@@ -42,6 +42,19 @@ pub struct SessionNote {
     pub pos_y: f32,
 }
 
+/// An image node's own saved data -- see `crate::ImagePayload`'s own doc
+/// comment for why only the file `path` is kept (not the picture's own
+/// bytes, and not `width`/`height` -- those are re-derived by decoding the
+/// file again at restore, same as a note's `SessionNote` doesn't duplicate
+/// anything `NotePayload` can hold directly).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionImage {
+    pub id: String,
+    pub path: String,
+    pub pos_x: f32,
+    pub pos_y: f32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
@@ -49,11 +62,15 @@ pub struct Session {
     /// (an empty `Vec`, not a missing field) still loads cleanly.
     #[serde(default)]
     pub notes: Vec<SessionNote>,
+    #[serde(default)]
+    pub images: Vec<SessionImage>,
     pub focused: Option<String>,
     pub view_mode_tab: bool,
     pub next_tab_id: u64,
     #[serde(default)]
     pub next_note_id: u64,
+    #[serde(default)]
+    pub next_image_id: u64,
 }
 
 fn session_dir() -> Option<PathBuf> {

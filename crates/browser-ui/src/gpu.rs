@@ -98,6 +98,15 @@ pub struct GpuState {
     /// that visited it.
     favicons: HashMap<String, ThumbTexture>,
     favicon_order: std::collections::VecDeque<String>,
+    /// Keyed by *node id*, unlike `favicons` -- an image node's own file is
+    /// decoded once at creation/restore (see `App::add_image_node`), not
+    /// re-fetched, and each node is its own independent picture even if two
+    /// nodes happen to point at the same file, so there's no origin-style
+    /// sharing to do and no unbounded-growth risk needing `favicons`' own
+    /// FIFO eviction -- bounded by however many image nodes the user
+    /// deliberately creates, freed one-for-one via `free_image` when a node
+    /// is removed.
+    images: HashMap<String, ThumbTexture>,
     egui_renderer: egui_wgpu::Renderer,
 }
 
@@ -263,6 +272,7 @@ impl GpuState {
             thumbnails: HashMap::new(),
             favicons: HashMap::new(),
             favicon_order: std::collections::VecDeque::new(),
+            images: HashMap::new(),
             egui_renderer,
         }
     }
@@ -520,6 +530,53 @@ impl GpuState {
     /// title. `key` is an origin (see `favicons`' own doc comment).
     pub fn favicon_id(&self, key: &str) -> Option<egui::TextureId> {
         self.favicons.get(key).map(|t| t.egui_id)
+    }
+
+    /// Registers an image node's decoded picture -- same one-shot
+    /// `create_texture_with_data` registration as `upload_favicon`, in its
+    /// own map since an image node's picture is unrelated in size/lifetime
+    /// to a favicon or a tab's content thumbnail. `key` is a *node id* (see
+    /// `images`' own doc comment), and this is only ever called once per
+    /// node (at creation or session restore) -- an image node's picture
+    /// never changes after that the way a tab's thumbnail does every frame.
+    pub fn upload_image(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+        let texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("image node texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            rgba,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
+        self.images.insert(key.to_string(), ThumbTexture { egui_id });
+    }
+
+    /// The `egui::TextureId` for an image node's picture, if it decoded
+    /// successfully — for Graph view to draw via `egui::Image`.
+    pub fn image_id(&self, key: &str) -> Option<egui::TextureId> {
+        self.images.get(key).map(|t| t.egui_id)
+    }
+
+    /// Must be called when an image node is removed -- same "manually
+    /// registered native textures leak until freed" reasoning as
+    /// `free_tab_thumbnail`'s own doc comment.
+    pub fn free_image(&mut self, key: &str) {
+        if let Some(image) = self.images.remove(key) {
+            self.egui_renderer.free_texture(&image.egui_id);
+        }
     }
 
     /// `viewport` is the exact rect (physical pixels: x, y, w, h) the

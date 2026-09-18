@@ -168,6 +168,10 @@ pub enum DebugCommand {
     NewGroup,
     /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
     NewNote,
+    /// The Graph toolbar's "+ Image" button with an explicit path instead
+    /// of a real file dialog — same "bypass the dialog entirely" reason as
+    /// `ExportSession`/`PrintToPdf`. See `App::insert_image_node`.
+    AddImage(String),
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -390,6 +394,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "RELOAD" => Some(DebugCommand::Reload),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
+        "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         _ => None,
     }

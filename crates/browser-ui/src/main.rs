@@ -66,6 +66,13 @@ const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 /// since its whole body is an editable multi-line text area, not just a
 /// title strip.
 const NOTE_NODE_SIZE: egui::Vec2 = egui::vec2(180.0, 140.0);
+/// The largest an image node's card gets, in either dimension -- unlike
+/// every other kind, an image card's actual footprint is derived per-node
+/// from `ImagePayload::width`/`height`'s own aspect ratio (see
+/// `image_node_card_size`), scaled down to fit inside this box. Never
+/// scaled *up* past the image's real pixel size, so a small picture isn't
+/// blurrily stretched to fill it.
+const IMAGE_NODE_MAX_SIZE: egui::Vec2 = egui::vec2(220.0, 220.0);
 
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
@@ -209,6 +216,17 @@ fn fade_popup_state<T: Clone>(
 /// happen for a real downloaded file's path).
 fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
+}
+
+/// An image node's own card size: `width`x`height` scaled down (never up)
+/// to fit inside `IMAGE_NODE_MAX_SIZE` while preserving aspect ratio --
+/// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
+/// bounds union so the two never disagree about how big a given image's
+/// card actually is.
+fn image_node_card_size(width: u32, height: u32) -> egui::Vec2 {
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    let scale = (IMAGE_NODE_MAX_SIZE.x / width).min(IMAGE_NODE_MAX_SIZE.y / height).min(1.0);
+    egui::vec2(width * scale, height * scale)
 }
 
 /// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
@@ -718,14 +736,15 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 /// `GraphNode` holds the fields every kind shares (position, graph
 /// membership); this holds only what varies per kind. Tab/Download/Group
 /// were the migration off three separate hardcoded node types (the old
-/// `TabNode`/`DownloadNode`/`GroupNode`); `Note` is the first genuinely new
-/// kind added on top of that unified model -- a plain user-authored text
-/// card, no engine process behind it (see `NotePayload`'s own doc comment).
+/// `TabNode`/`DownloadNode`/`GroupNode`); `Note` and `Image` are genuinely
+/// new kinds added on top of that unified model -- see each one's own
+/// `*Payload` doc comment.
 enum NodePayload {
     Tab(TabPayload),
     Download(DownloadPayload),
     Group(GroupPayload),
     Note(NotePayload),
+    Image(ImagePayload),
 }
 
 impl NodePayload {
@@ -784,6 +803,13 @@ impl NodePayload {
             _ => None,
         }
     }
+
+    fn as_image(&self) -> Option<&ImagePayload> {
+        match self {
+            NodePayload::Image(i) => Some(i),
+            _ => None,
+        }
+    }
 }
 
 /// A sticky note's own data -- free-form user-typed text, no engine process
@@ -797,6 +823,30 @@ impl NodePayload {
 /// point of writing one down.
 struct NotePayload {
     text: String,
+}
+
+/// A locally-added picture, embedded directly on the graph -- the second
+/// new node kind built on the unified model (see `NotePayload`'s own doc
+/// comment for the first). Unlike a tab's thumbnail or a favicon, this
+/// isn't fetched or re-rendered continuously: `path` is decoded once, at
+/// creation (`App::add_image_node`, via a real file picker -- blocks on
+/// OS/human input, so unavailable in headless mode, same reasoning every
+/// other file-dialog action here has) or at session restore, and the
+/// resulting texture (`GpuState::images`, keyed by this node's own id)
+/// never changes after that. `width`/`height` are the *decoded* image's
+/// real pixel dimensions, kept so the card can size itself to the image's
+/// own aspect ratio instead of stretching/squashing it into a fixed box.
+/// Persisted in `session.json` (`session::SessionImage`) as just the file
+/// path -- same "re-derive, don't duplicate the bytes" posture a restored
+/// tab's fresh navigation already has, rather than embedding the picture's
+/// own bytes a second time. If the file has since moved or been deleted,
+/// restore skips that node rather than failing the whole session load,
+/// same "never let one bad thing stop everything else" posture
+/// `Settings::load`/`Session::load` already have.
+struct ImagePayload {
+    path: String,
+    width: u32,
+    height: u32,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -913,6 +963,10 @@ impl GraphNode {
 
     fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
         self.payload.as_note_mut()
+    }
+
+    fn as_image(&self) -> Option<&ImagePayload> {
+        self.payload.as_image()
     }
 }
 
@@ -1125,6 +1179,10 @@ struct App {
     note_context_menu: Option<(String, egui::Pos2)>,
     /// Same fade-out role as `group_context_menu_cache`, for `note_context_menu`.
     note_context_menu_cache: Option<(String, egui::Pos2)>,
+    /// Same role as `note_context_menu`, for an image node's card.
+    image_context_menu: Option<(String, egui::Pos2)>,
+    /// Same fade-out role as `group_context_menu_cache`, for `image_context_menu`.
+    image_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `(tab_id, screen_pos)` while a right-click context menu is showing
     /// for that tab's card -- Pin/color/Remove from Group/Close in one
     /// place, same "consolidate scattered card actions" idea
@@ -1186,6 +1244,7 @@ struct App {
     next_download_id: u64,
     next_group_id: u64,
     next_note_id: u64,
+    next_image_id: u64,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -1520,6 +1579,8 @@ impl Default for App {
             download_context_menu_cache: None,
             note_context_menu: None,
             note_context_menu_cache: None,
+            image_context_menu: None,
+            image_context_menu_cache: None,
             tab_context_menu: None,
             tab_context_menu_cache: None,
             quick_switcher: None,
@@ -1536,6 +1597,7 @@ impl Default for App {
             next_download_id: 0,
             next_group_id: 0,
             next_note_id: 0,
+            next_image_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -2152,13 +2214,29 @@ impl App {
                 })
             })
             .collect();
+        let images = self
+            .node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let image = node.as_image()?;
+                Some(session::SessionImage {
+                    id: id.clone(),
+                    path: image.path.clone(),
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                })
+            })
+            .collect();
         session::Session {
             tabs,
             notes,
+            images,
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
             next_tab_id: self.next_tab_id,
             next_note_id: self.next_note_id,
+            next_image_id: self.next_image_id,
         }
     }
 
@@ -2178,7 +2256,7 @@ impl App {
         let Some(session) = session::Session::load() else {
             return false;
         };
-        if session.tabs.is_empty() && session.notes.is_empty() {
+        if session.tabs.is_empty() && session.notes.is_empty() && session.images.is_empty() {
             return false;
         }
         self.apply_session(session);
@@ -2195,6 +2273,7 @@ impl App {
     fn apply_session(&mut self, session: session::Session) {
         self.next_tab_id = session.next_tab_id;
         self.next_note_id = session.next_note_id;
+        self.next_image_id = session.next_image_id;
         for note in session.notes {
             self.nodes.insert(
                 note.id.clone(),
@@ -2208,6 +2287,10 @@ impl App {
                 },
             );
             self.node_order.push(note.id);
+        }
+        for image in session.images {
+            let pos = egui::vec2(image.pos_x, image.pos_y);
+            self.insert_image_node_with_id(image.id, image.path, pos, None);
         }
         let valid_focus = session
             .focused
@@ -2262,8 +2345,6 @@ impl App {
         if session.tabs.is_empty() {
             return;
         }
-        self.nodes.clear();
-        self.node_order.clear();
         self.nodes.clear();
         self.node_order.clear();
         self.focused = None;
@@ -2475,6 +2556,19 @@ impl App {
             .spawn();
     }
 
+    /// Same idea as `reveal_download`, for an image node -- no WSL path
+    /// translation needed here, since an image's `path` always came from a
+    /// real Windows file picker (`add_image_node`), never a WebKit-side
+    /// download.
+    fn reveal_image(&self, id: &str) {
+        let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) else {
+            return;
+        };
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{path}"))
+            .spawn();
+    }
+
     /// Distinct prefix from `alloc_tab_id`/the `"dl-"` download-id prefix —
     /// group ids share the same flat id space at the top level
     /// (`graph_layout::step` again sees ids only, not node kinds).
@@ -2489,6 +2583,14 @@ impl App {
     fn alloc_note_id(&mut self) -> String {
         let id = format!("note-{}", self.next_note_id);
         self.next_note_id += 1;
+        id
+    }
+
+    /// Same reasoning as `alloc_note_id` -- a distinct `"img-"` prefix in
+    /// the same flat id space.
+    fn alloc_image_id(&mut self) -> String {
+        let id = format!("img-{}", self.next_image_id);
+        self.next_image_id += 1;
         id
     }
 
@@ -2620,6 +2722,19 @@ impl App {
             .collect()
     }
 
+    /// Same shape as `notes_at_current_level`, for image nodes.
+    fn images_at_current_level(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_image().is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// "Reset View"'s scene rect: bounds every node currently visible at
     /// this level (tabs/downloads, plus group cards at the top level —
     /// same level rules `tabs_at_current_level`/`downloads_at_current_level`
@@ -2651,6 +2766,14 @@ impl App {
             if let Some(node) = self.nodes.get(&id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, NOTE_NODE_SIZE));
+            }
+        }
+        for id in self.images_at_current_level() {
+            if let Some(node) = self.nodes.get(&id).and_then(|n| Some((n, n.as_image()?))) {
+                let (n, image) = node;
+                let center = egui::Pos2::new(n.pos.x, n.pos.y);
+                let size = image_node_card_size(image.width, image.height);
+                bounds = bounds.union(egui::Rect::from_center_size(center, size));
             }
         }
         if self.current_group.is_none() {
@@ -2724,6 +2847,7 @@ impl App {
             self.tabs_at_current_level().len()
                 + self.downloads_at_current_level().len()
                 + self.notes_at_current_level().len()
+                + self.images_at_current_level().len()
                 + if self.current_group.is_none() { self.groups_at_current_level().len() } else { 0 },
         )
     }
@@ -3484,6 +3608,71 @@ impl App {
         );
         self.node_order.push(id);
         self.save_session();
+    }
+
+    /// Decodes `path` and inserts a new image node with a fresh id at the
+    /// current level, jittered around world center -- the interactive
+    /// "+ Image" button (`add_image_node`, after its own file picker) and
+    /// the headless `ADDIMAGE <path>` debug command. Returns `false` (doing
+    /// nothing) if the file doesn't exist or isn't a decodable image, same
+    /// "never let one bad file stop everything else" posture
+    /// `Settings::load`/`session::Session::load` already have. Doesn't
+    /// itself call `save_session` -- both callers mutate persisted state
+    /// and save themselves right after.
+    fn insert_image_node(&mut self, path: String) -> bool {
+        let id = self.alloc_image_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        let group = self.current_group.clone();
+        self.insert_image_node_with_id(id, path, pos, group)
+    }
+
+    /// Shared by `insert_image_node` (fresh id/jittered position/current
+    /// level) and session restore (the exact saved id/position -- and,
+    /// like a restored tab's `group` staying unset regardless of where it
+    /// was before restart, always `None` here too).
+    fn insert_image_node_with_id(
+        &mut self,
+        id: String,
+        path: String,
+        pos: egui::Vec2,
+        group: Option<String>,
+    ) -> bool {
+        let Ok(img) = image::open(&path) else { return false };
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        if let Some(gpu) = &mut self.gpu {
+            gpu.upload_image(&id, rgba.as_raw(), width, height);
+        }
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: None,
+                group,
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Image(ImagePayload { path, width, height }),
+            },
+        );
+        self.node_order.push(id);
+        true
+    }
+
+    /// The Graph toolbar's "+ Image" button -- a real file picker blocks on
+    /// OS/human input neither exists in headless mode (same reasoning
+    /// Export/Import Session/Group already have), so this is never called
+    /// there; `ADDIMAGE <path>` is the headless equivalent, supplying the
+    /// path directly instead of showing a picker.
+    fn add_image_node(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"])
+            .pick_file()
+        else {
+            return;
+        };
+        if self.insert_image_node(path.to_string_lossy().into_owned()) {
+            self.save_session();
+        }
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
@@ -5026,6 +5215,95 @@ impl App {
         }
     }
 
+    /// Right-click menu for an image node's card -- Open Containing Folder,
+    /// Copy Path, Remove from Group (only while grouped), and Delete. Same
+    /// shape as `build_download_context_menu`, which this closely mirrors
+    /// (an image node's `path` is a real file the same way a download's is).
+    fn build_image_context_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.image_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("image_context_menu_fade"),
+            &current,
+            &mut self.image_context_menu_cache,
+        ) else {
+            return;
+        };
+        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
+            self.image_context_menu = None;
+            return;
+        };
+        let mut close = false;
+        let mut reveal = false;
+        let mut copy_path = false;
+        let mut remove_from_group = false;
+        let mut delete = false;
+
+        let area = egui::Area::new(egui::Id::new("image_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(170.0);
+                        if ui.button("Open Containing Folder").clicked() {
+                            reveal = true;
+                            close = true;
+                        }
+                        if ui.button("Copy Path").clicked() {
+                            copy_path = true;
+                            close = true;
+                        }
+                        if has_group {
+                            ui.separator();
+                            if ui.button("Remove from Group").clicked() {
+                                remove_from_group = true;
+                                close = true;
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Delete").clicked() {
+                            delete = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
+        if clicked_outside {
+            close = true;
+        }
+
+        if reveal {
+            self.reveal_image(&id);
+        }
+        if copy_path {
+            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                ui.ctx().copy_text(path);
+            }
+        }
+        if remove_from_group {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.group = None;
+            }
+        }
+        if delete {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.free_image(&id);
+            }
+            self.remove_node(&id);
+            self.save_session();
+        }
+        if close {
+            self.image_context_menu = None;
+        }
+    }
+
     /// Right-click menu for a tab's card -- Pin/Unpin, the same 6-color
     /// swatch row groups already have, Remove from Group (only while
     /// actually viewing a group's own subgraph, same scope as the card's
@@ -5956,6 +6234,8 @@ impl App {
         let mut new_group_requested = false;
         let mut new_note_requested = false;
         let mut note_close_requested: Option<String> = None;
+        let mut add_image_requested = false;
+        let mut image_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
@@ -6031,6 +6311,17 @@ impl App {
                         .clicked()
                     {
                         new_note_requested = true;
+                    }
+                    // File picker blocks on OS/human input neither exists
+                    // in headless mode -- same `!self.headless` gate every
+                    // other file-dialog button here already has.
+                    if !self.headless
+                        && ui
+                            .button(egui_phosphor::regular::IMAGE_SQUARE)
+                            .on_hover_text("Add Image...")
+                            .clicked()
+                    {
+                        add_image_requested = true;
                     }
                     // These four buttons used to carry full text labels
                     // ("+ New Group", "Import Group...", "Ungroup All",
@@ -6345,7 +6636,23 @@ impl App {
                         })
                     })
                     .flatten();
-                let hit_tab = (hit_group.is_none() && hit_download.is_none() && hit_note.is_none())
+                let hit_image = (hit_group.is_none() && hit_download.is_none() && hit_note.is_none())
+                    .then(|| {
+                        self.images_at_current_level().into_iter().find(|iid| {
+                            self.nodes.get(iid).is_some_and(|n| {
+                                n.as_image().is_some_and(|image| {
+                                    let size = image_node_card_size(image.width, image.height);
+                                    egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), size)
+                                        .contains(world_pos)
+                                })
+                            })
+                        })
+                    })
+                    .flatten();
+                let hit_tab = (hit_group.is_none()
+                    && hit_download.is_none()
+                    && hit_note.is_none()
+                    && hit_image.is_none())
                     .then(|| {
                         self.tabs_at_current_level().into_iter().find(|tid| {
                             self.nodes.get(tid).is_some_and(|n| {
@@ -6359,18 +6666,28 @@ impl App {
                     self.group_context_menu = Some((gid, pos));
                     self.download_context_menu = None;
                     self.note_context_menu = None;
+                    self.image_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(did) = hit_download {
                     self.download_context_menu = Some((did, pos));
                     self.group_context_menu = None;
                     self.note_context_menu = None;
+                    self.image_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(nid) = hit_note {
                     self.note_context_menu = Some((nid, pos));
                     self.group_context_menu = None;
                     self.download_context_menu = None;
+                    self.image_context_menu = None;
+                    self.tab_context_menu = None;
+                    self.rect_select_start = None;
+                } else if let Some(iid) = hit_image {
+                    self.image_context_menu = Some((iid, pos));
+                    self.group_context_menu = None;
+                    self.download_context_menu = None;
+                    self.note_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(tid) = hit_tab {
@@ -6378,11 +6695,13 @@ impl App {
                     self.group_context_menu = None;
                     self.download_context_menu = None;
                     self.note_context_menu = None;
+                    self.image_context_menu = None;
                     self.rect_select_start = None;
                 } else {
                     self.group_context_menu = None;
                     self.download_context_menu = None;
                     self.note_context_menu = None;
+                    self.image_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = Some(pos);
                 }
@@ -6481,6 +6800,12 @@ impl App {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, NOTE_CARD_COLOR);
+            }
+        }
+        for id in self.images_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 2.0, ACCENT);
             }
         }
         if self.current_group.is_none() {
@@ -7545,6 +7870,159 @@ impl App {
                     }
                 }
 
+                // Image nodes: a locally-added picture, no engine/IPC
+                // behind it -- see `ImagePayload`'s own doc comment. Unlike
+                // a note, nothing inside the card needs its own clicks (no
+                // embedded text editor), so the whole card is drag-sensitive
+                // via one plain `Sense::click_and_drag()`, same as a tab or
+                // download card. The card's own footprint comes from
+                // `image_node_card_size` (the decoded picture's real aspect
+                // ratio, capped at `IMAGE_NODE_MAX_SIZE`), not a fixed size
+                // the way every other kind's card is.
+                for id in self.images_at_current_level() {
+                    let Some((node_pos, image_size, tex_id)) = self.nodes.get(&id).and_then(|n| {
+                        let image = n.as_image()?;
+                        Some((
+                            n.pos,
+                            image_node_card_size(image.width, image.height),
+                            self.gpu.as_ref().and_then(|g| g.image_id(&id)),
+                        ))
+                    }) else {
+                        continue;
+                    };
+                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                    let rect = egui::Rect::from_center_size(center_pos, image_size);
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_image_node", id.as_str())),
+                        egui::Sense::click_and_drag(),
+                    );
+                    let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+
+                    match tex_id {
+                        Some(tex_id) => {
+                            ui.painter().image(
+                                tex_id,
+                                rect,
+                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        // Only reachable if the node somehow outlived its
+                        // own texture (freed but not removed) -- a broken-
+                        // image glyph is a more honest placeholder here
+                        // than the loading `Spinner` a tab/download
+                        // placeholder uses, since this picture isn't *about*
+                        // to arrive the way a first frame or fetch is.
+                        None => {
+                            ui.painter().rect_filled(
+                                rect,
+                                4.0 * inv_zoom,
+                                ui.visuals().extreme_bg_color,
+                            );
+                            overlay_painter.text(
+                                project(rect.center()),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::IMAGE_BROKEN,
+                                egui::FontId::proportional(24.0),
+                                ui.visuals().weak_text_color(),
+                            );
+                        }
+                    }
+                    let (border_width, border_color) = if is_hovered {
+                        (1.5, ui.visuals().text_color())
+                    } else {
+                        (1.0, ui.visuals().weak_text_color())
+                    };
+                    ui.painter().rect_stroke(
+                        rect,
+                        4.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    if is_hovered {
+                        let close_rect = egui::Rect::from_center_size(
+                            rect.right_top(),
+                            egui::vec2(18.0, 18.0) * inv_zoom,
+                        );
+                        let close_response = ui.interact(
+                            close_rect,
+                            egui::Id::new(("graph_image_node_close", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let close_fill = if close_response.hovered() {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                        ui.painter().rect_stroke(
+                            close_rect,
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                        overlay_painter.text(
+                            project(close_rect.center()),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::X,
+                            egui::FontId::proportional(14.0),
+                            ui.visuals().text_color(),
+                        );
+                        if close_response.clicked() {
+                            image_close_requested = Some(id.clone());
+                        }
+                    }
+
+                    if response.dragged() {
+                        self.dragging = Some(id.clone());
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.pos += response.drag_delta();
+                        }
+                    } else if self.dragging.as_deref() == Some(id.as_str()) {
+                        self.dragging = None;
+                        // Same drop-onto-a-group-card gesture a note/tab
+                        // already have -- see the note card's own comment
+                        // on this for why note/image-onto-note/image
+                        // doesn't also auto-create a new group.
+                        if self.current_group.is_none() {
+                            if let Some(image_pos) = self.nodes.get(&id).map(|n| n.pos) {
+                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                                    self.nodes.get(gid).is_some_and(|g| {
+                                        egui::Rect::from_center_size(
+                                            egui::Pos2::new(g.pos.x, g.pos.y),
+                                            GROUP_NODE_SIZE,
+                                        )
+                                        .contains(egui::Pos2::new(image_pos.x, image_pos.y))
+                                    })
+                                });
+                                if let Some(group_id) = dropped_on_group {
+                                    if let Some(node) = self.nodes.get_mut(&id) {
+                                        node.group = Some(group_id);
+                                    }
+                                }
+                            }
+                        }
+                        self.save_session();
+                    }
+                    if is_hovered {
+                        self.hovered = Some(id.clone());
+                    } else if self.hovered.as_deref() == Some(id.as_str()) {
+                        self.hovered = None;
+                    }
+
+                    if let Some(image) = self.nodes.get(&id).and_then(|n| n.as_image()) {
+                        if graph_filter_dims(&self.graph_filter, &[download_filename(&image.path)]) {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                4.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }
+                    }
+                }
+
                 // Group nodes: top level only (no nesting in this first
                 // cut — see `GroupPayload`'s own doc comment). Double-click
                 // drills into the group's own subgraph; a dragged tab
@@ -7961,6 +8439,16 @@ impl App {
             self.remove_node(&id);
             self.save_session();
         }
+        if add_image_requested {
+            self.add_image_node();
+        }
+        if let Some(id) = image_close_requested {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.free_image(&id);
+            }
+            self.remove_node(&id);
+            self.save_session();
+        }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
             // Centroid of the selected cards, rather than the usual
@@ -8068,6 +8556,7 @@ impl App {
             self.rect_select_start = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
+            self.image_context_menu = None;
             self.tab_context_menu = None;
         }
         if leave_group_requested {
@@ -8084,6 +8573,7 @@ impl App {
             self.rect_select_start = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
+            self.image_context_menu = None;
             self.tab_context_menu = None;
         }
         if let Some(id) = group_close_requested {
@@ -8124,6 +8614,7 @@ impl App {
         self.build_group_context_menu(ui);
         self.build_download_context_menu(ui);
         self.build_note_context_menu(ui);
+        self.build_image_context_menu(ui);
         self.build_tab_context_menu(ui);
     }
 }
@@ -8750,6 +9241,11 @@ impl App {
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::NewGroup => self.new_group_shortcut(),
             DebugCommand::NewNote => self.new_note_shortcut(),
+            DebugCommand::AddImage(path) => {
+                if self.insert_image_node(path) {
+                    self.save_session();
+                }
+            }
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;
