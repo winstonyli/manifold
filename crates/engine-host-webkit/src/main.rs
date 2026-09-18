@@ -8,7 +8,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use webkit2gtk::{
-    gio, DownloadExt, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt,
+    gio, DownloadExt, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt,
     WebContextExt, WebView, WebViewExt,
 };
 
@@ -16,6 +16,19 @@ use gtk::cairo::{Format, ImageSurface};
 
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
+
+/// One thing that happened to a download since the last poll -- mirrors
+/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
+/// type here (rather than depending on `ipc_protocol` from the GTK signal
+/// closures directly) so the polling loop below does the actual
+/// translation, same separation `engine-host-webview2`'s own `download::
+/// DownloadEvent`/`engine-host-cef`'s own `download_handler::DownloadEvent`
+/// use.
+enum DownloadEvent {
+    Started { path: String, total_bytes: Option<u64> },
+    Progress { path: String, bytes_received: u64 },
+    Completed { path: String },
+}
 
 fn main() {
     // Read (and required) so a missing env var fails fast with a clear
@@ -122,19 +135,40 @@ fn main() {
     // never starts, same requirement as CEF's `on_before_download`/
     // `BeforeDownloadCallback::cont`. `$HOME/Downloads` mirrors CEF's
     // `%USERPROFILE%\Downloads` choice for the same reason: this project
-    // never shows its own save-as dialog. `connect_finished` (not
-    // `received_data_length`/`estimated_progress` polling) is the actual
-    // completion signal; `destination()` returns back whatever URI was set
-    // above, stripped of its `file://` prefix to match the plain
-    // filesystem paths WebView2/CEF report over the same
-    // `EngineToHost::DownloadCompleted` message.
-    // A queue, not a single slot -- two downloads finishing within the
+    // never shows its own save-as dialog.
+    //
+    // Reports live byte progress now, not just the final result:
+    // `decide-destination` is also where `total_bytes` is read (the
+    // response's `Content-Length`, via `WebKitURIResponse::content_length`
+    // -- 0 means unknown, per WebKit's own convention) and where `path` is
+    // computed directly from `dest` rather than round-tripped through
+    // `destination()` the way the other two signals below need to (they
+    // don't have `dest` in their own closure's scope). `connect_received_
+    // data` fires repeatedly as bytes arrive; `received_data_length()` is
+    // WebKit's own running total, no manual accumulation from the signal's
+    // per-chunk delta parameter needed. `connect_finished` (not `estimated_
+    // progress` polling) remains the actual completion signal; `destination
+    // ()` returns back whatever URI was set above, stripped of its `file://`
+    // prefix to match the plain filesystem paths WebView2/CEF report.
+    //
+    // **Not build-verified**: this WSL2 environment only has
+    // `webkit2gtk-4.1` dev headers installed (`webkit2gtk-4.0`, what this
+    // crate's `Cargo.toml` targets, isn't in this Ubuntu release's `apt`
+    // index at all) -- `engine-host-webkit` can't be compiled here at
+    // present, pre-existing and unrelated to this change. Written directly
+    // from `webkit2gtk` 2.0.2's own generated bindings
+    // (`DownloadExt`/`URIResponseExt`'s method signatures), same structure
+    // proven working for WebView2/CEF, but not run through a real compiler
+    // the way every other change this session has been.
+    //
+    // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
-    let pending_download: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let pending_download: Rc<RefCell<Vec<DownloadEvent>>> = Rc::new(RefCell::new(Vec::new()));
     if let Some(context) = &web_context {
-        let pending_download = pending_download.clone();
+        let pending_for_started = pending_download.clone();
         context.connect_download_started(move |_context, download| {
-            download.connect_decide_destination(|download, suggested_filename| {
+            let pending_for_destination = pending_for_started.clone();
+            download.connect_decide_destination(move |download, suggested_filename| {
                 let dir = std::env::var_os("HOME")
                     .map(std::path::PathBuf::from)
                     .unwrap_or_default()
@@ -150,13 +184,30 @@ fn main() {
                     .unwrap_or("download");
                 let dest = dir.join(name);
                 download.set_destination(&format!("file://{}", dest.display()));
+                let path = dest.to_string_lossy().to_string();
+                let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
+                pending_for_destination
+                    .borrow_mut()
+                    .push(DownloadEvent::Started { path, total_bytes });
                 true
             });
-            let pending_download = pending_download.clone();
+
+            let pending_for_progress = pending_for_started.clone();
+            download.connect_received_data(move |download, _data_length_delta| {
+                if let Some(uri) = download.destination() {
+                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                    let bytes_received = download.received_data_length();
+                    pending_for_progress
+                        .borrow_mut()
+                        .push(DownloadEvent::Progress { path, bytes_received });
+                }
+            });
+
+            let pending_for_finished = pending_for_started.clone();
             download.connect_finished(move |download| {
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
-                    pending_download.borrow_mut().push(path);
+                    pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
                 }
             });
         });
@@ -462,8 +513,17 @@ fn main() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
-        for path in pending_download.borrow_mut().drain(..) {
-            let _ = to_host.send(&EngineToHost::DownloadCompleted { path });
+        for event in pending_download.borrow_mut().drain(..) {
+            let msg = match event {
+                DownloadEvent::Started { path, total_bytes } => {
+                    EngineToHost::DownloadStarted { path, total_bytes }
+                }
+                DownloadEvent::Progress { path, bytes_received } => {
+                    EngineToHost::DownloadProgress { path, bytes_received }
+                }
+                DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+            };
+            let _ = to_host.send(&msg);
         }
 
         if visible {

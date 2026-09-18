@@ -175,6 +175,25 @@ fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
+/// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
+/// Explorer's own convention for a "how big is this file" readout, which is
+/// the nearest existing reference point a download progress display has in
+/// this app.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
     match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
         None => Some(TAG_COLOR_PALETTE[0]),
@@ -647,15 +666,16 @@ struct TabNode {
     color: Option<egui::Color32>,
 }
 
-/// A completed download shown as its own graph node, edged to the tab it
-/// was downloaded from — same force-directed layout/edge machinery as
+/// A download shown as its own graph node, edged to the tab it was
+/// downloaded from — same force-directed layout/edge machinery as
 /// `TabNode` (see `graph_layout::step`), but no engine process/live content
-/// behind it, just a static file reference. `parent` follows the same
-/// reparent-on-close rule `close_tab` already applies to tabs (falls back
-/// to the closed tab's own parent, or `None` if it was a root). Session-
-/// only — not written to `session.json`: the downloaded file already
-/// exists on disk regardless, so losing this node on restart costs nothing
-/// but a "recent downloads" convenience.
+/// behind it, just a file reference plus (while still downloading) live
+/// byte progress. `parent` follows the same reparent-on-close rule
+/// `close_tab` already applies to tabs (falls back to the closed tab's own
+/// parent, or `None` if it was a root). Session-only — not written to
+/// `session.json`: the downloaded file already exists on disk regardless
+/// (once finished), so losing this node on restart costs nothing but a
+/// "recent downloads" convenience.
 struct DownloadNode {
     parent: Option<String>,
     /// Inherited from the parent tab's own `group` at creation time — see
@@ -667,6 +687,22 @@ struct DownloadNode {
     path: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
+    /// Bytes received so far -- created (node included) at
+    /// `EngineToHost::DownloadStarted`, not only once finished, so a
+    /// download is visible with live progress for its whole lifetime
+    /// instead of only appearing once done. `None` total (see below) still
+    /// updates this field; it just can't be shown as a fraction/percentage.
+    bytes_received: u64,
+    /// The server's reported final size, if any (a `Content-Length`-less
+    /// response -- chunked transfer -- means `None`). Shown as a byte count
+    /// with no percentage/bar in that case, rather than a misleading guess.
+    total_bytes: Option<u64>,
+    /// Set once `DownloadCompleted` arrives for this node's own `path`.
+    /// Distinguishes an in-progress node (still shows a progress bar) from
+    /// a finished one (plain filename, same as before this feature) without
+    /// needing a separate enum -- nothing about a completed download's
+    /// other fields becomes invalid or needs clearing.
+    completed: bool,
 }
 
 /// A tab group: a container node shown at the top level of Graph view that,
@@ -2068,15 +2104,6 @@ impl App {
         id
     }
 
-    /// Distinct prefix from `alloc_tab_id` so a download node's id can
-    /// never collide with a tab's — both share the same graph/edge id
-    /// space (`graph_layout::step` sees them as one flat set of nodes).
-    fn alloc_download_id(&mut self) -> String {
-        let id = format!("dl-{}", self.next_download_id);
-        self.next_download_id += 1;
-        id
-    }
-
     /// Removes a download node from the graph — the file on disk is left
     /// untouched, this only forgets the node. Session-only state, so
     /// there's nothing to persist after removal either.
@@ -2119,9 +2146,9 @@ impl App {
             .spawn();
     }
 
-    /// Distinct prefix from `alloc_tab_id`/`alloc_download_id` — group ids
-    /// share the same flat id space at the top level (`graph_layout::step`
-    /// again sees ids only, not node kinds).
+    /// Distinct prefix from `alloc_tab_id`/the `"dl-"` download-id prefix —
+    /// group ids share the same flat id space at the top level
+    /// (`graph_layout::step` again sees ids only, not node kinds).
     fn alloc_group_id(&mut self) -> String {
         let id = format!("grp-{}", self.next_group_id);
         self.next_group_id += 1;
@@ -3495,6 +3522,44 @@ impl App {
                             remove_id = Some(id.clone());
                         }
                     });
+                    // In-progress downloads get a live progress row below
+                    // the filename; a completed one is left exactly as
+                    // before this feature -- just the filename row above.
+                    if !node.completed {
+                        match node.total_bytes {
+                            Some(total) if total > 0 => {
+                                let fraction = (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);
+                                ui.add(
+                                    egui::ProgressBar::new(fraction)
+                                        .text(format!(
+                                            "{} / {}",
+                                            human_bytes(node.bytes_received),
+                                            human_bytes(total)
+                                        ))
+                                        .desired_width(f32::INFINITY),
+                                );
+                            }
+                            // No `Content-Length` to size a fraction
+                            // against (chunked transfer) -- a byte count
+                            // with no bar/percentage is honest; a bar stuck
+                            // at some arbitrary fraction (or a fake
+                            // "indeterminate" scroll egui has no built-in
+                            // support for) would just be a guess.
+                            _ => {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "Downloading… {}",
+                                            human_bytes(node.bytes_received)
+                                        ))
+                                        .small()
+                                        .weak(),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                        }
+                    }
                 }
             });
         });
@@ -6529,6 +6594,44 @@ impl App {
                                 ui.visuals().text_color(),
                             );
                         }
+                        // Live progress bar, only while not yet complete
+                        // and only when the server reported a real total
+                        // (an unknown-total download still shows as a
+                        // download via the icon/filename above; the
+                        // Downloads popup's own byte-count-with-no-bar
+                        // fallback is where that case gets a number). A
+                        // plain `ui.painter()` world-space rect, same
+                        // coordinate space `rect`/the card's own fill and
+                        // border already draw in -- not `overlay_painter`
+                        // (screen-space, used for text specifically to
+                        // avoid blurring at non-100% zoom), and not scaled
+                        // by `inv_zoom` for the same reason `GRAPH_THUMB_
+                        // MARGIN` isn't: this is card-layout geometry
+                        // already inside the zoom-scaled Scene transform,
+                        // not chrome that needs a constant on-screen size.
+                        if !node.completed {
+                            if let Some(total) = node.total_bytes.filter(|t| *t > 0) {
+                                let fraction =
+                                    (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);
+                                let track_rect = egui::Rect::from_min_max(
+                                    egui::pos2(rect.left() + 8.0, rect.bottom() - 26.0),
+                                    egui::pos2(rect.right() - 8.0, rect.bottom() - 22.0),
+                                );
+                                ui.painter().rect_filled(
+                                    track_rect,
+                                    2.0,
+                                    ui.visuals().weak_text_color().gamma_multiply(0.4),
+                                );
+                                let fill_rect = egui::Rect::from_min_max(
+                                    track_rect.min,
+                                    egui::pos2(
+                                        track_rect.min.x + track_rect.width() * fraction,
+                                        track_rect.max.y,
+                                    ),
+                                );
+                                ui.painter().rect_filled(fill_rect, 2.0, ACCENT);
+                            }
+                        }
                     }
 
                     if is_hovered {
@@ -7819,7 +7922,6 @@ impl App {
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
         let mut favicon_updates: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
-        let mut download_events: Vec<(String, String)> = Vec::new();
         // Whether any tab's real (settled) url changed this pass — used to
         // trigger one `save_session()` after the loop below rather than one
         // per `NavigationStateChanged` (title/history-only changes and a
@@ -7909,9 +8011,55 @@ impl App {
                             });
                         }
                     }
+                    // Handled inline (not deferred to after this whole
+                    // `tab_ids` loop the way `frame_updates`/`crashes`/etc.
+                    // are) since a fast download can send `Started`,
+                    // `Progress`, and `Completed` all within the same
+                    // `try_recv` drain -- deferring node *creation* would
+                    // mean `Progress`/`Completed` arriving in that same
+                    // batch find no node yet to update. `node` here (this
+                    // message's own tab, from the enclosing `self.tabs.
+                    // get_mut(tab_id)`) already has the group/position a
+                    // separate `self.tabs.get(&tab_id)` lookup would
+                    // otherwise need -- and couldn't get anyway, since
+                    // `node` already holds `self.tabs`' own mutable borrow.
+                    EngineToHost::DownloadStarted { path, total_bytes } => {
+                        // "dl-" prefix (was `alloc_download_id`, inlined
+                        // here -- that method took `&mut self` as a whole,
+                        // which conflicts with `node`'s own already-live
+                        // mutable borrow of `self.tabs` for this entire
+                        // match) so a download node's id can never collide
+                        // with a tab's -- both share the same graph/edge id
+                        // space (`graph_layout::step` sees them as one flat
+                        // set of nodes).
+                        let id = format!("dl-{}", self.next_download_id);
+                        self.next_download_id += 1;
+                        let pos = node.pos + graph_layout::spawn_jitter(&id);
+                        self.downloads.insert(
+                            id.clone(),
+                            DownloadNode {
+                                parent: Some(tab_id.clone()),
+                                group: node.group.clone(),
+                                path,
+                                pos,
+                                vel: egui::Vec2::ZERO,
+                                bytes_received: 0,
+                                total_bytes,
+                                completed: false,
+                            },
+                        );
+                        self.download_order.push(id);
+                    }
+                    EngineToHost::DownloadProgress { path, bytes_received } => {
+                        if let Some(dl) = self.downloads.values_mut().find(|d| d.path == path) {
+                            dl.bytes_received = bytes_received;
+                        }
+                    }
                     EngineToHost::DownloadCompleted { path } => {
                         self.save_toast = Some((path.clone(), std::time::Instant::now()));
-                        download_events.push((tab_id.clone(), path));
+                        if let Some(dl) = self.downloads.values_mut().find(|d| d.path == path) {
+                            dl.completed = true;
+                        }
                     }
                 }
             }
@@ -7961,21 +8109,6 @@ impl App {
             let parent = Some(requesting_tab_id);
             let group = self.group_of(&parent);
             self.spawn_new_tab(parent, group, &url);
-        }
-
-        // A completed download becomes its own graph node, child of the
-        // tab it came from — same spawn-jitter placement a new tab gets
-        // relative to its parent.
-        for (tab_id, path) in download_events {
-            let id = self.alloc_download_id();
-            let group = self.tabs.get(&tab_id).and_then(|n| n.group.clone());
-            let parent_pos = self.tabs.get(&tab_id).map(|n| n.pos).unwrap_or(egui::Vec2::ZERO);
-            let pos = parent_pos + graph_layout::spawn_jitter(&id);
-            self.downloads.insert(
-                id.clone(),
-                DownloadNode { parent: Some(tab_id), group, path, pos, vel: egui::Vec2::ZERO },
-            );
-            self.download_order.push(id);
         }
 
         for (tab_id, rgba, width, height) in favicon_updates {

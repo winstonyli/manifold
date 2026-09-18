@@ -239,18 +239,28 @@ pub enum EngineToHost {
     /// version. Servo has no context-menu hook in its embedding surface at
     /// all.
     ContextMenuLink { x: f64, y: f64, href: String },
-    /// A download finished — `path` is where the engine saved it. This
-    /// project never prompts for a save location or shows progress; each
-    /// engine picks its own default location (WebView2: its own real
-    /// Downloads-folder default; CEF: `%USERPROFILE%\Downloads` plus the
-    /// server's suggested filename, chosen by `browser-ui`'s equivalent —
-    /// see each engine-host's own download-handling code) and this just
-    /// reports the final result so `browser-ui` can show a brief "Saved
-    /// <path>" toast. WebView2, CEF, and WebKit (`WebContext::
-    /// download-started`, `WebKitDownload::finished`) all have a real
-    /// native download API — none of them are tied to the per-engine input
-    /// mechanism the way context-menu support was, so there's no
-    /// asymmetry gap here beyond Servo, whose embedding API has no
-    /// download hook at all.
+    /// A download started -- `path` is where the engine will save it (this
+    /// project never prompts for a save location; each engine picks its own
+    /// default: WebView2's own real Downloads-folder default, CEF's
+    /// `%USERPROFILE%\Downloads` plus the server's suggested filename
+    /// chosen by `browser-ui`'s equivalent, WebKit's own default -- see each
+    /// engine-host's own download-handling code). `total_bytes` is the
+    /// expected final size if the server reported a real `Content-Length`;
+    /// `None` for a chunked/unknown-length response, shown as a byte count
+    /// with no percentage rather than a guessed bar. `path` is the stable
+    /// key `DownloadProgress`/`DownloadCompleted` for this same download are
+    /// reported under -- final by contract at this point (the engine has
+    /// already decided the save location before this fires), so `browser-ui`
+    /// never needs to re-derive it. WebView2, CEF, and WebKit all have a
+    /// real native download-progress API; Servo's embedding surface has no
+    /// download hook of any kind, so it never sends any `Download*` message.
+    DownloadStarted { path: String, total_bytes: Option<u64> },
+    /// Bytes received so far for an in-progress download, keyed by the same
+    /// `path` its own `DownloadStarted` reported.
+    DownloadProgress { path: String, bytes_received: u64 },
+    /// A download finished — `path` is the same one its `DownloadStarted`
+    /// reported. `browser-ui` shows a brief "Saved <path>" toast here and
+    /// marks that download's own graph node/popup row as no longer in
+    /// progress.
     DownloadCompleted { path: String },
 }

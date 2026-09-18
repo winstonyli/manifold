@@ -296,8 +296,17 @@ fn main() {
             let _ = control.send(&EngineToHost::FindResult { count, active_index });
         }
 
-        for path in download_path.borrow_mut().queue.drain(..) {
-            let _ = control.send(&EngineToHost::DownloadCompleted { path });
+        for event in download_path.borrow_mut().queue.drain(..) {
+            let msg = match event {
+                download_handler::DownloadEvent::Started { path, total_bytes } => {
+                    EngineToHost::DownloadStarted { path, total_bytes }
+                }
+                download_handler::DownloadEvent::Progress { path, bytes_received } => {
+                    EngineToHost::DownloadProgress { path, bytes_received }
+                }
+                download_handler::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+            };
+            let _ = control.send(&msg);
         }
 
         // Blocking HTTP fetch + decode, right here in the tick loop rather

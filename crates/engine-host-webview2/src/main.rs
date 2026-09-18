@@ -294,8 +294,17 @@ fn main() {
         }
 
         if let Some(pending) = &pending_download {
-            for path in pending.borrow_mut().drain(..) {
-                let _ = control.send(&EngineToHost::DownloadCompleted { path });
+            for event in pending.borrow_mut().drain(..) {
+                let msg = match event {
+                    download::DownloadEvent::Started { path, total_bytes } => {
+                        EngineToHost::DownloadStarted { path, total_bytes }
+                    }
+                    download::DownloadEvent::Progress { path, bytes_received } => {
+                        EngineToHost::DownloadProgress { path, bytes_received }
+                    }
+                    download::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+                };
+                let _ = control.send(&msg);
             }
         }
 

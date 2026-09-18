@@ -1,14 +1,20 @@
 //! Download handling via WebView2's real native `DownloadStarting`/
-//! `StateChanged` events (`ICoreWebView2_4`). This project never prompts
-//! for a save location or shows progress -- WebView2 already computes a
+//! `BytesReceivedChanged`/`StateChanged` events (`ICoreWebView2_4`). This
+//! project never prompts for a save location -- WebView2 already computes a
 //! real default path (its own equivalent of a normal Edge download's
 //! default Downloads-folder location) before this handler ever runs, so
-//! there's nothing to choose; only the *result* (once complete) is worth
-//! reporting back to `browser-ui`. `SetHandled(true)` suppresses
-//! WebView2's own default download UI (a flyout a real windowed Edge would
-//! show) -- same don't-let-the-engine-try-to-paint-its-own-chrome caution
-//! `popup.rs`/`find.rs` already take, and this off-screen host has nowhere
-//! sensible for a flyout to appear anyway.
+//! there's nothing to choose. `SetHandled(true)` suppresses WebView2's own
+//! default download UI (a flyout a real windowed Edge would show) -- same
+//! don't-let-the-engine-try-to-paint-its-own-chrome caution `popup.rs`/
+//! `find.rs` already take, and this off-screen host has nowhere sensible
+//! for a flyout to appear anyway.
+//!
+//! Reports live byte progress now, not just the final result: `path` is
+//! read once, from `DownloadStartingEventArgs::ResultFilePath` at the
+//! moment the download starts (already final by contract -- WebView2 has
+//! decided the save location before this event fires), then reused as the
+//! stable key for every later `Progress`/`Completed` event on the same
+//! download, rather than re-reading it from the operation each time.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,14 +22,28 @@ use std::rc::Rc;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
 };
-use webview2_com::{take_pwstr, DownloadStartingEventHandler, StateChangedEventHandler};
+use webview2_com::{
+    take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
+    StateChangedEventHandler,
+};
 use windows::core::PWSTR;
 
-/// A queue, not a single slot -- two downloads completing within the same
+/// One thing that happened to a download since the last poll -- mirrors
+/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
+/// type here (rather than depending on `ipc_protocol` from this leaf
+/// module) so `main.rs` does the actual translation, same separation the
+/// rest of this crate's `pending_*` types already keep.
+pub enum DownloadEvent {
+    Started { path: String, total_bytes: Option<u64> },
+    Progress { path: String, bytes_received: u64 },
+    Completed { path: String },
+}
+
+/// A queue, not a single slot -- two downloads progressing within the same
 /// tick would otherwise silently clobber each other (each gets its own
-/// `StateChangedEventHandler` closure below, all writing into whatever this
-/// type is).
-pub type PendingDownload = Rc<RefCell<Vec<String>>>;
+/// `BytesReceivedChangedEventHandler`/`StateChangedEventHandler` closures
+/// below, all writing into whatever this type is).
+pub type PendingDownload = Rc<RefCell<Vec<DownloadEvent>>>;
 
 /// Best-effort like this project's other version-gated WebView2 APIs -- an
 /// `ICoreWebView2_4`-less Runtime just means downloads on this tab proceed
@@ -41,25 +61,59 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
         unsafe {
             let _ = args.SetHandled(true);
         }
+        let mut path_raw = PWSTR::null();
+        let path = if unsafe { args.ResultFilePath(&mut path_raw) }.is_ok() {
+            take_pwstr(path_raw)
+        } else {
+            return Ok(());
+        };
         if let Ok(operation) = unsafe { args.DownloadOperation() } {
-            let pending = pending_for_handler.clone();
-            let mut op_token = Default::default();
+            let mut total_bytes_raw: i64 = -1;
+            let total_bytes = unsafe { operation.TotalBytesToReceive(&mut total_bytes_raw) }
+                .is_ok()
+                .then_some(total_bytes_raw)
+                .filter(|n| *n >= 0)
+                .map(|n| n as u64);
+            pending_for_handler
+                .borrow_mut()
+                .push(DownloadEvent::Started { path: path.clone(), total_bytes });
+
+            let pending_for_bytes = pending_for_handler.clone();
+            let path_for_bytes = path.clone();
+            let mut bytes_token = Default::default();
+            let bytes_handler = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _args| {
+                if let Some(sender) = &sender {
+                    let mut bytes_received: i64 = 0;
+                    if unsafe { sender.BytesReceived(&mut bytes_received) }.is_ok() && bytes_received >= 0 {
+                        pending_for_bytes.borrow_mut().push(DownloadEvent::Progress {
+                            path: path_for_bytes.clone(),
+                            bytes_received: bytes_received as u64,
+                        });
+                    }
+                }
+                Ok(())
+            }));
+            unsafe {
+                let _ = operation.add_BytesReceivedChanged(&bytes_handler, &mut bytes_token);
+            }
+
+            let pending_for_state = pending_for_handler.clone();
+            let mut state_token = Default::default();
             let state_handler = StateChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let Some(sender) = &sender {
                     let mut state = Default::default();
                     if unsafe { sender.State(&mut state) }.is_ok()
                         && state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED
                     {
-                        let mut path = PWSTR::null();
-                        if unsafe { sender.ResultFilePath(&mut path) }.is_ok() {
-                            pending.borrow_mut().push(take_pwstr(path));
-                        }
+                        pending_for_state
+                            .borrow_mut()
+                            .push(DownloadEvent::Completed { path: path.clone() });
                     }
                 }
                 Ok(())
             }));
             unsafe {
-                let _ = operation.add_StateChanged(&state_handler, &mut op_token);
+                let _ = operation.add_StateChanged(&state_handler, &mut state_token);
             }
         }
         Ok(())
