@@ -342,6 +342,28 @@ fn draw_node_close_button(
     close_response.clicked()
 }
 
+/// Shows a native "Save As" dialog defaulting to `default_name`, filtered
+/// to `.json`; if a path was picked, returns it along with the exact
+/// "Saved <path>" toast text this app shows for every export (Session,
+/// Bookmarks, one Group) on success. Doesn't write anything itself, and
+/// deliberately isn't a method on `App` -- the caller still does its own
+/// serialization (`self.build_session_snapshot().save_to(path)`, etc.)
+/// and sets `self.save_toast`, which a `&mut self` helper here couldn't
+/// do without a borrow conflict against a closure also wanting to touch
+/// `self`. Previously this dialog-plus-toast tail was hand-copied three
+/// times, differing only in the default filename and the filter's label.
+fn save_dialog_with_toast(
+    default_name: impl Into<String>,
+    filter_label: &str,
+) -> Option<(std::path::PathBuf, (String, std::time::Instant))> {
+    let path = rfd::FileDialog::new()
+        .set_file_name(default_name.into())
+        .add_filter(filter_label, &["json"])
+        .save_file()?;
+    let toast = (format!("Saved {}", path.display()), std::time::Instant::now());
+    Some((path, toast))
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -2490,13 +2512,9 @@ impl App {
             session::Session::delete_named(&name);
         }
         if export_requested {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name("session.json")
-                .add_filter("Session", &["json"])
-                .save_file()
-            {
+            if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {
                 self.build_session_snapshot().save_to(&path);
-                self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
+                self.save_toast = Some(toast);
             }
         }
         if import_requested {
@@ -2510,13 +2528,9 @@ impl App {
             }
         }
         if export_bookmarks_requested {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name("bookmarks.json")
-                .add_filter("Bookmarks", &["json"])
-                .save_file()
-            {
+            if let Some((path, toast)) = save_dialog_with_toast("bookmarks.json", "Bookmarks") {
                 bookmarks::save_to(&self.bookmarks, &path);
-                self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
+                self.save_toast = Some(toast);
             }
         }
         if import_bookmarks_requested {
@@ -5938,13 +5952,11 @@ impl App {
         }
         if export_group_requested {
             if let Some(export) = self.export_group(&id) {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_file_name(format!("{}.json", export.name))
-                    .add_filter("Group", &["json"])
-                    .save_file()
+                if let Some((path, toast)) =
+                    save_dialog_with_toast(format!("{}.json", export.name), "Group")
                 {
                     group_export::save_to(&export, &path);
-                    self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
+                    self.save_toast = Some(toast);
                 }
             }
         }
