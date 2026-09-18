@@ -66,8 +66,8 @@ const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
 /// chosen for mutual distinguishability against this app's dark chrome
-/// rather than any particular meaning. Shared by `GraphNode::color`
-/// (used by `Group`) and `TabNode::color`.
+/// rather than any particular meaning. Used via the now-shared
+/// `GraphNode::color`, for both `Tab` and `Group`.
 const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
     egui::Color32::from_rgb(235, 87, 87),
     egui::Color32::from_rgb(242, 153, 74),
@@ -702,76 +702,33 @@ struct GraphCameraTween {
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// One tab: its engine-host process/IPC handle, the "opened from" edge
-/// (`parent`) that makes the tab collection a forest for the M5 graph view,
-/// per-tab navigation/UI state, and force-directed layout state (`pos`/
-/// `vel`) — see `graph_layout`.
-struct TabNode {
-    tab: EngineTab,
-    parent: Option<String>,
-    url: String,
-    title: String,
-    can_go_back: bool,
-    can_go_forward: bool,
-    loading: bool,
-    /// Shown as a speaker icon on this tab's graph node — see
-    /// `ipc_protocol::EngineToHost::AudioPlayingChanged`'s doc comment for
-    /// which engines actually send this (WebView2, WebKit; never CEF or
-    /// Servo, so this just stays `false` for those tabs).
-    audio_playing: bool,
-    /// User-toggled via the toolbar's "Muted" button — host-tracked (not
-    /// read back from the engine), see `ipc_protocol::HostToEngine::
-    /// SetMuted`'s doc comment. Resets to `false` on a fresh spawn/respawn/
-    /// engine swap, same as every other per-tab UI-only flag here (nothing
-    /// about mute state survives a swap to a different engine process).
-    muted: bool,
-    /// Graph view's pin toggle — a pinned node is excluded from the
-    /// force-directed layout entirely (same `pinned` exclusion
-    /// `graph_layout::step` already gives a node currently being dragged),
-    /// so it stays exactly where the user put it instead of drifting under
-    /// repulsion/centering forces as siblings come and go. Not persisted to
-    /// `session.json` (unlike `pos`, which is) — resets to unpinned on
-    /// every restart, a smaller scope than plumbing a new field through
-    /// `SessionTab` warranted for a graph-view display preference.
-    pinned: bool,
-    /// Which group's subgraph this tab is shown in — `None` at the top
-    /// level. See `GroupPayload`'s own doc comment. Unlike `parent` (who
-    /// opened this tab, used for the edge drawn to it), `group` is purely
-    /// "which graph view is this node rendered in" — a tab's parent can
-    /// point to a tab in a *different* group (or none at all) without
-    /// anything breaking; the edge just isn't drawn unless both endpoints
-    /// share the same `group` (see `build_graph_ui`'s level-filtering).
-    /// Session-only, same scope decision as `pinned`.
-    group: Option<String>,
-    /// Set while a swap is in flight for *this* tab: the engine to swap
-    /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
-    /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
-    /// block or interfere with a concurrent swap/crash on another.
-    swap_target: Option<EngineKind>,
-    pos: egui::Vec2,
-    vel: egui::Vec2,
-    /// User-chosen tag color, cycled through `TAG_COLOR_PALETTE` by
-    /// clicking the card's own color swatch (bottom-right corner -- the one
-    /// corner of a tab card not already claimed by the pin dot, close "x",
-    /// or (inside a group) the eject button). `None` keeps the card's plain
-    /// default border. Session-only, same scope decision as `pinned`.
-    color: Option<egui::Color32>,
-}
-
 /// Kind-specific data for one node in the unified graph-node model --
 /// `GraphNode` holds the fields every kind shares (position, graph
-/// membership); this holds only what varies per kind. Step in migrating off
-/// three separate hardcoded node types (the old `TabNode`/`DownloadNode`/
-/// `GroupNode`, three separate `HashMap`s) onto one: `Download` and `Group`
-/// have moved over so far (see `App::nodes`'s own doc comment) -- `Tab`
-/// (still its own `TabNode`/`tabs` map, by far the largest of the three)
-/// remains for a later step.
+/// membership); this holds only what varies per kind. Final step in
+/// migrating off three separate hardcoded node types (the old `TabNode`/
+/// `DownloadNode`/`GroupNode`, three separate `HashMap`s) onto one -- all
+/// three kinds now live here (see `App::nodes`'s own doc comment).
 enum NodePayload {
+    Tab(TabPayload),
     Download(DownloadPayload),
     Group(GroupPayload),
 }
 
 impl NodePayload {
+    fn as_tab(&self) -> Option<&TabPayload> {
+        match self {
+            NodePayload::Tab(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
+        match self {
+            NodePayload::Tab(t) => Some(t),
+            _ => None,
+        }
+    }
+
     fn as_download(&self) -> Option<&DownloadPayload> {
         match self {
             NodePayload::Download(d) => Some(d),
@@ -799,6 +756,43 @@ impl NodePayload {
             _ => None,
         }
     }
+}
+
+/// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
+/// `pos`/`vel`/`color` moved to the now-shared `GraphNode`). See
+/// `NodePayload`'s own doc comment.
+struct TabPayload {
+    tab: EngineTab,
+    url: String,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    loading: bool,
+    /// Shown as a speaker icon on this tab's graph node — see
+    /// `ipc_protocol::EngineToHost::AudioPlayingChanged`'s doc comment for
+    /// which engines actually send this (WebView2, WebKit; never CEF or
+    /// Servo, so this just stays `false` for those tabs).
+    audio_playing: bool,
+    /// User-toggled via the toolbar's "Muted" button — host-tracked (not
+    /// read back from the engine), see `ipc_protocol::HostToEngine::
+    /// SetMuted`'s doc comment. Resets to `false` on a fresh spawn/respawn/
+    /// engine swap, same as every other per-tab UI-only flag here (nothing
+    /// about mute state survives a swap to a different engine process).
+    muted: bool,
+    /// Graph view's pin toggle — a pinned node is excluded from the
+    /// force-directed layout entirely (same `pinned` exclusion
+    /// `graph_layout::step` already gives a node currently being dragged),
+    /// so it stays exactly where the user put it instead of drifting under
+    /// repulsion/centering forces as siblings come and go. Not persisted to
+    /// `session.json` (unlike `pos`, which is) — resets to unpinned on
+    /// every restart, a smaller scope than plumbing a new field through
+    /// `SessionTab` warranted for a graph-view display preference.
+    pinned: bool,
+    /// Set while a swap is in flight for *this* tab: the engine to swap
+    /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
+    /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
+    /// block or interfere with a concurrent swap/crash on another.
+    swap_target: Option<EngineKind>,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -830,10 +824,10 @@ struct DownloadPayload {
 /// node's actual kind. See `NodePayload`'s own doc comment for the
 /// migration this is a step of.
 struct GraphNode {
-    /// The "opened from" edge for a tab, or (for a download) the tab it was
-    /// downloaded from -- see `TabNode::parent`'s own doc comment (not yet
-    /// migrated, still describes the same concept). `None` for a root node,
-    /// and always `None` for a group (never nested, never "opened from").
+    /// The "opened from" edge for a tab (which tab spawned it, making the
+    /// tab collection a forest for Graph view), or, for a download, the tab
+    /// it was downloaded from. `None` for a root node, and always `None`
+    /// for a group (never nested, never "opened from").
     parent: Option<String>,
     /// Which group's subgraph this node is shown in -- `None` at the top
     /// level. See `GroupPayload`'s own doc comment. Always `None` for a
@@ -842,13 +836,20 @@ struct GraphNode {
     pos: egui::Vec2,
     vel: egui::Vec2,
     /// User-chosen tag color -- `None` for any kind that doesn't use one
-    /// (`Download` doesn't; `Group` does). `Tab` still uses its own
-    /// not-yet-migrated `TabNode::color` until it migrates too.
+    /// (`Download` doesn't; `Tab`/`Group` do).
     color: Option<egui::Color32>,
     payload: NodePayload,
 }
 
 impl GraphNode {
+    fn as_tab(&self) -> Option<&TabPayload> {
+        self.payload.as_tab()
+    }
+
+    fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
+        self.payload.as_tab_mut()
+    }
+
     fn as_download(&self) -> Option<&DownloadPayload> {
         self.payload.as_download()
     }
@@ -875,13 +876,13 @@ impl GraphNode {
 /// already is, just one level deeper, and reusing that same flat
 /// `graph_layout::step` simulation rather than a second nested one running
 /// inside the group's own node. No nesting in this first cut — a group
-/// can't contain another group, only tabs/downloads (`GraphNode::group`/
-/// `TabNode::group` are a single `Option<String>`, not a path). A group
-/// node's own `GraphNode::group`/`parent` stay `None` — a group itself is
-/// never nested and has no "opened from" edge. Entering/leaving eases the
+/// can't contain another group, only tabs/downloads (`GraphNode::group` is
+/// a single `Option<String>`, not a path). A group node's own
+/// `GraphNode::group`/`parent` stay `None` — a group itself is never
+/// nested and has no "opened from" edge. Entering/leaving eases the
 /// camera via `GraphCameraTween` rather than `Transition` — see that type's
 /// own doc comment for why. Groups (and membership) are session-only, same
-/// scope decision as `TabNode::pinned` — not written to `session.json`.
+/// scope decision as `TabPayload::pinned` — not written to `session.json`.
 struct GroupPayload {
     name: String,
 }
@@ -990,11 +991,11 @@ struct TabSpawnOutcome {
     parent: Option<String>,
     group: Option<String>,
     /// Carried through a respawn/engine-swap/crash-recovery so a pinned
-    /// tab stays pinned — see `TabNode::pinned`'s own doc comment. Always
+    /// tab stays pinned — see `TabPayload::pinned`'s own doc comment. Always
     /// `false` for a genuinely new tab (`SpawnPurpose::New`/`Root`).
     pinned: bool,
     /// Same "carried through respawn, `None` for a genuinely new tab"
-    /// treatment as `pinned` above, but for `TabNode::color`.
+    /// treatment as `pinned` above, but for `GraphNode::color`.
     color: Option<egui::Color32>,
     url: String,
     pos: egui::Vec2,
@@ -1012,16 +1013,11 @@ struct App {
     /// Poll`, redrawing continuously).
     last_window_title: String,
     gpu: Option<GpuState>,
-    tabs: HashMap<String, TabNode>,
-    /// Stable iteration/z-order for graph rendering and hit-testing — a
-    /// `HashMap`'s own iteration order is unspecified and can change
-    /// frame-to-frame, which would make node click/drag targeting flaky.
-    tab_order: Vec<String>,
-    /// Graph nodes migrated onto the unified `GraphNode`/`NodePayload`
-    /// model so far -- downloads and groups (see `NodePayload`'s own doc
-    /// comment). Tabs still live in their own `tabs` map below until it
-    /// migrates too. `node_order` is the same "stable insertion order,
-    /// `HashMap` iteration isn't" reasoning `tab_order` already has.
+    /// Every graph node -- tabs, downloads, and groups alike (see
+    /// `NodePayload`'s own doc comment). `node_order` is a stable
+    /// iteration/z-order for graph rendering and hit-testing, separate from
+    /// this `HashMap`'s own unspecified iteration order (which would make
+    /// node click/drag targeting flaky if used directly).
     nodes: HashMap<String, GraphNode>,
     node_order: Vec<String>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
@@ -1425,7 +1421,7 @@ struct App {
     /// The tab id `respawn_tab` was called for *while it was the focused
     /// tab* — i.e. an engine swap or crash recovery is currently respawning
     /// the tab the user is looking at. `build_tab_ui`'s existing "focused
-    /// tab missing from `self.tabs`" guard (a pre-existing one-frame safety
+    /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
     /// net, from before spawning was async) would otherwise bounce the user
     /// to Graph view for the tab's *entire* respawn duration — imperceptible
     /// when spawning was synchronous, but a visible multi-second flicker
@@ -1454,8 +1450,6 @@ impl Default for App {
             window: None,
             last_window_title: "multiengine-browser".to_string(),
             gpu: None,
-            tabs: HashMap::new(),
-            tab_order: Vec::new(),
             nodes: HashMap::new(),
             node_order: Vec::new(),
             groups_collapsed: false,
@@ -1568,7 +1562,8 @@ impl App {
         let title = self
             .focused
             .as_ref()
-            .and_then(|id| self.tabs.get(id))
+            .and_then(|id| self.nodes.get(id))
+            .and_then(|n| n.as_tab())
             .map(|n| if n.title.is_empty() { n.url.as_str() } else { n.title.as_str() })
             .filter(|t| !t.is_empty())
             .map(|t| format!("{t} — multiengine-browser"))
@@ -1602,7 +1597,7 @@ impl App {
     fn send_resize_to(&mut self, tab_id: &str) {
         let (width, height) = self.content_size_px();
         let dpi_scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
-        if let Some(node) = self.tabs.get_mut(tab_id) {
+        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToEngine::Resize {
                 width,
                 height,
@@ -1620,7 +1615,7 @@ impl App {
     /// visible effect on the tab you're looking at would be confusing.
     fn send_zoom_to(&mut self, tab_id: &str) {
         let factor = self.settings.zoom_factor;
-        if let Some(node) = self.tabs.get_mut(tab_id) {
+        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToEngine::SetZoom { factor });
         }
     }
@@ -1965,7 +1960,7 @@ impl App {
     }
 
     fn navigate_tab(&mut self, tab_id: &str, url: String) {
-        if let Some(node) = self.tabs.get_mut(tab_id) {
+        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             // Recorded here, not left to `NavigationStateChanged`'s own
             // history-recording: this sets `node.url` immediately
             // (synchronously, before the engine round-trips its own
@@ -1983,7 +1978,7 @@ impl App {
                 }
             }
         }
-        if let Some(node) = self.tabs.get_mut(tab_id) {
+        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.url = url.clone();
             node.tab
                 .send(&HostToEngine::Navigate { url, referrer: None });
@@ -2000,10 +1995,10 @@ impl App {
             return Vec::new();
         }
         let query = query.to_lowercase();
-        self.tab_order
+        self.node_order
             .iter()
             .filter(|id| id.as_str() != exclude)
-            .filter_map(|id| self.tabs.get(id).map(|node| (id, node)))
+            .filter_map(|id| self.nodes.get(id).and_then(|n| n.as_tab()).map(|node| (id, node)))
             .filter(|(_, node)| {
                 node.url.to_lowercase().contains(&query) || node.title.to_lowercase().contains(&query)
             })
@@ -2067,15 +2062,16 @@ impl App {
     /// drift into building this differently.
     fn build_session_snapshot(&self) -> session::Session {
         let tabs = self
-            .tab_order
+            .node_order
             .iter()
             .filter_map(|id| {
-                let node = self.tabs.get(id)?;
+                let node = self.nodes.get(id)?;
+                let tab = node.as_tab()?;
                 Some(session::SessionTab {
                     id: id.clone(),
                     parent: node.parent.clone(),
-                    url: node.url.clone(),
-                    engine: node.tab.kind,
+                    url: tab.url.clone(),
+                    engine: tab.tab.kind,
                     pos_x: node.pos.x,
                     pos_y: node.pos.y,
                 })
@@ -2162,8 +2158,8 @@ impl App {
         self.replace_running_session(session);
     }
 
-    /// Tears down every currently-open tab/download/group -- each
-    /// `TabNode`'s own `Drop` handles process shutdown+kill, the same
+    /// Tears down every currently-open tab/download/group -- each tab's own
+    /// `EngineTab::Drop` handles process shutdown+kill, the same
     /// mechanism `close_tab` already relies on, so clearing the map is
     /// enough, no per-tab teardown call needed -- then replays `session`
     /// via `apply_session`, same as startup replays `session.json`. Shared
@@ -2174,8 +2170,8 @@ impl App {
         if session.tabs.is_empty() {
             return;
         }
-        self.tabs.clear();
-        self.tab_order.clear();
+        self.nodes.clear();
+        self.node_order.clear();
         self.nodes.clear();
         self.node_order.clear();
         self.focused = None;
@@ -2270,28 +2266,30 @@ impl App {
                     }
                 };
                 tab.set_visible(is_focused);
-                self.tabs.insert(
+                self.nodes.insert(
                     id.clone(),
-                    TabNode {
-                        tab,
+                    GraphNode {
                         parent,
-                        url: url.clone(),
-                        title: String::new(),
-                        can_go_back: false,
-                        can_go_forward: false,
-                        loading: false,
-                        audio_playing: false,
-                        muted: false,
-                        pinned,
                         group,
-                        swap_target: None,
                         pos,
                         vel,
                         color,
+                        payload: NodePayload::Tab(TabPayload {
+                            tab,
+                            url: url.clone(),
+                            title: String::new(),
+                            can_go_back: false,
+                            can_go_forward: false,
+                            loading: false,
+                            audio_playing: false,
+                            muted: false,
+                            pinned,
+                            swap_target: None,
+                        }),
                     },
                 );
-                if !self.tab_order.iter().any(|t| t == &id) {
-                    self.tab_order.push(id.clone());
+                if !self.node_order.iter().any(|t| t == &id) {
+                    self.node_order.push(id.clone());
                 }
                 match purpose {
                     SpawnPurpose::Root => {
@@ -2413,7 +2411,7 @@ impl App {
     /// this only ever renders at the top level, where the group being
     /// closed can't simultaneously be the one being viewed).
     fn dissolve_group(&mut self, id: &str) {
-        for node in self.tabs.values_mut() {
+        for node in self.nodes.values_mut() {
             if node.group.as_deref() == Some(id) {
                 node.group = None;
             }
@@ -2447,18 +2445,22 @@ impl App {
     /// instead, since `self.focused` (its `parent`) isn't necessarily a
     /// tab inside whichever group's subgraph is currently being viewed.
     fn group_of(&self, id: &Option<String>) -> Option<String> {
-        id.as_ref().and_then(|id| self.tabs.get(id)).and_then(|n| n.group.clone())
+        id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone())
     }
 
-    /// `tab_order`/`download_order`, filtered to whichever level
-    /// `self.current_group` is currently viewing — the id lists
-    /// `build_graph_ui`'s node-rendering loops iterate, kept in their
-    /// stable insertion order (unlike filtering `self.tabs`/`self.downloads`
-    /// directly, a `HashMap`'s iteration order isn't stable frame-to-frame).
+    /// `node_order`, filtered to tab-kind nodes at whichever level
+    /// `self.current_group` is currently viewing — the id list
+    /// `build_graph_ui`'s tab-rendering loop iterates, kept in stable
+    /// insertion order (unlike filtering `self.nodes` directly, a
+    /// `HashMap`'s iteration order isn't stable frame-to-frame).
     fn tabs_at_current_level(&self) -> Vec<String> {
-        self.tab_order
+        self.node_order
             .iter()
-            .filter(|id| self.tabs.get(*id).is_some_and(|n| n.group == self.current_group))
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_tab().is_some())
+            })
             .cloned()
             .collect()
     }
@@ -2475,7 +2477,7 @@ impl App {
             if cur == node_id {
                 return true;
             }
-            current = self.tabs.get(&cur).and_then(|n| n.parent.clone());
+            current = self.nodes.get(&cur).and_then(|n| n.parent.clone());
         }
         false
     }
@@ -2521,7 +2523,7 @@ impl App {
         const MARGIN: f32 = 60.0;
         let mut bounds = egui::Rect::NOTHING;
         for id in self.tabs_at_current_level() {
-            if let Some(node) = self.tabs.get(&id) {
+            if let Some(node) = self.nodes.get(&id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
             }
@@ -2554,13 +2556,13 @@ impl App {
     /// (checks every tab per frontier node), but this graph's tab counts
     /// stay small enough that it's not worth a real adjacency structure.
     fn subtree_ids(&self, root_id: &str) -> Vec<String> {
-        let Some(level_group) = self.tabs.get(root_id).map(|n| n.group.clone()) else {
+        let Some(level_group) = self.nodes.get(root_id).map(|n| n.group.clone()) else {
             return Vec::new();
         };
         let mut result = vec![root_id.to_string()];
         let mut frontier = vec![root_id.to_string()];
         while let Some(current) = frontier.pop() {
-            for (id, node) in &self.tabs {
+            for (id, node) in &self.nodes {
                 if node.parent.as_deref() == Some(current.as_str())
                     && node.group == level_group
                     && !result.contains(id)
@@ -2580,7 +2582,7 @@ impl App {
         const MARGIN: f32 = 60.0;
         let mut bounds = egui::Rect::NOTHING;
         for id in self.subtree_ids(root_id) {
-            if let Some(node) = self.tabs.get(&id) {
+            if let Some(node) = self.nodes.get(&id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
             }
@@ -2620,7 +2622,7 @@ impl App {
     fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
         let mut best: Option<(String, f32)> = None;
         for id in self.tabs_at_current_level() {
-            let Some(node) = self.tabs.get(&id) else { continue };
+            let Some(node) = self.nodes.get(&id) else { continue };
             let delta = node.pos - from;
             let along = delta.dot(dir);
             if along <= 0.5 {
@@ -2648,8 +2650,8 @@ impl App {
         let from_at_level = self
             .focused
             .as_ref()
-            .filter(|id| self.tabs.get(id.as_str()).is_some_and(|n| n.group == self.current_group))
-            .and_then(|id| self.tabs.get(id))
+            .filter(|id| self.nodes.get(id.as_str()).is_some_and(|n| n.group == self.current_group))
+            .and_then(|id| self.nodes.get(id))
             .map(|n| n.pos);
         match from_at_level {
             Some(from) => {
@@ -2670,7 +2672,7 @@ impl App {
     /// keyboard navigation, and the headless `GRAPHOPEN` command.
     fn open_focused_graph_node(&mut self) {
         if let Some(id) = self.focused.clone() {
-            if self.tabs.get(&id).is_some_and(|n| n.group == self.current_group) {
+            if self.nodes.get(&id).is_some_and(|n| n.group == self.current_group) {
                 self.start_transition_to_tab(&id);
             }
         }
@@ -2701,7 +2703,7 @@ impl App {
         const SETTLE_DT: f32 = 1.0 / 60.0;
 
         let mut positions: HashMap<String, egui::Vec2> = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.pos))
@@ -2713,7 +2715,7 @@ impl App {
             )
             .collect();
         let mut velocities: HashMap<String, egui::Vec2> = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.vel))
@@ -2725,7 +2727,7 @@ impl App {
             )
             .collect();
         let edges: Vec<(String, String)> = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
@@ -2738,9 +2740,9 @@ impl App {
             .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
             .collect();
         let pinned: HashSet<String> = self
-            .tabs
+            .nodes
             .iter()
-            .filter(|(_, n)| n.group == self.current_group && n.pinned)
+            .filter(|(_, n)| n.group == self.current_group && n.as_tab().is_some_and(|t| t.pinned))
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -2755,7 +2757,7 @@ impl App {
             );
         }
 
-        for (id, node) in self.tabs.iter_mut() {
+        for (id, node) in self.nodes.iter_mut() {
             if let Some(p) = positions.get(id) {
                 node.pos = *p;
             }
@@ -2784,9 +2786,9 @@ impl App {
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip.
     fn duplicate_tab(&mut self, id: &str) {
-        let Some((parent, group, url, kind)) =
-            self.tabs.get(id).map(|n| (n.parent.clone(), n.group.clone(), n.url.clone(), n.tab.kind))
-        else {
+        let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
+            n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.url.clone(), t.tab.kind))
+        }) else {
             return;
         };
         self.spawn_new_tab_with_kind(parent, group, &url, kind);
@@ -2817,10 +2819,10 @@ impl App {
         // group's own spawn point) covers a brand new, still-empty group.
         let parent_pos = parent
             .as_ref()
-            .and_then(|p| self.tabs.get(p))
+            .and_then(|p| self.nodes.get(p))
             .filter(|n| n.group == group)
             .map(|n| n.pos)
-            .or_else(|| self.tabs.values().find(|n| n.group == group).map(|n| n.pos))
+            .or_else(|| self.nodes.values().find(|n| n.group == group).map(|n| n.pos))
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
@@ -2836,12 +2838,12 @@ impl App {
             self.close_find_bar();
             self.context_menu = None;
             if let Some(old_id) = self.focused.clone() {
-                if let Some(old) = self.tabs.get_mut(&old_id) {
+                if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
                     old.tab.set_visible(false);
                 }
             }
         }
-        if let Some(node) = self.tabs.get_mut(id) {
+        if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
             if !self.address_bar_focused && !self.debug_address_bar_pin {
                 self.address_bar_text = node.url.clone();
@@ -2933,7 +2935,7 @@ impl App {
         match kind {
             TransitionKind::ToGraph => {
                 self.view_mode = ViewMode::Graph;
-                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
                     node.tab.set_visible(false);
                 }
             }
@@ -2984,7 +2986,7 @@ impl App {
         );
 
         let node_rect = self
-            .tabs
+            .nodes
             .get(&transition.tab_id)
             .map(|node| {
                 let scene_outer_rect = egui::Rect::from_min_size(
@@ -3028,29 +3030,22 @@ impl App {
     /// than orphaning that whole subtree. Falls back to Graph view if the
     /// closed tab was focused.
     fn close_tab(&mut self, id: &str) {
-        let Some((parent, url, kind, group)) = self
-            .tabs
-            .get(id)
-            .map(|n| (n.parent.clone(), n.url.clone(), n.tab.kind, n.group.clone()))
-        else {
+        let Some((parent, url, kind, group)) = self.nodes.get(id).and_then(|n| {
+            n.as_tab().map(|t| (n.parent.clone(), t.url.clone(), t.tab.kind, n.group.clone()))
+        }) else {
             return;
         };
         self.closed_tabs.push(ClosedTab { url, kind, parent: parent.clone(), group });
         if self.closed_tabs.len() > MAX_CLOSED_TABS {
             self.closed_tabs.remove(0);
         }
-        for node in self.tabs.values_mut() {
-            if node.parent.as_deref() == Some(id) {
-                node.parent = parent.clone();
-            }
-        }
         for node in self.nodes.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
             }
         }
-        self.tabs.remove(id);
-        self.tab_order.retain(|t| t != id);
+        self.nodes.remove(id);
+        self.node_order.retain(|t| t != id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
         }
@@ -3075,9 +3070,9 @@ impl App {
     /// M2's swap sequence, now per-tab and driven by the engine-picker
     /// dropdown: `GetState` -> spawn new engine at the same tab_id -> new
     /// engine's first `FrameReady` becomes the displayed texture (once
-    /// focused) -> old engine-host dropped when its `TabNode` is replaced.
+    /// focused) -> old engine-host dropped when its graph node is replaced.
     fn start_swap_to(&mut self, tab_id: &str, target: EngineKind) {
-        let Some(node) = self.tabs.get_mut(tab_id) else {
+        let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
             return;
         };
         if node.tab.kind == target || node.swap_target.is_some() {
@@ -3088,17 +3083,15 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, group, pinned, color, pos, vel)) = self
-            .tabs
-            .get(tab_id)
-            .map(|n| (n.parent.clone(), n.group.clone(), n.pinned, n.color, n.pos, n.vel))
-        else {
+        let Some((parent, group, pinned, color, pos, vel)) = self.nodes.get(tab_id).and_then(|n| {
+            n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.pinned, n.color, n.pos, n.vel))
+        }) else {
             return;
         };
         // Must drop (and thus Shutdown + kill) the old tab before spawning
         // the new one at the same tab_id — the new engine-host's named-pipe
         // listeners would collide with the old ones otherwise.
-        self.tabs.remove(tab_id);
+        self.nodes.remove(tab_id);
         // Same stale-state guard `close_tab` already applies: without it, a
         // drag in progress on this exact tab when its engine swap/crash
         // fires would leave `self.dragging` pointing at an id invisible for
@@ -3286,7 +3279,7 @@ impl App {
     /// Pin/Unpin entry.
     fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        if let Some(node) = self.tabs.get_mut(&id) {
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.pinned = !node.pinned;
         }
     }
@@ -3297,7 +3290,7 @@ impl App {
     /// `GoBack`/`GoForward` need one.
     fn reload_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        if let Some(node) = self.tabs.get_mut(&id) {
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToEngine::Reload);
         }
     }
@@ -3366,8 +3359,8 @@ impl App {
             ViewMode::Settings => self.close_settings_page(),
             ViewMode::Graph => {
                 let Some(id) = self.focused.clone() else { return };
-                if self.tabs.contains_key(&id) {
-                    self.current_group = self.tabs.get(&id).and_then(|n| n.group.clone());
+                if self.nodes.contains_key(&id) {
+                    self.current_group = self.nodes.get(&id).and_then(|n| n.group.clone());
                     self.focus_tab(&id);
                 }
             }
@@ -3436,7 +3429,7 @@ impl App {
     /// `HostToEngine::OpenDevTools`'s doc comment for per-engine support.
     fn open_devtools_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        let Some(node) = self.tabs.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         node.tab.send(&HostToEngine::OpenDevTools);
     }
 
@@ -3503,10 +3496,10 @@ impl App {
 
     /// Toggles `id`'s mute state and sends the real `SetMuted` — shared by
     /// Tab view's "Muted" toolbar button and Graph view's own audio-dot
-    /// click (see `TabNode::muted`'s doc comment for the WebView2/WebKit-
+    /// click (see `TabPayload::muted`'s doc comment for the WebView2/WebKit-
     /// only caveat).
     fn toggle_muted(&mut self, id: &str) {
-        if let Some(node) = self.tabs.get_mut(id) {
+        if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.muted = !node.muted;
             let muted = node.muted;
             node.tab.send(&HostToEngine::SetMuted { muted });
@@ -3540,7 +3533,7 @@ impl App {
     /// immediately, same "no separate Save step" posture every other
     /// instant-apply control in this chrome already has.
     fn toggle_bookmark(&mut self, id: &str) {
-        let Some(node) = self.tabs.get(id) else { return };
+        let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return };
         let url = node.url.clone();
         if let Some(index) = self.bookmarks.iter().position(|b| b.url == url) {
             self.bookmarks.remove(index);
@@ -3849,7 +3842,9 @@ impl App {
         let mut mute_others = false;
         let mut close_others = false;
         let mut toggle_pin_all = false;
-        let all_pinned = !self.tabs.is_empty() && self.tabs.values().all(|n| n.pinned);
+        let tab_pin_states: Vec<bool> =
+            self.nodes.values().filter_map(|n| n.as_tab()).map(|t| t.pinned).collect();
+        let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
@@ -3905,10 +3900,14 @@ impl App {
     /// toggle -- a second click would just mute everything again, a no-op
     /// for anything already muted.
     fn mute_all_except(&mut self, keep_id: &str) {
-        let other_ids: Vec<String> =
-            self.tabs.keys().filter(|id| id.as_str() != keep_id).cloned().collect();
+        let other_ids: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(id, n)| id.as_str() != keep_id && n.as_tab().is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
         for id in other_ids {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 if !node.muted {
                     node.muted = true;
                     node.tab.send(&HostToEngine::SetMuted { muted: true });
@@ -3922,8 +3921,12 @@ impl App {
     /// the `closed_tabs` stack all still apply -- this is just that same
     /// action run once per other tab, not a bulk shortcut around it).
     fn close_all_except(&mut self, keep_id: &str) {
-        let other_ids: Vec<String> =
-            self.tab_order.iter().filter(|id| id.as_str() != keep_id).cloned().collect();
+        let other_ids: Vec<String> = self
+            .node_order
+            .iter()
+            .filter(|id| id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.as_tab().is_some()))
+            .cloned()
+            .collect();
         for id in other_ids {
             self.close_tab(&id);
         }
@@ -3936,7 +3939,7 @@ impl App {
     /// has no natural tab to exclude the way muting excludes the one
     /// they're presumably still listening to.
     fn set_all_pinned(&mut self, pin: bool) {
-        for node in self.tabs.values_mut() {
+        for node in self.nodes.values_mut().filter_map(|n| n.as_tab_mut()) {
             node.pinned = pin;
         }
     }
@@ -3998,7 +4001,7 @@ impl App {
             window.request_redraw();
         }
         let Some(id) = self.focused.clone() else { return };
-        let Some(node) = self.tabs.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         if self.find_text.is_empty() {
             node.tab.send(&HostToEngine::FindStop);
         } else {
@@ -4025,7 +4028,7 @@ impl App {
             window.request_redraw();
         }
         if let Some(id) = self.focused.clone() {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.tab.send(&HostToEngine::FindStop);
             }
         }
@@ -4037,7 +4040,7 @@ impl App {
             window.request_redraw();
         }
         let Some(id) = self.focused.clone() else { return };
-        let Some(node) = self.tabs.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
         node.tab.send(&if forward { HostToEngine::FindNext } else { HostToEngine::FindPrevious });
     }
 
@@ -4149,17 +4152,17 @@ impl App {
         }
     }
 
-    /// `self.tab_order`, filtered by a case-insensitive substring match
+    /// `self.node_order`, filtered by a case-insensitive substring match
     /// against title-or-url — factored out so the quick-switcher's render
     /// function and its Enter-key jump always agree on the exact same list
     /// (computed once per frame, not separately in each place that needs
     /// it).
     fn quick_switcher_matches(&self, query: &str) -> Vec<String> {
         let query = query.to_lowercase();
-        self.tab_order
+        self.node_order
             .iter()
             .filter(|id| {
-                self.tabs.get(id.as_str()).is_some_and(|n| {
+                self.nodes.get(id.as_str()).and_then(|n| n.as_tab()).is_some_and(|n| {
                     query.is_empty()
                         || n.title.to_lowercase().contains(&query)
                         || n.url.to_lowercase().contains(&query)
@@ -4196,7 +4199,7 @@ impl App {
         let Some(switcher) = &self.quick_switcher else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
         if let Some(id) = matches.get(switcher.selected).cloned() {
-            let group = self.tabs.get(&id).and_then(|n| n.group.clone());
+            let group = self.nodes.get(&id).and_then(|n| n.group.clone());
             self.current_group = group;
             self.focus_tab(&id);
         }
@@ -4293,7 +4296,7 @@ impl App {
                         }
                         egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                             for (i, id) in matches.iter().enumerate() {
-                                let Some(node) = self.tabs.get(id) else { continue };
+                                let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { continue };
                                 let label = if node.title.is_empty() {
                                     node.url.clone()
                                 } else {
@@ -4319,7 +4322,7 @@ impl App {
             });
 
         if let Some(id) = jump_to {
-            let group = self.tabs.get(&id).and_then(|n| n.group.clone());
+            let group = self.nodes.get(&id).and_then(|n| n.group.clone());
             self.current_group = group;
             self.focus_tab(&id);
             self.quick_switcher = None;
@@ -4637,7 +4640,7 @@ impl App {
         }
         let closed_tabs_before = self.closed_tabs.len();
         let member_ids: Vec<String> = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(_, node)| node.group.as_deref() == Some(id))
             .map(|(tid, _)| tid.clone())
@@ -4659,22 +4662,25 @@ impl App {
         let group = group_node.as_group()?;
         let group_color = group_node.color;
         let member_ids: std::collections::HashSet<&str> = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(_, n)| n.group.as_deref() == Some(group_id))
             .map(|(id, _)| id.as_str())
             .collect();
         let tabs = self
-            .tabs
+            .nodes
             .iter()
             .filter(|(id, _)| member_ids.contains(id.as_str()))
-            .map(|(id, node)| group_export::GroupExportTab {
-                id: id.clone(),
-                parent: node.parent.clone().filter(|p| member_ids.contains(p.as_str())),
-                url: node.url.clone(),
-                engine: node.tab.kind,
-                pos_x: node.pos.x,
-                pos_y: node.pos.y,
+            .filter_map(|(id, node)| {
+                let tab = node.as_tab()?;
+                Some(group_export::GroupExportTab {
+                    id: id.clone(),
+                    parent: node.parent.clone().filter(|p| member_ids.contains(p.as_str())),
+                    url: tab.url.clone(),
+                    engine: tab.tab.kind,
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                })
             })
             .collect();
         Some(group_export::GroupExport {
@@ -4815,8 +4821,10 @@ impl App {
         ) else {
             return;
         };
-        let Some((pinned, color, group)) =
-            self.tabs.get(&id).map(|n| (n.pinned, n.color, n.group.clone()))
+        let Some((pinned, color, group)) = self
+            .nodes
+            .get(&id)
+            .and_then(|n| n.as_tab().map(|t| (t.pinned, n.color, n.group.clone())))
         else {
             self.tab_context_menu = None;
             return;
@@ -4850,7 +4858,7 @@ impl App {
                             close = true;
                         }
                         if ui.button("Copy URL").clicked() {
-                            if let Some(url) = self.tabs.get(&id).map(|n| n.url.clone()) {
+                            if let Some(url) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.url.clone()) {
                                 ui.ctx().copy_text(url);
                             }
                             close = true;
@@ -4917,17 +4925,17 @@ impl App {
         }
 
         if toggle_pin {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.pinned = !node.pinned;
             }
         }
         if let Some(color) = set_color {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id) {
                 node.color = color;
             }
         }
         if remove_from_group {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id) {
                 node.group = None;
             }
         }
@@ -5013,14 +5021,14 @@ impl App {
     /// to define a more meaningful order), wrapping at both ends. A no-op
     /// with zero or one tab open.
     fn cycle_focused_tab(&mut self, forward: bool) {
-        if self.tab_order.len() < 2 {
+        if self.node_order.len() < 2 {
             return;
         }
         let current = self
             .focused
             .as_ref()
-            .and_then(|id| self.tab_order.iter().position(|t| t == id));
-        let len = self.tab_order.len() as isize;
+            .and_then(|id| self.node_order.iter().position(|t| t == id));
+        let len = self.node_order.len() as isize;
         let next = match current {
             Some(i) => {
                 let delta = if forward { 1 } else { -1 };
@@ -5028,7 +5036,7 @@ impl App {
             }
             None => 0,
         };
-        let id = self.tab_order[next].clone();
+        let id = self.node_order[next].clone();
         self.focus_tab(&id);
     }
 
@@ -5064,7 +5072,7 @@ impl App {
     fn build_import_confirm_popup(&mut self, ui: &mut egui::Ui) {
         let Some(session) = &self.pending_import else { return };
         let incoming = session.tabs.len();
-        let current = self.tabs.len();
+        let current = self.nodes.len();
         let mut confirm = false;
         let mut cancel = false;
         egui::Area::new(egui::Id::new("import_confirm_popup"))
@@ -5125,14 +5133,14 @@ impl App {
             self.view_mode = ViewMode::Graph;
             return;
         };
-        if !self.tabs.contains_key(&focused_id) {
+        if !self.nodes.contains_key(&focused_id) {
             if self.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
                 // An engine swap or crash recovery is respawning the tab
                 // the user is currently looking at — stay in Tab view
                 // (don't bounce to Graph, see `pending_respawn_focus`'s doc
                 // comment) and show a lightweight placeholder (with just
                 // enough chrome to still escape to Graph) instead of
-                // nothing until it reappears in `self.tabs`.
+                // nothing until it reappears in `self.nodes`.
                 let mut back_to_graph = false;
                 egui::Panel::top("tab_strip_respawning")
                     .exact_size(CHROME_HEIGHT_POINTS)
@@ -5175,9 +5183,9 @@ impl App {
             || !self.search_suggestions.is_empty()
             || self.debug_address_bar_pin;
         if !editing_address {
-            self.address_bar_text = self.tabs[&focused_id].url.clone();
+            self.address_bar_text = self.nodes[&focused_id].as_tab().unwrap().url.clone();
         }
-        let current_kind = self.tabs.get(&focused_id).map(|n| n.tab.kind);
+        let current_kind = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).map(|n| n.tab.kind);
 
         let mut go_back = false;
         let mut go_forward = false;
@@ -5231,7 +5239,7 @@ impl App {
                     if ui.button("Graph").clicked() {
                         back_to_graph = true;
                     }
-                    let node = &self.tabs[&focused_id];
+                    let node = self.nodes[&focused_id].as_tab().unwrap();
                     // `◀`/`▶` were already a proven-safe Unicode gamble
                     // (confirmed live elsewhere in this app), not a real
                     // problem -- migrated to `egui_phosphor::CARET_LEFT`/
@@ -5324,7 +5332,7 @@ impl App {
                     // (accent background, dark foreground) handles the
                     // icon's contrast automatically, same as any other
                     // selected label here.
-                    let node_muted = self.tabs.get(&focused_id).is_some_and(|n| n.muted);
+                    let node_muted = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
                     let mute_icon = if node_muted {
                         egui_phosphor::regular::SPEAKER_X
                     } else {
@@ -5351,8 +5359,9 @@ impl App {
                     // `BOOKMARK_SIMPLE` icon instead of the plain-text
                     // fallback a star glyph's tofu risk used to require.
                     let is_bookmarked = self
-                        .tabs
+                        .nodes
                         .get(&focused_id)
+                        .and_then(|n| n.as_tab())
                         .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
                     if ui
                         .selectable_label(is_bookmarked, egui_phosphor::regular::BOOKMARK_SIMPLE)
@@ -5623,12 +5632,12 @@ impl App {
             }
         }
         if go_back {
-            if let Some(node) = self.tabs.get_mut(&focused_id) {
+            if let Some(node) = self.nodes.get_mut(&focused_id).and_then(|n| n.as_tab_mut()) {
                 node.tab.send(&HostToEngine::GoBack);
             }
         }
         if go_forward {
-            if let Some(node) = self.tabs.get_mut(&focused_id) {
+            if let Some(node) = self.nodes.get_mut(&focused_id).and_then(|n| n.as_tab_mut()) {
                 node.tab.send(&HostToEngine::GoForward);
             }
         }
@@ -5918,7 +5927,7 @@ impl App {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
         }
 
-        if self.tabs.is_empty() {
+        if self.nodes.is_empty() {
             ui.centered_and_justified(|ui| {
                 match &self.tab_spawn_error {
                     Some(err) => ui.colored_label(
@@ -6101,7 +6110,7 @@ impl App {
                 let hit_tab = (hit_group.is_none() && hit_download.is_none())
                     .then(|| {
                         self.tabs_at_current_level().into_iter().find(|tid| {
-                            self.tabs.get(tid).is_some_and(|n| {
+                            self.nodes.get(tid).is_some_and(|n| {
                                 egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), GRAPH_NODE_SIZE)
                                     .contains(world_pos)
                             })
@@ -6155,7 +6164,7 @@ impl App {
                     .tabs_at_current_level()
                     .into_iter()
                     .filter(|id| {
-                        self.tabs.get(id).is_some_and(|node| {
+                        self.nodes.get(id).is_some_and(|node| {
                             let card = egui::Rect::from_center_size(
                                 egui::Pos2::new(node.pos.x, node.pos.y),
                                 GRAPH_NODE_SIZE,
@@ -6209,7 +6218,7 @@ impl App {
         };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for id in self.tabs_at_current_level() {
-            if let Some(node) = self.tabs.get(&id) {
+            if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ui.visuals().text_color());
             }
@@ -6301,14 +6310,14 @@ impl App {
                 // Edges first so node cards paint on top of the lines feeding them.
                 // Both endpoints must share the currently-viewed level —
                 // see the physics block's own edge filter above for why.
-                for (id, node) in &self.tabs {
+                for (id, node) in &self.nodes {
                     if node.group != self.current_group {
                         continue;
                     }
                     let Some(parent_id) = &node.parent else {
                         continue;
                     };
-                    let Some(parent) = self.tabs.get(parent_id).filter(|p| p.group == self.current_group) else {
+                    let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
                     let _ = id;
@@ -6320,7 +6329,7 @@ impl App {
                     );
                 }
                 // Download nodes are always parented to a tab (never to
-                // another download), so the same `self.tabs` lookup works.
+                // another download), so the same `self.nodes` lookup works.
                 for node in self.nodes.values() {
                     if node.group != self.current_group {
                         continue;
@@ -6328,7 +6337,7 @@ impl App {
                     let Some(parent_id) = &node.parent else {
                         continue;
                     };
-                    let Some(parent) = self.tabs.get(parent_id).filter(|p| p.group == self.current_group) else {
+                    let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
                     draw_graph_edge(
@@ -6340,7 +6349,7 @@ impl App {
                 }
 
                 for id in self.tabs_at_current_level() {
-                    let Some(node_pos) = self.tabs.get(&id).map(|n| n.pos) else {
+                    let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                         continue;
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
@@ -6354,7 +6363,7 @@ impl App {
                     let is_focused = self.focused.as_deref() == Some(id.as_str());
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
                     let is_selected = self.selected_tabs.contains(&id);
-                    let tag_color = self.tabs.get(&id).and_then(|n| n.color);
+                    let tag_color = self.nodes.get(&id).and_then(|n| n.color);
 
                     // Shared by the fill/border/glow eases below -- one
                     // hover transition, not three separately-timed ones.
@@ -6416,7 +6425,7 @@ impl App {
                         );
                     }
 
-                    if let Some(node) = self.tabs.get(&id) {
+                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
                         let label = if node.title.is_empty() {
                             node.url.as_str()
                         } else {
@@ -6471,8 +6480,9 @@ impl App {
                         }
                     }
                     if let Some(tex_id) = self
-                        .tabs
+                        .nodes
                         .get(&id)
+                        .and_then(|n| n.as_tab())
                         .and_then(|n| favicon_fetch::url_origin(&n.url))
                         .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
                     {
@@ -6494,13 +6504,14 @@ impl App {
                     // empty boxes in this app's font, so a painter-drawn
                     // shape is the reliable choice, not text. `audio_playing`
                     // is only ever true for WebView2/WebKit tabs — see
-                    // `TabNode::audio_playing`'s doc comment — but the dot
+                    // `TabPayload::audio_playing`'s doc comment — but the dot
                     // also shows (and stays clickable) whenever `muted` is
                     // set, even after audio stops, so there's always a way
                     // to see and undo a mute from Graph view without first
                     // switching to Tab view.
-                    let node_muted = self.tabs.get(&id).is_some_and(|n| n.muted);
-                    let node_audio_playing = self.tabs.get(&id).is_some_and(|n| n.audio_playing);
+                    let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
+                    let node_audio_playing =
+                        self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.audio_playing);
                     let mut audio_clicked = false;
                     if node_audio_playing || node_muted {
                         let audio_rect = egui::Rect::from_center_size(
@@ -6583,7 +6594,7 @@ impl App {
                     // hover-only like the close button) so a pinned node's
                     // state stays legible at a glance. A pinned node is
                     // excluded from the force-directed layout entirely —
-                    // see `TabNode::pinned`'s own doc comment. A real
+                    // see `TabPayload::pinned`'s own doc comment. A real
                     // `PUSH_PIN` icon (accent-colored when pinned, weak gray
                     // otherwise) rather than a plain dot -- migrated once
                     // `egui_phosphor` was already wired in for the Graph
@@ -6599,7 +6610,7 @@ impl App {
                     // check further down excludes `pin_response.clicked()`
                     // so a pin click doesn't also focus the node into Tab
                     // view.
-                    let node_pinned = self.tabs.get(&id).is_some_and(|n| n.pinned);
+                    let node_pinned = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.pinned);
                     let pin_rect =
                         egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
                     let pin_response = ui.interact(
@@ -6764,11 +6775,11 @@ impl App {
                         // visual selection's cohesion mid-drag).
                         if self.selected_tabs.contains(&id) {
                             for tab_id in self.selected_tabs.clone() {
-                                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                                if let Some(node) = self.nodes.get_mut(&tab_id) {
                                     node.pos += delta;
                                 }
                             }
-                        } else if let Some(node) = self.tabs.get_mut(&id) {
+                        } else if let Some(node) = self.nodes.get_mut(&id) {
                             node.pos += delta;
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
@@ -6778,7 +6789,7 @@ impl App {
                         // tabs and groups are rendered (and can overlap)
                         // together. See `GroupPayload`'s own doc comment.
                         if self.current_group.is_none() {
-                            if let Some(tab_pos) = self.tabs.get(&id).map(|n| n.pos) {
+                            if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
                                 let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
                                     self.nodes.get(gid).is_some_and(|g| {
                                         egui::Rect::from_center_size(
@@ -6799,11 +6810,11 @@ impl App {
                                     // the original single-tab behavior.
                                     if self.selected_tabs.contains(&id) {
                                         for tab_id in self.selected_tabs.drain() {
-                                            if let Some(node) = self.tabs.get_mut(&tab_id) {
+                                            if let Some(node) = self.nodes.get_mut(&tab_id) {
                                                 node.group = Some(group_id.clone());
                                             }
                                         }
-                                    } else if let Some(node) = self.tabs.get_mut(&id) {
+                                    } else if let Some(node) = self.nodes.get_mut(&id) {
                                         node.group = Some(group_id);
                                     }
                                 } else {
@@ -6820,7 +6831,7 @@ impl App {
                                     let dropped_on_tab =
                                         self.tabs_at_current_level().into_iter().find(|other_id| {
                                             other_id != &id
-                                                && self.tabs.get(other_id).is_some_and(|other| {
+                                                && self.nodes.get(other_id).is_some_and(|other| {
                                                     egui::Rect::from_center_size(
                                                         egui::Pos2::new(other.pos.x, other.pos.y),
                                                         GRAPH_NODE_SIZE,
@@ -6831,7 +6842,7 @@ impl App {
                                     if let Some(other_id) = dropped_on_tab {
                                         let group_id = self.alloc_group_id();
                                         let pos =
-                                            self.tabs.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
+                                            self.nodes.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
                                         let name = Self::default_group_name(&group_id);
                                         self.nodes.insert(
                                             group_id.clone(),
@@ -6845,10 +6856,10 @@ impl App {
                                             },
                                         );
                                         self.node_order.push(group_id.clone());
-                                        if let Some(node) = self.tabs.get_mut(&other_id) {
+                                        if let Some(node) = self.nodes.get_mut(&other_id) {
                                             node.group = Some(group_id.clone());
                                         }
-                                        if let Some(node) = self.tabs.get_mut(&id) {
+                                        if let Some(node) = self.nodes.get_mut(&id) {
                                             node.group = Some(group_id);
                                         }
                                     }
@@ -6868,7 +6879,7 @@ impl App {
                             // button, just reached by dragging the card
                             // itself out through the way back instead.
                             remove_from_group_requested = Some(id.clone());
-                        } else if let Some(tab_pos) = self.tabs.get(&id).map(|n| n.pos) {
+                        } else if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
                             // Dropping one member of a group's own subgraph
                             // onto a sibling tab's card re-parents it there
                             // -- the top-level equivalent gesture (drop tab
@@ -6885,7 +6896,7 @@ impl App {
                             let dropped_on_sibling =
                                 self.tabs_at_current_level().into_iter().find(|other_id| {
                                     other_id != &id
-                                        && self.tabs.get(other_id).is_some_and(|other| {
+                                        && self.nodes.get(other_id).is_some_and(|other| {
                                             egui::Rect::from_center_size(
                                                 egui::Pos2::new(other.pos.x, other.pos.y),
                                                 GRAPH_NODE_SIZE,
@@ -6895,7 +6906,7 @@ impl App {
                                 });
                             if let Some(new_parent_id) = dropped_on_sibling {
                                 if !self.would_create_cycle(&id, &new_parent_id) {
-                                    if let Some(node) = self.tabs.get_mut(&id) {
+                                    if let Some(node) = self.nodes.get_mut(&id) {
                                         node.parent = Some(new_parent_id);
                                     }
                                 }
@@ -6927,7 +6938,7 @@ impl App {
                     // borders below it) rather than threading a dim factor
                     // through every draw call above -- one extra scrim
                     // covers the whole card in one shot.
-                    if let Some(node) = self.tabs.get(&id) {
+                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
                         if graph_filter_dims(&self.graph_filter, &[&node.title, &node.url]) {
                             overlay_painter.rect_filled(
                                 egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -7127,7 +7138,7 @@ impl App {
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
                         let tag_color = self.nodes.get(&id).and_then(|n| n.color);
                         let member_ids: Vec<String> = self
-                            .tabs
+                            .nodes
                             .iter()
                             .filter(|(_, n)| n.group.as_deref() == Some(id.as_str()))
                             .map(|(tid, _)| tid.clone())
@@ -7410,7 +7421,7 @@ impl App {
                     ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
                 if peek_fade > 0.0 {
                     if let Some(hovered_id) = peek_target {
-                        let node_pos = self.tabs.get(&hovered_id).map(|n| n.pos);
+                        let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
                         let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
                         if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
                             let rect = egui::Rect::from_min_size(
@@ -7483,7 +7494,7 @@ impl App {
             self.close_tab(&id);
         }
         if let Some(id) = clicked_focus {
-            if self.tabs.contains_key(&id) {
+            if self.nodes.contains_key(&id) {
                 self.selected_tabs.clear();
                 self.start_transition_to_tab(&id);
             }
@@ -7495,17 +7506,17 @@ impl App {
             self.reveal_download(&id);
         }
         if let Some(id) = pin_toggle_requested {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.pinned = !node.pinned;
             }
         }
         if let Some(id) = remove_from_group_requested {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id) {
                 node.group = None;
             }
         }
         if let Some(id) = tab_color_cycle_requested {
-            if let Some(node) = self.tabs.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id) {
                 node.color = next_tag_color(node.color);
             }
         }
@@ -7526,7 +7537,7 @@ impl App {
             let sum = self
                 .selected_tabs
                 .iter()
-                .filter_map(|id| self.tabs.get(id))
+                .filter_map(|id| self.nodes.get(id))
                 .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
             let pos = sum / count;
             let name = Self::default_group_name(&id);
@@ -7543,7 +7554,7 @@ impl App {
             );
             self.node_order.push(id.clone());
             for tab_id in self.selected_tabs.drain() {
-                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                if let Some(node) = self.nodes.get_mut(&tab_id) {
                     node.group = Some(id.clone());
                 }
             }
@@ -7647,7 +7658,7 @@ impl App {
             }
         }
         if let Some((source_id, target_id)) = group_merge_requested {
-            for node in self.tabs.values_mut() {
+            for node in self.nodes.values_mut() {
                 if node.group.as_deref() == Some(source_id.as_str()) {
                     node.group = Some(target_id.clone());
                 }
@@ -7737,7 +7748,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let chrome_height = self.chrome_height_px() as f64;
                 if in_tab_view && !consumed_by_egui && position.y >= chrome_height {
                     if let Some(id) = self.focused.clone() {
-                        if let Some(node) = self.tabs.get_mut(&id) {
+                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             node.tab.send(&HostToEngine::Input(InputEvent::MouseMove {
                                 x: position.x,
                                 y: position.y - chrome_height,
@@ -7762,7 +7773,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if in_tab_view && !egui_wants_it && y >= chrome_height {
                     if let Some(button) = translate_mouse_button(button) {
                         if let Some(id) = self.focused.clone() {
-                            if let Some(node) = self.tabs.get_mut(&id) {
+                            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                                 let event = match state {
                                     ElementState::Pressed => InputEvent::MouseDown {
                                         x,
@@ -7788,7 +7799,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let (x, y) = self.cursor_pos;
                 if in_tab_view && !consumed_by_egui && y >= chrome_height {
                     if let Some(id) = self.focused.clone() {
-                        if let Some(node) = self.tabs.get_mut(&id) {
+                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             let (dx, dy) = match delta {
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
                                     (x as f64 * 20.0, y as f64 * 20.0)
@@ -7812,7 +7823,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if in_tab_view && !consumed_by_egui {
                     if let Some(id) = self.focused.clone() {
-                        if let Some(node) = self.tabs.get_mut(&id) {
+                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             if let Some(key) = translate_key_code(event.physical_key) {
                                 let input = match event.state {
                                     ElementState::Pressed => InputEvent::KeyDown {
@@ -8158,7 +8169,7 @@ impl App {
             DebugCommand::GraphOpenFocused => self.open_focused_graph_node(),
             DebugCommand::TypeIntoPage(text) => {
                 if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.tabs.get_mut(&id) {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                         for ch in text.chars() {
                             node.tab
                                 .send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
@@ -8168,7 +8179,7 @@ impl App {
             }
             DebugCommand::KeyPage(key) => {
                 if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.tabs.get_mut(&id) {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                         node.tab.send(&HostToEngine::Input(InputEvent::KeyDown {
                             key,
                             modifiers: self.key_modifiers,
@@ -8204,7 +8215,7 @@ impl App {
             DebugCommand::CloseFindBar => self.close_find_bar(),
             DebugCommand::SetVisible(visible) => {
                 if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.tabs.get_mut(&id) {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                         node.tab.set_visible(visible);
                     }
                 }
@@ -8323,9 +8334,9 @@ impl App {
     /// background tab can still crash, or finish an in-flight swap, while
     /// suspended) and applies the results. Frame uploads are collected and
     /// applied after crash/swap handling, since either of those can remove
-    /// the very `TabNode` a queued `FrameReady` refers to — applying to a
+    /// the very graph node a queued `FrameReady` refers to — applying to a
     /// since-removed tab_id is harmless (checked at upload time via `gpu`
-    /// only, no `self.tabs` lookup needed there) but there's no reason to
+    /// only, no `self.nodes` lookup needed there) but there's no reason to
     /// upload a stale frame for a tab that's mid-replacement.
     fn drain_tab_events(&mut self) {
         struct FrameUpdate {
@@ -8343,11 +8354,31 @@ impl App {
             pixels: Option<Vec<u8>>,
         }
 
-        let tab_ids: Vec<String> = self.tab_order.clone();
+        let tab_ids: Vec<String> = self.node_order.clone();
         let mut frame_updates: Vec<FrameUpdate> = Vec::new();
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
+        // Download events, deferred the same way as `frame_updates`/
+        // `crashes`/etc. above rather than applied inline: unlike before the
+        // Tab/Download merge onto one shared `self.nodes` map, `node` here
+        // is itself a live mutable borrow of one `self.nodes` entry for the
+        // whole `try_recv` drain below -- a same-loop `self.nodes.insert`/
+        // `values_mut()` for a download would now conflict with that borrow
+        // (previously fine: download bookkeeping lived in a *different*
+        // field, `self.downloads`, than the `self.tabs` entry `node`
+        // borrowed).
+        // One ordered `Vec`, not three separate ones, so a fast download's
+        // `Started`+`Progress`+`Completed` (all arriving within the same
+        // `try_recv` drain) still get applied in that same relative order
+        // after the loop -- three separate `Vec`s would lose the ordering
+        // between event *kinds*, only preserving it within each kind.
+        enum DownloadEvent {
+            Started { tab_id: String, path: String, total_bytes: Option<u64> },
+            Progress { path: String, bytes_received: u64 },
+            Completed { path: String },
+        }
+        let mut download_events: Vec<DownloadEvent> = Vec::new();
         // Whether any tab's real (settled) url changed this pass — used to
         // trigger one `save_session()` after the loop below rather than one
         // per `NavigationStateChanged` (title/history-only changes and a
@@ -8356,7 +8387,7 @@ impl App {
         let mut nav_url_changed = false;
 
         for tab_id in &tab_ids {
-            let Some(node) = self.tabs.get_mut(tab_id) else {
+            let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                 continue;
             };
             while let Ok(msg) = node.tab.events_rx.try_recv() {
@@ -8448,62 +8479,76 @@ impl App {
                             });
                         }
                     }
-                    // Handled inline (not deferred to after this whole
-                    // `tab_ids` loop the way `frame_updates`/`crashes`/etc.
-                    // are) since a fast download can send `Started`,
-                    // `Progress`, and `Completed` all within the same
-                    // `try_recv` drain -- deferring node *creation* would
-                    // mean `Progress`/`Completed` arriving in that same
-                    // batch find no node yet to update. `node` here (this
-                    // message's own tab, from the enclosing `self.tabs.
-                    // get_mut(tab_id)`) already has the group/position a
-                    // separate `self.tabs.get(&tab_id)` lookup would
-                    // otherwise need -- and couldn't get anyway, since
-                    // `node` already holds `self.tabs`' own mutable borrow.
+                    // Deferred to after this whole `tab_ids` loop (see
+                    // `download_events`'s own doc comment) -- `node` here
+                    // holds a live mutable borrow of this one `self.nodes`
+                    // entry for the whole `try_recv` drain, so a same-loop
+                    // `self.nodes.insert`/`values_mut()` for a download
+                    // would conflict with it.
                     EngineToHost::DownloadStarted { path, total_bytes } => {
-                        // "dl-" prefix (was `alloc_download_id`, inlined
-                        // here -- that method took `&mut self` as a whole,
-                        // which conflicts with `node`'s own already-live
-                        // mutable borrow of `self.tabs` for this entire
-                        // match) so a download node's id can never collide
-                        // with a tab's -- both share the same graph/edge id
-                        // space (`graph_layout::step` sees them as one flat
-                        // set of nodes).
-                        let id = format!("dl-{}", self.next_download_id);
-                        self.next_download_id += 1;
-                        let pos = node.pos + graph_layout::spawn_jitter(&id);
-                        self.nodes.insert(
-                            id.clone(),
-                            GraphNode {
-                                parent: Some(tab_id.clone()),
-                                group: node.group.clone(),
-                                pos,
-                                vel: egui::Vec2::ZERO,
-                                color: None,
-                                payload: NodePayload::Download(DownloadPayload {
-                                    path,
-                                    bytes_received: 0,
-                                    total_bytes,
-                                    completed: false,
-                                }),
-                            },
-                        );
-                        self.node_order.push(id);
+                        download_events.push(DownloadEvent::Started {
+                            tab_id: tab_id.clone(),
+                            path,
+                            total_bytes,
+                        });
                     }
                     EngineToHost::DownloadProgress { path, bytes_received } => {
-                        if let Some(dl) = self.nodes.values_mut().find_map(|n| {
-                            n.as_download_mut().filter(|d| d.path == path)
-                        }) {
-                            dl.bytes_received = bytes_received;
-                        }
+                        download_events.push(DownloadEvent::Progress { path, bytes_received });
                     }
                     EngineToHost::DownloadCompleted { path } => {
                         self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
-                        if let Some(dl) = self.nodes.values_mut().find_map(|n| {
-                            n.as_download_mut().filter(|d| d.path == path)
-                        }) {
-                            dl.completed = true;
-                        }
+                        download_events.push(DownloadEvent::Completed { path });
+                    }
+                }
+            }
+        }
+        for event in download_events {
+            match event {
+                DownloadEvent::Started { tab_id, path, total_bytes } => {
+                    // "dl-" prefix (was `alloc_download_id`, inlined here --
+                    // that method took `&mut self` as a whole, awkward to
+                    // call while iterating `download_events`) so a download
+                    // node's id can never collide with a tab's -- both share
+                    // the same graph/edge id space (`graph_layout::step`
+                    // sees them as one flat set of nodes).
+                    let Some((node_pos, node_group)) =
+                        self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone()))
+                    else {
+                        continue;
+                    };
+                    let id = format!("dl-{}", self.next_download_id);
+                    self.next_download_id += 1;
+                    let pos = node_pos + graph_layout::spawn_jitter(&id);
+                    self.nodes.insert(
+                        id.clone(),
+                        GraphNode {
+                            parent: Some(tab_id),
+                            group: node_group,
+                            pos,
+                            vel: egui::Vec2::ZERO,
+                            color: None,
+                            payload: NodePayload::Download(DownloadPayload {
+                                path,
+                                bytes_received: 0,
+                                total_bytes,
+                                completed: false,
+                            }),
+                        },
+                    );
+                    self.node_order.push(id);
+                }
+                DownloadEvent::Progress { path, bytes_received } => {
+                    if let Some(dl) =
+                        self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path))
+                    {
+                        dl.bytes_received = bytes_received;
+                    }
+                }
+                DownloadEvent::Completed { path } => {
+                    if let Some(dl) =
+                        self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path))
+                    {
+                        dl.completed = true;
                     }
                 }
             }
@@ -8513,18 +8558,13 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, group, pinned, color, pos, vel)) = self.tabs.get(&tab_id).map(|n| {
-                (
-                    n.tab.kind,
-                    n.url.clone(),
-                    n.parent.clone(),
-                    n.group.clone(),
-                    n.pinned,
-                    n.color,
-                    n.pos,
-                    n.vel,
-                )
-            }) else {
+            let Some((kind, url, parent, group, pinned, color, pos, vel)) =
+                self.nodes.get(&tab_id).and_then(|n| {
+                    n.as_tab().map(|t| {
+                        (t.tab.kind, t.url.clone(), n.parent.clone(), n.group.clone(), t.pinned, n.color, n.pos, n.vel)
+                    })
+                })
+            else {
                 continue;
             };
             eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
@@ -8537,7 +8577,7 @@ impl App {
             // doc comment) rather than a second, separate notification
             // mechanism.
             self.save_toast = Some((format!("Tab crashed, restarted: {url}"), std::time::Instant::now()));
-            self.tabs.remove(&tab_id);
+            self.nodes.remove(&tab_id);
             // Same stale-state guard `close_tab`/`finish_swap` apply — see
             // `finish_swap`'s own comment on this.
             if self.dragging.as_deref() == Some(tab_id.as_str()) {
