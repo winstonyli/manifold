@@ -166,6 +166,36 @@ fn build_list_popup_frame(
         .rect
 }
 
+/// Lets a popup driven by `Option<T>` app state (the right-click context
+/// menus) fade out instead of vanishing the instant that state goes back
+/// to `None` -- the position/content those need to keep drawing during a
+/// fade-out would otherwise disappear the same frame the menu "closes."
+/// `cache` is a sibling field remembering the last real value; `id` keys
+/// the fade animation (must be unique per popup). Polled every frame
+/// regardless of `current`'s state, same "continuous polling" reasoning
+/// the toolbar dropdowns' own fade needs (see their own call sites) --
+/// calling `ctx.animate_bool` only while `current` is `Some` would leave
+/// real elapsed time untracked while it's `None`, making the next open
+/// jump straight to visible instead of easing in. Returns `None` once the
+/// fade has actually finished (nothing left to draw), or `Some((value,
+/// fade))` otherwise -- `value` is `current`'s own content while it's
+/// `Some`, else the frozen `cache`.
+fn fade_popup_state<T: Clone>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    current: &Option<T>,
+    cache: &mut Option<T>,
+) -> Option<(T, f32)> {
+    let fade = ctx.animate_bool(id, current.is_some());
+    if let Some(value) = current {
+        *cache = Some(value.clone());
+    }
+    if fade <= 0.0 {
+        return None;
+    }
+    cache.clone().map(|value| (value, fade))
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -955,6 +985,11 @@ struct App {
     /// on a group's card specifically opens this instead of starting a
     /// marquee.
     group_context_menu: Option<(String, egui::Pos2)>,
+    /// Last real value of `group_context_menu`, kept around so `build_
+    /// group_context_menu` can keep drawing (fading out, not vanishing
+    /// instantly) for a few frames after `group_context_menu` itself goes
+    /// back to `None` -- see `fade_popup_state`.
+    group_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `(download_id, screen_pos)` while a right-click context menu is
     /// showing for that download's card -- Open Containing Folder/Copy
     /// Path/Remove from List, same "consolidate scattered card actions
@@ -962,6 +997,8 @@ struct App {
     /// A press landing on a download's card opens this instead of starting
     /// a marquee, same reasoning as `group_context_menu`'s own doc comment.
     download_context_menu: Option<(String, egui::Pos2)>,
+    /// Same fade-out role as `group_context_menu_cache`, for `download_context_menu`.
+    download_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `(tab_id, screen_pos)` while a right-click context menu is showing
     /// for that tab's card -- Pin/color/Remove from Group/Close in one
     /// place, same "consolidate scattered card actions" idea
@@ -969,6 +1006,8 @@ struct App {
     /// landing on a tab's card opens this instead of starting a marquee,
     /// same reasoning as those two.
     tab_context_menu: Option<(String, egui::Pos2)>,
+    /// Same fade-out role as `group_context_menu_cache`, for `tab_context_menu`.
+    tab_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
@@ -1183,6 +1222,8 @@ struct App {
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
     context_menu: Option<ContextMenuState>,
+    /// Same fade-out role as `group_context_menu_cache`, for `context_menu`.
+    context_menu_cache: Option<ContextMenuState>,
 
     /// A brief "Saved <path>" toast for the most recent completed download
     /// or screenshot save, and when it was set — cleared once
@@ -1323,8 +1364,11 @@ impl Default for App {
             renaming_group: None,
             pending_focus_rename: false,
             group_context_menu: None,
+            group_context_menu_cache: None,
             download_context_menu: None,
+            download_context_menu_cache: None,
             tab_context_menu: None,
+            tab_context_menu_cache: None,
             quick_switcher: None,
             shortcuts_help_open: false,
             pending_import: None,
@@ -1368,6 +1412,7 @@ impl Default for App {
             closed_tabs: Vec::new(),
             closed_groups: Vec::new(),
             context_menu: None,
+            context_menu_cache: None,
             save_toast: None,
             last_session_save: None,
             find_bar_open: false,
@@ -4177,7 +4222,15 @@ impl App {
     /// outside the menu's own rect, or Escape (see the Escape-priority
     /// chain in `build_tab_ui`).
     fn build_context_menu(&mut self, ui: &mut egui::Ui) {
-        let Some(menu) = self.context_menu.clone() else { return };
+        let current = self.context_menu.clone();
+        let Some((menu, fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("context_menu_fade"),
+            &current,
+            &mut self.context_menu_cache,
+        ) else {
+            return;
+        };
         let mut open_tab = false;
         let mut close = false;
 
@@ -4185,6 +4238,7 @@ impl App {
             .fixed_pos(egui::pos2(menu.x, menu.y))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -4221,7 +4275,15 @@ impl App {
     /// `TextEdit`, exactly like the toolbar's own in-subgraph rename does,
     /// rather than opening a second, separate text field somewhere else.
     fn build_group_context_menu(&mut self, ui: &mut egui::Ui) {
-        let Some((id, pos)) = self.group_context_menu.clone() else { return };
+        let current = self.group_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("group_context_menu_fade"),
+            &current,
+            &mut self.group_context_menu_cache,
+        ) else {
+            return;
+        };
         if !self.groups.contains_key(&id) {
             self.group_context_menu = None;
             return;
@@ -4236,6 +4298,7 @@ impl App {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -4476,7 +4539,15 @@ impl App {
     /// `remove_download_node`). See `App::build_group_context_menu` for the
     /// identical pattern this mirrors.
     fn build_download_context_menu(&mut self, ui: &mut egui::Ui) {
-        let Some((id, pos)) = self.download_context_menu.clone() else { return };
+        let current = self.download_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("download_context_menu_fade"),
+            &current,
+            &mut self.download_context_menu_cache,
+        ) else {
+            return;
+        };
         if !self.downloads.contains_key(&id) {
             self.download_context_menu = None;
             return;
@@ -4489,6 +4560,7 @@ impl App {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -4537,7 +4609,15 @@ impl App {
     /// `App::build_group_context_menu` for the identical pattern this
     /// mirrors.
     fn build_tab_context_menu(&mut self, ui: &mut egui::Ui) {
-        let Some((id, pos)) = self.tab_context_menu.clone() else { return };
+        let current = self.tab_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("tab_context_menu_fade"),
+            &current,
+            &mut self.tab_context_menu_cache,
+        ) else {
+            return;
+        };
         let Some((pinned, color, group)) =
             self.tabs.get(&id).map(|n| (n.pinned, n.color, n.group.clone()))
         else {
@@ -4556,6 +4636,7 @@ impl App {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
