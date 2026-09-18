@@ -1302,20 +1302,41 @@ impl GraphNode {
 
 /// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
 /// `pos`/`vel`/`color` moved to `GraphNode`, shared with every kind). A
-/// group is a container node shown at the top level of Graph view that,
-/// double-clicked, drills into its own subgraph of member tabs/downloads
-/// (`App::current_group`) in place of the top level's — the same "swap
-/// which set of nodes this view renders" idea `ViewMode::Tab`/`Graph`
-/// already is, just one level deeper, and reusing that same flat
-/// `graph_layout::step` simulation rather than a second nested one running
-/// inside the group's own node. No nesting in this first cut — a group
-/// can't contain another group, only tabs/downloads (`GraphNode::group` is
-/// a single `Option<String>`, not a path). A group node's own
-/// `GraphNode::group`/`parent` stay `None` — a group itself is never
-/// nested and has no "opened from" edge. Entering/leaving eases the
-/// camera via `GraphCameraTween` rather than `Transition` — see that type's
-/// own doc comment for why. Groups (and membership) are session-only, same
-/// scope decision as `TabPayload::pinned` — not written to `session.json`.
+/// group is a container node shown at whichever level of Graph view it
+/// itself belongs to that, double-clicked, drills into its own subgraph of
+/// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
+/// place of that level's -- the same "swap which set of nodes this view
+/// renders" idea `ViewMode::Tab`/`Graph` already is, just recursively, and
+/// reusing that same flat `graph_layout::step` simulation rather than a
+/// second nested one running inside the group's own node.
+///
+/// **Groups nest.** A group's own `GraphNode::group` can itself be
+/// `Some(parent_group_id)` -- the "no nesting, `GraphNode::group` is a
+/// single `Option<String>` not a path" limitation this doc comment used to
+/// describe no longer applies: a single `Option<String>` *is* enough to
+/// nest, since walking `.group` links upward from any node already forms
+/// the whole ancestor chain (`App::group_breadcrumb`), with no separate
+/// path/stack type needed. `App::current_group` names whichever group's
+/// subgraph is currently showing (`None` at the true top level, same as
+/// before); leaving a group (the toolbar's "◀" button) goes to that
+/// group's own parent, not straight to the top, so leaving a deeply-nested
+/// group takes as many "◀" clicks as it took to get there (or one
+/// breadcrumb click to jump straight to any ancestor). Dissolving a nested
+/// group reparents its members to *its own* parent (`App::dissolve_group`),
+/// not unconditionally to the top level.
+///
+/// Dragging one group's card onto another's is deliberately left as
+/// **merge** (dissolve the source, flatten its members into the target),
+/// unchanged from before nesting existed -- it does not nest the source
+/// under the target. Nesting is created only through "+ New Group"/Import
+/// Group/"Group Selected" while already viewing a group's own subgraph, a
+/// deliberate choice (confirmed with the user) to avoid changing what an
+/// already-shipped drag gesture does.
+///
+/// Entering/leaving eases the camera via `GraphCameraTween` rather than
+/// `Transition` — see that type's own doc comment for why. Groups (and
+/// membership, including nesting) are session-only, same scope decision as
+/// `TabPayload::pinned` — not written to `session.json`.
 struct GroupPayload {
     name: String,
 }
@@ -3190,18 +3211,22 @@ impl App {
             }
         } else if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
-            if self.current_group.is_none() {
-                if let Some(pos) = self.nodes.get(id).map(|n| n.pos) {
-                    let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
-                        self.nodes.get(gid).is_some_and(|g| {
-                            egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
-                                .contains(egui::Pos2::new(pos.x, pos.y))
-                        })
-                    });
-                    if let Some(group_id) = dropped_on_group {
-                        if let Some(node) = self.nodes.get_mut(id) {
-                            node.group = Some(group_id);
-                        }
+            // Unlike a tab (see the tab loop's own drop-onto-group logic),
+            // Note/Image/Pdf/Json have no competing "drop onto a sibling"
+            // gesture of their own to conflict with, so this works at any
+            // level, not just the top -- letting an existing item join a
+            // nested subgroup by dragging it onto that subgroup's own card
+            // while both are visible in the same subgraph.
+            if let Some(pos) = self.nodes.get(id).map(|n| n.pos) {
+                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                    self.nodes.get(gid).is_some_and(|g| {
+                        egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
+                            .contains(egui::Pos2::new(pos.x, pos.y))
+                    })
+                });
+                if let Some(group_id) = dropped_on_group {
+                    if let Some(node) = self.nodes.get_mut(id) {
+                        node.group = Some(group_id);
                     }
                 }
             }
@@ -3328,23 +3353,27 @@ impl App {
         format!("Group {}", id.trim_start_matches("grp-"))
     }
 
-    /// Dissolves a group: members become top-level tabs again (never
-    /// closed — grouping is purely a display grouping, not an ownership
-    /// one), and the group card itself is removed. `current_group` resets
-    /// to top level if it happened to be the group just dissolved (should
-    /// only actually matter defensively — the close button that calls
-    /// this only ever renders at the top level, where the group being
-    /// closed can't simultaneously be the one being viewed).
+    /// Dissolves a group: members rejoin *its own parent's* level again
+    /// (never closed — grouping is purely a display grouping, not an
+    /// ownership one), and the group card itself is removed. A top-level
+    /// group's parent is `None`, so this still means "become top-level"
+    /// exactly as before nesting existed -- reads the group's own parent
+    /// before removing it, rather than assuming `None`. `current_group`
+    /// moves to that same parent if it happened to be the group just
+    /// dissolved (should only actually matter defensively — the close
+    /// button that calls this only ever renders one level up from the
+    /// group being closed, never on the level currently being viewed).
     fn dissolve_group(&mut self, id: &str) {
+        let parent = self.nodes.get(id).and_then(|n| n.group.clone());
         for node in self.nodes.values_mut() {
             if node.group.as_deref() == Some(id) {
-                node.group = None;
+                node.group = parent.clone();
             }
         }
         self.nodes.remove(id);
         self.node_order.retain(|g| g != id);
         if self.current_group.as_deref() == Some(id) {
-            self.current_group = None;
+            self.current_group = parent;
         }
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
@@ -3414,17 +3443,39 @@ impl App {
             .collect()
     }
 
-    /// Group cards only ever show at the top level (no nested groups, see
-    /// `GroupPayload`'s own doc comment) -- unlike `downloads_at_current_level`,
-    /// no `self.current_group` filter is needed beyond the callers' own
-    /// existing `self.current_group.is_none()` gates, since a group node's
-    /// `GraphNode::group` is always `None` regardless of level.
+    /// Same shape as `downloads_at_current_level` -- a group is level-scoped
+    /// like every other kind now that groups nest (see `GroupPayload`'s own
+    /// doc comment), so this needs the same `n.group == self.current_group`
+    /// filter every other `*_at_current_level` already has.
     fn groups_at_current_level(&self) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_group().is_some()))
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_group().is_some())
+            })
             .cloned()
             .collect()
+    }
+
+    /// Every ancestor above `self.current_group`, root-most first, as
+    /// `(id, name)` pairs -- the toolbar's own breadcrumb trail now that
+    /// groups nest. Empty at the true top level. Walks `GraphNode::group`
+    /// upward from the current group exactly the way `subtree_ids`/
+    /// `dissolve_group` already do to find a single ancestor; this just
+    /// collects the whole chain instead of stopping at the first one.
+    fn group_breadcrumb(&self) -> Vec<(String, String)> {
+        let mut chain = Vec::new();
+        let mut current = self.current_group.clone();
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(&id) else { break };
+            let name = node.as_group().map(|g| g.name.clone()).unwrap_or_default();
+            current = node.group.clone();
+            chain.push((id, name));
+        }
+        chain.reverse();
+        chain
     }
 
     /// Same shape as `downloads_at_current_level` -- notes are level-scoped
@@ -3482,12 +3533,12 @@ impl App {
     }
 
     /// "Reset View"'s scene rect: bounds every node currently visible at
-    /// this level (tabs/downloads, plus group cards at the top level —
-    /// same level rules `tabs_at_current_level`/`downloads_at_current_level`
-    /// and `build_graph_ui`'s own `self.current_group.is_none()` group-card
-    /// gate already use) instead of always framing the same fixed
-    /// world-space rect regardless of how many nodes exist or where
-    /// they've drifted to. Each node contributes its own half-size (a
+    /// this level (tabs/downloads, plus group cards -- same level rules
+    /// `tabs_at_current_level`/`downloads_at_current_level`/
+    /// `groups_at_current_level` already use) instead of always framing
+    /// the same fixed world-space rect regardless of how many nodes exist
+    /// or where they've drifted to. Each node contributes its own
+    /// half-size (a
     /// node's *card*, not just its center point, must fit on screen) plus
     /// a flat margin so a node isn't left flush against the viewport edge.
     /// Falls back to `default_graph_scene_rect()` when there's nothing to
@@ -3536,12 +3587,10 @@ impl App {
                 bounds = bounds.union(egui::Rect::from_center_size(center, JSON_NODE_SIZE));
             }
         }
-        if self.current_group.is_none() {
-            for id in self.groups_at_current_level() {
-                if let Some(node) = self.nodes.get(&id) {
-                    let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                    bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
-                }
+        for id in self.groups_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
             }
         }
         if !bounds.is_finite() {
@@ -3610,7 +3659,7 @@ impl App {
                 + self.images_at_current_level().len()
                 + self.pdfs_at_current_level().len()
                 + self.jsons_at_current_level().len()
-                + if self.current_group.is_none() { self.groups_at_current_level().len() } else { 0 },
+                + self.groups_at_current_level().len(),
         )
     }
 
@@ -4411,13 +4460,10 @@ impl App {
     }
 
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
-    /// creates an empty group at the top level. No-ops while viewing a
-    /// group's own subgraph, same "no nesting" restriction "+ New Group"'s
-    /// own button already enforces by only rendering there.
+    /// creates an empty group at whichever level is currently being
+    /// viewed, nested under `current_group` if that's not the top level
+    /// (see `GroupPayload`'s own doc comment on nesting).
     fn new_group_shortcut(&mut self) {
-        if self.current_group.is_some() {
-            return;
-        }
         let id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let name = Self::default_group_name(&id);
@@ -4425,7 +4471,7 @@ impl App {
             id.clone(),
             GraphNode {
                 parent: None,
-                group: None,
+                group: self.current_group.clone(),
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
@@ -4435,9 +4481,9 @@ impl App {
         self.node_order.push(id);
     }
 
-    /// The Graph toolbar's "+ Note" button -- unlike "+ New Group" (top
-    /// level only, groups don't nest), a note spawns at whichever level is
-    /// currently being viewed, same as "+ New Tab", since a note is a
+    /// The Graph toolbar's "+ Note" button -- a note spawns at whichever
+    /// level is currently being viewed, same as "+ New Tab" and (now)
+    /// "+ New Group" itself, since a note is a
     /// plain member of a level's subgraph like a tab or download is.
     fn new_note_shortcut(&mut self) {
         let id = self.alloc_note_id();
@@ -6056,7 +6102,7 @@ impl App {
             group_id.clone(),
             GraphNode {
                 parent: None,
-                group: None,
+                group: self.current_group.clone(),
                 pos,
                 vel: egui::Vec2::ZERO,
                 color,
@@ -7427,43 +7473,61 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if let Some(group_id) = &self.current_group {
-                        // Inside a group's own subgraph: a way back takes
-                        // the place of "+ New Group" (no nesting in this
-                        // first cut — see `GroupPayload`'s doc comment), and
-                        // the group's name replaces the empty space "+ New
-                        // Tab"/"Reset View" already fill at the top level.
-                        let leave_group_response = ui.button("\u{25c0} Groups");
+                    // Empty at the true top level; one entry per ancestor
+                    // group otherwise (root-most first, current group
+                    // last) -- groups nest now, so this is a real
+                    // breadcrumb trail, not just "are we inside the one
+                    // possible group or not." See `GroupPayload`'s own doc
+                    // comment on nesting and `group_breadcrumb`'s own.
+                    let breadcrumb = self.group_breadcrumb();
+                    if !breadcrumb.is_empty() {
+                        // "◀" goes up exactly one level (to the current
+                        // group's own parent, possibly another group, not
+                        // straight to the top) -- the breadcrumb trail
+                        // below takes the place of "+ New Group" would
+                        // otherwise fill in the empty space "+ New Tab"/
+                        // "Reset View" already occupy at the top level.
+                        let leave_group_response =
+                            ui.button("\u{25c0}").on_hover_text("Back one level");
                         if leave_group_response.clicked() {
                             leave_group_requested = true;
                         }
                         leave_group_button_rect = Some(leave_group_response.rect);
-                        let is_renaming =
-                            self.renaming_group.as_ref().is_some_and(|(id, _)| id == group_id);
-                        if is_renaming {
-                            if let Some((_, draft)) = &mut self.renaming_group {
-                                let response = ui
-                                    .add(egui::TextEdit::singleline(draft).desired_width(140.0));
-                                if std::mem::take(&mut self.pending_focus_rename) {
-                                    response.request_focus();
-                                }
-                                if response.lost_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                        rename_cancel = true;
-                                    } else {
-                                        rename_commit = Some(draft.clone());
+                        let crumb_count = breadcrumb.len();
+                        for (i, (id, name)) in breadcrumb.iter().enumerate() {
+                            if i + 1 == crumb_count {
+                                let is_renaming =
+                                    self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
+                                if is_renaming {
+                                    if let Some((_, draft)) = &mut self.renaming_group {
+                                        let response = ui.add(
+                                            egui::TextEdit::singleline(draft).desired_width(140.0),
+                                        );
+                                        if std::mem::take(&mut self.pending_focus_rename) {
+                                            response.request_focus();
+                                        }
+                                        if response.lost_focus() {
+                                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                                rename_cancel = true;
+                                            } else {
+                                                rename_commit = Some(draft.clone());
+                                            }
+                                        }
                                     }
+                                } else if ui.button(name).on_hover_text("Click to rename").clicked() {
+                                    rename_start = Some((id.clone(), name.clone()));
                                 }
-                            }
-                        } else {
-                            let name = self
-                                .nodes
-                                .get(group_id)
-                                .and_then(|n| n.as_group())
-                                .map(|g| g.name.clone())
-                                .unwrap_or_default();
-                            if ui.button(&name).on_hover_text("Click to rename").clicked() {
-                                rename_start = Some((group_id.clone(), name));
+                            } else {
+                                // An ancestor, not the current group itself
+                                // -- click to jump straight there (reuses
+                                // `group_entered`, the exact same "switch
+                                // current_group and ease the camera" effect
+                                // double-clicking a group card triggers;
+                                // it doesn't care which direction that is).
+                                if ui.button(name).on_hover_text("Jump to this group").clicked() {
+                                    group_entered = Some(id.clone());
+                                }
+                                ui.label("\u{203a}");
                             }
                         }
                     }
@@ -7500,21 +7564,19 @@ impl App {
                     // icons instead of folding into a dropdown -- each
                     // stays a one-click action, just narrower, with the
                     // old label preserved as a hover tooltip so the action
-                    // is still discoverable.
-                    if self.current_group.is_none()
-                        && ui
-                            .button(egui_phosphor::regular::FOLDER_PLUS)
-                            .on_hover_text("New Group")
-                            .clicked()
-                    {
+                    // is still discoverable. All four now work at any
+                    // level, not just the top -- see `GroupPayload`'s own
+                    // doc comment on nesting; each already acts on
+                    // `self.current_group`/`groups_at_current_level()`
+                    // (its own level), never hardcoding the top level.
+                    if ui.button(egui_phosphor::regular::FOLDER_PLUS).on_hover_text("New Group").clicked() {
                         new_group_requested = true;
                     }
                     // Same "real file dialog blocks on OS/human input
                     // neither exists in headless mode" reasoning as every
                     // other Export/Import button -- `IMPORTGROUP <path>`
                     // calls the same underlying import directly instead.
-                    if self.current_group.is_none()
-                        && !self.headless
+                    if !self.headless
                         && ui
                             .button(egui_phosphor::regular::UPLOAD_SIMPLE)
                             .on_hover_text("Import Group...")
@@ -7522,8 +7584,7 @@ impl App {
                     {
                         import_group_requested = true;
                     }
-                    if self.current_group.is_none()
-                        && !self.groups_at_current_level().is_empty()
+                    if !self.groups_at_current_level().is_empty()
                         && ui
                             .button(egui_phosphor::regular::FOLDER_MINUS)
                             .on_hover_text("Ungroup All")
@@ -7531,7 +7592,7 @@ impl App {
                     {
                         ungroup_all_requested = true;
                     }
-                    if self.current_group.is_none() && !self.groups_at_current_level().is_empty() {
+                    if !self.groups_at_current_level().is_empty() {
                         let (icon, hover) = if self.groups_collapsed {
                             (egui_phosphor::regular::CORNERS_OUT, "Expand Groups")
                         } else {
@@ -7563,13 +7624,10 @@ impl App {
                     // right-drag has actually selected something (see the
                     // gesture handling below, near `Scene::new()`).
                     if !self.selected_tabs.is_empty() {
-                        // Matches "+ New Group" above: no nesting in this
-                        // first cut, so grouping is a top-level-only action.
-                        // Rectangle-select itself and closing a selection
-                        // both still work fine inside a group's own subgraph.
-                        if self.current_group.is_none()
-                            && ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked()
-                        {
+                        // Matches "+ New Group" above: groups the selection
+                        // into a new subgroup of whichever level is
+                        // currently being viewed, not just the top.
+                        if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
                             group_selected_requested = true;
                         }
                         if ui
@@ -7759,16 +7817,12 @@ impl App {
                 // `self.focused` stays tab-only), so a right-click there
                 // would otherwise just compute an empty selection.
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
-                let hit_group = self.current_group.is_none()
-                    .then(|| {
-                        self.groups_at_current_level().into_iter().find(|gid| {
-                            self.nodes.get(gid).is_some_and(|g| {
-                                egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
-                                    .contains(world_pos)
-                            })
-                        })
+                let hit_group = self.groups_at_current_level().into_iter().find(|gid| {
+                    self.nodes.get(gid).is_some_and(|g| {
+                        egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
+                            .contains(world_pos)
                     })
-                    .flatten();
+                });
                 let hit_download = hit_group.is_none()
                     .then(|| {
                         self.downloads_at_current_level().into_iter().find(|did| {
@@ -8035,12 +8089,10 @@ impl App {
                 overlay_painter.circle_filled(p, 2.0, ACCENT);
             }
         }
-        if self.current_group.is_none() {
-            for id in self.groups_at_current_level() {
-                if let Some(node) = self.nodes.get(&id) {
-                    let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                    overlay_painter.circle_filled(p, 3.0, ACCENT);
-                }
+        for id in self.groups_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 3.0, ACCENT);
             }
         }
         let viewport_rect = egui::Rect::from_two_pos(
@@ -8591,9 +8643,19 @@ impl App {
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
                         self.dragging = None;
                         // Dropping a tab onto a group's card joins that
-                        // group -- only meaningful at the top level, where
-                        // tabs and groups are rendered (and can overlap)
-                        // together. See `GroupPayload`'s own doc comment.
+                        // group, or (dropped on a plain tab instead) starts
+                        // a new one with both -- kept top-level-only for
+                        // now even though groups can nest (see
+                        // `GroupPayload`'s own doc comment): inside a
+                        // group's own subgraph, dropping onto a sibling tab
+                        // already means something else (re-parent, the
+                        // `else if` below), and resolving that overlap
+                        // wasn't part of this pass. A nested group still
+                        // gains members today via "+ New Tab"/"Group
+                        // Selected" while viewing its own subgraph, or by
+                        // dragging a tab already inside it onto a sibling
+                        // to reorganize -- just not by dragging one in from
+                        // a different branch of the tree.
                         if self.current_group.is_none() {
                             if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
                                 let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
@@ -8674,16 +8736,18 @@ impl App {
                         } else if leave_group_button_rect
                             .is_some_and(|rect| ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)))
                         {
-                            // Dragging a group member onto the "◀ Groups"
-                            // back button ejects it to the top level --
-                            // the button's rect is screen-space (it's a
-                            // toolbar widget), so this checks the raw
-                            // pointer position directly rather than the
-                            // node's world-space `pos` the top-level
-                            // group-card/tab-card drop targets above use.
-                            // Same effect as the hover-revealed eject
-                            // button, just reached by dragging the card
-                            // itself out through the way back instead.
+                            // Dragging a group member onto the "◀" back
+                            // button ejects it one level up (to the
+                            // group's own parent -- the top level, if the
+                            // group itself isn't nested) -- the button's
+                            // rect is screen-space (it's a toolbar widget),
+                            // so this checks the raw pointer position
+                            // directly rather than the node's world-space
+                            // `pos` the top-level group-card/tab-card drop
+                            // targets above use. Same effect as the
+                            // hover-revealed eject button, just reached by
+                            // dragging the card itself out through the way
+                            // back instead.
                             remove_from_group_requested = Some(id.clone());
                         } else if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
                             // Dropping one member of a group's own subgraph
@@ -9425,13 +9489,12 @@ impl App {
                     }
                 }
 
-                // Group nodes: top level only (no nesting in this first
-                // cut — see `GroupPayload`'s own doc comment). Double-click
-                // drills into the group's own subgraph; a dragged tab
-                // dropped onto one joins it (handled above, in the tab
-                // loop, since that's where the drag-release fires).
-                if self.current_group.is_none() {
-                    for id in self.groups_at_current_level() {
+                // Group nodes: rendered at whichever level `self.current_group`
+                // is (groups nest -- see `GroupPayload`'s own doc comment).
+                // Double-click drills into the group's own subgraph; a
+                // dragged tab dropped onto one joins it (handled above, in
+                // the tab loop, since that's where the drag-release fires).
+                for id in self.groups_at_current_level() {
                         let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                             continue;
                         };
@@ -9701,7 +9764,6 @@ impl App {
                             }
                         }
                     }
-                }
 
                 // Peek preview: an enlarged view of the hovered node's cached
                 // thumbnail, floating near it, without changing focus. Painted
@@ -9819,8 +9881,20 @@ impl App {
             }
         }
         if let Some(id) = remove_from_group_requested {
+            // One level up, not straight to the top -- the group `id` is
+            // currently in might itself be nested inside another (see
+            // `GroupPayload`'s own doc comment), so "eject" should land
+            // in *its* parent, same as `dissolve_group` reparenting a
+            // dissolved group's members to its own parent rather than
+            // always `None`.
+            let grandparent = self
+                .nodes
+                .get(&id)
+                .and_then(|n| n.group.clone())
+                .and_then(|parent| self.nodes.get(&parent))
+                .and_then(|g| g.group.clone());
             if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
+                node.group = grandparent;
             }
         }
         if let Some(id) = tab_color_cycle_requested {
@@ -9884,7 +9958,7 @@ impl App {
                 id.clone(),
                 GraphNode {
                     parent: None,
-                    group: None,
+                    group: self.current_group.clone(),
                     pos,
                     vel: egui::Vec2::ZERO,
                     color: None,
@@ -9978,7 +10052,11 @@ impl App {
             self.tab_context_menu = None;
         }
         if leave_group_requested {
-            self.current_group = None;
+            // One level up, not straight to the top -- same "go to this
+            // group's own parent" rule `dissolve_group`/the drag-to-eject
+            // handler above both use, now that groups nest.
+            self.current_group =
+                self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
             self.settle_current_level();
             self.graph_settled_key = Some(self.current_level_settle_key());
             self.graph_camera_tween = Some(GraphCameraTween {
