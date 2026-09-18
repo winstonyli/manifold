@@ -4587,45 +4587,16 @@ impl App {
         self.node_order.push(id);
     }
 
-    /// The Graph toolbar's "+ PDF" button -- a real file picker blocks on
-    /// OS/human input neither exists in headless mode (same reasoning
-    /// Export/Import Session/Group/Image already have), so this is never
-    /// called there; `ADDPDF <path>` is the headless equivalent, supplying
-    /// the path directly instead of showing a picker.
-    fn add_pdf_node(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() else {
-            return;
-        };
-        self.insert_pdf_node(path.to_string_lossy().into_owned());
-        self.save_session();
-    }
-
-    /// The Graph toolbar's "+ Image" button -- a real file picker blocks on
-    /// OS/human input neither exists in headless mode (same reasoning
-    /// Export/Import Session/Group already have), so this is never called
-    /// there; `ADDIMAGE <path>` is the headless equivalent, supplying the
-    /// path directly instead of showing a picker.
-    fn add_image_node(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"])
-            .pick_file()
-        else {
-            return;
-        };
-        if self.insert_image_node(path.to_string_lossy().into_owned()) {
-            self.save_session();
-        }
-    }
-
     /// Decodes `path` as JSON and inserts a new JSON node with a fresh id at
     /// the current level, jittered around world center -- the interactive
-    /// "+ JSON" button (`add_json_node`) and the headless `ADDJSON <path>`
-    /// debug command. Returns `false` (doing nothing) if the file doesn't
-    /// exist or isn't valid JSON, same fail-fast posture `insert_image_node`
-    /// already has (a JSON parse is just as fast as decoding an image, so
-    /// there's nothing here that needs `Pdf`'s own background-render
-    /// treatment). Doesn't itself call `save_session` -- both callers mutate
-    /// persisted state and save themselves right after.
+    /// "+ File" button (`add_file_node`, when the picked file is `.json`)
+    /// and the headless `ADDJSON <path>` debug command. Returns `false`
+    /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
+    /// fail-fast posture `insert_image_node` already has (a JSON parse is
+    /// just as fast as decoding an image, so there's nothing here that
+    /// needs `Pdf`'s own background-render treatment). Doesn't itself call
+    /// `save_session` -- both callers mutate persisted state and save
+    /// themselves right after.
     fn insert_json_node(&mut self, path: String) -> bool {
         let id = self.alloc_json_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
@@ -4661,16 +4632,46 @@ impl App {
         true
     }
 
-    /// The Graph toolbar's "+ JSON" button -- a real file picker blocks on
-    /// OS/human input neither exists in headless mode (same reasoning
-    /// Export/Import Session/Image/PDF already have), so this is never
-    /// called there; `ADDJSON <path>` is the headless equivalent, supplying
-    /// the path directly instead of showing a picker.
-    fn add_json_node(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() else {
+    /// The Graph toolbar's single "+ File" button -- one file picker
+    /// covering every locally-addable node kind (Image/PDF/JSON), replacing
+    /// three separate buttons/pickers (`add_image_node`/`add_pdf_node`/
+    /// `add_json_node`, all since removed) that only ever differed in
+    /// which extensions they filtered for and which `insert_*_node` got
+    /// called after picking a file -- the same "dispatch by type, one
+    /// allowlist" shape `redirect_fetch::classify` already established for
+    /// auto-redirected tabs, applied here to a local file's own extension
+    /// instead of a fetched `Content-Type` (there's no HTTP response to
+    /// read a real MIME type from for a file already on disk). A real file
+    /// picker blocks on OS/human input neither exists in headless mode, so
+    /// this is never called there; `ADDIMAGE`/`ADDPDF`/`ADDJSON <path>`
+    /// remain the headless equivalents, each still supplying its own path
+    /// directly to the matching `insert_*_node` without going through this
+    /// dispatch at all.
+    fn add_file_node(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Image, PDF, or JSON",
+                &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "json"],
+            )
+            .pick_file()
+        else {
             return;
         };
-        if self.insert_json_node(path.to_string_lossy().into_owned()) {
+        let path = path.to_string_lossy().into_owned();
+        let extension = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let inserted = match extension.as_deref() {
+            Some("pdf") => {
+                self.insert_pdf_node(path);
+                true
+            }
+            Some("json") => self.insert_json_node(path),
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico") => self.insert_image_node(path),
+            _ => false,
+        };
+        if inserted {
             self.save_session();
         }
     }
@@ -7396,11 +7397,9 @@ impl App {
         let mut new_group_requested = false;
         let mut new_note_requested = false;
         let mut note_close_requested: Option<String> = None;
-        let mut add_image_requested = false;
+        let mut add_file_requested = false;
         let mut image_close_requested: Option<String> = None;
-        let mut add_pdf_requested = false;
         let mut pdf_close_requested: Option<String> = None;
-        let mut add_json_requested = false;
         let mut json_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
@@ -7478,29 +7477,19 @@ impl App {
                     {
                         new_note_requested = true;
                     }
-                    // File picker blocks on OS/human input neither exists
-                    // in headless mode -- same `!self.headless` gate every
-                    // other file-dialog button here already has.
+                    // One button, one file picker, covering every locally-
+                    // addable node kind (Image/PDF/JSON) -- see
+                    // `App::add_file_node`'s own doc comment for why this
+                    // replaced three separate buttons/pickers that only
+                    // ever differed in extension filter and which
+                    // `insert_*_node` got called after. File picker blocks
+                    // on OS/human input neither exists in headless mode --
+                    // same `!self.headless` gate every other file-dialog
+                    // button here already has.
                     if !self.headless
-                        && ui
-                            .button(egui_phosphor::regular::IMAGE_SQUARE)
-                            .on_hover_text("Add Image...")
-                            .clicked()
+                        && ui.button(egui_phosphor::regular::FILE_PLUS).on_hover_text("Add File...").clicked()
                     {
-                        add_image_requested = true;
-                    }
-                    if !self.headless
-                        && ui.button(egui_phosphor::regular::FILE_PDF).on_hover_text("Add PDF...").clicked()
-                    {
-                        add_pdf_requested = true;
-                    }
-                    if !self.headless
-                        && ui
-                            .button(egui_phosphor::regular::BRACKETS_CURLY)
-                            .on_hover_text("Add JSON...")
-                            .clicked()
-                    {
-                        add_json_requested = true;
+                        add_file_requested = true;
                     }
                     // These four buttons used to carry full text labels
                     // ("+ New Group", "Import Group...", "Ungroup All",
@@ -9852,8 +9841,8 @@ impl App {
             self.remove_node(&id);
             self.save_session();
         }
-        if add_image_requested {
-            self.add_image_node();
+        if add_file_requested {
+            self.add_file_node();
         }
         if let Some(id) = image_close_requested {
             if let Some(gpu) = &mut self.gpu {
@@ -9862,18 +9851,12 @@ impl App {
             self.remove_node(&id);
             self.save_session();
         }
-        if add_pdf_requested {
-            self.add_pdf_node();
-        }
         if let Some(id) = pdf_close_requested {
             if let Some(gpu) = &mut self.gpu {
                 gpu.free_image(&id);
             }
             self.remove_node(&id);
             self.save_session();
-        }
-        if add_json_requested {
-            self.add_json_node();
         }
         if let Some(id) = json_close_requested {
             if self.json_viewer_node.as_deref() == Some(id.as_str()) {
