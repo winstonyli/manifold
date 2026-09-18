@@ -1756,6 +1756,14 @@ struct App {
     /// toggle into one popup instead of three always-visible buttons. See
     /// `App::build_tab_actions_popup`.
     tab_actions_open: bool,
+    /// Same "fold several toolbar buttons into one dropdown" idea as
+    /// `tab_actions_open`, for "Bookmarks (N)"/"History (N)"/"Downloads (N)"
+    /// -- previously three separate buttons, each hidden while its own list
+    /// was empty (inconsistent toolbar width, and no way to tell a feature
+    /// existed at all before using it once). Now one always-visible "Lists"
+    /// button; picking a row here just sets that list's own `_open` flag,
+    /// unchanged otherwise. See `App::build_lists_menu`.
+    lists_menu_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -1899,6 +1907,7 @@ impl Default for App {
             history_filter: String::new(),
             downloads_open: false,
             tab_actions_open: false,
+            lists_menu_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -4568,6 +4577,9 @@ impl App {
             // alphabetically -- `folders` is already sorted.
             let groups: Vec<Option<&str>> =
                 std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
+            if matches.is_empty() {
+                ui.label(egui::RichText::new("No bookmarks yet.").weak());
+            }
             egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                 for folder in groups {
                     let rows: Vec<&(usize, &bookmarks::Bookmark)> = matches
@@ -4673,7 +4685,10 @@ impl App {
         if clicked_outside && self.renaming_bookmark_folder.is_none() {
             close = true;
         }
-        if close || self.bookmarks.is_empty() {
+        // Not `|| self.bookmarks.is_empty()` any more -- the "Lists" menu
+        // can now open this popup with an empty list (see `lists_menu_open`'s
+        // doc comment), and that used to close it again the very next frame.
+        if close {
             self.bookmarks_open = false;
             self.renaming_bookmark_folder = None;
         }
@@ -4695,6 +4710,9 @@ impl App {
                     .desired_width(f32::INFINITY)
                     .hint_text("Filter..."),
             );
+            if self.history.is_empty() {
+                ui.label(egui::RichText::new("No history yet.").weak());
+            }
             egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                 for entry in self.history.iter().rev() {
                     let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
@@ -4727,7 +4745,9 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        if close || self.history.is_empty() {
+        // Not `|| self.history.is_empty()` any more -- see the matching
+        // comment in `build_bookmarks_popup`.
+        if close {
             self.history_open = false;
         }
     }
@@ -4745,6 +4765,9 @@ impl App {
         let mut remove_id: Option<String> = None;
         let area_rect =
             build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
+                ui.label(egui::RichText::new("No downloads yet.").weak());
+            }
             egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                 for id in self.node_order.iter().rev() {
                     let Some(node) = self.nodes.get(id).and_then(|n| n.as_download()) else { continue };
@@ -4814,7 +4837,13 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        if close || self.nodes.is_empty() {
+        // Not `|| self.nodes.is_empty()` any more: that counted every graph
+        // node (tabs, notes, images, ...), not just downloads, so it almost
+        // never actually fired -- and per the same fix as
+        // `build_bookmarks_popup`/`build_history_popup`, an empty list is no
+        // longer a reason to self-close at all now that the "Lists" menu can
+        // open this popup while empty.
+        if close {
             self.downloads_open = false;
         }
     }
@@ -4879,6 +4908,72 @@ impl App {
         }
         if close {
             self.tab_actions_open = false;
+        }
+    }
+
+    /// Tab view's "Lists" button -- folds Bookmarks/History/Downloads into
+    /// one dropdown instead of three separate always-conditionally-shown
+    /// buttons (see `lists_menu_open`'s own doc comment). Picking a row
+    /// just opens that list's own existing popup exactly as its old
+    /// standalone button did; nothing about `build_bookmarks_popup`/
+    /// `build_history_popup`/`build_downloads_popup` themselves changes,
+    /// only what triggers them.
+    fn build_lists_menu(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
+        let mut close = false;
+        let mut open_bookmarks = false;
+        let mut open_history = false;
+        let mut open_downloads = false;
+        // Not `self.nodes.len()` (every graph node, not just downloads) --
+        // **found while moving this into its own menu**: the old always-
+        // conditionally-shown button's own count was wrong the same way,
+        // just never as obviously since happening to be non-empty was all
+        // that decided whether the button showed at all.
+        let download_count = self.nodes.values().filter(|n| n.as_download().is_some()).count();
+        let area = egui::Area::new(egui::Id::new("lists_menu"))
+            .fixed_pos(anchor_rect.left_bottom())
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(160.0);
+                        if ui.button(format!("Bookmarks ({})", self.bookmarks.len())).clicked() {
+                            open_bookmarks = true;
+                            close = true;
+                        }
+                        if ui.button(format!("History ({})", self.history.len())).clicked() {
+                            open_history = true;
+                            close = true;
+                        }
+                        if ui.button(format!("Downloads ({download_count})")).clicked() {
+                            open_downloads = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
+
+        if open_bookmarks {
+            self.bookmarks_open = true;
+            self.bookmarks_filter.clear();
+        }
+        if open_history {
+            self.history_open = true;
+            self.history_filter.clear();
+        }
+        if open_downloads {
+            self.downloads_open = true;
+        }
+        if clicked_outside {
+            close = true;
+        }
+        if close {
+            self.lists_menu_open = false;
         }
     }
 
@@ -6668,9 +6763,7 @@ impl App {
         let mut mute_toggle = false;
         let mut toggle_bookmark_requested = false;
         let mut tab_actions_button_rect: Option<egui::Rect> = None;
-        let mut bookmarks_button_rect: Option<egui::Rect> = None;
-        let mut history_button_rect: Option<egui::Rect> = None;
-        let mut downloads_button_rect: Option<egui::Rect> = None;
+        let mut lists_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
         let mut split_requested: Option<EngineKind> = None;
@@ -6881,36 +6974,16 @@ impl App {
                     {
                         self.json_viewer_node = Some(focused_id.clone());
                     }
-                    if !self.bookmarks.is_empty() {
-                        let label = format!("Bookmarks ({})", self.bookmarks.len());
-                        let response = ui.button(label);
-                        if response.clicked() {
-                            self.bookmarks_open = !self.bookmarks_open;
-                            if self.bookmarks_open {
-                                self.bookmarks_filter.clear();
-                            }
-                        }
-                        bookmarks_button_rect = Some(response.rect);
+                    // Always visible now, regardless of whether any list
+                    // is actually empty -- see `lists_menu_open`'s own doc
+                    // comment for why (a button that vanishes/reappears
+                    // depending on data is a discoverability trap, and a
+                    // shifting toolbar width besides).
+                    let lists_response = ui.button("Lists");
+                    if lists_response.clicked() {
+                        self.lists_menu_open = !self.lists_menu_open;
                     }
-                    if !self.history.is_empty() {
-                        let label = format!("History ({})", self.history.len());
-                        let response = ui.button(label);
-                        if response.clicked() {
-                            self.history_open = !self.history_open;
-                            if self.history_open {
-                                self.history_filter.clear();
-                            }
-                        }
-                        history_button_rect = Some(response.rect);
-                    }
-                    if !self.nodes.is_empty() {
-                        let label = format!("Downloads ({})", self.nodes.len());
-                        let response = ui.button(label);
-                        if response.clicked() {
-                            self.downloads_open = !self.downloads_open;
-                        }
-                        downloads_button_rect = Some(response.rect);
-                    }
+                    lists_button_rect = Some(lists_response.rect);
 
                     // Full window (chrome + content), same composited
                     // picture the headless `SCREENSHOT` debug command
@@ -7217,23 +7290,34 @@ impl App {
         // (self.bookmarks/history/downloads, the toolbar buttons) all
         // outlive the `_open` flag going false, so drawing continues
         // correctly through the fade-out too, not just fade-in.
+        // All four of these now anchor to the one "Lists" button's own
+        // rect (`lists_button_rect`) -- Bookmarks/History/Downloads are
+        // opened *from* that button's own dropdown (`build_lists_menu`),
+        // not by three separate buttons the way they used to be.
+        let lists_menu_fade =
+            ui.ctx().animate_bool(egui::Id::new("lists_menu_fade"), self.lists_menu_open);
+        if lists_menu_fade > 0.0 {
+            if let Some(rect) = lists_button_rect {
+                self.build_lists_menu(ui, rect, lists_menu_fade);
+            }
+        }
         let bookmarks_fade =
             ui.ctx().animate_bool(egui::Id::new("bookmarks_popup_fade"), self.bookmarks_open);
         if bookmarks_fade > 0.0 {
-            if let Some(rect) = bookmarks_button_rect {
+            if let Some(rect) = lists_button_rect {
                 self.build_bookmarks_popup(ui, rect, bookmarks_fade);
             }
         }
         let history_fade = ui.ctx().animate_bool(egui::Id::new("history_popup_fade"), self.history_open);
         if history_fade > 0.0 {
-            if let Some(rect) = history_button_rect {
+            if let Some(rect) = lists_button_rect {
                 self.build_history_popup(ui, rect, history_fade);
             }
         }
         let downloads_fade =
             ui.ctx().animate_bool(egui::Id::new("downloads_popup_fade"), self.downloads_open);
         if downloads_fade > 0.0 {
-            if let Some(rect) = downloads_button_rect {
+            if let Some(rect) = lists_button_rect {
                 self.build_downloads_popup(ui, rect, downloads_fade);
             }
         }
