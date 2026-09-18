@@ -6633,8 +6633,24 @@ impl App {
 
                     if response.dragged() {
                         self.dragging = Some(id.clone());
-                        if let Some(node) = self.tabs.get_mut(&id) {
-                            node.pos += response.drag_delta();
+                        let delta = response.drag_delta();
+                        // Dragging one member of an active rectangle-
+                        // selection moves the *whole* selection together,
+                        // not just the card the pointer happened to grab --
+                        // same "selection acts as one unit" reasoning the
+                        // drop-onto-a-group-card handling just below
+                        // already has for joining a group; found live that
+                        // plain repositioning didn't have this yet (the
+                        // other selected cards stayed put, breaking the
+                        // visual selection's cohesion mid-drag).
+                        if self.selected_tabs.contains(&id) {
+                            for tab_id in self.selected_tabs.clone() {
+                                if let Some(node) = self.tabs.get_mut(&tab_id) {
+                                    node.pos += delta;
+                                }
+                            }
+                        } else if let Some(node) = self.tabs.get_mut(&id) {
+                            node.pos += delta;
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
                         self.dragging = None;
