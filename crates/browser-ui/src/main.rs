@@ -874,6 +874,7 @@ struct ContextMenuState {
 /// matches` currently returns for `query` -- clamped on every keystroke
 /// since the match list can shrink out from under a previously valid
 /// index (e.g. a query that used to match 5 tabs now matches 2).
+#[derive(Clone)]
 struct QuickSwitcher {
     query: String,
     selected: usize,
@@ -1011,6 +1012,12 @@ struct App {
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
+    /// Same fade-out role as `group_context_menu_cache`, for `quick_switcher`
+    /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
+    /// once actually closing, since editing/clicking needs `&mut self.
+    /// quick_switcher`, which no longer exists by then. See `build_quick_
+    /// switcher`'s own `is_live` branch.
+    quick_switcher_cache: Option<QuickSwitcher>,
     /// `F1` / headless `TOGGLESHORTCUTSHELP` -- whether the keyboard-
     /// shortcut reference popup is showing. See `App::build_shortcuts_help`.
     shortcuts_help_open: bool,
@@ -1370,6 +1377,7 @@ impl Default for App {
             tab_context_menu: None,
             tab_context_menu_cache: None,
             quick_switcher: None,
+            quick_switcher_cache: None,
             shortcuts_help_open: false,
             pending_import: None,
             session_name_draft: String::new(),
@@ -4060,35 +4068,47 @@ impl App {
     /// from `build_ui` itself rather than `build_tab_ui`/`build_graph_ui`
     /// so it works the same from either view.
     fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
-        if self.quick_switcher.is_none() {
+        let current = self.quick_switcher.clone();
+        let is_live = current.is_some();
+        let Some((switcher, fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("quick_switcher_fade"),
+            &current,
+            &mut self.quick_switcher_cache,
+        ) else {
             return;
+        };
+
+        if is_live {
+            // Read once, outside the `Area`, so arrow/Enter/Escape work
+            // regardless of whether the search field inside currently has
+            // egui focus — same reasoning the address-bar dropdown's own
+            // arrow-key handling already documents. Gated on `is_live`:
+            // once actually closing (rendering the frozen `cache` snapshot
+            // below instead), there's no live switcher left to move a
+            // selection in or confirm.
+            let (arrow_down, arrow_up, enter, escape) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowDown),
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if arrow_down {
+                self.quick_switcher_move(1);
+            }
+            if arrow_up {
+                self.quick_switcher_move(-1);
+            }
+            if escape {
+                self.quick_switcher = None;
+            }
+            if enter {
+                self.quick_switcher_confirm();
+            }
         }
 
-        // Read once, outside the `Area`, so arrow/Enter/Escape work
-        // regardless of whether the search field inside currently has
-        // egui focus — same reasoning the address-bar dropdown's own
-        // arrow-key handling already documents.
-        let (arrow_down, arrow_up, enter, escape) = ui.input(|i| {
-            (
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::Enter),
-                i.key_pressed(egui::Key::Escape),
-            )
-        });
-        if arrow_down {
-            self.quick_switcher_move(1);
-        }
-        if arrow_up {
-            self.quick_switcher_move(-1);
-        }
-        if escape {
-            self.quick_switcher = None;
-        }
-        if enter {
-            self.quick_switcher_confirm();
-        }
-        let Some(switcher) = &self.quick_switcher else { return };
         let query = switcher.query.clone();
         let selected_index = switcher.selected;
         let matches = self.quick_switcher_matches(&query);
@@ -4098,6 +4118,7 @@ impl App {
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
                 egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
@@ -4105,15 +4126,25 @@ impl App {
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
                         ui.set_width(360.0);
-                        if let Some(switcher) = &mut self.quick_switcher {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut switcher.query)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("Search open tabs..."),
-                            );
-                            if std::mem::take(&mut self.pending_focus_quick_switcher) {
-                                response.request_focus();
+                        if is_live {
+                            if let Some(switcher) = &mut self.quick_switcher {
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut switcher.query)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Search open tabs..."),
+                                );
+                                if std::mem::take(&mut self.pending_focus_quick_switcher) {
+                                    response.request_focus();
+                                }
                             }
+                        } else {
+                            // Closing: a live `TextEdit` needs `&mut self.
+                            // quick_switcher`, which no longer exists once
+                            // it's actually `None` -- the fade past this
+                            // point is purely a visual echo of the last
+                            // real state, not something still editable.
+                            let placeholder = if query.is_empty() { "Search open tabs..." } else { &query };
+                            ui.label(placeholder);
                         }
                         ui.separator();
                         if matches.is_empty() {
@@ -4127,8 +4158,19 @@ impl App {
                                 } else {
                                     node.title.clone()
                                 };
-                                if ui.selectable_label(i == selected_index, label).clicked() {
-                                    jump_to = Some(id.clone());
+                                if is_live {
+                                    if ui.selectable_label(i == selected_index, label).clicked() {
+                                        jump_to = Some(id.clone());
+                                    }
+                                } else {
+                                    // Non-interactive while closing --
+                                    // clicking a row already fading out
+                                    // would be a confusing "did that even
+                                    // do anything" moment.
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::selectable(i == selected_index, label),
+                                    );
                                 }
                             }
                         });
