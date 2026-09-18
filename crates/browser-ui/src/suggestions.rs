@@ -112,23 +112,34 @@ pub struct SuggestionFetcher {
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// Spawns the one-time TLS/DNS warm-up this process's very first real HTTPS
+/// request needs. Found live: the *first* HTTPS request this process ever
+/// makes (rustls/ureq's one-time TLS setup — root store loading, cipher
+/// negotiation tables, etc. — plus a cold DNS+TLS handshake) is slow enough
+/// that doing it for the first time exactly when the user starts typing a
+/// search query reliably tripped Servo's engine-host into a crash/respawn
+/// loop (confirmed reproducible: never happened on the *second* search of a
+/// session, only ever the first). Absorbing that one-time cost here, at
+/// startup on a throwaway background thread, keeps it off the critical path
+/// by the time it's actually needed. The result is discarded — this is pure
+/// warm-up, not a real query.
+///
+/// Called once, centrally, from `App::default()` — not from inside
+/// `SuggestionFetcher::new()` the way it used to be, once a second network
+/// consumer (favicon fetching) existed too: each doing its own redundant
+/// warm-up would be wasteful, and worse, whichever one wasn't constructed
+/// first could still race a real request against the *other's* not-yet-
+/// finished warm-up. One shared call, before either fetcher is built,
+/// avoids both problems.
+pub fn warm_up_https_client() {
+    std::thread::spawn(|| {
+        let _ = fetch_suggestions("a");
+    });
+}
+
 impl SuggestionFetcher {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        // Found live: the *first* HTTPS request this process ever makes
-        // (rustls/ureq's one-time TLS setup — root store loading, cipher
-        // negotiation tables, etc. — plus a cold DNS+TLS handshake) is slow
-        // enough that doing it for the first time exactly when the user
-        // starts typing a search query reliably tripped Servo's
-        // engine-host into a crash/respawn loop (confirmed reproducible:
-        // never happened on the *second* search of a session, only ever
-        // the first). Absorbing that one-time cost here, at startup on a
-        // throwaway background thread, keeps it off the critical path by
-        // the time the user actually needs a suggestion. The result is
-        // discarded — this is pure warm-up, not a real query.
-        std::thread::spawn(|| {
-            let _ = fetch_suggestions("a");
-        });
         Self {
             tx,
             rx,

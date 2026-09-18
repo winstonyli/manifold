@@ -1,5 +1,6 @@
 mod bookmarks;
 mod debug_control;
+mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod group_export;
@@ -12,6 +13,7 @@ mod suggestions;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use favicon_fetch::FaviconFetcher;
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use debug_control::DebugCommand;
@@ -1085,6 +1087,19 @@ struct App {
     open_tab_suggestions: Vec<Suggestion>,
     search_suggestions: Vec<String>,
     suggestion_fetcher: SuggestionFetcher,
+    /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
+    /// module's own doc comment for why favicons are fetched independently
+    /// here rather than aggregated from each engine's own (inconsistent)
+    /// native favicon API.
+    favicon_fetcher: FaviconFetcher,
+    /// Origins already resolved (successfully or not) by `favicon_fetcher`
+    /// -- checked before requesting again, so a failed origin (no
+    /// `/favicon.ico`, a network error, undecodable bytes) isn't refetched
+    /// on every navigation back to it. A *successful* fetch's actual pixel
+    /// data lives in `GpuState::favicons` (keyed by the same origin
+    /// string), not duplicated here -- this only needs to remember whether
+    /// resolution was already attempted, not the result itself.
+    favicon_resolved: HashSet<String>,
     /// Index into `combined_suggestions()` the user has moved to via
     /// Up/Down — `None` means no row is highlighted (Enter falls through
     /// to a plain navigate of the typed text). Reset whenever the
@@ -1364,6 +1379,13 @@ impl Default for App {
         apply_fonts(&egui_ctx);
         let settings = Settings::load();
         let bookmarks = bookmarks::load();
+        // Before constructing anything that might make its own first real
+        // HTTPS request (search suggestions, favicons) -- see `suggestions::
+        // warm_up_https_client`'s own doc comment for why this needs to run
+        // exactly once, centrally, rather than each network consumer doing
+        // its own redundant warm-up (or, worse, one racing a real request
+        // against another's not-yet-finished warm-up).
+        suggestions::warm_up_https_client();
         Self {
             window: None,
             last_window_title: "multiengine-browser".to_string(),
@@ -1406,6 +1428,8 @@ impl Default for App {
             open_tab_suggestions: Vec::new(),
             search_suggestions: Vec::new(),
             suggestion_fetcher: SuggestionFetcher::new(),
+            favicon_fetcher: FaviconFetcher::new(),
+            favicon_resolved: HashSet::new(),
             dropdown_highlighted: None,
             dragging: None,
             hovered: None,
@@ -5175,8 +5199,8 @@ impl App {
                     // or the fetched favicon, right before the engine picker.
                     if node.loading {
                         ui.add(egui::Spinner::new().size(12.0));
-                    } else if let Some(tex_id) =
-                        self.gpu.as_ref().and_then(|g| g.favicon_id(&focused_id))
+                    } else if let Some(tex_id) = favicon_fetch::url_origin(&node.url)
+                        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
                     {
                         ui.add(egui::Image::new(egui::load::SizedTexture::new(
                             tex_id,
@@ -6361,7 +6385,12 @@ impl App {
                             );
                         }
                     }
-                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&id)) {
+                    if let Some(tex_id) = self
+                        .tabs
+                        .get(&id)
+                        .and_then(|n| favicon_fetch::url_origin(&n.url))
+                        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+                    {
                         let favicon_rect = egui::Rect::from_min_size(
                             rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
                             FAVICON_SIZE * inv_zoom,
@@ -8215,7 +8244,6 @@ impl App {
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
-        let mut favicon_updates: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
         // Whether any tab's real (settled) url changed this pass — used to
         // trigger one `save_session()` after the loop below rather than one
         // per `NavigationStateChanged` (title/history-only changes and a
@@ -8262,6 +8290,20 @@ impl App {
                             if self.history.len() > MAX_HISTORY_ENTRIES {
                                 self.history.remove(0);
                             }
+                            // The origin is known as soon as the url is --
+                            // no need to wait for the page to actually
+                            // finish loading, unlike a page's own favicon
+                            // link tag this project doesn't parse anyway
+                            // (see `favicon_fetch`'s own doc comment).
+                            // `favicon_resolved`/`FaviconFetcher`'s own
+                            // `in_flight` set both dedupe repeat requests,
+                            // so this can fire on every url change with no
+                            // extra bookkeeping needed here.
+                            if let Some(origin) = favicon_fetch::url_origin(&url) {
+                                if !self.favicon_resolved.contains(&origin) {
+                                    self.favicon_fetcher.request(origin);
+                                }
+                            }
                         }
                         node.url = url;
                         node.title = title;
@@ -8274,9 +8316,6 @@ impl App {
                     }
                     EngineToHost::OpenTabRequested { url } => {
                         open_tab_requests.push((tab_id.clone(), url));
-                    }
-                    EngineToHost::FaviconChanged { rgba, width, height } => {
-                        favicon_updates.push((tab_id.clone(), rgba, width, height));
                     }
                     EngineToHost::FindResult { count, active_index } => {
                         // Ignore a result from a tab that isn't the one the
@@ -8414,9 +8453,12 @@ impl App {
             self.spawn_new_tab(parent, group, &url);
         }
 
-        for (tab_id, rgba, width, height) in favicon_updates {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.upload_favicon(&tab_id, &rgba, width, height);
+        for (origin, result) in self.favicon_fetcher.tick() {
+            self.favicon_resolved.insert(origin.clone());
+            if let Some(image) = result {
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.upload_favicon(&origin, &image.rgba, image.width, image.height);
+                }
             }
         }
 

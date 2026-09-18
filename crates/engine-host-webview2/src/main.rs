@@ -9,7 +9,6 @@
 mod audio;
 mod capture;
 mod download;
-mod favicon;
 mod find;
 mod input;
 mod nav_state;
@@ -126,15 +125,9 @@ fn main() {
 
     let nav_state = new_shared_nav_state(initial_url.clone());
     nav_state::register_handlers(&webview, nav_state.clone());
-    // Favicon support is best-effort -- if `ICoreWebView2_15` isn't
-    // available on whatever WebView2 Runtime version is installed,
-    // `register` fails and this tab just never reports a favicon, same
-    // graceful-degradation shape as CEF's already-known-broken favicon path.
-    let pending_favicon = favicon::register(&webview).ok();
     let pending_popup = popup::register(&webview);
-    // Best-effort like favicon's own version-gated API -- an
-    // `ICoreWebView2_28`/`ICoreWebView2Environment15`-less WebView2 Runtime
-    // just means this tab's find bar never reports results.
+    // Best-effort -- an `ICoreWebView2_28`/`ICoreWebView2Environment15`-less
+    // WebView2 Runtime just means this tab's find bar never reports results.
     let find_state = find::register(&environment, &webview).ok();
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
@@ -264,12 +257,6 @@ fn main() {
                     can_go_forward: state.can_go_forward,
                     loading: state.loading,
                 });
-            }
-        }
-
-        if let Some(pending) = &pending_favicon {
-            if let Some((rgba, width, height)) = pending.borrow_mut().take() {
-                let _ = control.send(&EngineToHost::FaviconChanged { rgba, width, height });
             }
         }
 

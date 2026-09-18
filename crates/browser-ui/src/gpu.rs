@@ -88,9 +88,27 @@ pub struct GpuState {
     sampler: wgpu::Sampler,
     tab_texture: Option<TabTexture>,
     thumbnails: HashMap<String, ThumbTexture>,
+    /// Keyed by *origin* (`scheme://host[:port]`, see `favicon_fetch::
+    /// url_origin`), not tab id -- favicons are fetched independently of
+    /// any specific tab (see `favicon_fetch`'s own module doc comment), so
+    /// two tabs on the same site share one texture instead of each
+    /// re-fetching/re-uploading their own. `favicon_order` tracks insertion
+    /// order for `MAX_CACHED_FAVICONS` FIFO eviction -- not tied to tab
+    /// close the way `thumbnails` is, since an origin can outlive every tab
+    /// that visited it.
     favicons: HashMap<String, ThumbTexture>,
+    favicon_order: std::collections::VecDeque<String>,
     egui_renderer: egui_wgpu::Renderer,
 }
+
+/// How many distinct origins' favicons `GpuState` keeps textures for before
+/// evicting the oldest (FIFO, not true LRU -- simpler, and a revisited
+/// origin just re-fetches, same cost as a cache miss would have anyway).
+/// Same bounded-cache posture `MAX_CLOSED_TABS`/`MAX_CLOSED_GROUPS` already
+/// have elsewhere in this app, sized generously since a favicon texture is
+/// tiny (typically 16-32px) and a real session could plausibly visit a
+/// couple hundred distinct sites.
+const MAX_CACHED_FAVICONS: usize = 200;
 
 impl GpuState {
     pub fn new(window: Arc<Window>) -> Self {
@@ -244,6 +262,7 @@ impl GpuState {
             tab_texture: None,
             thumbnails: HashMap::new(),
             favicons: HashMap::new(),
+            favicon_order: std::collections::VecDeque::new(),
             egui_renderer,
         }
     }
@@ -440,19 +459,23 @@ impl GpuState {
         if let Some(thumb) = self.thumbnails.remove(tab_id) {
             self.egui_renderer.free_texture(&thumb.egui_id);
         }
-        self.free_tab_favicon(tab_id);
+        // Favicons are origin-keyed, not tab-keyed (see `favicons`' own doc
+        // comment) -- closing this one tab says nothing about whether some
+        // other tab still shows the same origin, so there's no per-tab
+        // free to do here. `upload_favicon`'s own `MAX_CACHED_FAVICONS`
+        // eviction is what eventually reclaims an origin nothing visits
+        // anymore.
     }
 
-    /// `rgba` is already tightly-packed RGBA (both Servo's and WebKit's
-    /// favicon paths hand over decoded pixels, no channel swap needed
-    /// unlike `upload_frame`'s CEF case) — registered the same way as a
-    /// thumbnail, in its own map since a tab's favicon and its content
-    /// thumbnail are unrelated sizes and update independently.
-    pub fn upload_favicon(&mut self, tab_id: &str, rgba: &[u8], width: u32, height: u32) {
+    /// `rgba` is already tightly-packed RGBA -- registered the same way as
+    /// a thumbnail, in its own map since a favicon and a tab's content
+    /// thumbnail are unrelated sizes and update independently. `key` is an
+    /// *origin* (see `favicons`' own doc comment), not a tab id.
+    pub fn upload_favicon(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
         let texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
-                label: Some("tab favicon texture"),
+                label: Some("favicon texture"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -469,7 +492,7 @@ impl GpuState {
             rgba,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Some(existing) = self.favicons.get(tab_id) {
+        if let Some(existing) = self.favicons.get(key) {
             self.egui_renderer.update_egui_texture_from_wgpu_texture(
                 &self.device,
                 &view,
@@ -480,25 +503,23 @@ impl GpuState {
             let egui_id =
                 self.egui_renderer
                     .register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-            self.favicons
-                .insert(tab_id.to_string(), ThumbTexture { egui_id });
+            self.favicons.insert(key.to_string(), ThumbTexture { egui_id });
+            self.favicon_order.push_back(key.to_string());
+            if self.favicon_order.len() > MAX_CACHED_FAVICONS {
+                if let Some(oldest) = self.favicon_order.pop_front() {
+                    if let Some(favicon) = self.favicons.remove(&oldest) {
+                        self.egui_renderer.free_texture(&favicon.egui_id);
+                    }
+                }
+            }
         }
     }
 
-    /// The `egui::TextureId` for a tab's cached favicon, if it has sent one
-    /// — for the tab strip and graph nodes to draw next to the title.
-    pub fn favicon_id(&self, tab_id: &str) -> Option<egui::TextureId> {
-        self.favicons.get(tab_id).map(|t| t.egui_id)
-    }
-
-    /// Same leak concern as `free_tab_thumbnail` — called from there on tab
-    /// close, kept separate since a favicon can also change size (new
-    /// texture registered in place is fine; only close needs an explicit
-    /// free).
-    pub fn free_tab_favicon(&mut self, tab_id: &str) {
-        if let Some(favicon) = self.favicons.remove(tab_id) {
-            self.egui_renderer.free_texture(&favicon.egui_id);
-        }
+    /// The `egui::TextureId` for an origin's cached favicon, if one has
+    /// been fetched — for the tab strip and graph nodes to draw next to the
+    /// title. `key` is an origin (see `favicons`' own doc comment).
+    pub fn favicon_id(&self, key: &str) -> Option<egui::TextureId> {
+        self.favicons.get(key).map(|t| t.egui_id)
     }
 
     /// `viewport` is the exact rect (physical pixels: x, y, w, h) the

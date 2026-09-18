@@ -8,11 +8,9 @@ use std::time::Duration;
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use webkit2gtk::{
-    gio, DownloadExt, FaviconDatabaseExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt,
-    WebContextExt, WebView, WebViewExt,
+    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView,
+    WebViewExt,
 };
-
-use gtk::cairo::{Format, ImageSurface};
 
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
@@ -98,36 +96,17 @@ fn main() {
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
 
-    // WebKitGTK doesn't track favicons at all — `connect_favicon_notify`
-    // never fires, on any page — until a `WebContext` has a favicon
-    // database directory explicitly set (confirmed live: without this,
-    // silent, no error, just never fires — no signal ever arrives).
-    // `WebView::new()` uses the default context, so this must happen
-    // before it.
-    //
-    // Setting the directory alone was found (in an earlier pass) to be
-    // necessary but not sufficient — the database initializes and is
-    // actively written to (confirmed via the WSL2 filesystem: a real
-    // `WebpageIcons.db` + WAL journal), but a real page's favicon still
-    // never showed up via `WebView::favicon()`/`connect_favicon_notify`
-    // alone. Root cause, found by reading `webkit2gtk`'s own generated
-    // bindings rather than guessing further: `WebView::favicon`/
-    // `favicon-notify` are a passive property that reflects whatever the
-    // favicon database *already has cached* — they don't themselves cause
-    // a fetch. The actual fetch trigger is `FaviconDatabase::favicon(uri,
-    // cancellable, callback)`, a separate async API on the *database*
-    // object (`WebContext::favicon_database()`), which explicitly
-    // requests (and if needed, downloads) the icon for a given page URI.
-    // Nothing in this codebase ever called it — every prior attempt only
-    // ever waited passively for a signal that had nothing to actively
-    // trigger it. Kept alive for the process lifetime (not just this
-    // block) so it can be used below once a page finishes loading.
+    // `WebView::new()` uses the default context, so this must be created
+    // before it -- kept for the download handling below, which needs a
+    // `WebContext` to attach `connect_download_started` to. Favicon
+    // fetching (which used to also live on this context, via WebKitGTK's
+    // own `FaviconDatabase` API) has been replaced by `browser-ui`'s own
+    // uniform HTTP fetch of `{origin}/favicon.ico`, independent of any
+    // engine -- see `favicon_fetch` in that crate. That per-engine
+    // approach was inconsistent across engines anyway (this one needed an
+    // extra "actively request the fetch" step CEF's own favicon plumbing
+    // never worked at all under, a confirmed platform limitation).
     let web_context = webkit2gtk::WebContext::default();
-    let favicon_database = web_context.as_ref().and_then(|context| {
-        let dir = std::env::temp_dir().join("multiengine-browser-favicons");
-        context.set_favicon_database_directory(dir.to_str());
-        context.favicon_database()
-    });
 
     // Downloads: WebKitGTK has no default save location of its own (unlike
     // WebView2) -- `decide-destination` fires with the server's suggested
@@ -150,16 +129,6 @@ fn main() {
     // progress` polling) remains the actual completion signal; `destination
     // ()` returns back whatever URI was set above, stripped of its `file://`
     // prefix to match the plain filesystem paths WebView2/CEF report.
-    //
-    // **Not build-verified**: this WSL2 environment only has
-    // `webkit2gtk-4.1` dev headers installed (`webkit2gtk-4.0`, what this
-    // crate's `Cargo.toml` targets, isn't in this Ubuntu release's `apt`
-    // index at all) -- `engine-host-webkit` can't be compiled here at
-    // present, pre-existing and unrelated to this change. Written directly
-    // from `webkit2gtk` 2.0.2's own generated bindings
-    // (`DownloadExt`/`URIResponseExt`'s method signatures), same structure
-    // proven working for WebView2/CEF, but not run through a real compiler
-    // the way every other change this session has been.
     //
     // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
@@ -252,24 +221,8 @@ fn main() {
         });
     }
 
-    // Favicon: WebKitGTK only tells us it changed (a GObject property
-    // notify, not a poll-friendly value) — stash the decoded pixels here
-    // and drain them in the main loop below, same pattern as
-    // `pending_open_tab` above.
-    let pending_favicon: Rc<RefCell<Option<(Vec<u8>, u32, u32)>>> = Rc::new(RefCell::new(None));
-    {
-        let pending_favicon = pending_favicon.clone();
-        webview.connect_favicon_notify(move |webview| {
-            if let Some(surface) = webview.favicon() {
-                if let Some(rgba) = favicon_to_rgba(&surface) {
-                    *pending_favicon.borrow_mut() = Some(rgba);
-                }
-            }
-        });
-    }
-
     // Audio-playing indicator: `is-playing-audio` is a real GObject notify
-    // property (same passive-read shape as `favicon`), unlike CEF's only
+    // property, unlike CEF's only
     // equivalent (a full `AudioHandler` that takes over raw audio output
     // entirely) -- see `ipc_protocol::EngineToHost::AudioPlayingChanged`'s
     // doc comment.
@@ -464,13 +417,6 @@ fn main() {
             webview.is_loading(),
         );
         if nav_now != last_nav {
-            // Fetch the favicon once a load actually finishes (loading
-            // true -> false), not on every nav-state tick — see
-            // `favicon_database`'s doc comment for why this explicit
-            // request is the real trigger, not something that happens on
-            // its own just because the page loaded.
-            let just_finished_loading = last_nav.4 && !nav_now.4;
-            let loaded_url = nav_now.0.clone();
             last_nav = nav_now.clone();
             let _ = to_host.send(&EngineToHost::NavigationStateChanged {
                 url: nav_now.0,
@@ -479,26 +425,10 @@ fn main() {
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
             });
-            if just_finished_loading {
-                if let Some(db) = &favicon_database {
-                    let pending_favicon = pending_favicon.clone();
-                    db.favicon(&loaded_url, gio::Cancellable::NONE, move |result| {
-                        if let Ok(surface) = result {
-                            if let Some(rgba) = favicon_to_rgba(&surface) {
-                                *pending_favicon.borrow_mut() = Some(rgba);
-                            }
-                        }
-                    });
-                }
-            }
         }
 
         for url in pending_open_tab.borrow_mut().drain(..) {
             let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
-        }
-
-        if let Some((rgba, width, height)) = pending_favicon.borrow_mut().take() {
-            let _ = to_host.send(&EngineToHost::FaviconChanged { rgba, width, height });
         }
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
@@ -563,48 +493,6 @@ fn main() {
 
         std::thread::sleep(Duration::from_millis(16));
     }
-}
-
-/// `WebView::favicon()` hands over a cairo `Surface`, not a `GdkPixbuf` —
-/// downcast to `ImageSurface` (the only variant with CPU-readable pixel
-/// data) and convert its native `ARgb32`/`Rgb24` format to tightly-packed
-/// RGBA. `ARgb32`'s pixels are alpha-*premultiplied* 32-bit words in
-/// native-endian order, which on this x86-64 target means byte order
-/// B,G,R,A in memory — both the channel swap and the alpha-unmultiply are
-/// needed, unlike `tightly_packed_rgba`'s pixbuf source which is neither
-/// premultiplied nor channel-swapped. Returns `None` for any other format
-/// (favicons only ever come back as one of these two in practice) or if
-/// the surface can't be downcast/borrowed.
-fn favicon_to_rgba(surface: &gtk::cairo::Surface) -> Option<(Vec<u8>, u32, u32)> {
-    let mut image = ImageSurface::try_from(surface.clone()).ok()?;
-    let format = image.format();
-    let width = image.width() as usize;
-    let height = image.height() as usize;
-    let stride = image.stride() as usize;
-    let data = image.data().ok()?;
-
-    let mut out = vec![0u8; width * height * 4];
-    for y in 0..height {
-        let src_row = &data[y * stride..y * stride + width * 4];
-        let dst_row = &mut out[y * width * 4..(y + 1) * width * 4];
-        for x in 0..width {
-            let b = src_row[x * 4] as u32;
-            let g = src_row[x * 4 + 1] as u32;
-            let r = src_row[x * 4 + 2] as u32;
-            let a = src_row[x * 4 + 3] as u32;
-            let (r, g, b, a) = match format {
-                Format::ARgb32 if a > 0 => (r * 255 / a, g * 255 / a, b * 255 / a, a),
-                Format::ARgb32 => (0, 0, 0, 0),
-                Format::Rgb24 => (r, g, b, 255),
-                _ => return None,
-            };
-            dst_row[x * 4] = r as u8;
-            dst_row[x * 4 + 1] = g as u8;
-            dst_row[x * 4 + 2] = b as u8;
-            dst_row[x * 4 + 3] = a as u8;
-        }
-    }
-    Some((out, width as u32, height as u32))
 }
 
 /// `GdkPixbuf` rows can be padded to a stride wider than `width * 4` for

@@ -37,26 +37,14 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     std::rc::Rc::new(RefCell::new(NavState::new(initial_url)))
 }
 
-/// The most recently reported favicon URL, drained once by the main loop
-/// (which does the actual HTTP fetch + decode — see
-/// `EngineToHost::FaviconChanged`'s doc comment for why CEF alone among
-/// the three engines needs this extra step: `on_favicon_urlchange` only
-/// ever hands over a URL, never pixels).
-pub type SharedFaviconUrl = std::rc::Rc<RefCell<Option<String>>>;
-
-pub fn new_shared_favicon_url() -> SharedFaviconUrl {
-    std::rc::Rc::new(RefCell::new(None))
-}
-
 #[derive(Clone)]
 pub struct EngineDisplayHandler {
     state: SharedNavState,
-    favicon_url: SharedFaviconUrl,
 }
 
 impl EngineDisplayHandler {
-    pub fn new(state: SharedNavState, favicon_url: SharedFaviconUrl) -> Self {
-        Self { state, favicon_url }
+    pub fn new(state: SharedNavState) -> Self {
+        Self { state }
     }
 }
 
@@ -85,16 +73,10 @@ wrap_display_handler! {
             state.dirty = true;
         }
 
-        // CEF's own favicon plumbing only ever hands over a URL, never
-        // decoded pixels (unlike Servo/WebKit's `favicon()` getters) —
-        // take the first (an arbitrary but consistent choice; the list's
-        // ordering isn't documented as size-sorted) and let the main loop
-        // fetch+decode it, since that needs blocking I/O this handler
-        // can't do.
-        //
-        // Confirmed via live logging (with a real page fully loaded and
-        // screenshotted, not just glanced at early) that this callback
-        // fires, but its `icon_urls` list is empty every time — for
+        // `on_favicon_urlchange` used to live here -- CEF's own favicon
+        // plumbing only ever handed over a URL, and its `icon_urls` list
+        // was confirmed live (a real page fully loaded and screenshotted,
+        // not just glanced at early) to always be empty anyway, for
         // multiple real pages with real favicons (github.com, iana.org).
         // Root cause, per CEF's own issue tracker (chromiumembedded/cef
         // #3293/#3685): `windowless_rendering_enabled` forces CEF's legacy
@@ -102,26 +84,11 @@ wrap_display_handler! {
         // isn't supported by the Chrome runtime at all) — Alloy predates
         // and never fully wired up the chrome-layer favicon-candidate
         // collection a normal windowed Chrome/CEF browser gets, which is
-        // why the callback fires (it's genuinely called) but never carries
-        // real candidate URLs. This is a CEF/Alloy-runtime limitation in
-        // windowless mode, not something fixable from this handler's side
-        // — kept as a graceful no-op (a missing favicon is cosmetic, never
-        // load-bearing) with logging left in since favicon changes are
-        // rare (a couple of times per navigation, not per frame) and this
-        // is genuinely useful to see if CEF's behavior here ever changes.
-        fn on_favicon_urlchange(
-            &self,
-            _browser: Option<&mut Browser>,
-            icon_urls: Option<&mut CefStringList>,
-        ) {
-            let urls: Vec<String> = icon_urls
-                .map(|l| l.clone().into_iter().collect())
-                .unwrap_or_default();
-            eprintln!("[favicon] on_favicon_urlchange fired, urls={urls:?}");
-            if let Some(url) = urls.into_iter().next() {
-                *self.handler.favicon_url.borrow_mut() = Some(url);
-            }
-        }
+        // why the callback fired (it was genuinely called) but never
+        // carried real candidate URLs -- a CEF/Alloy-runtime limitation in
+        // windowless mode, not fixable from this handler's side. Removed
+        // once favicon fetching moved to `browser-ui`'s own uniform
+        // `{origin}/favicon.ico` HTTP fetch, independent of any engine.
     }
 }
 

@@ -168,21 +168,6 @@ pub enum EngineToHost {
         can_go_forward: bool,
         loading: bool,
     },
-    /// Raw pixels, like `FrameReady` — not encoded image bytes. Servo's
-    /// `WebView::favicon()` and WebKitGTK's `WebView::favicon()` both hand
-    /// over already-decoded pixels, so there's nothing to decode on this
-    /// end; WebView2's `ICoreWebView2_15::GetFavicon` hands back a
-    /// PNG-encoded `IStream` instead, decoded to raw RGBA before landing
-    /// here (see `engine-host-webview2/src/favicon.rs`) to match this same
-    /// convention. Only CEF's `DisplayHandler::on_favicon_urlchange` gives a
-    /// URL instead of pixels or a stream (would need an HTTP fetch + image
-    /// decode to turn into this shape), so only Servo, WebKit, and WebView2
-    /// send this for now.
-    FaviconChanged {
-        rgba: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
     StateSnapshot(TabState),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,

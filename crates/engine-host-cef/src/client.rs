@@ -6,8 +6,7 @@ use crate::life_span_handler::{
     EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab,
 };
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder,
-    SharedFaviconUrl, SharedNavState,
+    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
 
@@ -53,14 +52,13 @@ impl ClientBuilder {
         render_handler: EngineRenderHandler,
         nav_state: SharedNavState,
         pending_open_tab: SharedPendingOpenTab,
-        favicon_url: SharedFaviconUrl,
         find_result: SharedFindResult,
         download_path: SharedDownloadPath,
         closed: SharedClosed,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
-            DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone(), favicon_url)),
+            DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
             LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),

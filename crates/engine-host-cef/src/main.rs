@@ -19,7 +19,7 @@ use client::ClientBuilder;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
-use nav_handler::{new_shared_favicon_url, new_shared_nav_state};
+use nav_handler::new_shared_nav_state;
 use render_handler::EngineRenderHandler;
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -106,7 +106,6 @@ fn main() {
         EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let nav_state = new_shared_nav_state(initial_url.clone());
     let pending_open_tab = new_shared_pending_open_tab();
-    let favicon_url = new_shared_favicon_url();
     let find_result = new_shared_find_result();
     let download_path = new_shared_download_path();
     let closed = new_shared_closed();
@@ -130,7 +129,6 @@ fn main() {
             render_handler,
             nav_state.clone(),
             pending_open_tab.clone(),
-            favicon_url.clone(),
             find_result.clone(),
             download_path.clone(),
             closed.clone(),
@@ -309,19 +307,6 @@ fn main() {
             let _ = control.send(&msg);
         }
 
-        // Blocking HTTP fetch + decode, right here in the tick loop rather
-        // than a background thread: favicon changes are rare (once or
-        // twice per real navigation, not per frame) and the URL itself
-        // already went through a short deny-list of untrusted response
-        // sizes/timeouts below, so an occasional few-hundred-ms stall in
-        // frame capture/input handling here is an acceptable tradeoff
-        // against adding real async/thread-pool infrastructure for it.
-        if let Some(url) = favicon_url.borrow_mut().take() {
-            if let Some((rgba, width, height)) = fetch_favicon(&url) {
-                let _ = control.send(&EngineToHost::FaviconChanged { rgba, width, height });
-            }
-        }
-
         if visible {
             if let Some(frame) = latest_frame.borrow_mut().take() {
                 if buffer_size != (frame.width, frame.height) {
@@ -353,30 +338,4 @@ fn main() {
 
         std::thread::sleep(Duration::from_millis(8));
     }
-}
-
-/// CEF's `DisplayHandler::on_favicon_urlchange` only ever hands over a
-/// URL (unlike Servo/WebKit's `favicon()` getters, which hand over
-/// already-decoded pixels) — fetch it over HTTP and decode it ourselves.
-/// A short timeout and a response-size cap keep a slow or hostile favicon
-/// URL from blocking this process's tick loop for long or exhausting
-/// memory; any failure (network, decode, oversized) just means no favicon
-/// for this change, not a crash — favicons are a cosmetic nice-to-have,
-/// never load-bearing.
-fn fetch_favicon(url: &str) -> Option<(Vec<u8>, u32, u32)> {
-    let response = ureq::get(url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(3)))
-        .build()
-        .call()
-        .ok()?;
-    let bytes = response
-        .into_body()
-        .with_config()
-        .limit(2_000_000)
-        .read_to_vec()
-        .ok()?;
-    let image = image::load_from_memory(&bytes).ok()?.into_rgba8();
-    let (width, height) = (image.width(), image.height());
-    Some((image.into_raw(), width, height))
 }
