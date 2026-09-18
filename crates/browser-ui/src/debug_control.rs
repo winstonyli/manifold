@@ -176,6 +176,10 @@ pub enum DebugCommand {
     /// a real file dialog — same reasoning as `AddImage`. See
     /// `App::insert_pdf_node`.
     AddPdf(String),
+    /// The Graph toolbar's "+ JSON" button with an explicit path instead of
+    /// a real file dialog — same reasoning as `AddImage`. See
+    /// `App::insert_json_node`.
+    AddJson(String),
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -400,6 +404,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "NEWNOTE" => Some(DebugCommand::NewNote),
         "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
+        "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         _ => None,
     }

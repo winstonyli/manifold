@@ -67,6 +67,18 @@ pub struct SessionPdf {
     pub pos_y: f32,
 }
 
+/// A JSON node's own saved data -- same "just the file path" posture
+/// `SessionImage`/`SessionPdf` already have, for the same reason: the
+/// parsed `serde_json::Value` is re-derived by reading and reparsing the
+/// file again at restore, not duplicated here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionJson {
+    pub id: String,
+    pub path: String,
+    pub pos_x: f32,
+    pub pos_y: f32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
@@ -78,6 +90,8 @@ pub struct Session {
     pub images: Vec<SessionImage>,
     #[serde(default)]
     pub pdfs: Vec<SessionPdf>,
+    #[serde(default)]
+    pub jsons: Vec<SessionJson>,
     pub focused: Option<String>,
     pub view_mode_tab: bool,
     pub next_tab_id: u64,
@@ -87,6 +101,8 @@ pub struct Session {
     pub next_image_id: u64,
     #[serde(default)]
     pub next_pdf_id: u64,
+    #[serde(default)]
+    pub next_json_id: u64,
 }
 
 fn session_dir() -> Option<PathBuf> {

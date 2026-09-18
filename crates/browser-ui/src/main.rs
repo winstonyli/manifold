@@ -85,6 +85,11 @@ const IMAGE_NODE_MAX_SIZE: egui::Vec2 = egui::vec2(220.0, 220.0);
 /// `image_node_card_size` like an `Image` node does, sized from the real
 /// page dimensions `PdfOutcome` carries.
 const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
+/// A JSON node's card size -- always this fixed box, never derived from
+/// content the way `Image`/`Pdf`'s own sizing is: there's no natural aspect
+/// ratio for a JSON document, and the card only ever shows a compact shape
+/// summary (double-click opens the real content in `build_json_viewer`).
+const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
@@ -262,6 +267,26 @@ fn draw_json_value(ui: &mut egui::Ui, key: &str, value: &serde_json::Value, top_
         // `null` -- no need to match each scalar variant separately.
         other => {
             ui.label(format!("{key}: {other}"));
+        }
+    }
+}
+
+/// A one-line shape summary for a JSON node's own small graph card -- the
+/// full tree only ever shows in `build_json_viewer`'s own popup, so the
+/// card needs something glanceable instead: `{ N }`/`[ N ]` for a container,
+/// or the scalar's own compact `Display` form (truncated if it would
+/// otherwise overflow a card this small).
+fn json_summary(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => format!("{{ {} }}", map.len()),
+        serde_json::Value::Array(items) => format!("[ {} ]", items.len()),
+        other => {
+            let text = other.to_string();
+            if text.chars().count() > 24 {
+                format!("{}…", text.chars().take(23).collect::<String>())
+            } else {
+                text
+            }
         }
     }
 }
@@ -796,9 +821,9 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 /// `GraphNode` holds the fields every kind shares (position, graph
 /// membership); this holds only what varies per kind. Tab/Download/Group
 /// were the migration off three separate hardcoded node types (the old
-/// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf` are genuinely
-/// new kinds added on top of that unified model -- see each one's own
-/// `*Payload` doc comment.
+/// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf`/`Json` are
+/// genuinely new kinds added on top of that unified model -- see each one's
+/// own `*Payload` doc comment.
 enum NodePayload {
     Tab(TabPayload),
     Download(DownloadPayload),
@@ -806,6 +831,7 @@ enum NodePayload {
     Note(NotePayload),
     Image(ImagePayload),
     Pdf(PdfPayload),
+    Json(JsonPayload),
 }
 
 impl NodePayload {
@@ -885,6 +911,13 @@ impl NodePayload {
             _ => None,
         }
     }
+
+    fn as_json(&self) -> Option<&JsonPayload> {
+        match self {
+            NodePayload::Json(j) => Some(j),
+            _ => None,
+        }
+    }
 }
 
 /// A sticky note's own data -- free-form user-typed text, no engine process
@@ -957,6 +990,23 @@ struct PdfOutcome {
     width: u32,
     height: u32,
     page_count: usize,
+}
+
+/// A locally-added JSON file, embedded directly on the graph -- the fourth
+/// new kind built on the unified model. Unlike `Image`/`Pdf`, there's no GPU
+/// texture at all: the card is drawn with plain egui widgets (a compact
+/// shape summary), and the full content reuses the exact same collapsible-
+/// tree popup (`draw_json_value`/`build_json_viewer`) already built for a
+/// tab's own "View as JSON" -- see `App::json_viewer_node`'s own doc comment
+/// for how that popup now serves both sources. `value` is parsed once, at
+/// creation (`App::add_json_node`, via a real file picker, same
+/// headless-unavailable posture `ImagePayload` already has) or at session
+/// restore -- like `ImagePayload`, a bad/no-longer-JSON file just means
+/// that one node is skipped at restore rather than failing the whole
+/// session load.
+struct JsonPayload {
+    path: String,
+    value: serde_json::Value,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -1093,6 +1143,10 @@ impl GraphNode {
 
     fn as_pdf_mut(&mut self) -> Option<&mut PdfPayload> {
         self.payload.as_pdf_mut()
+    }
+
+    fn as_json(&self) -> Option<&JsonPayload> {
+        self.payload.as_json()
     }
 }
 
@@ -1313,6 +1367,10 @@ struct App {
     pdf_context_menu: Option<(String, egui::Pos2)>,
     /// Same fade-out role as `group_context_menu_cache`, for `pdf_context_menu`.
     pdf_context_menu_cache: Option<(String, egui::Pos2)>,
+    /// Same role as `pdf_context_menu`, for a JSON node's card.
+    json_context_menu: Option<(String, egui::Pos2)>,
+    /// Same fade-out role as `group_context_menu_cache`, for `json_context_menu`.
+    json_context_menu_cache: Option<(String, egui::Pos2)>,
     /// `(tab_id, screen_pos)` while a right-click context menu is showing
     /// for that tab's card -- Pin/color/Remove from Group/Close in one
     /// place, same "consolidate scattered card actions" idea
@@ -1322,13 +1380,15 @@ struct App {
     tab_context_menu: Option<(String, egui::Pos2)>,
     /// Same fade-out role as `group_context_menu_cache`, for `tab_context_menu`.
     tab_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// `Some(tab_id)` while that tab's `TabPayload::json_body` is showing
-    /// full-screen (`build_json_viewer`) -- opened from Tab view's own
-    /// toolbar button or Graph view's tab context menu's "View as JSON",
-    /// closed via its own close button or Escape. Not `bool`: needs to
-    /// remember *which* tab, since it can be opened from Graph view for a
-    /// tab other than whichever is focused.
-    json_viewer_tab: Option<String>,
+    /// `Some(node_id)` while that node's JSON content is showing full-screen
+    /// (`build_json_viewer`) -- a tab's own `TabPayload::json_body` (opened
+    /// from Tab view's toolbar button or Graph view's tab context menu's
+    /// "View as JSON") or a `JsonPayload::value` (opened by double-clicking
+    /// a JSON node's card), closed via its own close button or Escape. Not
+    /// `bool`: needs to remember *which* node, since either source can be
+    /// opened from Graph view for a node other than whichever tab is
+    /// focused.
+    json_viewer_node: Option<String>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
@@ -1383,6 +1443,7 @@ struct App {
     next_note_id: u64,
     next_image_id: u64,
     next_pdf_id: u64,
+    next_json_id: u64,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -1725,9 +1786,11 @@ impl Default for App {
             image_context_menu_cache: None,
             pdf_context_menu: None,
             pdf_context_menu_cache: None,
+            json_context_menu: None,
+            json_context_menu_cache: None,
             tab_context_menu: None,
             tab_context_menu_cache: None,
-            json_viewer_tab: None,
+            json_viewer_node: None,
             quick_switcher: None,
             quick_switcher_cache: None,
             shortcuts_help_open: false,
@@ -1744,6 +1807,7 @@ impl Default for App {
             next_note_id: 0,
             next_image_id: 0,
             next_pdf_id: 0,
+            next_json_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -2390,17 +2454,33 @@ impl App {
                 })
             })
             .collect();
+        let jsons = self
+            .node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let json = node.as_json()?;
+                Some(session::SessionJson {
+                    id: id.clone(),
+                    path: json.path.clone(),
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                })
+            })
+            .collect();
         session::Session {
             tabs,
             notes,
             images,
             pdfs,
+            jsons,
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
             next_tab_id: self.next_tab_id,
             next_note_id: self.next_note_id,
             next_image_id: self.next_image_id,
             next_pdf_id: self.next_pdf_id,
+            next_json_id: self.next_json_id,
         }
     }
 
@@ -2424,6 +2504,7 @@ impl App {
             && session.notes.is_empty()
             && session.images.is_empty()
             && session.pdfs.is_empty()
+            && session.jsons.is_empty()
         {
             return false;
         }
@@ -2443,6 +2524,7 @@ impl App {
         self.next_note_id = session.next_note_id;
         self.next_image_id = session.next_image_id;
         self.next_pdf_id = session.next_pdf_id;
+        self.next_json_id = session.next_json_id;
         for note in session.notes {
             self.nodes.insert(
                 note.id.clone(),
@@ -2464,6 +2546,10 @@ impl App {
         for pdf in session.pdfs {
             let pos = egui::vec2(pdf.pos_x, pdf.pos_y);
             self.insert_pdf_node_with_id(pdf.id, pdf.path, pos, None);
+        }
+        for json in session.jsons {
+            let pos = egui::vec2(json.pos_x, json.pos_y);
+            self.insert_json_node_with_id(json.id, json.path, pos, None);
         }
         let valid_focus = session
             .focused
@@ -2753,6 +2839,16 @@ impl App {
             .spawn();
     }
 
+    /// Same idea as `reveal_pdf`, for a JSON node.
+    fn reveal_json(&self, id: &str) {
+        let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) else {
+            return;
+        };
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{path}"))
+            .spawn();
+    }
+
     /// Distinct prefix from `alloc_tab_id`/the `"dl-"` download-id prefix —
     /// group ids share the same flat id space at the top level
     /// (`graph_layout::step` again sees ids only, not node kinds).
@@ -2783,6 +2879,14 @@ impl App {
     fn alloc_pdf_id(&mut self) -> String {
         let id = format!("pdf-{}", self.next_pdf_id);
         self.next_pdf_id += 1;
+        id
+    }
+
+    /// Same reasoning as `alloc_pdf_id` -- a distinct `"json-"` prefix in
+    /// the same flat id space.
+    fn alloc_json_id(&mut self) -> String {
+        let id = format!("json-{}", self.next_json_id);
+        self.next_json_id += 1;
         id
     }
 
@@ -2940,6 +3044,19 @@ impl App {
             .collect()
     }
 
+    /// Same shape as `pdfs_at_current_level`, for JSON nodes.
+    fn jsons_at_current_level(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_json().is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// "Reset View"'s scene rect: bounds every node currently visible at
     /// this level (tabs/downloads, plus group cards at the top level —
     /// same level rules `tabs_at_current_level`/`downloads_at_current_level`
@@ -2987,6 +3104,12 @@ impl App {
                 let center = egui::Pos2::new(n.pos.x, n.pos.y);
                 let size = pdf_card_size(pdf);
                 bounds = bounds.union(egui::Rect::from_center_size(center, size));
+            }
+        }
+        for id in self.jsons_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, JSON_NODE_SIZE));
             }
         }
         if self.current_group.is_none() {
@@ -3062,6 +3185,7 @@ impl App {
                 + self.notes_at_current_level().len()
                 + self.images_at_current_level().len()
                 + self.pdfs_at_current_level().len()
+                + self.jsons_at_current_level().len()
                 + if self.current_group.is_none() { self.groups_at_current_level().len() } else { 0 },
         )
     }
@@ -3980,6 +4104,64 @@ impl App {
             return;
         };
         if self.insert_image_node(path.to_string_lossy().into_owned()) {
+            self.save_session();
+        }
+    }
+
+    /// Decodes `path` as JSON and inserts a new JSON node with a fresh id at
+    /// the current level, jittered around world center -- the interactive
+    /// "+ JSON" button (`add_json_node`) and the headless `ADDJSON <path>`
+    /// debug command. Returns `false` (doing nothing) if the file doesn't
+    /// exist or isn't valid JSON, same fail-fast posture `insert_image_node`
+    /// already has (a JSON parse is just as fast as decoding an image, so
+    /// there's nothing here that needs `Pdf`'s own background-render
+    /// treatment). Doesn't itself call `save_session` -- both callers mutate
+    /// persisted state and save themselves right after.
+    fn insert_json_node(&mut self, path: String) -> bool {
+        let id = self.alloc_json_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        let group = self.current_group.clone();
+        self.insert_json_node_with_id(id, path, pos, group)
+    }
+
+    /// Shared by `insert_json_node` (fresh id/jittered position/current
+    /// level) and session restore (the exact saved id/position -- and,
+    /// like a restored image's `group` staying unset regardless of where it
+    /// was before restart, always `None` here too).
+    fn insert_json_node_with_id(
+        &mut self,
+        id: String,
+        path: String,
+        pos: egui::Vec2,
+        group: Option<String>,
+    ) -> bool {
+        let Ok(text) = std::fs::read_to_string(&path) else { return false };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: None,
+                group,
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Json(JsonPayload { path, value }),
+            },
+        );
+        self.node_order.push(id);
+        true
+    }
+
+    /// The Graph toolbar's "+ JSON" button -- a real file picker blocks on
+    /// OS/human input neither exists in headless mode (same reasoning
+    /// Export/Import Session/Image/PDF already have), so this is never
+    /// called there; `ADDJSON <path>` is the headless equivalent, supplying
+    /// the path directly instead of showing a picker.
+    fn add_json_node(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() else {
+            return;
+        };
+        if self.insert_json_node(path.to_string_lossy().into_owned()) {
             self.save_session();
         }
     }
@@ -5701,6 +5883,95 @@ impl App {
         }
     }
 
+    /// Right-click menu for a JSON node's card -- Open Containing Folder,
+    /// Copy Path, Remove from Group (only while grouped), and Delete. Same
+    /// shape as `build_pdf_context_menu`, minus the `gpu.free_image` call --
+    /// a JSON node has no GPU texture of any kind, same as a note.
+    fn build_json_context_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.json_context_menu.clone();
+        let Some(((id, pos), fade)) = fade_popup_state(
+            ui.ctx(),
+            egui::Id::new("json_context_menu_fade"),
+            &current,
+            &mut self.json_context_menu_cache,
+        ) else {
+            return;
+        };
+        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
+            self.json_context_menu = None;
+            return;
+        };
+        let mut close = false;
+        let mut reveal = false;
+        let mut copy_path = false;
+        let mut remove_from_group = false;
+        let mut delete = false;
+
+        let area = egui::Area::new(egui::Id::new("json_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(fade);
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(170.0);
+                        if ui.button("Open Containing Folder").clicked() {
+                            reveal = true;
+                            close = true;
+                        }
+                        if ui.button("Copy Path").clicked() {
+                            copy_path = true;
+                            close = true;
+                        }
+                        if has_group {
+                            ui.separator();
+                            if ui.button("Remove from Group").clicked() {
+                                remove_from_group = true;
+                                close = true;
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Delete").clicked() {
+                            delete = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
+        if clicked_outside {
+            close = true;
+        }
+
+        if reveal {
+            self.reveal_json(&id);
+        }
+        if copy_path {
+            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                ui.ctx().copy_text(path);
+            }
+        }
+        if remove_from_group {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.group = None;
+            }
+        }
+        if delete {
+            if self.json_viewer_node.as_deref() == Some(id.as_str()) {
+                self.json_viewer_node = None;
+            }
+            self.remove_node(&id);
+            self.save_session();
+        }
+        if close {
+            self.json_context_menu = None;
+        }
+    }
+
     /// Right-click menu for a tab's card -- Pin/Unpin, the same 6-color
     /// swatch row groups already have, Remove from Group (only while
     /// actually viewing a group's own subgraph, same scope as the card's
@@ -5846,7 +6117,7 @@ impl App {
             self.duplicate_tab(&id);
         }
         if view_json_requested {
-            self.json_viewer_tab = Some(id.clone());
+            self.json_viewer_node = Some(id.clone());
         }
         if fit_subtree_requested {
             self.graph_scene_rect = self.fit_subtree_scene_rect(&id);
@@ -6035,20 +6306,36 @@ impl App {
         }
     }
 
-    /// Full-screen popup showing a tab's own `TabPayload::json_body` as a
-    /// real collapsible tree -- opened from Tab view's toolbar button or
-    /// Graph view's tab context menu's "View as JSON", not tied to
-    /// whichever view is currently active (see `json_viewer_tab`'s own doc
-    /// comment), so this renders every frame regardless of `view_mode`.
+    /// Full-screen popup showing one node's JSON content as a real
+    /// collapsible tree -- either a tab's own `TabPayload::json_body`
+    /// (opened from Tab view's toolbar button or Graph view's tab context
+    /// menu's "View as JSON") or a `JsonPayload::value` (opened by double-
+    /// clicking a JSON node's card). Not tied to whichever view is
+    /// currently active (see `json_viewer_node`'s own doc comment), so this
+    /// renders every frame regardless of `view_mode`.
     fn build_json_viewer(&mut self, ui: &mut egui::Ui) {
-        let Some(tab_id) = self.json_viewer_tab.clone() else { return };
+        let Some(id) = self.json_viewer_node.clone() else { return };
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.json_viewer_tab = None;
+            self.json_viewer_node = None;
             return;
         }
-        let Some(body) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).and_then(|t| t.json_body.clone())
-        else {
-            self.json_viewer_tab = None;
+        // A JSON node's own `value` is already parsed -- shown directly, no
+        // fallback needed. A tab's `json_body` is raw text: the engine's
+        // own `document.contentType` check already confirmed
+        // `application/json` before this ever got set, but a server can lie
+        // about its own header, so re-parsing here still needs a fallback.
+        enum Source {
+            Parsed(serde_json::Value),
+            Raw(String),
+        }
+        let Some(source) = self.nodes.get(&id).and_then(|n| {
+            if let Some(json) = n.as_json() {
+                Some(Source::Parsed(json.value.clone()))
+            } else {
+                n.as_tab().and_then(|t| t.json_body.clone()).map(Source::Raw)
+            }
+        }) else {
+            self.json_viewer_node = None;
             return;
         };
         let mut close = false;
@@ -6071,29 +6358,23 @@ impl App {
                             }
                         });
                         ui.separator();
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            match serde_json::from_str::<serde_json::Value>(&body) {
+                        egui::ScrollArea::vertical().show(ui, |ui| match source {
+                            Source::Parsed(value) => draw_json_value(ui, "root", &value, true),
+                            Source::Raw(body) => match serde_json::from_str::<serde_json::Value>(&body) {
                                 Ok(value) => draw_json_value(ui, "root", &value, true),
                                 Err(err) => {
-                                    // Shouldn't normally happen -- `body` only
-                                    // ever got here because the engine's own
-                                    // `document.contentType` check already
-                                    // confirmed `application/json` -- but a
-                                    // server can lie about its own header, so
-                                    // fall back to showing the raw text rather
-                                    // than a blank popup.
                                     ui.colored_label(
                                         egui::Color32::from_rgb(220, 60, 60),
                                         format!("Invalid JSON: {err}"),
                                     );
                                     ui.add(egui::Label::new(&body).wrap());
                                 }
-                            }
+                            },
                         });
                     });
             });
         if close {
-            self.json_viewer_tab = None;
+            self.json_viewer_node = None;
         }
     }
 
@@ -6349,7 +6630,7 @@ impl App {
                             .on_hover_text("View as JSON")
                             .clicked()
                     {
-                        self.json_viewer_tab = Some(focused_id.clone());
+                        self.json_viewer_node = Some(focused_id.clone());
                     }
                     if !self.bookmarks.is_empty() {
                         let label = format!("Bookmarks ({})", self.bookmarks.len());
@@ -6720,6 +7001,8 @@ impl App {
         let mut image_close_requested: Option<String> = None;
         let mut add_pdf_requested = false;
         let mut pdf_close_requested: Option<String> = None;
+        let mut add_json_requested = false;
+        let mut json_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
@@ -6811,6 +7094,14 @@ impl App {
                         && ui.button(egui_phosphor::regular::FILE_PDF).on_hover_text("Add PDF...").clicked()
                     {
                         add_pdf_requested = true;
+                    }
+                    if !self.headless
+                        && ui
+                            .button(egui_phosphor::regular::BRACKETS_CURLY)
+                            .on_hover_text("Add JSON...")
+                            .clicked()
+                    {
+                        add_json_requested = true;
                     }
                     // These four buttons used to carry full text labels
                     // ("+ New Group", "Import Group...", "Ungroup All",
@@ -7154,11 +7445,26 @@ impl App {
                         })
                     })
                     .flatten();
-                let hit_tab = (hit_group.is_none()
+                let hit_json = (hit_group.is_none()
                     && hit_download.is_none()
                     && hit_note.is_none()
                     && hit_image.is_none()
                     && hit_pdf.is_none())
+                    .then(|| {
+                        self.jsons_at_current_level().into_iter().find(|jid| {
+                            self.nodes.get(jid).is_some_and(|n| {
+                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), JSON_NODE_SIZE)
+                                    .contains(world_pos)
+                            })
+                        })
+                    })
+                    .flatten();
+                let hit_tab = (hit_group.is_none()
+                    && hit_download.is_none()
+                    && hit_note.is_none()
+                    && hit_image.is_none()
+                    && hit_pdf.is_none()
+                    && hit_json.is_none())
                     .then(|| {
                         self.tabs_at_current_level().into_iter().find(|tid| {
                             self.nodes.get(tid).is_some_and(|n| {
@@ -7174,6 +7480,7 @@ impl App {
                     self.note_context_menu = None;
                     self.image_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(did) = hit_download {
@@ -7182,6 +7489,7 @@ impl App {
                     self.note_context_menu = None;
                     self.image_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(nid) = hit_note {
@@ -7190,6 +7498,7 @@ impl App {
                     self.download_context_menu = None;
                     self.image_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(iid) = hit_image {
@@ -7198,6 +7507,7 @@ impl App {
                     self.download_context_menu = None;
                     self.note_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(pid) = hit_pdf {
@@ -7206,6 +7516,16 @@ impl App {
                     self.download_context_menu = None;
                     self.note_context_menu = None;
                     self.image_context_menu = None;
+                    self.json_context_menu = None;
+                    self.tab_context_menu = None;
+                    self.rect_select_start = None;
+                } else if let Some(jid) = hit_json {
+                    self.json_context_menu = Some((jid, pos));
+                    self.group_context_menu = None;
+                    self.download_context_menu = None;
+                    self.note_context_menu = None;
+                    self.image_context_menu = None;
+                    self.pdf_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = None;
                 } else if let Some(tid) = hit_tab {
@@ -7215,6 +7535,7 @@ impl App {
                     self.note_context_menu = None;
                     self.image_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.rect_select_start = None;
                 } else {
                     self.group_context_menu = None;
@@ -7222,6 +7543,7 @@ impl App {
                     self.note_context_menu = None;
                     self.image_context_menu = None;
                     self.pdf_context_menu = None;
+                    self.json_context_menu = None;
                     self.tab_context_menu = None;
                     self.rect_select_start = Some(pos);
                 }
@@ -7329,6 +7651,12 @@ impl App {
             }
         }
         for id in self.pdfs_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 2.0, ACCENT);
+            }
+        }
+        for id in self.jsons_at_current_level() {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ACCENT);
@@ -8737,6 +9065,138 @@ impl App {
                     }
                 }
 
+                // JSON nodes: always the same fixed `JSON_NODE_SIZE` box
+                // (see its own doc comment for why) -- no GPU texture, just
+                // an icon plus `json_summary`'s own compact shape label.
+                // Double-click opens the full tree in `build_json_viewer`,
+                // the same popup a tab's own "View as JSON" already uses.
+                for id in self.jsons_at_current_level() {
+                    let Some((node_pos, summary, path)) = self.nodes.get(&id).and_then(|n| {
+                        let json = n.as_json()?;
+                        Some((n.pos, json_summary(&json.value), json.path.clone()))
+                    }) else {
+                        continue;
+                    };
+                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                    let rect = egui::Rect::from_center_size(center_pos, JSON_NODE_SIZE);
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_json_node", id.as_str())),
+                        egui::Sense::click_and_drag(),
+                    );
+                    let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+
+                    ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                    if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                        overlay_painter.text(
+                            project(rect.center()) + egui::vec2(0.0, -12.0),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::BRACKETS_CURLY,
+                            egui::FontId::proportional(22.0),
+                            ACCENT,
+                        );
+                        overlay_painter.text(
+                            project(rect.center()) + egui::vec2(0.0, 14.0),
+                            egui::Align2::CENTER_CENTER,
+                            &summary,
+                            egui::FontId::proportional(12.0),
+                            ui.visuals().text_color(),
+                        );
+                    }
+                    let (border_width, border_color) = if is_hovered {
+                        (1.5, ui.visuals().text_color())
+                    } else {
+                        (1.0, ui.visuals().weak_text_color())
+                    };
+                    ui.painter().rect_stroke(
+                        rect,
+                        4.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    if is_hovered {
+                        let close_rect = egui::Rect::from_center_size(
+                            rect.right_top(),
+                            egui::vec2(18.0, 18.0) * inv_zoom,
+                        );
+                        let close_response = ui.interact(
+                            close_rect,
+                            egui::Id::new(("graph_json_node_close", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let close_fill = if close_response.hovered() {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            ui.visuals().extreme_bg_color
+                        };
+                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                        ui.painter().rect_stroke(
+                            close_rect,
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                        overlay_painter.text(
+                            project(close_rect.center()),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::X,
+                            egui::FontId::proportional(14.0),
+                            ui.visuals().text_color(),
+                        );
+                        if close_response.clicked() {
+                            json_close_requested = Some(id.clone());
+                        }
+                    }
+
+                    if response.double_clicked() {
+                        self.json_viewer_node = Some(id.clone());
+                    }
+
+                    if response.dragged() {
+                        self.dragging = Some(id.clone());
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.pos += response.drag_delta();
+                        }
+                    } else if self.dragging.as_deref() == Some(id.as_str()) {
+                        self.dragging = None;
+                        // Same drop-onto-a-group-card gesture note/image/pdf
+                        // already have.
+                        if self.current_group.is_none() {
+                            if let Some(json_pos) = self.nodes.get(&id).map(|n| n.pos) {
+                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                                    self.nodes.get(gid).is_some_and(|g| {
+                                        egui::Rect::from_center_size(
+                                            egui::Pos2::new(g.pos.x, g.pos.y),
+                                            GROUP_NODE_SIZE,
+                                        )
+                                        .contains(egui::Pos2::new(json_pos.x, json_pos.y))
+                                    })
+                                });
+                                if let Some(group_id) = dropped_on_group {
+                                    if let Some(node) = self.nodes.get_mut(&id) {
+                                        node.group = Some(group_id);
+                                    }
+                                }
+                            }
+                        }
+                        self.save_session();
+                    }
+                    if is_hovered {
+                        self.hovered = Some(id.clone());
+                    } else if self.hovered.as_deref() == Some(id.as_str()) {
+                        self.hovered = None;
+                    }
+
+                    if graph_filter_dims(&self.graph_filter, &[download_filename(&path)]) {
+                        overlay_painter.rect_filled(
+                            egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                            4.0,
+                            egui::Color32::from_black_alpha(190),
+                        );
+                    }
+                }
+
                 // Group nodes: top level only (no nesting in this first
                 // cut — see `GroupPayload`'s own doc comment). Double-click
                 // drills into the group's own subgraph; a dragged tab
@@ -9173,6 +9633,16 @@ impl App {
             self.remove_node(&id);
             self.save_session();
         }
+        if add_json_requested {
+            self.add_json_node();
+        }
+        if let Some(id) = json_close_requested {
+            if self.json_viewer_node.as_deref() == Some(id.as_str()) {
+                self.json_viewer_node = None;
+            }
+            self.remove_node(&id);
+            self.save_session();
+        }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
             // Centroid of the selected cards, rather than the usual
@@ -9282,6 +9752,7 @@ impl App {
             self.note_context_menu = None;
             self.image_context_menu = None;
             self.pdf_context_menu = None;
+            self.json_context_menu = None;
             self.tab_context_menu = None;
         }
         if leave_group_requested {
@@ -9300,6 +9771,7 @@ impl App {
             self.note_context_menu = None;
             self.image_context_menu = None;
             self.pdf_context_menu = None;
+            self.json_context_menu = None;
             self.tab_context_menu = None;
         }
         if let Some(id) = group_close_requested {
@@ -9342,6 +9814,7 @@ impl App {
         self.build_note_context_menu(ui);
         self.build_image_context_menu(ui);
         self.build_pdf_context_menu(ui);
+        self.build_json_context_menu(ui);
         self.build_tab_context_menu(ui);
     }
 }
@@ -9976,6 +10449,11 @@ impl App {
             DebugCommand::AddPdf(path) => {
                 self.insert_pdf_node(path);
                 self.save_session();
+            }
+            DebugCommand::AddJson(path) => {
+                if self.insert_json_node(path) {
+                    self.save_session();
+                }
             }
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
