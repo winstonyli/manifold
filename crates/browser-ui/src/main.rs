@@ -2186,6 +2186,23 @@ impl App {
             .collect()
     }
 
+    /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
+    /// Walks `new_parent_id`'s own parent chain upward -- if it ever
+    /// reaches `node_id`, `new_parent_id` is currently a descendant of
+    /// `node_id`, so re-parenting `node_id` under it would loop. See the
+    /// tab-onto-tab drag-to-reparent gesture (inside a group's own
+    /// subgraph) this guards.
+    fn would_create_cycle(&self, node_id: &str, new_parent_id: &str) -> bool {
+        let mut current = Some(new_parent_id.to_string());
+        while let Some(cur) = current {
+            if cur == node_id {
+                return true;
+            }
+            current = self.tabs.get(&cur).and_then(|n| n.parent.clone());
+        }
+        false
+    }
+
     fn downloads_at_current_level(&self) -> Vec<String> {
         self.download_order
             .iter()
@@ -6374,6 +6391,38 @@ impl App {
                             // button, just reached by dragging the card
                             // itself out through the way back instead.
                             remove_from_group_requested = Some(id.clone());
+                        } else if let Some(tab_pos) = self.tabs.get(&id).map(|n| n.pos) {
+                            // Dropping one member of a group's own subgraph
+                            // onto a sibling tab's card re-parents it there
+                            // -- the top-level equivalent gesture (drop tab
+                            // onto tab) already means "create a new group
+                            // with both," so this only applies once inside
+                            // a group's own subgraph, where that meaning
+                            // doesn't apply and no drop gesture existed at
+                            // all yet. `tabs_at_current_level` already only
+                            // returns this group's own members here (its
+                            // filter is `n.group == self.current_group`),
+                            // so any match is a valid sibling to reparent
+                            // onto. Guarded against creating a cycle (e.g.
+                            // dropping a tab onto its own descendant).
+                            let dropped_on_sibling =
+                                self.tabs_at_current_level().into_iter().find(|other_id| {
+                                    other_id != &id
+                                        && self.tabs.get(other_id).is_some_and(|other| {
+                                            egui::Rect::from_center_size(
+                                                egui::Pos2::new(other.pos.x, other.pos.y),
+                                                GRAPH_NODE_SIZE,
+                                            )
+                                            .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
+                                        })
+                                });
+                            if let Some(new_parent_id) = dropped_on_sibling {
+                                if !self.would_create_cycle(&id, &new_parent_id) {
+                                    if let Some(node) = self.tabs.get_mut(&id) {
+                                        node.parent = Some(new_parent_id);
+                                    }
+                                }
+                            }
                         }
                     }
                     if response.hovered() {
