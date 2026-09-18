@@ -2271,6 +2271,20 @@ impl App {
         id
     }
 
+    /// A fresh group's default display name -- derived from its own id's
+    /// numeric suffix (`alloc_group_id`'s own monotonic, never-reused
+    /// counter) rather than `self.groups.len() + 1`, which the three call
+    /// sites all used until this was found live: dissolving/closing a
+    /// group shrinks `len()`, so a later new group's default name could
+    /// collide with an existing one's (e.g. three groups "Group 1/2/3",
+    /// dissolve "Group 2", create a new one -- `len()` is back to 2, so the
+    /// new group's name is "Group 3", a duplicate). Manually *renaming* two
+    /// groups to the identical string is left alone -- that's a deliberate
+    /// user choice, not an accidental default-naming collision.
+    fn default_group_name(id: &str) -> String {
+        format!("Group {}", id.trim_start_matches("grp-"))
+    }
+
     /// Dissolves a group: members become top-level tabs again (never
     /// closed — grouping is purely a display grouping, not an ownership
     /// one), and the group card itself is removed. `current_group` resets
@@ -3205,7 +3219,7 @@ impl App {
         }
         let id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        let name = format!("Group {}", self.groups.len() + 1);
+        let name = Self::default_group_name(&id);
         self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
         self.group_order.push(id);
     }
@@ -6647,7 +6661,7 @@ impl App {
                                         let group_id = self.alloc_group_id();
                                         let pos =
                                             self.tabs.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
-                                        let name = format!("Group {}", self.groups.len() + 1);
+                                        let name = Self::default_group_name(&group_id);
                                         self.groups.insert(
                                             group_id.clone(),
                                             GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None },
@@ -7336,7 +7350,7 @@ impl App {
                 .filter_map(|id| self.tabs.get(id))
                 .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
             let pos = sum / count;
-            let name = format!("Group {}", self.groups.len() + 1);
+            let name = Self::default_group_name(&id);
             self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
             self.group_order.push(id.clone());
             for tab_id in self.selected_tabs.drain() {
