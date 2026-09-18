@@ -758,27 +758,40 @@ struct TabNode {
     color: Option<egui::Color32>,
 }
 
-/// A download shown as its own graph node, edged to the tab it was
-/// downloaded from — same force-directed layout/edge machinery as
-/// `TabNode` (see `graph_layout::step`), but no engine process/live content
-/// behind it, just a file reference plus (while still downloading) live
-/// byte progress. `parent` follows the same reparent-on-close rule
-/// `close_tab` already applies to tabs (falls back to the closed tab's own
-/// parent, or `None` if it was a root). Session-only — not written to
-/// `session.json`: the downloaded file already exists on disk regardless
-/// (once finished), so losing this node on restart costs nothing but a
-/// "recent downloads" convenience.
-struct DownloadNode {
-    parent: Option<String>,
-    /// Inherited from the parent tab's own `group` at creation time — see
-    /// `TabNode::group`'s doc comment. Fixed at creation rather than
-    /// tracking the parent tab live: a download node has no reason to
-    /// follow its tab into a *different* group after the fact (nothing
-    /// currently moves a tab between groups after creation either).
-    group: Option<String>,
+/// Kind-specific data for one node in the unified graph-node model --
+/// `GraphNode` holds the fields every kind shares (position, graph
+/// membership); this holds only what varies per kind. First step of
+/// migrating off three separate hardcoded node types (`TabNode`/
+/// `DownloadNode`/`GroupNode`, three separate `HashMap`s) onto one: only
+/// `Download` has moved over so far (see `App::nodes`'s own doc comment) --
+/// `Tab`/`Group` variants land in later steps, once this one's proven out
+/// end to end. A one-variant enum reads oddly in isolation, but it's the
+/// right scaffolding for an incremental migration rather than a single
+/// all-at-once rewrite of every render/drag/hit-test site in this file.
+enum NodePayload {
+    Download(DownloadPayload),
+}
+
+impl NodePayload {
+    fn as_download(&self) -> Option<&DownloadPayload> {
+        match self {
+            NodePayload::Download(d) => Some(d),
+        }
+    }
+
+    fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
+        match self {
+            NodePayload::Download(d) => Some(d),
+        }
+    }
+}
+
+/// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
+/// byte progress). See `NodePayload`'s own doc comment for why this is
+/// split out from the position/graph-membership fields `GraphNode` now
+/// holds for every kind.
+struct DownloadPayload {
     path: String,
-    pos: egui::Vec2,
-    vel: egui::Vec2,
     /// Bytes received so far -- created (node included) at
     /// `EngineToHost::DownloadStarted`, not only once finished, so a
     /// download is visible with live progress for its whole lifetime
@@ -795,6 +808,40 @@ struct DownloadNode {
     /// needing a separate enum -- nothing about a completed download's
     /// other fields becomes invalid or needs clearing.
     completed: bool,
+}
+
+/// One node in the graph view -- fields every kind shares (position, graph
+/// membership) live here; `payload` holds whatever's specific to the
+/// node's actual kind. See `NodePayload`'s own doc comment for the
+/// migration this is the first step of. `color` isn't used by `Download`
+/// (it never had one) but is on `GraphNode` itself, not deferred to a later
+/// step, so this shape doesn't need to change shape again once `Tab`/
+/// `Group` (which do use it) migrate over.
+struct GraphNode {
+    /// The "opened from" edge for a tab, or (for a download) the tab it was
+    /// downloaded from -- see `TabNode::parent`'s own doc comment (not yet
+    /// migrated, still describes the same concept). `None` for a root node.
+    parent: Option<String>,
+    /// Which group's subgraph this node is shown in -- `None` at the top
+    /// level. See `GroupNode`'s own doc comment (not yet migrated).
+    group: Option<String>,
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+    /// User-chosen tag color -- `None` for any kind that doesn't use one
+    /// (every kind migrated so far). Unread until `Tab`/`Group` migrate.
+    #[allow(dead_code)]
+    color: Option<egui::Color32>,
+    payload: NodePayload,
+}
+
+impl GraphNode {
+    fn as_download(&self) -> Option<&DownloadPayload> {
+        self.payload.as_download()
+    }
+
+    fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
+        self.payload.as_download_mut()
+    }
 }
 
 /// A tab group: a container node shown at the top level of Graph view that,
@@ -952,10 +999,14 @@ struct App {
     /// `HashMap`'s own iteration order is unspecified and can change
     /// frame-to-frame, which would make node click/drag targeting flaky.
     tab_order: Vec<String>,
-    /// Completed downloads shown as graph nodes — see `DownloadNode`'s own
-    /// doc comment.
-    downloads: HashMap<String, DownloadNode>,
-    download_order: Vec<String>,
+    /// Graph nodes migrated onto the unified `GraphNode`/`NodePayload`
+    /// model so far -- downloads only, for now (see `NodePayload`'s own
+    /// doc comment). Tabs/groups still live in their own `tabs`/`groups`
+    /// maps below until they migrate too. `node_order` is the same "stable
+    /// insertion order, `HashMap` iteration isn't" reasoning `tab_order`
+    /// already has.
+    nodes: HashMap<String, GraphNode>,
+    node_order: Vec<String>,
     /// Tab groups shown as top-level graph nodes — see `GroupNode`'s own
     /// doc comment.
     groups: HashMap<String, GroupNode>,
@@ -1392,8 +1443,8 @@ impl Default for App {
             gpu: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
-            downloads: HashMap::new(),
-            download_order: Vec::new(),
+            nodes: HashMap::new(),
+            node_order: Vec::new(),
             groups: HashMap::new(),
             group_order: Vec::new(),
             groups_collapsed: false,
@@ -2114,8 +2165,8 @@ impl App {
         }
         self.tabs.clear();
         self.tab_order.clear();
-        self.downloads.clear();
-        self.download_order.clear();
+        self.nodes.clear();
+        self.node_order.clear();
         self.groups.clear();
         self.group_order.clear();
         self.focused = None;
@@ -2284,8 +2335,8 @@ impl App {
     /// untouched, this only forgets the node. Session-only state, so
     /// there's nothing to persist after removal either.
     fn remove_download_node(&mut self, id: &str) {
-        self.downloads.remove(id);
-        self.download_order.retain(|d| d != id);
+        self.nodes.remove(id);
+        self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
@@ -2303,11 +2354,11 @@ impl App {
     /// engine-host. Shared by `reveal_download` and the download context
     /// menu's "Copy Path".
     fn windows_path_for_download(&self, id: &str) -> Option<String> {
-        let node = self.downloads.get(id)?;
-        Some(if let Some(posix) = node.path.strip_prefix('/') {
+        let download = self.nodes.get(id)?.as_download()?;
+        Some(if let Some(posix) = download.path.strip_prefix('/') {
             format!("\\\\wsl.localhost\\Ubuntu\\{}", posix.replace('/', "\\"))
         } else {
-            node.path.clone()
+            download.path.clone()
         })
     }
 
@@ -2358,7 +2409,7 @@ impl App {
                 node.group = None;
             }
         }
-        for node in self.downloads.values_mut() {
+        for node in self.nodes.values_mut() {
             if node.group.as_deref() == Some(id) {
                 node.group = None;
             }
@@ -2421,9 +2472,9 @@ impl App {
     }
 
     fn downloads_at_current_level(&self) -> Vec<String> {
-        self.download_order
+        self.node_order
             .iter()
-            .filter(|id| self.downloads.get(*id).is_some_and(|n| n.group == self.current_group))
+            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group))
             .cloned()
             .collect()
     }
@@ -2450,7 +2501,7 @@ impl App {
             }
         }
         for id in self.downloads_at_current_level() {
-            if let Some(node) = self.downloads.get(&id) {
+            if let Some(node) = self.nodes.get(&id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, DOWNLOAD_NODE_SIZE));
             }
@@ -2627,7 +2678,7 @@ impl App {
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.pos))
             .chain(
-                self.downloads
+                self.nodes
                     .iter()
                     .filter(|(_, n)| n.group == self.current_group)
                     .map(|(id, n)| (id.clone(), n.pos)),
@@ -2646,7 +2697,7 @@ impl App {
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.vel))
             .chain(
-                self.downloads
+                self.nodes
                     .iter()
                     .filter(|(_, n)| n.group == self.current_group)
                     .map(|(id, n)| (id.clone(), n.vel)),
@@ -2665,7 +2716,7 @@ impl App {
             .filter(|(_, n)| n.group == self.current_group)
             .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
             .chain(
-                self.downloads
+                self.nodes
                     .iter()
                     .filter(|(_, n)| n.group == self.current_group)
                     .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
@@ -2698,7 +2749,7 @@ impl App {
                 node.vel = *v;
             }
         }
-        for (id, node) in self.downloads.iter_mut() {
+        for (id, node) in self.nodes.iter_mut() {
             if let Some(p) = positions.get(id) {
                 node.pos = *p;
             }
@@ -2987,7 +3038,7 @@ impl App {
                 node.parent = parent.clone();
             }
         }
-        for node in self.downloads.values_mut() {
+        for node in self.nodes.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
             }
@@ -3698,8 +3749,8 @@ impl App {
         let area_rect =
             build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                for id in self.download_order.iter().rev() {
-                    let Some(node) = self.downloads.get(id) else { continue };
+                for id in self.node_order.iter().rev() {
+                    let Some(node) = self.nodes.get(id).and_then(|n| n.as_download()) else { continue };
                     ui.horizontal(|ui| {
                         let filename = download_filename(&node.path);
                         if ui
@@ -3766,7 +3817,7 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        if close || self.downloads.is_empty() {
+        if close || self.nodes.is_empty() {
             self.downloads_open = false;
         }
     }
@@ -4664,7 +4715,7 @@ impl App {
         ) else {
             return;
         };
-        if !self.downloads.contains_key(&id) {
+        if !self.nodes.contains_key(&id) {
             self.download_context_menu = None;
             return;
         }
@@ -5302,8 +5353,8 @@ impl App {
                         }
                         history_button_rect = Some(response.rect);
                     }
-                    if !self.downloads.is_empty() {
-                        let label = format!("Downloads ({})", self.downloads.len());
+                    if !self.nodes.is_empty() {
+                        let label = format!("Downloads ({})", self.nodes.len());
                         let response = ui.button(label);
                         if response.clicked() {
                             self.downloads_open = !self.downloads_open;
@@ -6008,7 +6059,7 @@ impl App {
                 let hit_download = hit_group.is_none()
                     .then(|| {
                         self.downloads_at_current_level().into_iter().find(|did| {
-                            self.downloads.get(did).is_some_and(|d| {
+                            self.nodes.get(did).is_some_and(|d| {
                                 egui::Rect::from_center_size(egui::Pos2::new(d.pos.x, d.pos.y), DOWNLOAD_NODE_SIZE)
                                     .contains(world_pos)
                             })
@@ -6132,7 +6183,7 @@ impl App {
             }
         }
         for id in self.downloads_at_current_level() {
-            if let Some(node) = self.downloads.get(&id) {
+            if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ui.visuals().weak_text_color());
             }
@@ -6236,7 +6287,7 @@ impl App {
                 }
                 // Download nodes are always parented to a tab (never to
                 // another download), so the same `self.tabs` lookup works.
-                for node in self.downloads.values() {
+                for node in self.nodes.values() {
                     if node.group != self.current_group {
                         continue;
                     }
@@ -6850,7 +6901,7 @@ impl App {
                 // the filename and a click-to-reveal/close affordance,
                 // reusing the same interact/hover/drag pattern as tab nodes.
                 for id in self.downloads_at_current_level() {
-                    let Some(node_pos) = self.downloads.get(&id).map(|n| n.pos) else {
+                    let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                         continue;
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
@@ -6880,7 +6931,7 @@ impl App {
                         egui::StrokeKind::Inside,
                     );
 
-                    if let Some(node) = self.downloads.get(&id) {
+                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_download()) {
                         let filename = download_filename(&node.path);
                         // `egui_phosphor::DOWNLOAD_SIMPLE` -- was a raw
                         // Unicode arrow-to-bar glyph (`\u{2913}`) that
@@ -6987,7 +7038,7 @@ impl App {
 
                     if response.dragged() {
                         self.dragging = Some(id.clone());
-                        if let Some(node) = self.downloads.get_mut(&id) {
+                        if let Some(node) = self.nodes.get_mut(&id) {
                             node.pos += response.drag_delta();
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
@@ -7002,7 +7053,7 @@ impl App {
                         download_clicked = Some(id.clone());
                     }
 
-                    if let Some(node) = self.downloads.get(&id) {
+                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_download()) {
                         if graph_filter_dims(&self.graph_filter, &[&node.path]) {
                             overlay_painter.rect_filled(
                                 egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -7548,7 +7599,7 @@ impl App {
                     node.group = Some(target_id.clone());
                 }
             }
-            for node in self.downloads.values_mut() {
+            for node in self.nodes.values_mut() {
                 if node.group.as_deref() == Some(source_id.as_str()) {
                     node.group = Some(target_id.clone());
                 }
@@ -8368,29 +8419,36 @@ impl App {
                         let id = format!("dl-{}", self.next_download_id);
                         self.next_download_id += 1;
                         let pos = node.pos + graph_layout::spawn_jitter(&id);
-                        self.downloads.insert(
+                        self.nodes.insert(
                             id.clone(),
-                            DownloadNode {
+                            GraphNode {
                                 parent: Some(tab_id.clone()),
                                 group: node.group.clone(),
-                                path,
                                 pos,
                                 vel: egui::Vec2::ZERO,
-                                bytes_received: 0,
-                                total_bytes,
-                                completed: false,
+                                color: None,
+                                payload: NodePayload::Download(DownloadPayload {
+                                    path,
+                                    bytes_received: 0,
+                                    total_bytes,
+                                    completed: false,
+                                }),
                             },
                         );
-                        self.download_order.push(id);
+                        self.node_order.push(id);
                     }
                     EngineToHost::DownloadProgress { path, bytes_received } => {
-                        if let Some(dl) = self.downloads.values_mut().find(|d| d.path == path) {
+                        if let Some(dl) = self.nodes.values_mut().find_map(|n| {
+                            n.as_download_mut().filter(|d| d.path == path)
+                        }) {
                             dl.bytes_received = bytes_received;
                         }
                     }
                     EngineToHost::DownloadCompleted { path } => {
                         self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
-                        if let Some(dl) = self.downloads.values_mut().find(|d| d.path == path) {
+                        if let Some(dl) = self.nodes.values_mut().find_map(|n| {
+                            n.as_download_mut().filter(|d| d.path == path)
+                        }) {
                             dl.completed = true;
                         }
                     }
