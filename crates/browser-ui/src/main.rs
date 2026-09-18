@@ -196,6 +196,81 @@ fn build_list_popup_frame(
         .rect
 }
 
+/// Which single item (if any) was clicked in a `build_node_context_menu`
+/// popup this frame -- what varies is only ever "which button," never how
+/// the popup itself is drawn, so the caller (which alone knows the kind's
+/// own path/accessor/cleanup) decides what each one actually does.
+enum NodeMenuAction {
+    CopyText,
+    Reveal,
+    CopyPath,
+    RemoveFromGroup,
+    Delete,
+}
+
+/// Which items `build_node_context_menu` shows, and their exact wording --
+/// the only real difference between a download/image/PDF/JSON/note's own
+/// right-click menu, now that the shell itself (`build_list_popup_frame`,
+/// `fade_popup_state`, `clicked_outside_popup`) is shared. `delete_label`
+/// exists only because the download menu calls its own last item "Remove
+/// from List" rather than "Delete" -- same action, different wording, not
+/// worth a whole extra variant.
+struct NodeMenuConfig {
+    copy_text: bool,
+    reveal_and_copy_path: bool,
+    has_group: bool,
+    delete_label: &'static str,
+    width: f32,
+}
+
+/// Shared right-click context-menu builder for a download/image/PDF/JSON/
+/// note node's card -- previously five separate ~90-line functions, each a
+/// hand-copy of the same `Area`/`Frame`/fade/`clicked_outside_popup`
+/// scaffolding differing only in which buttons show and what clicking one
+/// does. That scaffolding now lives here once (via `build_list_popup_frame`,
+/// with `pos` itself standing in for an anchor rect of zero size, so
+/// `.left_bottom()` still lands exactly on `pos`); the caller still owns
+/// every kind-specific effect (`reveal_image`/`as_pdf().path`/
+/// `gpu.free_image`/etc.), applied from the single `NodeMenuAction` this
+/// returns rather than duplicated per-button bools. A free function, like
+/// `build_list_popup_frame` itself -- callers still need `&mut self` free
+/// to apply whichever action came back.
+fn build_node_context_menu(
+    ui: &mut egui::Ui,
+    id: &str,
+    pos: egui::Pos2,
+    fade: f32,
+    config: NodeMenuConfig,
+) -> (Option<NodeMenuAction>, bool) {
+    let mut action = None;
+    let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
+    let area_rect = build_list_popup_frame(ui.ctx(), id, anchor, config.width, config.width, fade, |ui| {
+        if config.copy_text && ui.button("Copy Text").clicked() {
+            action = Some(NodeMenuAction::CopyText);
+        }
+        if config.reveal_and_copy_path {
+            if ui.button("Open Containing Folder").clicked() {
+                action = Some(NodeMenuAction::Reveal);
+            }
+            if ui.button("Copy Path").clicked() {
+                action = Some(NodeMenuAction::CopyPath);
+            }
+        }
+        if config.has_group {
+            ui.separator();
+            if ui.button("Remove from Group").clicked() {
+                action = Some(NodeMenuAction::RemoveFromGroup);
+            }
+        }
+        ui.separator();
+        if ui.button(config.delete_label).clicked() {
+            action = Some(NodeMenuAction::Delete);
+        }
+    });
+    let clicked_outside = clicked_outside_popup(ui, area_rect, None);
+    (action, clicked_outside)
+}
+
 /// Lets a popup driven by `Option<T>` app state (the right-click context
 /// menus) fade out instead of vanishing the instant that state goes back
 /// to `None` -- the position/content those need to keep drawing during a
@@ -5822,8 +5897,12 @@ impl App {
     /// Right-click menu for a download's card -- Open Containing Folder
     /// (same effect as a plain click, see `reveal_download`), Copy Path,
     /// Remove from List (same effect as the card's own close "x", see
-    /// `remove_node`). See `App::build_group_context_menu` for the
-    /// identical pattern this mirrors.
+    /// `remove_node`). See `build_node_context_menu`'s own doc comment for
+    /// the shared shell this (and every other node kind's context menu)
+    /// now draws through. No `has_group` gate here -- pre-existing, not
+    /// something this dedup pass introduced or fixed: this menu never
+    /// offered "Remove from Group" even before, regardless of whether the
+    /// download actually has one.
     fn build_download_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.download_context_menu.clone();
         let Some(((id, pos), fade)) = fade_popup_state(
@@ -5838,52 +5917,32 @@ impl App {
             self.download_context_menu = None;
             return;
         }
-        let mut close = false;
-        let mut reveal = false;
-        let mut remove = false;
 
-        let area = egui::Area::new(egui::Id::new("download_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(170.0);
-                        if ui.button("Open Containing Folder").clicked() {
-                            reveal = true;
-                            close = true;
-                        }
-                        if ui.button("Copy Path").clicked() {
-                            if let Some(path) = self.windows_path_for_download(&id) {
-                                ui.ctx().copy_text(path);
-                            }
-                            close = true;
-                        }
-                        ui.separator();
-                        if ui.button("Remove from List").clicked() {
-                            remove = true;
-                            close = true;
-                        }
-                    });
-            });
+        let (action, clicked_outside) = build_node_context_menu(
+            ui,
+            "download_context_menu",
+            pos,
+            fade,
+            NodeMenuConfig {
+                copy_text: false,
+                reveal_and_copy_path: true,
+                has_group: false,
+                delete_label: "Remove from List",
+                width: 170.0,
+            },
+        );
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
+        match action {
+            Some(NodeMenuAction::Reveal) => self.reveal_download(&id),
+            Some(NodeMenuAction::CopyPath) => {
+                if let Some(path) = self.windows_path_for_download(&id) {
+                    ui.ctx().copy_text(path);
+                }
+            }
+            Some(NodeMenuAction::Delete) => self.remove_node(&id),
+            _ => {}
         }
-
-        if reveal {
-            self.reveal_download(&id);
-        }
-        if remove {
-            self.remove_node(&id);
-        }
-        if close {
+        if action.is_some() || clicked_outside {
             self.download_context_menu = None;
         }
     }
@@ -5907,62 +5966,39 @@ impl App {
             self.note_context_menu = None;
             return;
         };
-        let mut close = false;
-        let mut copy_text = false;
-        let mut remove_from_group = false;
-        let mut delete = false;
 
-        let area = egui::Area::new(egui::Id::new("note_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(150.0);
-                        if ui.button("Copy Text").clicked() {
-                            copy_text = true;
-                            close = true;
-                        }
-                        if has_group {
-                            ui.separator();
-                            if ui.button("Remove from Group").clicked() {
-                                remove_from_group = true;
-                                close = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("Delete").clicked() {
-                            delete = true;
-                            close = true;
-                        }
-                    });
-            });
+        let (action, clicked_outside) = build_node_context_menu(
+            ui,
+            "note_context_menu",
+            pos,
+            fade,
+            NodeMenuConfig {
+                copy_text: true,
+                reveal_and_copy_path: false,
+                has_group,
+                delete_label: "Delete",
+                width: 150.0,
+            },
+        );
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
-        }
-
-        if copy_text {
-            if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
-                ui.ctx().copy_text(text);
+        match action {
+            Some(NodeMenuAction::CopyText) => {
+                if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
+                    ui.ctx().copy_text(text);
+                }
             }
-        }
-        if remove_from_group {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
+            Some(NodeMenuAction::RemoveFromGroup) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.group = None;
+                }
             }
+            Some(NodeMenuAction::Delete) => {
+                self.remove_node(&id);
+                self.save_session();
+            }
+            _ => {}
         }
-        if delete {
-            self.remove_node(&id);
-            self.save_session();
-        }
-        if close {
+        if action.is_some() || clicked_outside {
             self.note_context_menu = None;
         }
     }
@@ -5985,73 +6021,43 @@ impl App {
             self.image_context_menu = None;
             return;
         };
-        let mut close = false;
-        let mut reveal = false;
-        let mut copy_path = false;
-        let mut remove_from_group = false;
-        let mut delete = false;
 
-        let area = egui::Area::new(egui::Id::new("image_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(170.0);
-                        if ui.button("Open Containing Folder").clicked() {
-                            reveal = true;
-                            close = true;
-                        }
-                        if ui.button("Copy Path").clicked() {
-                            copy_path = true;
-                            close = true;
-                        }
-                        if has_group {
-                            ui.separator();
-                            if ui.button("Remove from Group").clicked() {
-                                remove_from_group = true;
-                                close = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("Delete").clicked() {
-                            delete = true;
-                            close = true;
-                        }
-                    });
-            });
+        let (action, clicked_outside) = build_node_context_menu(
+            ui,
+            "image_context_menu",
+            pos,
+            fade,
+            NodeMenuConfig {
+                copy_text: false,
+                reveal_and_copy_path: true,
+                has_group,
+                delete_label: "Delete",
+                width: 170.0,
+            },
+        );
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
-        }
-
-        if reveal {
-            self.reveal_image(&id);
-        }
-        if copy_path {
-            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
-                ui.ctx().copy_text(path);
+        match action {
+            Some(NodeMenuAction::Reveal) => self.reveal_image(&id),
+            Some(NodeMenuAction::CopyPath) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                    ui.ctx().copy_text(path);
+                }
             }
-        }
-        if remove_from_group {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
+            Some(NodeMenuAction::RemoveFromGroup) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.group = None;
+                }
             }
-        }
-        if delete {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.free_image(&id);
+            Some(NodeMenuAction::Delete) => {
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.free_image(&id);
+                }
+                self.remove_node(&id);
+                self.save_session();
             }
-            self.remove_node(&id);
-            self.save_session();
+            _ => {}
         }
-        if close {
+        if action.is_some() || clicked_outside {
             self.image_context_menu = None;
         }
     }
@@ -6073,73 +6079,43 @@ impl App {
             self.pdf_context_menu = None;
             return;
         };
-        let mut close = false;
-        let mut reveal = false;
-        let mut copy_path = false;
-        let mut remove_from_group = false;
-        let mut delete = false;
 
-        let area = egui::Area::new(egui::Id::new("pdf_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(170.0);
-                        if ui.button("Open Containing Folder").clicked() {
-                            reveal = true;
-                            close = true;
-                        }
-                        if ui.button("Copy Path").clicked() {
-                            copy_path = true;
-                            close = true;
-                        }
-                        if has_group {
-                            ui.separator();
-                            if ui.button("Remove from Group").clicked() {
-                                remove_from_group = true;
-                                close = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("Delete").clicked() {
-                            delete = true;
-                            close = true;
-                        }
-                    });
-            });
+        let (action, clicked_outside) = build_node_context_menu(
+            ui,
+            "pdf_context_menu",
+            pos,
+            fade,
+            NodeMenuConfig {
+                copy_text: false,
+                reveal_and_copy_path: true,
+                has_group,
+                delete_label: "Delete",
+                width: 170.0,
+            },
+        );
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
-        }
-
-        if reveal {
-            self.reveal_pdf(&id);
-        }
-        if copy_path {
-            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
-                ui.ctx().copy_text(path);
+        match action {
+            Some(NodeMenuAction::Reveal) => self.reveal_pdf(&id),
+            Some(NodeMenuAction::CopyPath) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
+                    ui.ctx().copy_text(path);
+                }
             }
-        }
-        if remove_from_group {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
+            Some(NodeMenuAction::RemoveFromGroup) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.group = None;
+                }
             }
-        }
-        if delete {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.free_image(&id);
+            Some(NodeMenuAction::Delete) => {
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.free_image(&id);
+                }
+                self.remove_node(&id);
+                self.save_session();
             }
-            self.remove_node(&id);
-            self.save_session();
+            _ => {}
         }
-        if close {
+        if action.is_some() || clicked_outside {
             self.pdf_context_menu = None;
         }
     }
@@ -6162,73 +6138,43 @@ impl App {
             self.json_context_menu = None;
             return;
         };
-        let mut close = false;
-        let mut reveal = false;
-        let mut copy_path = false;
-        let mut remove_from_group = false;
-        let mut delete = false;
 
-        let area = egui::Area::new(egui::Id::new("json_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(170.0);
-                        if ui.button("Open Containing Folder").clicked() {
-                            reveal = true;
-                            close = true;
-                        }
-                        if ui.button("Copy Path").clicked() {
-                            copy_path = true;
-                            close = true;
-                        }
-                        if has_group {
-                            ui.separator();
-                            if ui.button("Remove from Group").clicked() {
-                                remove_from_group = true;
-                                close = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("Delete").clicked() {
-                            delete = true;
-                            close = true;
-                        }
-                    });
-            });
+        let (action, clicked_outside) = build_node_context_menu(
+            ui,
+            "json_context_menu",
+            pos,
+            fade,
+            NodeMenuConfig {
+                copy_text: false,
+                reveal_and_copy_path: true,
+                has_group,
+                delete_label: "Delete",
+                width: 170.0,
+            },
+        );
 
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
-        }
-
-        if reveal {
-            self.reveal_json(&id);
-        }
-        if copy_path {
-            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
-                ui.ctx().copy_text(path);
+        match action {
+            Some(NodeMenuAction::Reveal) => self.reveal_json(&id),
+            Some(NodeMenuAction::CopyPath) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                    ui.ctx().copy_text(path);
+                }
             }
-        }
-        if remove_from_group {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
+            Some(NodeMenuAction::RemoveFromGroup) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.group = None;
+                }
             }
-        }
-        if delete {
-            if self.json_viewer_node.as_deref() == Some(id.as_str()) {
-                self.json_viewer_node = None;
+            Some(NodeMenuAction::Delete) => {
+                if self.json_viewer_node.as_deref() == Some(id.as_str()) {
+                    self.json_viewer_node = None;
+                }
+                self.remove_node(&id);
+                self.save_session();
             }
-            self.remove_node(&id);
-            self.save_session();
+            _ => {}
         }
-        if close {
+        if action.is_some() || clicked_outside {
             self.json_context_menu = None;
         }
     }
