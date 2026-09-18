@@ -9,10 +9,11 @@ use ipc_protocol::{
     KeyCode as HostKeyCode, SharedFrameBuffer,
 };
 use servo::{
-    Code, EventLoopWaker, InputEvent as ServoInputEvent, Key, KeyState, KeyboardEvent, Location,
-    Modifiers, MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseMoveEvent, NamedKey, RenderingContext, ServoBuilder, SoftwareRenderingContext, WebView,
-    WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
+    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, Key, KeyState,
+    KeyboardEvent, Location, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext, ServoBuilder,
+    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta,
+    WheelEvent, WheelMode,
 };
 use url::Url;
 use webrender_api::units::DevicePoint;
@@ -46,11 +47,38 @@ struct NavState {
 struct Delegate {
     frame_ready: RefCell<bool>,
     nav: RefCell<NavState>,
+    /// `(x, y, href)` for a right-click that landed on a link -- see
+    /// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment. Servo
+    /// hands this over directly via `ContextMenuElementInformation::link_url`
+    /// on the `EmbedderControl::ContextMenu` it requests for every right-
+    /// click, unlike WebKit/WebView2's own `document.elementFromPoint`
+    /// JS-query workaround -- no script round-trip needed here.
+    context_menu_link: RefCell<Option<(f64, f64, String)>>,
 }
 
 impl WebViewDelegate for Delegate {
     fn notify_new_frame_ready(&self, _webview: WebView) {
         *self.frame_ready.borrow_mut() = true;
+    }
+
+    /// Fires for every kind of native-ish prompt Servo wants to show
+    /// (`<select>`/color/file pickers, IME, `alert()`/`confirm()`, and a
+    /// right-click's own context menu) -- only `ContextMenu` is handled
+    /// here, since none of the others are wired up by this engine-host at
+    /// all. Dropping `menu` without calling `.select()`/`.dismiss()`
+    /// explicitly still tells Servo the menu was dismissed with no
+    /// selection (see `ContextMenu`'s own `Drop` impl) -- exactly the
+    /// "suppress the real menu, use it only as a data source" posture
+    /// WebKit/WebView2/CEF's own equivalents already have, so a real
+    /// native-looking popup never appears over the page.
+    fn show_embedder_control(&self, _webview: WebView, embedder_control: EmbedderControl) {
+        if let EmbedderControl::ContextMenu(menu) = embedder_control {
+            if let Some(url) = menu.element_info().link_url.clone() {
+                let position = menu.position();
+                *self.context_menu_link.borrow_mut() =
+                    Some((position.min.x as f64, position.min.y as f64, url.to_string()));
+            }
+        }
     }
 
     fn notify_url_changed(&self, _webview: WebView, url: Url) {
@@ -162,6 +190,7 @@ fn main() {
             url: initial_url.clone(),
             ..Default::default()
         }),
+        context_menu_link: RefCell::new(None),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -288,6 +317,10 @@ fn main() {
                     loading: nav.loading,
                 });
             }
+        }
+
+        if let Some((x, y, href)) = delegate.context_menu_link.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
         if visible && *delegate.frame_ready.borrow() {

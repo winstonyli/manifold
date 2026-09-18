@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod context_menu_handler;
 mod download_handler;
 mod find_handler;
 mod input;
@@ -16,6 +17,7 @@ use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::ClientBuilder;
+use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
@@ -109,6 +111,7 @@ fn main() {
     let find_result = new_shared_find_result();
     let download_path = new_shared_download_path();
     let closed = new_shared_closed();
+    let context_menu_link = new_shared_context_menu_link();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
@@ -132,6 +135,7 @@ fn main() {
             find_result.clone(),
             download_path.clone(),
             closed.clone(),
+            context_menu_link.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -292,6 +296,10 @@ fn main() {
 
         if let Some((count, active_index)) = find_result.borrow_mut().take() {
             let _ = control.send(&EngineToHost::FindResult { count, active_index });
+        }
+
+        if let Some((x, y, href)) = context_menu_link.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
         for event in download_path.borrow_mut().queue.drain(..) {

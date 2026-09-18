@@ -1,5 +1,8 @@
 use cef::{rc::Rc, *};
 
+use crate::context_menu_handler::{
+    ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink,
+};
 use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, SharedDownloadPath};
 use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
 use crate::life_span_handler::{
@@ -18,6 +21,7 @@ wrap_client! {
         life_span_handler: LifeSpanHandler,
         find_handler: FindHandler,
         download_handler: DownloadHandler,
+        context_menu_handler: ContextMenuHandler,
     }
 
     impl Client {
@@ -44,6 +48,10 @@ wrap_client! {
         fn download_handler(&self) -> Option<cef::DownloadHandler> {
             Some(self.download_handler.clone())
         }
+
+        fn context_menu_handler(&self) -> Option<cef::ContextMenuHandler> {
+            Some(self.context_menu_handler.clone())
+        }
     }
 }
 
@@ -55,6 +63,7 @@ impl ClientBuilder {
         find_result: SharedFindResult,
         download_path: SharedDownloadPath,
         closed: SharedClosed,
+        context_menu_link: SharedContextMenuLink,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
@@ -63,6 +72,7 @@ impl ClientBuilder {
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
+            ContextMenuHandlerBuilder::build(EngineContextMenuHandler::new(context_menu_link)),
         )
     }
 }
