@@ -1831,14 +1831,6 @@ struct App {
     /// toggle into one popup instead of three always-visible buttons. See
     /// `App::build_tab_actions_popup`.
     tab_actions_open: bool,
-    /// Same "fold several toolbar buttons into one dropdown" idea as
-    /// `tab_actions_open`, for "Bookmarks (N)"/"History (N)"/"Downloads (N)"
-    /// -- previously three separate buttons, each hidden while its own list
-    /// was empty (inconsistent toolbar width, and no way to tell a feature
-    /// existed at all before using it once). Now one always-visible "Lists"
-    /// button; picking a row here just sets that list's own `_open` flag,
-    /// unchanged otherwise. See `App::build_lists_menu`.
-    lists_menu_open: bool,
     /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
     /// currently open -- see `App::build_recently_closed_popup`.
     recently_closed_open: bool,
@@ -1982,7 +1974,6 @@ impl Default for App {
             history_filter: String::new(),
             downloads_open: false,
             tab_actions_open: false,
-            lists_menu_open: false,
             recently_closed_open: false,
             transition: None,
             event_proxy: None,
@@ -2130,6 +2121,20 @@ impl App {
         let mut export_bookmarks_requested = false;
         let mut import_bookmarks_requested = false;
         let mut save_now_requested = false;
+        // "Current Tab" section, below -- `self.focused` persists across a
+        // view switch (entering Settings doesn't clear it), so these act on
+        // whichever tab was focused right before Settings was opened, same
+        // as the toolbar controls they replaced.
+        let mut current_tab_id: Option<String> = None;
+        let mut swap_to: Option<EngineKind> = None;
+        let mut mute_toggle = false;
+        let mut screenshot_requested = false;
+        let mut print_to_pdf_requested = false;
+        // "Lists" section, below -- same popups the old toolbar "Lists"
+        // dropdown opened, just anchored to these buttons instead.
+        let mut bookmarks_button_rect: Option<egui::Rect> = None;
+        let mut history_button_rect: Option<egui::Rect> = None;
+        let mut downloads_button_rect: Option<egui::Rect> = None;
 
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.close_settings_page();
@@ -2225,6 +2230,111 @@ impl App {
                 {
                     self.settings.save();
                 }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Current Tab").strong().color(TEXT_PRIMARY));
+                // Engine swap, Mute, Screenshot, and Print to PDF used to
+                // be live toolbar controls next to the address bar --
+                // moved here to keep that toolbar down to nav + address
+                // bar + a small handful of page actions, at the cost of a
+                // click through Settings instead of an in-place toggle.
+                // `focus_kind` is `None` either when no tab is focused at
+                // all, or Settings was reached with a non-tab node
+                // (group/note/etc.) focused -- either way, nothing here
+                // applies to it.
+                let focus_kind =
+                    self.focused.clone().and_then(|id| {
+                        self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.tab.kind).map(|kind| (id, kind))
+                    });
+                match focus_kind {
+                    Some((id, kind)) => {
+                        current_tab_id = Some(id.clone());
+                        ui.horizontal(|ui| {
+                            ui.label("Engine");
+                            let combo_text = egui::RichText::new(engine_label(kind)).color(engine_color(kind));
+                            egui::ComboBox::from_id_salt("settings_engine_picker")
+                                .selected_text(combo_text)
+                                .show_ui(ui, |ui| {
+                                    for candidate in
+                                        [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2]
+                                    {
+                                        let selected = candidate == kind;
+                                        ui.horizontal(|ui| {
+                                            engine_dot(ui, candidate, 8.0);
+                                            if ui.selectable_label(selected, engine_label(candidate)).clicked()
+                                                && !selected
+                                            {
+                                                swap_to = Some(candidate);
+                                            }
+                                        });
+                                    }
+                                });
+                        });
+                        let node_muted =
+                            self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
+                        let mute_label = if node_muted {
+                            format!("{} Unmute", egui_phosphor::regular::SPEAKER_X)
+                        } else {
+                            format!("{} Mute", egui_phosphor::regular::SPEAKER_HIGH)
+                        };
+                        if ui.selectable_label(node_muted, mute_label).clicked() {
+                            mute_toggle = true;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("{} Screenshot", egui_phosphor::regular::CAMERA))
+                                .clicked()
+                            {
+                                screenshot_requested = true;
+                            }
+                            if !self.headless
+                                && ui
+                                    .button(format!("{} Print to PDF", egui_phosphor::regular::PRINTER))
+                                    .clicked()
+                            {
+                                print_to_pdf_requested = true;
+                            }
+                        });
+                    }
+                    None => {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("No tab focused").small().weak()).wrap(),
+                        );
+                    }
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Lists").strong().color(TEXT_PRIMARY));
+                ui.horizontal(|ui| {
+                    let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
+                    if bookmarks_response.clicked() {
+                        self.bookmarks_open = !self.bookmarks_open;
+                        if self.bookmarks_open {
+                            self.bookmarks_filter.clear();
+                        }
+                    }
+                    bookmarks_button_rect = Some(bookmarks_response.rect);
+                    let history_response = ui.button(format!("History ({})", self.history.len()));
+                    if history_response.clicked() {
+                        self.history_open = !self.history_open;
+                        if self.history_open {
+                            self.history_filter.clear();
+                        }
+                    }
+                    history_button_rect = Some(history_response.rect);
+                    // Not `self.nodes.len()` (every graph node, not just
+                    // downloads) -- a real pre-existing bug found and fixed
+                    // when this button was still in the toolbar's own
+                    // "Lists" dropdown, carried forward here unchanged.
+                    let download_count = self.nodes.values().filter(|n| n.as_download().is_some()).count();
+                    let downloads_response = ui.button(format!("Downloads ({download_count})"));
+                    if downloads_response.clicked() {
+                        self.downloads_open = !self.downloads_open;
+                    }
+                    downloads_button_rect = Some(downloads_response.rect);
+                });
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -2377,6 +2487,58 @@ impl App {
                     bookmarks::save(&self.bookmarks);
                 }
                 self.close_settings_page();
+            }
+        }
+        if let Some(kind) = swap_to {
+            if let Some(id) = &current_tab_id {
+                self.start_swap_to(id, kind);
+            }
+        }
+        if mute_toggle {
+            if let Some(id) = &current_tab_id {
+                self.toggle_muted(id);
+            }
+        }
+        if screenshot_requested {
+            // No toast here -- the save hasn't happened yet. `save_toast`
+            // is only set once `RenderOutcome::screenshot_result` actually
+            // confirms success (see `WindowEvent::RedrawRequested`'s
+            // handling of `pending_screenshot`).
+            let path = screenshot_default_path();
+            self.pending_screenshot = Some(path.to_string_lossy().to_string());
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        if print_to_pdf_requested {
+            if let Some(path) =
+                rfd::FileDialog::new().set_file_name("page.pdf").add_filter("PDF", &["pdf"]).save_file()
+            {
+                self.start_print_to_pdf(path.to_string_lossy().into_owned());
+            }
+        }
+        // Same fade-in/out-off-`ctx.animate_bool` popup pattern the old
+        // toolbar "Lists" dropdown used, just anchored to these buttons
+        // instead -- `build_bookmarks_popup`/`build_history_popup`/
+        // `build_downloads_popup` themselves are unchanged either way.
+        let bookmarks_fade =
+            ui.ctx().animate_bool(egui::Id::new("bookmarks_popup_fade"), self.bookmarks_open);
+        if bookmarks_fade > 0.0 {
+            if let Some(rect) = bookmarks_button_rect {
+                self.build_bookmarks_popup(ui, rect, bookmarks_fade);
+            }
+        }
+        let history_fade = ui.ctx().animate_bool(egui::Id::new("history_popup_fade"), self.history_open);
+        if history_fade > 0.0 {
+            if let Some(rect) = history_button_rect {
+                self.build_history_popup(ui, rect, history_fade);
+            }
+        }
+        let downloads_fade =
+            ui.ctx().animate_bool(egui::Id::new("downloads_popup_fade"), self.downloads_open);
+        if downloads_fade > 0.0 {
+            if let Some(rect) = downloads_button_rect {
+                self.build_downloads_popup(ui, rect, downloads_fade);
             }
         }
     }
@@ -4760,9 +4922,9 @@ impl App {
         if clicked_outside && self.renaming_bookmark_folder.is_none() {
             close = true;
         }
-        // Not `|| self.bookmarks.is_empty()` any more -- the "Lists" menu
-        // can now open this popup with an empty list (see `lists_menu_open`'s
-        // doc comment), and that used to close it again the very next frame.
+        // Not `|| self.bookmarks.is_empty()` any more -- the Settings page's
+        // own "Lists" section can open this popup with an empty list, and
+        // that used to close it again the very next frame.
         if close {
             self.bookmarks_open = false;
             self.renaming_bookmark_folder = None;
@@ -4983,72 +5145,6 @@ impl App {
         }
         if close {
             self.tab_actions_open = false;
-        }
-    }
-
-    /// Tab view's "Lists" button -- folds Bookmarks/History/Downloads into
-    /// one dropdown instead of three separate always-conditionally-shown
-    /// buttons (see `lists_menu_open`'s own doc comment). Picking a row
-    /// just opens that list's own existing popup exactly as its old
-    /// standalone button did; nothing about `build_bookmarks_popup`/
-    /// `build_history_popup`/`build_downloads_popup` themselves changes,
-    /// only what triggers them.
-    fn build_lists_menu(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
-        let mut close = false;
-        let mut open_bookmarks = false;
-        let mut open_history = false;
-        let mut open_downloads = false;
-        // Not `self.nodes.len()` (every graph node, not just downloads) --
-        // **found while moving this into its own menu**: the old always-
-        // conditionally-shown button's own count was wrong the same way,
-        // just never as obviously since happening to be non-empty was all
-        // that decided whether the button showed at all.
-        let download_count = self.nodes.values().filter(|n| n.as_download().is_some()).count();
-        let area = egui::Area::new(egui::Id::new("lists_menu"))
-            .fixed_pos(anchor_rect.left_bottom())
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(160.0);
-                        if ui.button(format!("Bookmarks ({})", self.bookmarks.len())).clicked() {
-                            open_bookmarks = true;
-                            close = true;
-                        }
-                        if ui.button(format!("History ({})", self.history.len())).clicked() {
-                            open_history = true;
-                            close = true;
-                        }
-                        if ui.button(format!("Downloads ({download_count})")).clicked() {
-                            open_downloads = true;
-                            close = true;
-                        }
-                    });
-            });
-
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
-
-        if open_bookmarks {
-            self.bookmarks_open = true;
-            self.bookmarks_filter.clear();
-        }
-        if open_history {
-            self.history_open = true;
-            self.history_filter.clear();
-        }
-        if open_downloads {
-            self.downloads_open = true;
-        }
-        if clicked_outside {
-            close = true;
-        }
-        if close {
-            self.lists_menu_open = false;
         }
     }
 
@@ -6726,21 +6822,14 @@ impl App {
         if !editing_address {
             self.address_bar_text = self.nodes[&focused_id].as_tab().unwrap().url.clone();
         }
-        let current_kind = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).map(|n| n.tab.kind);
-
         let mut go_back = false;
         let mut go_forward = false;
         let mut reload_requested = false;
         let mut home_requested = false;
-        let mut swap_to = None;
         let mut navigate = None;
         let mut back_to_graph = false;
-        let mut mute_toggle = false;
         let mut toggle_bookmark_requested = false;
         let mut tab_actions_button_rect: Option<egui::Rect> = None;
-        let mut lists_button_rect: Option<egui::Rect> = None;
-        let mut screenshot_requested = false;
-        let mut print_to_pdf_requested = false;
         let mut split_requested: Option<EngineKind> = None;
         let mut close_split_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
@@ -6826,7 +6915,9 @@ impl App {
 
                     // Tab identity (was a separate strip above the toolbar,
                     // merged into this single bar): a small loading spinner
-                    // or the fetched favicon, right before the engine picker.
+                    // or the fetched favicon, right before the address bar --
+                    // the same "site identity chip at the address bar's own
+                    // left edge" spot Chrome/Firefox use.
                     if node.loading {
                         ui.add(egui::Spinner::new().size(12.0));
                     } else if let Some(tex_id) = favicon_fetch::url_origin(&node.url)
@@ -6838,50 +6929,76 @@ impl App {
                         )));
                     }
 
-                    let combo_label = current_kind.map(engine_label).unwrap_or("?");
-                    let combo_text = match current_kind {
-                        Some(kind) => egui::RichText::new(combo_label).color(engine_color(kind)),
-                        None => egui::RichText::new(combo_label),
-                    };
-                    egui::ComboBox::from_id_salt("engine_picker")
-                        .selected_text(combo_text)
-                        .show_ui(ui, |ui| {
-                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-                                let selected = current_kind == Some(kind);
-                                ui.horizontal(|ui| {
-                                    engine_dot(ui, kind, 8.0);
-                                    if ui
-                                        .selectable_label(selected, engine_label(kind))
-                                        .clicked()
-                                        && !selected
-                                    {
-                                        swap_to = Some(kind);
-                                    }
-                                });
-                            }
-                        });
+                    // Address bar moved up here (right after nav/identity,
+                    // before any per-tab action button) and given most of
+                    // the row's width -- mirrors every mainstream browser's
+                    // own layout (nav controls, then a wide address bar,
+                    // then a handful of page-action icons to its right, then
+                    // an overflow/app menu at the far end), rather than the
+                    // stack of buttons that used to sit entirely to its
+                    // left, pushing it almost to the row's far end.
+                    // `trailing_reserve` estimates the width still needed
+                    // for everything drawn *after* the address bar in this
+                    // same row (Bookmark, View-as-JSON, Split + Close Split,
+                    // Tab actions, Shortcuts help, Settings gear) so
+                    // `desired_width` doesn't claim the whole remaining row
+                    // and starve them -- same hand-estimated-reserve
+                    // tradeoff this toolbar already accepted for the gear
+                    // alone, sized generously for the worst case (Split
+                    // open + a JSON tab) rather than computed exactly, which
+                    // egui's immediate-mode layout has no cheap way to do
+                    // without a second pass.
+                    let trailing_reserve = 360.0;
+                    let text_width = (ui.available_width() - trailing_reserve).max(40.0);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.address_bar_text)
+                            .desired_width(text_width)
+                            // Match `style.spacing.button_padding` (set in
+                            // `apply_style`) so the address bar renders the
+                            // same height as the back/forward buttons next
+                            // to it — `TextEdit`'s own default margin
+                            // (`Margin::symmetric(4, 2)`) doesn't share that
+                            // style value, so left unset the row's tallest
+                            // item (the text field) stood out with visibly
+                            // more height than its neighbors instead of a
+                            // level toolbar.
+                            .margin(egui::Margin::symmetric(8, 4)),
+                    );
+                    if std::mem::take(&mut self.pending_focus_address_bar) {
+                        response.request_focus();
+                    }
+                    self.address_bar_focused = response.has_focus();
+                    address_bar_rect = Some(response.rect);
 
-                    // WebView2/WebKit/CEF -- Servo only, now, per
-                    // `HostToEngine::SetMuted`'s own doc comment.
-                    // `selectable_label`
-                    // gives a pressed look while muted, same minimal
-                    // indicator shape the engine picker's own selected row
-                    // uses. Icon swaps `SPEAKER_HIGH`/`SPEAKER_X` by state
-                    // -- same icon the graph-card audio indicator's own
-                    // muted case already uses, so the toolbar toggle and
-                    // the graph decoration read as the same concept.
-                    // `selectable_label`'s own selected-state styling
-                    // (accent background, dark foreground) handles the
-                    // icon's contrast automatically, same as any other
-                    // selected label here.
-                    let node_muted = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
-                    let mute_icon = if node_muted {
-                        egui_phosphor::regular::SPEAKER_X
-                    } else {
-                        egui_phosphor::regular::SPEAKER_HIGH
-                    };
-                    if ui.selectable_label(node_muted, mute_icon).on_hover_text("Muted").clicked() {
-                        mute_toggle = true;
+                    // `selectable_label`, same reasoning as elsewhere in
+                    // this toolbar -- a pressed look for "already
+                    // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
+                    // a star glyph's tofu risk. Sits right after the address
+                    // bar, mirroring Chrome/Firefox's own star icon at the
+                    // address bar's right edge.
+                    let is_bookmarked = self
+                        .nodes
+                        .get(&focused_id)
+                        .and_then(|n| n.as_tab())
+                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
+                    if ui
+                        .selectable_label(is_bookmarked, egui_phosphor::regular::BOOKMARK_SIMPLE)
+                        .on_hover_text("Bookmark")
+                        .clicked()
+                    {
+                        toggle_bookmark_requested = true;
+                    }
+                    if self
+                        .nodes
+                        .get(&focused_id)
+                        .and_then(|n| n.as_tab())
+                        .is_some_and(|n| n.json_body.is_some())
+                        && ui
+                            .button(egui_phosphor::regular::BRACKETS_CURLY)
+                            .on_hover_text("View as JSON")
+                            .clicked()
+                    {
+                        self.json_viewer_node = Some(focused_id.clone());
                     }
                     // Engine-vs-engine compare view -- see `App::split_tab`'s
                     // own doc comment. Picking an engine here (re-)opens a
@@ -6913,102 +7030,15 @@ impl App {
                     // flagged the toolbar as cramped with all three as
                     // always-visible buttons (confirmed live: text touching
                     // the window edge even at 1300pt wide). Same anchored
-                    // Area/Frame popup pattern "Bookmarks (N)"/"History (N)"
-                    // already use.
+                    // Area/Frame popup pattern the Settings page's own
+                    // "Lists" section buttons use for Bookmarks/History/
+                    // Downloads.
                     let tab_actions_response = ui.button("Tab actions");
                     if tab_actions_response.clicked() {
                         self.tab_actions_open = !self.tab_actions_open;
                     }
                     tab_actions_button_rect = Some(tab_actions_response.rect);
 
-                    // `selectable_label`, same reasoning as `Muted` above --
-                    // a pressed look for "already bookmarked", now a real
-                    // `BOOKMARK_SIMPLE` icon instead of the plain-text
-                    // fallback a star glyph's tofu risk used to require.
-                    let is_bookmarked = self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-                    if ui
-                        .selectable_label(is_bookmarked, egui_phosphor::regular::BOOKMARK_SIMPLE)
-                        .on_hover_text("Bookmark")
-                        .clicked()
-                    {
-                        toggle_bookmark_requested = true;
-                    }
-                    if self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| n.json_body.is_some())
-                        && ui
-                            .button(egui_phosphor::regular::BRACKETS_CURLY)
-                            .on_hover_text("View as JSON")
-                            .clicked()
-                    {
-                        self.json_viewer_node = Some(focused_id.clone());
-                    }
-                    // Always visible now, regardless of whether any list
-                    // is actually empty -- see `lists_menu_open`'s own doc
-                    // comment for why (a button that vanishes/reappears
-                    // depending on data is a discoverability trap, and a
-                    // shifting toolbar width besides).
-                    let lists_response = ui.button("Lists");
-                    if lists_response.clicked() {
-                        self.lists_menu_open = !self.lists_menu_open;
-                    }
-                    lists_button_rect = Some(lists_response.rect);
-
-                    // Full window (chrome + content), same composited
-                    // picture the headless `SCREENSHOT` debug command
-                    // already captures via `GpuState::render`'s
-                    // `screenshot_path` -- this button is that same
-                    // mechanism wired to a real default save location
-                    // instead of a test-supplied path.
-                    if icon_button_eased(ui, egui::Id::new("icon_btn_screenshot"), egui_phosphor::regular::CAMERA)
-                        .on_hover_text("Screenshot")
-                        .clicked()
-                    {
-                        screenshot_requested = true;
-                    }
-                    // Hidden in headless mode, same reason Export/Import
-                    // Session are: a real native file dialog blocks on
-                    // OS/human input neither exists there. `PRINTTOPDF
-                    // <path>` bypasses it directly for headless testing.
-                    if !self.headless
-                        && icon_button_eased(ui, egui::Id::new("icon_btn_pdf"), egui_phosphor::regular::PRINTER)
-                            .on_hover_text("Print to PDF")
-                            .clicked()
-                    {
-                        print_to_pdf_requested = true;
-                    }
-
-                    // Reserve room for the gear button after the address
-                    // bar — `desired_width(f32::INFINITY)` would otherwise
-                    // claim the whole remaining row, leaving nothing for a
-                    // widget added after it in the same horizontal layout.
-                    let gear_reserve = 32.0;
-                    let text_width = (ui.available_width() - gear_reserve).max(40.0);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.address_bar_text)
-                            .desired_width(text_width)
-                            // Match `style.spacing.button_padding` (set in
-                            // `apply_style`) so the address bar renders the
-                            // same height as the back/forward buttons and
-                            // engine picker next to it — `TextEdit`'s own
-                            // default margin (`Margin::symmetric(4, 2)`)
-                            // doesn't share that style value, so left unset
-                            // the row's tallest item (the text field) stood
-                            // out with visibly more height than its
-                            // neighbors instead of a level toolbar.
-                            .margin(egui::Margin::symmetric(8, 4)),
-                    );
-                    if std::mem::take(&mut self.pending_focus_address_bar) {
-                        response.request_focus();
-                    }
-                    self.address_bar_focused = response.has_focus();
-                    address_bar_rect = Some(response.rect);
                     shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                     if response.changed() {
                         self.open_tab_suggestions =
@@ -7192,12 +7222,6 @@ impl App {
             let home_page = self.settings.home_page.clone();
             self.navigate_tab(&focused_id, home_page);
         }
-        if let Some(kind) = swap_to {
-            self.start_swap_to(&focused_id, kind);
-        }
-        if mute_toggle {
-            self.toggle_muted(&focused_id);
-        }
         if let Some(kind) = split_requested {
             self.start_split(kind);
         }
@@ -7246,64 +7270,12 @@ impl App {
         // egui's animation manager needs continuous polling to track real
         // elapsed time; polling only while open made it jump straight to
         // its target the instant re-opened instead of visibly easing, the
-        // gap while closed having gone untracked. The underlying data
-        // (self.bookmarks/history/downloads, the toolbar buttons) all
-        // outlive the `_open` flag going false, so drawing continues
-        // correctly through the fade-out too, not just fade-in.
-        // All four of these now anchor to the one "Lists" button's own
-        // rect (`lists_button_rect`) -- Bookmarks/History/Downloads are
-        // opened *from* that button's own dropdown (`build_lists_menu`),
-        // not by three separate buttons the way they used to be.
-        let lists_menu_fade =
-            ui.ctx().animate_bool(egui::Id::new("lists_menu_fade"), self.lists_menu_open);
-        if lists_menu_fade > 0.0 {
-            if let Some(rect) = lists_button_rect {
-                self.build_lists_menu(ui, rect, lists_menu_fade);
-            }
-        }
-        let bookmarks_fade =
-            ui.ctx().animate_bool(egui::Id::new("bookmarks_popup_fade"), self.bookmarks_open);
-        if bookmarks_fade > 0.0 {
-            if let Some(rect) = lists_button_rect {
-                self.build_bookmarks_popup(ui, rect, bookmarks_fade);
-            }
-        }
-        let history_fade = ui.ctx().animate_bool(egui::Id::new("history_popup_fade"), self.history_open);
-        if history_fade > 0.0 {
-            if let Some(rect) = lists_button_rect {
-                self.build_history_popup(ui, rect, history_fade);
-            }
-        }
-        let downloads_fade =
-            ui.ctx().animate_bool(egui::Id::new("downloads_popup_fade"), self.downloads_open);
-        if downloads_fade > 0.0 {
-            if let Some(rect) = lists_button_rect {
-                self.build_downloads_popup(ui, rect, downloads_fade);
-            }
-        }
+        // gap while closed having gone untracked.
         let tab_actions_fade =
             ui.ctx().animate_bool(egui::Id::new("tab_actions_popup_fade"), self.tab_actions_open);
         if tab_actions_fade > 0.0 {
             if let Some(rect) = tab_actions_button_rect {
                 self.build_tab_actions_popup(ui, rect, &focused_id, tab_actions_fade);
-            }
-        }
-        if screenshot_requested {
-            // No toast here -- the save hasn't happened yet. `save_toast`
-            // is only set once `RenderOutcome::screenshot_result` actually
-            // confirms success (see `WindowEvent::RedrawRequested`'s
-            // handling of `pending_screenshot`).
-            let path = screenshot_default_path();
-            self.pending_screenshot = Some(path.to_string_lossy().to_string());
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
-        }
-        if print_to_pdf_requested {
-            if let Some(path) =
-                rfd::FileDialog::new().set_file_name("page.pdf").add_filter("PDF", &["pdf"]).save_file()
-            {
-                self.start_print_to_pdf(path.to_string_lossy().into_owned());
             }
         }
         if let Some(text) = navigate {
