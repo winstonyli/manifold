@@ -1238,11 +1238,12 @@ struct App {
     /// Same fade-out role as `group_context_menu_cache`, for `context_menu`.
     context_menu_cache: Option<ContextMenuState>,
 
-    /// A brief "Saved <path>" toast for the most recent completed download
-    /// or screenshot save, and when it was set — cleared once
-    /// `SAVE_TOAST_DURATION` has passed. No queue: a second save finishing
-    /// while one toast is showing just replaces it, same "latest wins"
-    /// simplicity as `find_result`.
+    /// A brief toast message (full text, not just a path -- see `build_
+    /// save_toast`'s own doc comment) for the most recent completed
+    /// download/save or crash/respawn notice, and when it was set —
+    /// cleared once `SAVE_TOAST_DURATION` has passed. No queue: a second
+    /// message arriving while one toast is showing just replaces it, same
+    /// "latest wins" simplicity as `find_result`.
     save_toast: Option<(String, std::time::Instant)>,
 
     /// When the auto-restore `session.json` was last written -- shown in
@@ -1767,7 +1768,7 @@ impl App {
             let name = sanitize_session_name(&self.session_name_draft);
             if !name.is_empty() {
                 self.build_session_snapshot().save_as(&name);
-                self.save_toast = Some((format!("session '{name}'"), std::time::Instant::now()));
+                self.save_toast = Some((format!("Saved session '{name}'"), std::time::Instant::now()));
                 self.session_name_draft.clear();
             }
         }
@@ -1785,7 +1786,7 @@ impl App {
                 .save_file()
             {
                 self.build_session_snapshot().save_to(&path);
-                self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+                self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
             }
         }
         if import_requested {
@@ -1805,7 +1806,7 @@ impl App {
                 .save_file()
             {
                 bookmarks::save_to(&self.bookmarks, &path);
-                self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+                self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
             }
         }
         if import_bookmarks_requested {
@@ -4507,7 +4508,7 @@ impl App {
                     .save_file()
                 {
                     group_export::save_to(&export, &path);
-                    self.save_toast = Some((path.display().to_string(), std::time::Instant::now()));
+                    self.save_toast = Some((format!("Saved {}", path.display()), std::time::Instant::now()));
                 }
             }
         }
@@ -4842,21 +4843,25 @@ impl App {
         }
     }
 
-    /// A brief "Saved <path>" toast, bottom-left, for `self.save_toast` —
-    /// cleared once `SAVE_TOAST_DURATION` elapses. No dismiss interaction
-    /// (unlike the context menu): it just times out. Fades in over its
-    /// first `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather
-    /// than popping on and cutting off instantly -- driven directly off
+    /// A brief bottom-left toast, for `self.save_toast` — cleared once
+    /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
+    /// context menu): it just times out. Fades in over its first
+    /// `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather than
+    /// popping on and cutting off instantly -- driven directly off
     /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
     /// so it's already redrawing every frame regardless; no extra
     /// `request_repaint` needed for a time-based fade to animate smoothly),
     /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
     /// this already has a real wall-clock lifetime to derive opacity from
-    /// directly.
+    /// directly. Despite the field's own name, the message is the caller's
+    /// full text now, not just a path this function used to prepend
+    /// "Saved " to -- every original "Saved <path>" call site now includes
+    /// that itself, freeing this up for unrelated short-lived messages too
+    /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
-        let Some((path, shown_at)) = &self.save_toast else { return };
+        let Some((message, shown_at)) = &self.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
             self.save_toast = None;
@@ -4866,7 +4871,7 @@ impl App {
         let remaining = SAVE_TOAST_DURATION.saturating_sub(elapsed);
         let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);
         let opacity = fade_in.min(fade_out);
-        let path = path.clone();
+        let message = message.clone();
         egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
@@ -4889,7 +4894,7 @@ impl App {
                     .corner_radius(3u8)
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
-                        ui.label(format!("Saved {path}"));
+                        ui.label(message);
                     });
                 let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
                 for (slot, shape) in glow_slots.into_iter().zip(shapes) {
@@ -7829,14 +7834,17 @@ impl ApplicationHandler<UserEvent> for App {
                                             std::path::Path::new(&pdf_path),
                                         ) {
                                             Ok(()) => {
-                                                self.save_toast =
-                                                    Some((pdf_path, std::time::Instant::now()));
+                                                self.save_toast = Some((
+                                                    format!("Saved {pdf_path}"),
+                                                    std::time::Instant::now(),
+                                                ));
                                             }
                                             Err(err) => eprintln!("print to pdf: {err}"),
                                         }
                                         let _ = std::fs::remove_file(&path);
                                     } else {
-                                        self.save_toast = Some((path, std::time::Instant::now()));
+                                        self.save_toast =
+                                            Some((format!("Saved {path}"), std::time::Instant::now()));
                                     }
                                 }
                             }
@@ -8342,7 +8350,7 @@ impl App {
                         }
                     }
                     EngineToHost::DownloadCompleted { path } => {
-                        self.save_toast = Some((path.clone(), std::time::Instant::now()));
+                        self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
                         if let Some(dl) = self.downloads.values_mut().find(|d| d.path == path) {
                             dl.completed = true;
                         }
@@ -8370,6 +8378,15 @@ impl App {
                 continue;
             };
             eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
+            // Previously silent from the actual app's own UI -- this only
+            // ever showed up in the console, so a user with no terminal
+            // open had no way to know a tab had crashed and quietly come
+            // back, e.g. mid-navigation with unsaved page state lost.
+            // Reuses the same toast infrastructure "Saved <path>" already
+            // has (generalized to a plain message, see `save_toast`'s own
+            // doc comment) rather than a second, separate notification
+            // mechanism.
+            self.save_toast = Some((format!("Tab crashed, restarted: {url}"), std::time::Instant::now()));
             self.tabs.remove(&tab_id);
             // Same stale-state guard `close_tab`/`finish_swap` apply — see
             // `finish_swap`'s own comment on this.
