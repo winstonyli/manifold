@@ -62,6 +62,10 @@ const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 /// dragged tab is tested against on release — see `GroupPayload`'s own doc
 /// comment.
 const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
+/// A note card's footprint -- taller than the other non-thumbnail kinds
+/// since its whole body is an editable multi-line text area, not just a
+/// title strip.
+const NOTE_NODE_SIZE: egui::Vec2 = egui::vec2(180.0, 140.0);
 
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
@@ -299,6 +303,14 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
 /// default `ACCENT` border.
 const GROUP_OVERLOAD_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 const GROUP_OVERLOAD_THRESHOLD: usize = 8;
+
+/// A sticky note's card fill -- a warm, light color deliberately unlike
+/// every other card's dark `extreme_bg_color`/`TOOLBAR_FILL` tone, so a note
+/// reads as "a physical note" at a glance rather than another chrome-toned
+/// panel. The text drawn on it (`NotePayload`'s editable body) is dark to
+/// stay legible against this light fill, the one card in this app that
+/// isn't light-text-on-dark.
+const NOTE_CARD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 236, 148);
 
 /// The window/content-area base — behind every panel, the darkest layer.
 /// Distinct from `TOOLBAR_FILL` on purpose: egui's own default has exactly
@@ -704,14 +716,16 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 
 /// Kind-specific data for one node in the unified graph-node model --
 /// `GraphNode` holds the fields every kind shares (position, graph
-/// membership); this holds only what varies per kind. Final step in
-/// migrating off three separate hardcoded node types (the old `TabNode`/
-/// `DownloadNode`/`GroupNode`, three separate `HashMap`s) onto one -- all
-/// three kinds now live here (see `App::nodes`'s own doc comment).
+/// membership); this holds only what varies per kind. Tab/Download/Group
+/// were the migration off three separate hardcoded node types (the old
+/// `TabNode`/`DownloadNode`/`GroupNode`); `Note` is the first genuinely new
+/// kind added on top of that unified model -- a plain user-authored text
+/// card, no engine process behind it (see `NotePayload`'s own doc comment).
 enum NodePayload {
     Tab(TabPayload),
     Download(DownloadPayload),
     Group(GroupPayload),
+    Note(NotePayload),
 }
 
 impl NodePayload {
@@ -756,6 +770,33 @@ impl NodePayload {
             _ => None,
         }
     }
+
+    fn as_note(&self) -> Option<&NotePayload> {
+        match self {
+            NodePayload::Note(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
+        match self {
+            NodePayload::Note(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
+/// A sticky note's own data -- free-form user-typed text, no engine process
+/// or IPC of any kind behind it (unlike every other node kind so far). The
+/// first new kind added on top of the unified `GraphNode`/`NodePayload`
+/// model, rather than another migration of a pre-existing type -- proof the
+/// model actually supports "arrange anything" the way it was built to.
+/// Persisted in `session.json` (`session::SessionNote`) since a note is
+/// user-authored content, not a display preference like `TabPayload::pinned`
+/// or a group's own membership -- losing it on restart would defeat the
+/// point of writing one down.
+struct NotePayload {
+    text: String,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -864,6 +905,14 @@ impl GraphNode {
 
     fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
         self.payload.as_group_mut()
+    }
+
+    fn as_note(&self) -> Option<&NotePayload> {
+        self.payload.as_note()
+    }
+
+    fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
+        self.payload.as_note_mut()
     }
 }
 
@@ -1128,6 +1177,7 @@ struct App {
     next_tab_id: u64,
     next_download_id: u64,
     next_group_id: u64,
+    next_note_id: u64,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -1475,6 +1525,7 @@ impl Default for App {
             next_tab_id: 0,
             next_download_id: 0,
             next_group_id: 0,
+            next_note_id: 0,
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -2077,11 +2128,27 @@ impl App {
                 })
             })
             .collect();
+        let notes = self
+            .node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let note = node.as_note()?;
+                Some(session::SessionNote {
+                    id: id.clone(),
+                    text: note.text.clone(),
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                })
+            })
+            .collect();
         session::Session {
             tabs,
+            notes,
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
             next_tab_id: self.next_tab_id,
+            next_note_id: self.next_note_id,
         }
     }
 
@@ -2101,7 +2168,7 @@ impl App {
         let Some(session) = session::Session::load() else {
             return false;
         };
-        if session.tabs.is_empty() {
+        if session.tabs.is_empty() && session.notes.is_empty() {
             return false;
         }
         self.apply_session(session);
@@ -2117,6 +2184,21 @@ impl App {
     /// this.
     fn apply_session(&mut self, session: session::Session) {
         self.next_tab_id = session.next_tab_id;
+        self.next_note_id = session.next_note_id;
+        for note in session.notes {
+            self.nodes.insert(
+                note.id.clone(),
+                GraphNode {
+                    parent: None,
+                    group: None,
+                    pos: egui::vec2(note.pos_x, note.pos_y),
+                    vel: egui::Vec2::ZERO,
+                    color: None,
+                    payload: NodePayload::Note(NotePayload { text: note.text }),
+                },
+            );
+            self.node_order.push(note.id);
+        }
         let valid_focus = session
             .focused
             .as_ref()
@@ -2338,10 +2420,13 @@ impl App {
         id
     }
 
-    /// Removes a download node from the graph — the file on disk is left
-    /// untouched, this only forgets the node. Session-only state, so
-    /// there's nothing to persist after removal either.
-    fn remove_download_node(&mut self, id: &str) {
+    /// Removes a download or note node from the graph -- a download's file
+    /// on disk is left untouched (this only forgets the node), and neither
+    /// kind has anything else to persist/tear down on removal the way a
+    /// tab's engine process or a group's membership does, so one plain
+    /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/
+    /// `hovered` guard `close_tab`/`finish_swap` also apply) covers both.
+    fn remove_node(&mut self, id: &str) {
         self.nodes.remove(id);
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
@@ -2389,6 +2474,14 @@ impl App {
         id
     }
 
+    /// Same reasoning as `alloc_group_id` -- a distinct `"note-"` prefix in
+    /// the same flat id space.
+    fn alloc_note_id(&mut self) -> String {
+        let id = format!("note-{}", self.next_note_id);
+        self.next_note_id += 1;
+        id
+    }
+
     /// A fresh group's default display name -- derived from its own id's
     /// numeric suffix (`alloc_group_id`'s own monotonic, never-reused
     /// counter) rather than `self.groups.len() + 1`, which the three call
@@ -2411,11 +2504,6 @@ impl App {
     /// this only ever renders at the top level, where the group being
     /// closed can't simultaneously be the one being viewed).
     fn dissolve_group(&mut self, id: &str) {
-        for node in self.nodes.values_mut() {
-            if node.group.as_deref() == Some(id) {
-                node.group = None;
-            }
-        }
         for node in self.nodes.values_mut() {
             if node.group.as_deref() == Some(id) {
                 node.group = None;
@@ -2507,6 +2595,21 @@ impl App {
             .collect()
     }
 
+    /// Same shape as `downloads_at_current_level` -- notes are level-scoped
+    /// like tabs/downloads (a note can live inside a group's own subgraph,
+    /// not just at the top level, unlike a group card itself).
+    fn notes_at_current_level(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_note().is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// "Reset View"'s scene rect: bounds every node currently visible at
     /// this level (tabs/downloads, plus group cards at the top level —
     /// same level rules `tabs_at_current_level`/`downloads_at_current_level`
@@ -2532,6 +2635,12 @@ impl App {
             if let Some(node) = self.nodes.get(&id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, DOWNLOAD_NODE_SIZE));
+            }
+        }
+        for id in self.notes_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                bounds = bounds.union(egui::Rect::from_center_size(center, NOTE_NODE_SIZE));
             }
         }
         if self.current_group.is_none() {
@@ -2604,6 +2713,7 @@ impl App {
             self.current_group.clone(),
             self.tabs_at_current_level().len()
                 + self.downloads_at_current_level().len()
+                + self.notes_at_current_level().len()
                 + if self.current_group.is_none() { self.groups_at_current_level().len() } else { 0 },
         )
     }
@@ -3344,6 +3454,27 @@ impl App {
         self.node_order.push(id);
     }
 
+    /// The Graph toolbar's "+ Note" button -- unlike "+ New Group" (top
+    /// level only, groups don't nest), a note spawns at whichever level is
+    /// currently being viewed, same as "+ New Tab", since a note is a
+    /// plain member of a level's subgraph like a tab or download is.
+    fn new_note_shortcut(&mut self) {
+        let id = self.alloc_note_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: None,
+                group: self.current_group.clone(),
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Note(NotePayload { text: String::new() }),
+            },
+        );
+        self.node_order.push(id);
+    }
+
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
     /// view isn't currently showing. Tab -> Graph reuses `leave_to_graph`'s
     /// own shrink animation. Graph -> Tab jumps to `self.focused` directly
@@ -3749,7 +3880,7 @@ impl App {
     /// nodes/context menu show, see `App::download_context_menu`), most-
     /// recently-downloaded first, click a filename to open its containing
     /// folder (same as `reveal_download`), "x" to remove it from the list
-    /// (same as `remove_download_node`). Exists so a completed download can
+    /// (same as `remove_node`). Exists so a completed download can
     /// be found without first switching to Graph view.
     fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
@@ -3821,7 +3952,7 @@ impl App {
             close = true;
         }
         if let Some(id) = remove_id {
-            self.remove_download_node(&id);
+            self.remove_node(&id);
         }
         if clicked_outside {
             close = true;
@@ -4739,7 +4870,7 @@ impl App {
     /// Right-click menu for a download's card -- Open Containing Folder
     /// (same effect as a plain click, see `reveal_download`), Copy Path,
     /// Remove from List (same effect as the card's own close "x", see
-    /// `remove_download_node`). See `App::build_group_context_menu` for the
+    /// `remove_node`). See `App::build_group_context_menu` for the
     /// identical pattern this mirrors.
     fn build_download_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.download_context_menu.clone();
@@ -4798,7 +4929,7 @@ impl App {
             self.reveal_download(&id);
         }
         if remove {
-            self.remove_download_node(&id);
+            self.remove_node(&id);
         }
         if close {
             self.download_context_menu = None;
@@ -5733,6 +5864,8 @@ impl App {
         let mut tab_color_cycle_requested: Option<String> = None;
         let mut mute_toggle_requested: Option<String> = None;
         let mut new_group_requested = false;
+        let mut new_note_requested = false;
+        let mut note_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
@@ -5801,6 +5934,13 @@ impl App {
                     }
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
+                    }
+                    if ui
+                        .button(egui_phosphor::regular::NOTE_PENCIL)
+                        .on_hover_text("New Note")
+                        .clicked()
+                    {
+                        new_note_requested = true;
                     }
                     // These four buttons used to carry full text labels
                     // ("+ New Group", "Import Group...", "Ungroup All",
@@ -6225,6 +6365,12 @@ impl App {
             if let Some(node) = self.nodes.get(&id) {
                 let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
                 overlay_painter.circle_filled(p, 2.0, ui.visuals().weak_text_color());
+            }
+        }
+        for id in self.notes_at_current_level() {
+            if let Some(node) = self.nodes.get(&id) {
+                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                overlay_painter.circle_filled(p, 2.0, NOTE_CARD_COLOR);
             }
         }
         if self.current_group.is_none() {
@@ -7115,6 +7261,142 @@ impl App {
                     }
                 }
 
+                // Note nodes: a plain user-authored text card, no engine
+                // process behind it -- see `NotePayload`'s own doc comment.
+                // Unlike every other kind, most of the card is a real
+                // editable `TextEdit`, not overlay-painted static text --
+                // editing happens directly in place, on the graph. Only the
+                // header strip (not the text body) is drag-sensitive, via
+                // its own separate `Sense::click_and_drag()` interact rect,
+                // so a click inside the text placing a cursor/selecting
+                // text is never mistaken for the start of a card drag. A
+                // second, `Sense::hover()`-only interact over the *whole*
+                // card (harmless to layer under the header/text widgets,
+                // since a pure hover sense claims nothing) drives the
+                // close-button reveal and `self.hovered` bookkeeping, so
+                // hovering the text body still counts even though it isn't
+                // the drag handle.
+                for id in self.notes_at_current_level() {
+                    let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
+                        continue;
+                    };
+                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
+                    let rect = egui::Rect::from_center_size(center_pos, NOTE_NODE_SIZE);
+                    let header_h = 20.0 * inv_zoom;
+                    let header_rect = egui::Rect::from_min_max(
+                        rect.min,
+                        egui::Pos2::new(rect.max.x, rect.min.y + header_h),
+                    );
+                    let text_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(rect.min.x, rect.min.y + header_h),
+                        rect.max,
+                    )
+                    .shrink(6.0 * inv_zoom);
+
+                    let hover_response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_note_node_hover", id.as_str())),
+                        egui::Sense::hover(),
+                    );
+                    let is_hovered =
+                        self.hovered.as_deref() == Some(id.as_str()) || hover_response.hovered();
+
+                    let response = ui.interact(
+                        header_rect,
+                        egui::Id::new(("graph_note_node", id.as_str())),
+                        egui::Sense::click_and_drag(),
+                    );
+
+                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, NOTE_CARD_COLOR);
+                    let (border_width, border_color) = if is_hovered {
+                        (1.5, egui::Color32::from_black_alpha(200))
+                    } else {
+                        (1.0, egui::Color32::from_black_alpha(120))
+                    };
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
+                        egui::StrokeKind::Inside,
+                    );
+                    overlay_painter.text(
+                        project(header_rect.left_center()) + egui::vec2(8.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        egui_phosphor::regular::NOTE_PENCIL,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_black_alpha(160),
+                    );
+
+                    if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
+                        ui.put(
+                            text_rect,
+                            egui::TextEdit::multiline(&mut note.text)
+                                .frame(egui::Frame::NONE)
+                                .font(egui::FontId::proportional(13.0))
+                                .text_color(egui::Color32::from_black_alpha(220))
+                                .hint_text("Type a note..."),
+                        );
+                    }
+
+                    if is_hovered {
+                        let close_rect = egui::Rect::from_center_size(
+                            rect.right_top(),
+                            egui::vec2(18.0, 18.0) * inv_zoom,
+                        );
+                        let close_response = ui.interact(
+                            close_rect,
+                            egui::Id::new(("graph_note_node_close", id.as_str())),
+                            egui::Sense::click(),
+                        );
+                        let close_fill = if close_response.hovered() {
+                            egui::Color32::from_rgb(220, 60, 60)
+                        } else {
+                            NOTE_CARD_COLOR
+                        };
+                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                        ui.painter().rect_stroke(
+                            close_rect,
+                            4.0 * inv_zoom,
+                            egui::Stroke::new(1.0 * inv_zoom, egui::Color32::from_black_alpha(160)),
+                            egui::StrokeKind::Inside,
+                        );
+                        overlay_painter.text(
+                            project(close_rect.center()),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::X,
+                            egui::FontId::proportional(14.0),
+                            egui::Color32::from_black_alpha(200),
+                        );
+                        if close_response.clicked() {
+                            note_close_requested = Some(id.clone());
+                        }
+                    }
+
+                    if response.dragged() {
+                        self.dragging = Some(id.clone());
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.pos += response.drag_delta();
+                        }
+                    } else if self.dragging.as_deref() == Some(id.as_str()) {
+                        self.dragging = None;
+                    }
+                    if is_hovered {
+                        self.hovered = Some(id.clone());
+                    } else if self.hovered.as_deref() == Some(id.as_str()) {
+                        self.hovered = None;
+                    }
+
+                    if let Some(note) = self.nodes.get(&id).and_then(|n| n.as_note()) {
+                        if graph_filter_dims(&self.graph_filter, &[&note.text]) {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                6.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }
+                    }
+                }
+
                 // Group nodes: top level only (no nesting in this first
                 // cut — see `GroupPayload`'s own doc comment). Double-click
                 // drills into the group's own subgraph; a dragged tab
@@ -7498,7 +7780,7 @@ impl App {
             }
         }
         if let Some(id) = download_close_requested {
-            self.remove_download_node(&id);
+            self.remove_node(&id);
         }
         if let Some(id) = download_clicked {
             self.reveal_download(&id);
@@ -7523,6 +7805,12 @@ impl App {
         }
         if new_group_requested {
             self.new_group_shortcut();
+        }
+        if new_note_requested {
+            self.new_note_shortcut();
+        }
+        if let Some(id) = note_close_requested {
+            self.remove_node(&id);
         }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
@@ -8309,6 +8597,7 @@ impl App {
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::NewGroup => self.new_group_shortcut(),
+            DebugCommand::NewNote => self.new_note_shortcut(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;

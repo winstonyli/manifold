@@ -166,6 +166,8 @@ pub enum DebugCommand {
     Reload,
     /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
     NewGroup,
+    /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
+    NewNote,
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -387,6 +389,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
+        "NEWNOTE" => Some(DebugCommand::NewNote),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         _ => None,
     }

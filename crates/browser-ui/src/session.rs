@@ -31,12 +31,29 @@ pub struct SessionTab {
     pub pos_y: f32,
 }
 
+/// A sticky note's own saved data -- see `crate::NotePayload`'s own doc
+/// comment for why a note is persisted at all (unlike most other per-node
+/// display state, which is session-only).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionNote {
+    pub id: String,
+    pub text: String,
+    pub pos_x: f32,
+    pub pos_y: f32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
+    /// `#[serde(default)]` so a `session.json` written before notes existed
+    /// (an empty `Vec`, not a missing field) still loads cleanly.
+    #[serde(default)]
+    pub notes: Vec<SessionNote>,
     pub focused: Option<String>,
     pub view_mode_tab: bool,
     pub next_tab_id: u64,
+    #[serde(default)]
+    pub next_note_id: u64,
 }
 
 fn session_dir() -> Option<PathBuf> {
