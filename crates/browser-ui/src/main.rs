@@ -301,6 +301,47 @@ fn fade_popup_state<T: Clone>(
     cache.clone().map(|value| (value, fade))
 }
 
+/// Small hover-revealed "X" close button at a Graph-view card's top-right
+/// corner -- shared by Note/Image/Pdf/Json's own card loops in
+/// `build_graph_ui`, previously hand-copied once per kind. Colors are
+/// parameters rather than hardcoded: Note's card deliberately uses a
+/// different (warm, black-alpha-based) palette than Image/Pdf/Json's
+/// shared dark-chrome one, so the button needs to match whichever card
+/// it's drawn on. `project` maps a world-space point to screen space, same
+/// as every other `overlay_painter` call in this canvas. Returns whether
+/// it was clicked this frame -- the caller still decides what that means
+/// for its own kind (which `*_close_requested` to set).
+fn draw_node_close_button(
+    ui: &egui::Ui,
+    overlay_painter: &egui::Painter,
+    project: &impl Fn(egui::Pos2) -> egui::Pos2,
+    card_rect: egui::Rect,
+    close_id_salt: (&str, &str),
+    inv_zoom: f32,
+    base_fill: egui::Color32,
+    border_color: egui::Color32,
+    icon_color: egui::Color32,
+) -> bool {
+    let close_rect = egui::Rect::from_center_size(card_rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
+    let close_response = ui.interact(close_rect, egui::Id::new(close_id_salt), egui::Sense::click());
+    let close_fill = if close_response.hovered() { egui::Color32::from_rgb(220, 60, 60) } else { base_fill };
+    ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+    ui.painter().rect_stroke(
+        close_rect,
+        4.0 * inv_zoom,
+        egui::Stroke::new(1.0 * inv_zoom, border_color),
+        egui::StrokeKind::Inside,
+    );
+    overlay_painter.text(
+        project(close_rect.center()),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::X,
+        egui::FontId::proportional(14.0),
+        icon_color,
+    );
+    close_response.clicked()
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -3115,6 +3156,50 @@ impl App {
         }
     }
 
+    /// Applies a Graph-view card's own drag delta, and on drag-release,
+    /// drops it onto whichever group card (if any) it's now sitting on top
+    /// of -- plus the `self.hovered`/`self.dragging` bookkeeping every card
+    /// needs regardless. Shared by Note/Image/Pdf/Json's own card loops in
+    /// `build_graph_ui` -- previously hand-copied once per kind, byte-
+    /// identical apart from which field's `id`/`.pos` it read. Tab/
+    /// Download/Group each have their own reasons to stay separate (a tab
+    /// can also drop onto another *tab* to form a new group, a download's
+    /// own group-drop was never implemented at all -- see
+    /// `build_download_context_menu`'s own doc comment --, and a group
+    /// itself can't be dropped onto another group), so this only covers
+    /// the four kinds whose drop behavior is genuinely identical.
+    fn finish_draggable_node(&mut self, id: &str, response: &egui::Response, is_hovered: bool) {
+        if response.dragged() {
+            self.dragging = Some(id.to_string());
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.pos += response.drag_delta();
+            }
+        } else if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+            if self.current_group.is_none() {
+                if let Some(pos) = self.nodes.get(id).map(|n| n.pos) {
+                    let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                        self.nodes.get(gid).is_some_and(|g| {
+                            egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
+                                .contains(egui::Pos2::new(pos.x, pos.y))
+                        })
+                    });
+                    if let Some(group_id) = dropped_on_group {
+                        if let Some(node) = self.nodes.get_mut(id) {
+                            node.group = Some(group_id);
+                        }
+                    }
+                }
+            }
+            self.save_session();
+        }
+        if is_hovered {
+            self.hovered = Some(id.to_string());
+        } else if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
+    }
+
     /// A WebKit-sourced download path is a WSL2-side path (WebKit runs
     /// inside WSL2 — see project docs), not reachable from this Windows
     /// process as a plain path, so it's translated to the
@@ -3132,15 +3217,22 @@ impl App {
         })
     }
 
+    /// Opens `path`'s containing folder with the file itself pre-selected --
+    /// the shared mechanism behind every `reveal_*` method below, previously
+    /// hand-copied four times differing only in how each kind's own `path`
+    /// gets read.
+    fn reveal_in_explorer(path: &str) {
+        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
+    }
+
     /// Graph node click on a download: opens the containing folder with
     /// the file pre-selected, same "just show the obvious thing, no custom
     /// UI" posture as the download itself (see `EngineToHost::
     /// DownloadCompleted`'s doc comment).
     fn reveal_download(&self, id: &str) {
-        let Some(path) = self.windows_path_for_download(id) else { return };
-        let _ = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
-            .spawn();
+        if let Some(path) = self.windows_path_for_download(id) {
+            Self::reveal_in_explorer(&path);
+        }
     }
 
     /// Same idea as `reveal_download`, for an image node -- no WSL path
@@ -3148,32 +3240,23 @@ impl App {
     /// real Windows file picker (`add_image_node`), never a WebKit-side
     /// download.
     fn reveal_image(&self, id: &str) {
-        let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) else {
-            return;
-        };
-        let _ = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
-            .spawn();
+        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+            Self::reveal_in_explorer(&path);
+        }
     }
 
     /// Same idea as `reveal_image`, for a PDF node.
     fn reveal_pdf(&self, id: &str) {
-        let Some(path) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) else {
-            return;
-        };
-        let _ = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
-            .spawn();
+        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
+            Self::reveal_in_explorer(&path);
+        }
     }
 
     /// Same idea as `reveal_pdf`, for a JSON node.
     fn reveal_json(&self, id: &str) {
-        let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) else {
-            return;
-        };
-        let _ = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{path}"))
-            .spawn();
+        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+            Self::reveal_in_explorer(&path);
+        }
     }
 
     /// Distinct prefix from `alloc_tab_id`/the `"dl-"` download-id prefix —
@@ -8994,80 +9077,23 @@ impl App {
                         }
                     }
 
-                    if is_hovered {
-                        let close_rect = egui::Rect::from_center_size(
-                            rect.right_top(),
-                            egui::vec2(18.0, 18.0) * inv_zoom,
-                        );
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_note_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
-                        let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
-                        } else {
-                            NOTE_CARD_COLOR
-                        };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
-                        ui.painter().rect_stroke(
-                            close_rect,
-                            4.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, egui::Color32::from_black_alpha(160)),
-                            egui::StrokeKind::Inside,
-                        );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
+                    if is_hovered
+                        && draw_node_close_button(
+                            ui,
+                            &overlay_painter,
+                            &project,
+                            rect,
+                            ("graph_note_node_close", id.as_str()),
+                            inv_zoom,
+                            NOTE_CARD_COLOR,
+                            egui::Color32::from_black_alpha(160),
                             egui::Color32::from_black_alpha(200),
-                        );
-                        if close_response.clicked() {
-                            note_close_requested = Some(id.clone());
-                        }
+                        )
+                    {
+                        note_close_requested = Some(id.clone());
                     }
 
-                    if response.dragged() {
-                        self.dragging = Some(id.clone());
-                        if let Some(node) = self.nodes.get_mut(&id) {
-                            node.pos += response.drag_delta();
-                        }
-                    } else if self.dragging.as_deref() == Some(id.as_str()) {
-                        self.dragging = None;
-                        // Dropping a note onto a group's card joins that
-                        // group -- same "drop onto a card" gesture a tab
-                        // already has, only meaningful at the top level
-                        // where notes and groups are rendered (and can
-                        // overlap) together. Unlike a tab, dropping a note
-                        // on another ungrouped note doesn't auto-create a
-                        // new group -- that's a tab-specific convenience
-                        // this doesn't try to match.
-                        if self.current_group.is_none() {
-                            if let Some(note_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
-                                    self.nodes.get(gid).is_some_and(|g| {
-                                        egui::Rect::from_center_size(
-                                            egui::Pos2::new(g.pos.x, g.pos.y),
-                                            GROUP_NODE_SIZE,
-                                        )
-                                        .contains(egui::Pos2::new(note_pos.x, note_pos.y))
-                                    })
-                                });
-                                if let Some(group_id) = dropped_on_group {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.group = Some(group_id);
-                                    }
-                                }
-                            }
-                        }
-                        self.save_session();
-                    }
-                    if is_hovered {
-                        self.hovered = Some(id.clone());
-                    } else if self.hovered.as_deref() == Some(id.as_str()) {
-                        self.hovered = None;
-                    }
+                    self.finish_draggable_node(&id, &response, is_hovered);
 
                     if let Some(note) = self.nodes.get(&id).and_then(|n| n.as_note()) {
                         if graph_filter_dims(&self.graph_filter, &[&note.text]) {
@@ -9151,76 +9177,23 @@ impl App {
                         egui::StrokeKind::Inside,
                     );
 
-                    if is_hovered {
-                        let close_rect = egui::Rect::from_center_size(
-                            rect.right_top(),
-                            egui::vec2(18.0, 18.0) * inv_zoom,
-                        );
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_image_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
-                        let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
-                        ui.painter().rect_stroke(
-                            close_rect,
-                            4.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                            egui::StrokeKind::Inside,
-                        );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
+                    if is_hovered
+                        && draw_node_close_button(
+                            ui,
+                            &overlay_painter,
+                            &project,
+                            rect,
+                            ("graph_image_node_close", id.as_str()),
+                            inv_zoom,
+                            ui.visuals().extreme_bg_color,
+                            ui.visuals().weak_text_color(),
                             ui.visuals().text_color(),
-                        );
-                        if close_response.clicked() {
-                            image_close_requested = Some(id.clone());
-                        }
+                        )
+                    {
+                        image_close_requested = Some(id.clone());
                     }
 
-                    if response.dragged() {
-                        self.dragging = Some(id.clone());
-                        if let Some(node) = self.nodes.get_mut(&id) {
-                            node.pos += response.drag_delta();
-                        }
-                    } else if self.dragging.as_deref() == Some(id.as_str()) {
-                        self.dragging = None;
-                        // Same drop-onto-a-group-card gesture a note/tab
-                        // already have -- see the note card's own comment
-                        // on this for why note/image-onto-note/image
-                        // doesn't also auto-create a new group.
-                        if self.current_group.is_none() {
-                            if let Some(image_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
-                                    self.nodes.get(gid).is_some_and(|g| {
-                                        egui::Rect::from_center_size(
-                                            egui::Pos2::new(g.pos.x, g.pos.y),
-                                            GROUP_NODE_SIZE,
-                                        )
-                                        .contains(egui::Pos2::new(image_pos.x, image_pos.y))
-                                    })
-                                });
-                                if let Some(group_id) = dropped_on_group {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.group = Some(group_id);
-                                    }
-                                }
-                            }
-                        }
-                        self.save_session();
-                    }
-                    if is_hovered {
-                        self.hovered = Some(id.clone());
-                    } else if self.hovered.as_deref() == Some(id.as_str()) {
-                        self.hovered = None;
-                    }
+                    self.finish_draggable_node(&id, &response, is_hovered);
 
                     if let Some(image) = self.nodes.get(&id).and_then(|n| n.as_image()) {
                         if graph_filter_dims(&self.graph_filter, &[download_filename(&image.path)]) {
@@ -9341,74 +9314,23 @@ impl App {
                         egui::StrokeKind::Inside,
                     );
 
-                    if is_hovered {
-                        let close_rect = egui::Rect::from_center_size(
-                            rect.right_top(),
-                            egui::vec2(18.0, 18.0) * inv_zoom,
-                        );
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_pdf_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
-                        let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
-                        ui.painter().rect_stroke(
-                            close_rect,
-                            4.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                            egui::StrokeKind::Inside,
-                        );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
+                    if is_hovered
+                        && draw_node_close_button(
+                            ui,
+                            &overlay_painter,
+                            &project,
+                            rect,
+                            ("graph_pdf_node_close", id.as_str()),
+                            inv_zoom,
+                            ui.visuals().extreme_bg_color,
+                            ui.visuals().weak_text_color(),
                             ui.visuals().text_color(),
-                        );
-                        if close_response.clicked() {
-                            pdf_close_requested = Some(id.clone());
-                        }
+                        )
+                    {
+                        pdf_close_requested = Some(id.clone());
                     }
 
-                    if response.dragged() {
-                        self.dragging = Some(id.clone());
-                        if let Some(node) = self.nodes.get_mut(&id) {
-                            node.pos += response.drag_delta();
-                        }
-                    } else if self.dragging.as_deref() == Some(id.as_str()) {
-                        self.dragging = None;
-                        // Same drop-onto-a-group-card gesture note/image/tab
-                        // already have.
-                        if self.current_group.is_none() {
-                            if let Some(pdf_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
-                                    self.nodes.get(gid).is_some_and(|g| {
-                                        egui::Rect::from_center_size(
-                                            egui::Pos2::new(g.pos.x, g.pos.y),
-                                            GROUP_NODE_SIZE,
-                                        )
-                                        .contains(egui::Pos2::new(pdf_pos.x, pdf_pos.y))
-                                    })
-                                });
-                                if let Some(group_id) = dropped_on_group {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.group = Some(group_id);
-                                    }
-                                }
-                            }
-                        }
-                        self.save_session();
-                    }
-                    if is_hovered {
-                        self.hovered = Some(id.clone());
-                    } else if self.hovered.as_deref() == Some(id.as_str()) {
-                        self.hovered = None;
-                    }
+                    self.finish_draggable_node(&id, &response, is_hovered);
 
                     if let Some(pdf) = self.nodes.get(&id).and_then(|n| n.as_pdf()) {
                         if graph_filter_dims(&self.graph_filter, &[download_filename(&pdf.path)]) {
@@ -9471,78 +9393,27 @@ impl App {
                         egui::StrokeKind::Inside,
                     );
 
-                    if is_hovered {
-                        let close_rect = egui::Rect::from_center_size(
-                            rect.right_top(),
-                            egui::vec2(18.0, 18.0) * inv_zoom,
-                        );
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_json_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
-                        let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
-                        ui.painter().rect_stroke(
-                            close_rect,
-                            4.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                            egui::StrokeKind::Inside,
-                        );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
+                    if is_hovered
+                        && draw_node_close_button(
+                            ui,
+                            &overlay_painter,
+                            &project,
+                            rect,
+                            ("graph_json_node_close", id.as_str()),
+                            inv_zoom,
+                            ui.visuals().extreme_bg_color,
+                            ui.visuals().weak_text_color(),
                             ui.visuals().text_color(),
-                        );
-                        if close_response.clicked() {
-                            json_close_requested = Some(id.clone());
-                        }
+                        )
+                    {
+                        json_close_requested = Some(id.clone());
                     }
 
                     if response.double_clicked() {
                         self.json_viewer_node = Some(id.clone());
                     }
 
-                    if response.dragged() {
-                        self.dragging = Some(id.clone());
-                        if let Some(node) = self.nodes.get_mut(&id) {
-                            node.pos += response.drag_delta();
-                        }
-                    } else if self.dragging.as_deref() == Some(id.as_str()) {
-                        self.dragging = None;
-                        // Same drop-onto-a-group-card gesture note/image/pdf
-                        // already have.
-                        if self.current_group.is_none() {
-                            if let Some(json_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
-                                    self.nodes.get(gid).is_some_and(|g| {
-                                        egui::Rect::from_center_size(
-                                            egui::Pos2::new(g.pos.x, g.pos.y),
-                                            GROUP_NODE_SIZE,
-                                        )
-                                        .contains(egui::Pos2::new(json_pos.x, json_pos.y))
-                                    })
-                                });
-                                if let Some(group_id) = dropped_on_group {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.group = Some(group_id);
-                                    }
-                                }
-                            }
-                        }
-                        self.save_session();
-                    }
-                    if is_hovered {
-                        self.hovered = Some(id.clone());
-                    } else if self.hovered.as_deref() == Some(id.as_str()) {
-                        self.hovered = None;
-                    }
+                    self.finish_draggable_node(&id, &response, is_hovered);
 
                     if graph_filter_dims(&self.graph_filter, &[download_filename(&path)]) {
                         overlay_painter.rect_filled(
