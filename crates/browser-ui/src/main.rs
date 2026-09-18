@@ -712,6 +712,10 @@ struct ClosedTab {
 /// list is bounded too.
 const MAX_CLOSED_TABS: usize = 10;
 
+/// Same reasoning as `MAX_CLOSED_TABS`, just a smaller cap -- closing a
+/// whole group is a rarer, heavier action than closing one tab.
+const MAX_CLOSED_GROUPS: usize = 5;
+
 /// One entry in `App::history` -- see that field's own doc comment.
 struct HistoryEntry {
     title: String,
@@ -1064,6 +1068,21 @@ struct App {
     /// remove) any specific one — see `ClosedTab`'s own doc comment. Capped
     /// at `MAX_CLOSED_TABS`, oldest dropped first.
     closed_tabs: Vec<ClosedTab>,
+    /// Whole groups closed via `close_group` (its own "Close Group" context-
+    /// menu entry) -- each a full `group_export::GroupExport` snapshot
+    /// (name, tag color, member tabs/positions), same shape "Export
+    /// Group..." already produces, so reopening one goes through the exact
+    /// same `import_group_export` a real file import would. Listed in the
+    /// same "Recently Closed" dropdown as `closed_tabs`, in their own
+    /// section -- `close_group` closes each member through the normal
+    /// `close_tab` path too (for its other bookkeeping: parent-relinking,
+    /// thumbnail cleanup, focus/hover reset), then throws away the
+    /// individual `ClosedTab` entries that produced, so a closed group
+    /// doesn't ALSO leave behind N separate single-tab undo entries a user
+    /// could reopen from and get duplicates. Capped at `MAX_CLOSED_GROUPS`,
+    /// oldest dropped first. Not reachable from `Ctrl+Shift+T` (that
+    /// shortcut only ever looks at `closed_tabs`) -- only the dropdown.
+    closed_groups: Vec<group_export::GroupExport>,
 
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
@@ -1251,6 +1270,7 @@ impl Default for App {
             pending_screenshot: None,
             pending_print_to_pdf: None,
             closed_tabs: Vec::new(),
+            closed_groups: Vec::new(),
             context_menu: None,
             save_toast: None,
             last_session_save: None,
@@ -1615,21 +1635,36 @@ impl App {
     }
 
     /// The "Recently Closed" toolbar dropdown (Graph view, top level or
-    /// not -- unlike groups, this isn't level-scoped): every entry in
-    /// `self.closed_tabs`, most recently closed first, click one to respawn
-    /// exactly that tab and remove it from the list. `Ctrl+Shift+T`/
-    /// `REOPENTAB` only ever reaches the *last* entry; this is the way to
-    /// reopen an older one without reopening everything after it first.
+    /// not -- unlike groups, this isn't level-scoped): closed groups first
+    /// (`self.closed_groups`), then closed tabs (`self.closed_tabs`), each
+    /// section most recently closed first, click one to respawn it and
+    /// remove it from its list. `Ctrl+Shift+T`/`REOPENTAB` only ever
+    /// reaches `closed_tabs`' *last* entry (see that field's own doc
+    /// comment for why groups aren't reachable that way); this dropdown is
+    /// the only way to reopen an older tab, or any closed group at all.
     fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
-        let mut reopen_index: Option<usize> = None;
+        let mut reopen_tab_index: Option<usize> = None;
+        let mut reopen_group_index: Option<usize> = None;
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            for (index, group) in self.closed_groups.iter().enumerate().rev() {
+                ui.horizontal(|ui| {
+                    ui.label(egui_phosphor::regular::FOLDER_SIMPLE);
+                    let label = format!("{} ({})", group.name, group.tabs.len());
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                        reopen_group_index = Some(index);
+                    }
+                });
+            }
+            if !self.closed_groups.is_empty() && !self.closed_tabs.is_empty() {
+                ui.separator();
+            }
             for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
                     engine_dot(ui, closed.kind, 8.0);
                     if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click())).clicked() {
-                        reopen_index = Some(index);
+                        reopen_tab_index = Some(index);
                     }
                 });
             }
@@ -1637,7 +1672,12 @@ impl App {
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
-        if let Some(index) = reopen_index {
+        if let Some(index) = reopen_group_index {
+            let export = self.closed_groups.remove(index);
+            self.import_group_export(export);
+            close = true;
+        }
+        if let Some(index) = reopen_tab_index {
             let closed = self.closed_tabs.remove(index);
             self.respawn_closed_tab(closed);
             close = true;
@@ -1645,7 +1685,7 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        if close || self.closed_tabs.is_empty() {
+        if close || (self.closed_tabs.is_empty() && self.closed_groups.is_empty()) {
             self.recently_closed_open = false;
         }
     }
@@ -4178,13 +4218,28 @@ impl App {
     }
 
     /// Closes every tab member of a group (each through the normal
-    /// `close_tab` path -- teardown, reparenting, the `closed_tabs` stack
-    /// all still apply, same as `close_all_except`/`close_selected`), then
+    /// `close_tab` path -- teardown, reparenting, thumbnail cleanup all
+    /// still apply, same as `close_all_except`/`close_selected`), then
     /// dissolves the now-tabless group itself. A download member is never
     /// closed by this (downloads have no "closed" state of their own,
     /// see `App::close_tab`'s own scope) -- `dissolve_group` returns it to
-    /// the top level exactly as a plain Dissolve already would.
+    /// the top level exactly as a plain Dissolve already would. Snapshots
+    /// the group into `closed_groups` *before* touching anything, via the
+    /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
+    /// Group" can recreate it -- the individual `ClosedTab` entries
+    /// `close_tab` pushes along the way are then thrown away (`closed_tabs`
+    /// truncated back to its pre-loop length) rather than left behind
+    /// alongside the group-level snapshot, which would otherwise let a user
+    /// reopen the same tabs twice (once via the group, once via the plain
+    /// tab list) and end up with duplicates.
     fn close_group(&mut self, id: &str) {
+        if let Some(export) = self.export_group(id) {
+            self.closed_groups.push(export);
+            if self.closed_groups.len() > MAX_CLOSED_GROUPS {
+                self.closed_groups.remove(0);
+            }
+        }
+        let closed_tabs_before = self.closed_tabs.len();
         let member_ids: Vec<String> = self
             .tabs
             .iter()
@@ -4194,6 +4249,7 @@ impl App {
         for tid in member_ids {
             self.close_tab(&tid);
         }
+        self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
     }
 
@@ -5340,8 +5396,9 @@ impl App {
                             .desired_width(120.0)
                             .hint_text("Filter..."),
                     );
-                    if !self.closed_tabs.is_empty() {
-                        let label = format!("Recently Closed ({})", self.closed_tabs.len());
+                    if !self.closed_tabs.is_empty() || !self.closed_groups.is_empty() {
+                        let count = self.closed_tabs.len() + self.closed_groups.len();
+                        let label = format!("Recently Closed ({count})");
                         let response = ui.button(label);
                         if response.clicked() {
                             self.recently_closed_open = !self.recently_closed_open;
