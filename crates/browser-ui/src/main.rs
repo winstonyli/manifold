@@ -8876,7 +8876,7 @@ impl App {
                                 text_rect,
                                 egui::TextEdit::multiline(&mut note.text)
                                     .frame(egui::Frame::NONE)
-                                    .font(egui::FontId::proportional(13.0))
+                                    .font(egui::FontId::proportional(13.0 * inv_zoom))
                                     .text_color(egui::Color32::from_black_alpha(220))
                                     .hint_text("Type a note..."),
                             );
@@ -8903,6 +8903,20 @@ impl App {
                             |ui| {
                                 ui.style_mut().visuals.override_text_color =
                                     Some(egui::Color32::from_black_alpha(220));
+                                // Counteracts Scene's own zoom scaling, the
+                                // same `* inv_zoom` idea every other
+                                // constant-on-screen-size element in this
+                                // card (border width, close button, icons)
+                                // already uses -- otherwise heading/body
+                                // text would visibly grow/shrink with the
+                                // graph's own zoom instead of reading like
+                                // real UI chrome. Scales every `TextStyle`
+                                // by the same factor, not just body text, so
+                                // headings stay proportionally bigger than
+                                // body text at any zoom level.
+                                for font_id in ui.style_mut().text_styles.values_mut() {
+                                    font_id.size *= inv_zoom;
+                                }
                                 egui_commonmark::CommonMarkViewer::new().show(
                                     ui,
                                     &mut self.commonmark_cache,
