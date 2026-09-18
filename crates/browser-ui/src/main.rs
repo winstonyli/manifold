@@ -495,6 +495,35 @@ fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
+/// The actual shapes `draw_card_glow` paints -- split out so a caller whose
+/// rect isn't known until *after* its content is laid out (the save toast:
+/// an `egui::Frame` that auto-sizes to its own label) can still put the
+/// glow visually *behind* that content. `Painter::add` only ever appends
+/// (there's no "insert behind" for shapes already painted), so that caller
+/// pre-reserves placeholder slots with `Shape::Noop` before drawing its
+/// frame, then retroactively fills them in with these via `Painter::set`
+/// once the frame's real rect is known -- the standard egui pattern for
+/// this, also how e.g. selection highlights behind not-yet-laid-out text
+/// are done. A graph card's rect is fixed upfront (`GRAPH_NODE_SIZE`/
+/// `GROUP_NODE_SIZE`), so `draw_card_glow` itself just paints these
+/// directly, immediately, without needing this indirection.
+fn card_glow_shapes(
+    rect: egui::Rect,
+    base_corner_radius: f32,
+    color: egui::Color32,
+    inv_zoom: f32,
+    intensity: f32,
+) -> [egui::Shape; 2] {
+    [(85u8, 3.5_f32), (38u8, 8.5)].map(|(alpha, grow)| {
+        let alpha = ((alpha as f32) * intensity).min(255.0) as u8;
+        egui::Shape::rect_filled(
+            rect.expand(grow * inv_zoom),
+            (base_corner_radius + grow) * inv_zoom,
+            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+        )
+    })
+}
+
 /// A soft colored glow behind a graph card (tab or group), grown outward
 /// from its own rect with decreasing alpha -- used instead of a plain black
 /// drop-shadow, which was tried first and found live to be invisible
@@ -514,13 +543,8 @@ fn draw_card_glow(
     inv_zoom: f32,
     intensity: f32,
 ) {
-    for (alpha, grow) in [(85u8, 3.5_f32), (38u8, 8.5)] {
-        let alpha = ((alpha as f32) * intensity).min(255.0) as u8;
-        painter.rect_filled(
-            rect.expand(grow * inv_zoom),
-            (base_corner_radius + grow) * inv_zoom,
-            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
-        );
+    for shape in card_glow_shapes(rect, base_corner_radius, color, inv_zoom, intensity) {
+        painter.add(shape);
     }
 }
 
@@ -4637,7 +4661,18 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(opacity);
-                egui::Frame::default()
+                // Same ACCENT-tinted glow the graph cards use, tying the
+                // toast into that visual language -- but this Frame
+                // auto-sizes to its own label, so the rect `card_glow_
+                // shapes` needs isn't known until *after* `.show()` below
+                // lays it out. Reserve two placeholder shapes now (glow is
+                // always two layers) so they still paint *behind* the
+                // frame by paint order, then fill them in for real once
+                // `response.rect` exists -- see `card_glow_shapes`'s own
+                // doc comment for why this indirection, unlike graph
+                // cards, is needed here specifically.
+                let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
+                let response = egui::Frame::default()
                     .fill(TOOLBAR_FILL)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
                     .corner_radius(3u8)
@@ -4645,6 +4680,10 @@ impl App {
                     .show(ui, |ui| {
                         ui.label(format!("Saved {path}"));
                     });
+                let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
+                for (slot, shape) in glow_slots.into_iter().zip(shapes) {
+                    ui.painter().set(slot, shape);
+                }
             });
     }
 
