@@ -59,15 +59,15 @@ const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
 /// A group card's footprint — same idea as `DOWNLOAD_NODE_SIZE` (no live
 /// thumbnail, just a name/member-count), sized a bit larger since it's a
 /// container rather than a single file. Also the drop-target rect a
-/// dragged tab is tested against on release — see `GroupNode`'s own doc
+/// dragged tab is tested against on release — see `GroupPayload`'s own doc
 /// comment.
 const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
 /// chosen for mutual distinguishability against this app's dark chrome
-/// rather than any particular meaning. Shared by `GroupNode::color` and
-/// `TabNode::color`.
+/// rather than any particular meaning. Shared by `GraphNode::color`
+/// (used by `Group`) and `TabNode::color`.
 const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
     egui::Color32::from_rgb(235, 87, 87),
     egui::Color32::from_rgb(242, 153, 74),
@@ -735,7 +735,7 @@ struct TabNode {
     /// `SessionTab` warranted for a graph-view display preference.
     pinned: bool,
     /// Which group's subgraph this tab is shown in — `None` at the top
-    /// level. See `GroupNode`'s own doc comment. Unlike `parent` (who
+    /// level. See `GroupPayload`'s own doc comment. Unlike `parent` (who
     /// opened this tab, used for the edge drawn to it), `group` is purely
     /// "which graph view is this node rendered in" — a tab's parent can
     /// point to a tab in a *different* group (or none at all) without
@@ -760,28 +760,43 @@ struct TabNode {
 
 /// Kind-specific data for one node in the unified graph-node model --
 /// `GraphNode` holds the fields every kind shares (position, graph
-/// membership); this holds only what varies per kind. First step of
-/// migrating off three separate hardcoded node types (`TabNode`/
-/// `DownloadNode`/`GroupNode`, three separate `HashMap`s) onto one: only
-/// `Download` has moved over so far (see `App::nodes`'s own doc comment) --
-/// `Tab`/`Group` variants land in later steps, once this one's proven out
-/// end to end. A one-variant enum reads oddly in isolation, but it's the
-/// right scaffolding for an incremental migration rather than a single
-/// all-at-once rewrite of every render/drag/hit-test site in this file.
+/// membership); this holds only what varies per kind. Step in migrating off
+/// three separate hardcoded node types (the old `TabNode`/`DownloadNode`/
+/// `GroupNode`, three separate `HashMap`s) onto one: `Download` and `Group`
+/// have moved over so far (see `App::nodes`'s own doc comment) -- `Tab`
+/// (still its own `TabNode`/`tabs` map, by far the largest of the three)
+/// remains for a later step.
 enum NodePayload {
     Download(DownloadPayload),
+    Group(GroupPayload),
 }
 
 impl NodePayload {
     fn as_download(&self) -> Option<&DownloadPayload> {
         match self {
             NodePayload::Download(d) => Some(d),
+            _ => None,
         }
     }
 
     fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
         match self {
             NodePayload::Download(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    fn as_group(&self) -> Option<&GroupPayload> {
+        match self {
+            NodePayload::Group(g) => Some(g),
+            _ => None,
+        }
+    }
+
+    fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
+        match self {
+            NodePayload::Group(g) => Some(g),
+            _ => None,
         }
     }
 }
@@ -813,23 +828,22 @@ struct DownloadPayload {
 /// One node in the graph view -- fields every kind shares (position, graph
 /// membership) live here; `payload` holds whatever's specific to the
 /// node's actual kind. See `NodePayload`'s own doc comment for the
-/// migration this is the first step of. `color` isn't used by `Download`
-/// (it never had one) but is on `GraphNode` itself, not deferred to a later
-/// step, so this shape doesn't need to change shape again once `Tab`/
-/// `Group` (which do use it) migrate over.
+/// migration this is a step of.
 struct GraphNode {
     /// The "opened from" edge for a tab, or (for a download) the tab it was
     /// downloaded from -- see `TabNode::parent`'s own doc comment (not yet
-    /// migrated, still describes the same concept). `None` for a root node.
+    /// migrated, still describes the same concept). `None` for a root node,
+    /// and always `None` for a group (never nested, never "opened from").
     parent: Option<String>,
     /// Which group's subgraph this node is shown in -- `None` at the top
-    /// level. See `GroupNode`'s own doc comment (not yet migrated).
+    /// level. See `GroupPayload`'s own doc comment. Always `None` for a
+    /// group node itself.
     group: Option<String>,
     pos: egui::Vec2,
     vel: egui::Vec2,
     /// User-chosen tag color -- `None` for any kind that doesn't use one
-    /// (every kind migrated so far). Unread until `Tab`/`Group` migrate.
-    #[allow(dead_code)]
+    /// (`Download` doesn't; `Group` does). `Tab` still uses its own
+    /// not-yet-migrated `TabNode::color` until it migrates too.
     color: Option<egui::Color32>,
     payload: NodePayload,
 }
@@ -842,30 +856,34 @@ impl GraphNode {
     fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
         self.payload.as_download_mut()
     }
+
+    fn as_group(&self) -> Option<&GroupPayload> {
+        self.payload.as_group()
+    }
+
+    fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
+        self.payload.as_group_mut()
+    }
 }
 
-/// A tab group: a container node shown at the top level of Graph view that,
+/// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
+/// `pos`/`vel`/`color` moved to `GraphNode`, shared with every kind). A
+/// group is a container node shown at the top level of Graph view that,
 /// double-clicked, drills into its own subgraph of member tabs/downloads
 /// (`App::current_group`) in place of the top level's — the same "swap
 /// which set of nodes this view renders" idea `ViewMode::Tab`/`Graph`
 /// already is, just one level deeper, and reusing that same flat
 /// `graph_layout::step` simulation rather than a second nested one running
 /// inside the group's own node. No nesting in this first cut — a group
-/// can't contain another group, only tabs/downloads (`TabNode::group`/
-/// `DownloadNode::group` are a single `Option<String>`, not a path).
-/// Entering/leaving eases the camera via `GraphCameraTween` rather than
-/// `Transition` — see that type's own doc comment for why. Groups (and
-/// membership) are session-only, same scope decision as `TabNode::pinned`
-/// — not written to `session.json`.
-struct GroupNode {
+/// can't contain another group, only tabs/downloads (`GraphNode::group`/
+/// `TabNode::group` are a single `Option<String>`, not a path). A group
+/// node's own `GraphNode::group`/`parent` stay `None` — a group itself is
+/// never nested and has no "opened from" edge. Entering/leaving eases the
+/// camera via `GraphCameraTween` rather than `Transition` — see that type's
+/// own doc comment for why. Groups (and membership) are session-only, same
+/// scope decision as `TabNode::pinned` — not written to `session.json`.
+struct GroupPayload {
     name: String,
-    pos: egui::Vec2,
-    vel: egui::Vec2,
-    /// User-chosen tag color, cycled through `TAG_COLOR_PALETTE` by
-    /// clicking the card's own color swatch (bottom-left corner, same spot
-    /// a tab's pin dot occupies) -- `None` keeps the plain default `ACCENT`
-    /// border every group card had before this existed.
-    color: Option<egui::Color32>,
 }
 
 /// Snapshot of a tab taken by `close_tab` just before removal, enough to
@@ -1000,17 +1018,12 @@ struct App {
     /// frame-to-frame, which would make node click/drag targeting flaky.
     tab_order: Vec<String>,
     /// Graph nodes migrated onto the unified `GraphNode`/`NodePayload`
-    /// model so far -- downloads only, for now (see `NodePayload`'s own
-    /// doc comment). Tabs/groups still live in their own `tabs`/`groups`
-    /// maps below until they migrate too. `node_order` is the same "stable
-    /// insertion order, `HashMap` iteration isn't" reasoning `tab_order`
-    /// already has.
+    /// model so far -- downloads and groups (see `NodePayload`'s own doc
+    /// comment). Tabs still live in their own `tabs` map below until it
+    /// migrates too. `node_order` is the same "stable insertion order,
+    /// `HashMap` iteration isn't" reasoning `tab_order` already has.
     nodes: HashMap<String, GraphNode>,
     node_order: Vec<String>,
-    /// Tab groups shown as top-level graph nodes — see `GroupNode`'s own
-    /// doc comment.
-    groups: HashMap<String, GroupNode>,
-    group_order: Vec<String>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
     /// the plain centered name+count layout an empty group already uses,
@@ -1019,7 +1032,7 @@ struct App {
     /// touch `groups`/membership at all. Session-only, resets on restart.
     groups_collapsed: bool,
     /// `None` while viewing the top level; `Some(group_id)` while a
-    /// group's own subgraph has been drilled into (see `GroupNode`'s doc
+    /// group's own subgraph has been drilled into (see `GroupPayload`'s doc
     /// comment) — only meaningful when `view_mode == Graph`, but not reset
     /// on leaving Graph view, so returning to Graph resumes wherever the
     /// user last drilled into, same "graph view remembers its own state"
@@ -1031,7 +1044,7 @@ struct App {
     /// (see `group_context_menu`) sets this the same way. A real
     /// `egui::TextEdit` replaces whichever plain button/menu row started
     /// it until Enter commits or Escape cancels. Transient UI state, not
-    /// part of `GroupNode` itself.
+    /// part of `GroupPayload` itself.
     renaming_group: Option<(String, String)>,
     /// Set for exactly one frame when `renaming_group` is first set, same
     /// one-shot `response.request_focus()` pattern as
@@ -1445,8 +1458,6 @@ impl Default for App {
             tab_order: Vec::new(),
             nodes: HashMap::new(),
             node_order: Vec::new(),
-            groups: HashMap::new(),
-            group_order: Vec::new(),
             groups_collapsed: false,
             current_group: None,
             renaming_group: None,
@@ -2167,8 +2178,6 @@ impl App {
         self.tab_order.clear();
         self.nodes.clear();
         self.node_order.clear();
-        self.groups.clear();
-        self.group_order.clear();
         self.focused = None;
         self.current_group = None;
         self.dragging = None;
@@ -2245,7 +2254,7 @@ impl App {
         // same guard `reopen_closed_tab_shortcut` applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let group = group.filter(|g| self.groups.contains_key(g));
+        let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
         {
@@ -2414,8 +2423,8 @@ impl App {
                 node.group = None;
             }
         }
-        self.groups.remove(id);
-        self.group_order.retain(|g| g != id);
+        self.nodes.remove(id);
+        self.node_order.retain(|g| g != id);
         if self.current_group.as_deref() == Some(id) {
             self.current_group = None;
         }
@@ -2474,7 +2483,24 @@ impl App {
     fn downloads_at_current_level(&self) -> Vec<String> {
         self.node_order
             .iter()
-            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group))
+            .filter(|id| {
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|n| n.group == self.current_group && n.as_download().is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Group cards only ever show at the top level (no nested groups, see
+    /// `GroupPayload`'s own doc comment) -- unlike `downloads_at_current_level`,
+    /// no `self.current_group` filter is needed beyond the callers' own
+    /// existing `self.current_group.is_none()` gates, since a group node's
+    /// `GraphNode::group` is always `None` regardless of level.
+    fn groups_at_current_level(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.as_group().is_some()))
             .cloned()
             .collect()
     }
@@ -2507,9 +2533,11 @@ impl App {
             }
         }
         if self.current_group.is_none() {
-            for node in self.groups.values() {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
+            for id in self.groups_at_current_level() {
+                if let Some(node) = self.nodes.get(&id) {
+                    let center = egui::Pos2::new(node.pos.x, node.pos.y);
+                    bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
+                }
             }
         }
         if !bounds.is_finite() {
@@ -2574,7 +2602,7 @@ impl App {
             self.current_group.clone(),
             self.tabs_at_current_level().len()
                 + self.downloads_at_current_level().len()
-                + if self.current_group.is_none() { self.groups.len() } else { 0 },
+                + if self.current_group.is_none() { self.groups_at_current_level().len() } else { 0 },
         )
     }
 
@@ -2683,13 +2711,6 @@ impl App {
                     .filter(|(_, n)| n.group == self.current_group)
                     .map(|(id, n)| (id.clone(), n.pos)),
             )
-            .chain(
-                self.current_group
-                    .is_none()
-                    .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.pos)))
-                    .into_iter()
-                    .flatten(),
-            )
             .collect();
         let mut velocities: HashMap<String, egui::Vec2> = self
             .tabs
@@ -2701,13 +2722,6 @@ impl App {
                     .iter()
                     .filter(|(_, n)| n.group == self.current_group)
                     .map(|(id, n)| (id.clone(), n.vel)),
-            )
-            .chain(
-                self.current_group
-                    .is_none()
-                    .then(|| self.groups.iter().map(|(id, n)| (id.clone(), n.vel)))
-                    .into_iter()
-                    .flatten(),
             )
             .collect();
         let edges: Vec<(String, String)> = self
@@ -2750,14 +2764,6 @@ impl App {
             }
         }
         for (id, node) in self.nodes.iter_mut() {
-            if let Some(p) = positions.get(id) {
-                node.pos = *p;
-            }
-            if let Some(v) = velocities.get(id) {
-                node.vel = *v;
-            }
-        }
-        for (id, node) in self.groups.iter_mut() {
             if let Some(p) = positions.get(id) {
                 node.pos = *p;
             }
@@ -3315,7 +3321,7 @@ impl App {
         if self.renaming_group.is_some() {
             return;
         }
-        let Some(name) = self.groups.get(&group_id).map(|g| g.name.clone()) else { return };
+        let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
         self.renaming_group = Some((group_id, name));
         self.pending_focus_rename = true;
     }
@@ -3331,8 +3337,18 @@ impl App {
         let id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let name = Self::default_group_name(&id);
-        self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
-        self.group_order.push(id);
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: None,
+                group: None,
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Group(GroupPayload { name }),
+            },
+        );
+        self.node_order.push(id);
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
@@ -4451,7 +4467,7 @@ impl App {
         ) else {
             return;
         };
-        if !self.groups.contains_key(&id) {
+        if !self.nodes.contains_key(&id) {
             self.group_context_menu = None;
             return;
         }
@@ -4486,7 +4502,7 @@ impl App {
                                     } else if let Some((gid, name)) = self.renaming_group.take() {
                                         let trimmed = name.trim();
                                         if !trimmed.is_empty() {
-                                            if let Some(node) = self.groups.get_mut(&gid) {
+                                            if let Some(node) = self.nodes.get_mut(&gid).and_then(|n| n.as_group_mut()) {
                                                 node.name = trimmed.to_string();
                                             }
                                         }
@@ -4496,14 +4512,19 @@ impl App {
                             }
                         } else {
                             if ui.button("Rename").clicked() {
-                                let name = self.groups.get(&id).map(|g| g.name.clone()).unwrap_or_default();
+                                let name = self
+                                    .nodes
+                                    .get(&id)
+                                    .and_then(|n| n.as_group())
+                                    .map(|g| g.name.clone())
+                                    .unwrap_or_default();
                                 self.renaming_group = Some((id.clone(), name));
                                 self.pending_focus_rename = true;
                             }
                             ui.add_space(4.0);
                             ui.label("Color");
                             ui.horizontal(|ui| {
-                                let current = self.groups.get(&id).and_then(|g| g.color);
+                                let current = self.nodes.get(&id).and_then(|n| n.color);
                                 for &swatch in &TAG_COLOR_PALETTE {
                                     let (rect, response) = ui.allocate_exact_size(
                                         egui::vec2(18.0, 18.0),
@@ -4518,7 +4539,7 @@ impl App {
                                         );
                                     }
                                     if response.clicked() {
-                                        if let Some(node) = self.groups.get_mut(&id) {
+                                        if let Some(node) = self.nodes.get_mut(&id) {
                                             node.color = Some(swatch);
                                         }
                                         close = true;
@@ -4534,7 +4555,7 @@ impl App {
                                     egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
                                 );
                                 if response.clicked() {
-                                    if let Some(node) = self.groups.get_mut(&id) {
+                                    if let Some(node) = self.nodes.get_mut(&id) {
                                         node.color = None;
                                     }
                                     close = true;
@@ -4634,7 +4655,9 @@ impl App {
     /// (see `group_export::GroupExportTab`'s own doc comment). `None` if
     /// the group doesn't exist.
     fn export_group(&self, group_id: &str) -> Option<group_export::GroupExport> {
-        let group = self.groups.get(group_id)?;
+        let group_node = self.nodes.get(group_id)?;
+        let group = group_node.as_group()?;
+        let group_color = group_node.color;
         let member_ids: std::collections::HashSet<&str> = self
             .tabs
             .iter()
@@ -4656,12 +4679,12 @@ impl App {
             .collect();
         Some(group_export::GroupExport {
             name: group.name.clone(),
-            color: group.color.map(|c| (c.r(), c.g(), c.b())),
+            color: group_color.map(|c| (c.r(), c.g(), c.b())),
             tabs,
         })
     }
 
-    /// Recreates an exported group at the top level -- a new `GroupNode`
+    /// Recreates an exported group at the top level -- a new group `GraphNode`
     /// plus each member tab, spawned via the normal async path. Every tab
     /// gets a freshly allocated id (`alloc_tab_id`) rather than reusing the
     /// exported one, since importing into an already-running session can't
@@ -4673,11 +4696,18 @@ impl App {
         let group_id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&group_id);
         let color = export.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b));
-        self.groups.insert(
+        self.nodes.insert(
             group_id.clone(),
-            GroupNode { name: export.name, pos, vel: egui::Vec2::ZERO, color },
+            GraphNode {
+                parent: None,
+                group: None,
+                pos,
+                vel: egui::Vec2::ZERO,
+                color,
+                payload: NodePayload::Group(GroupPayload { name: export.name }),
+            },
         );
-        self.group_order.push(group_id.clone());
+        self.node_order.push(group_id.clone());
 
         let id_map: std::collections::HashMap<String, String> =
             export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_tab_id())).collect();
@@ -5723,7 +5753,7 @@ impl App {
                     if let Some(group_id) = &self.current_group {
                         // Inside a group's own subgraph: a way back takes
                         // the place of "+ New Group" (no nesting in this
-                        // first cut — see `GroupNode`'s doc comment), and
+                        // first cut — see `GroupPayload`'s doc comment), and
                         // the group's name replaces the empty space "+ New
                         // Tab"/"Reset View" already fill at the top level.
                         let leave_group_response = ui.button("\u{25c0} Groups");
@@ -5750,8 +5780,9 @@ impl App {
                             }
                         } else {
                             let name = self
-                                .groups
+                                .nodes
                                 .get(group_id)
+                                .and_then(|n| n.as_group())
                                 .map(|g| g.name.clone())
                                 .unwrap_or_default();
                             if ui.button(&name).on_hover_text("Click to rename").clicked() {
@@ -5794,7 +5825,7 @@ impl App {
                         import_group_requested = true;
                     }
                     if self.current_group.is_none()
-                        && !self.group_order.is_empty()
+                        && !self.groups_at_current_level().is_empty()
                         && ui
                             .button(egui_phosphor::regular::FOLDER_MINUS)
                             .on_hover_text("Ungroup All")
@@ -5802,7 +5833,7 @@ impl App {
                     {
                         ungroup_all_requested = true;
                     }
-                    if self.current_group.is_none() && !self.group_order.is_empty() {
+                    if self.current_group.is_none() && !self.groups_at_current_level().is_empty() {
                         let (icon, hover) = if self.groups_collapsed {
                             (egui_phosphor::regular::CORNERS_OUT, "Expand Groups")
                         } else {
@@ -6049,10 +6080,11 @@ impl App {
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
                 let hit_group = self.current_group.is_none()
                     .then(|| {
-                        self.groups.iter().find_map(|(gid, g)| {
-                            egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
-                                .contains(world_pos)
-                                .then(|| gid.clone())
+                        self.groups_at_current_level().into_iter().find(|gid| {
+                            self.nodes.get(gid).is_some_and(|g| {
+                                egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
+                                    .contains(world_pos)
+                            })
                         })
                     })
                     .flatten();
@@ -6189,9 +6221,11 @@ impl App {
             }
         }
         if self.current_group.is_none() {
-            for node in self.groups.values() {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 3.0, ACCENT);
+            for id in self.groups_at_current_level() {
+                if let Some(node) = self.nodes.get(&id) {
+                    let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
+                    overlay_painter.circle_filled(p, 3.0, ACCENT);
+                }
             }
         }
         let viewport_rect = egui::Rect::from_two_pos(
@@ -6742,16 +6776,17 @@ impl App {
                         // Dropping a tab onto a group's card joins that
                         // group -- only meaningful at the top level, where
                         // tabs and groups are rendered (and can overlap)
-                        // together. See `GroupNode`'s own doc comment.
+                        // together. See `GroupPayload`'s own doc comment.
                         if self.current_group.is_none() {
                             if let Some(tab_pos) = self.tabs.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups.iter().find_map(|(gid, g)| {
-                                    egui::Rect::from_center_size(
-                                        egui::Pos2::new(g.pos.x, g.pos.y),
-                                        GROUP_NODE_SIZE,
-                                    )
-                                    .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
-                                    .then(|| gid.clone())
+                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                                    self.nodes.get(gid).is_some_and(|g| {
+                                        egui::Rect::from_center_size(
+                                            egui::Pos2::new(g.pos.x, g.pos.y),
+                                            GROUP_NODE_SIZE,
+                                        )
+                                        .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
+                                    })
                                 });
                                 if let Some(group_id) = dropped_on_group {
                                     // Dragging one member of an active
@@ -6798,11 +6833,18 @@ impl App {
                                         let pos =
                                             self.tabs.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
                                         let name = Self::default_group_name(&group_id);
-                                        self.groups.insert(
+                                        self.nodes.insert(
                                             group_id.clone(),
-                                            GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None },
+                                            GraphNode {
+                                                parent: None,
+                                                group: None,
+                                                pos,
+                                                vel: egui::Vec2::ZERO,
+                                                color: None,
+                                                payload: NodePayload::Group(GroupPayload { name }),
+                                            },
                                         );
-                                        self.group_order.push(group_id.clone());
+                                        self.node_order.push(group_id.clone());
                                         if let Some(node) = self.tabs.get_mut(&other_id) {
                                             node.group = Some(group_id.clone());
                                         }
@@ -7065,13 +7107,13 @@ impl App {
                 }
 
                 // Group nodes: top level only (no nesting in this first
-                // cut — see `GroupNode`'s own doc comment). Double-click
+                // cut — see `GroupPayload`'s own doc comment). Double-click
                 // drills into the group's own subgraph; a dragged tab
                 // dropped onto one joins it (handled above, in the tab
                 // loop, since that's where the drag-release fires).
                 if self.current_group.is_none() {
-                    for id in self.group_order.clone() {
-                        let Some(node_pos) = self.groups.get(&id).map(|g| g.pos) else {
+                    for id in self.groups_at_current_level() {
+                        let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
                             continue;
                         };
                         let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
@@ -7083,7 +7125,7 @@ impl App {
                         );
 
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
-                        let tag_color = self.groups.get(&id).and_then(|g| g.color);
+                        let tag_color = self.nodes.get(&id).and_then(|n| n.color);
                         let member_ids: Vec<String> = self
                             .tabs
                             .iter()
@@ -7110,7 +7152,7 @@ impl App {
                             egui::StrokeKind::Inside,
                         );
 
-                        if let Some(node) = self.groups.get(&id) {
+                        if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
                             // labels entirely rather than truncating to a
                             // near-illegible sliver -- a group card has no
@@ -7293,7 +7335,7 @@ impl App {
 
                         if response.dragged() {
                             self.dragging = Some(id.clone());
-                            if let Some(node) = self.groups.get_mut(&id) {
+                            if let Some(node) = self.nodes.get_mut(&id) {
                                 node.pos += response.drag_delta();
                             }
                         } else if self.dragging.as_deref() == Some(id.as_str()) {
@@ -7303,17 +7345,18 @@ impl App {
                             // and removes the dragged group -- same
                             // "drop onto a card" language a tab already
                             // uses to join a group.
-                            if let Some(dragged_pos) = self.groups.get(&id).map(|g| g.pos) {
-                                let dropped_on_group = self.groups.iter().find_map(|(other_id, other)| {
+                            if let Some(dragged_pos) = self.nodes.get(&id).map(|n| n.pos) {
+                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|other_id| {
                                     if other_id == &id {
-                                        return None;
+                                        return false;
                                     }
-                                    egui::Rect::from_center_size(
-                                        egui::Pos2::new(other.pos.x, other.pos.y),
-                                        GROUP_NODE_SIZE,
-                                    )
-                                    .contains(egui::Pos2::new(dragged_pos.x, dragged_pos.y))
-                                    .then(|| other_id.clone())
+                                    self.nodes.get(other_id).is_some_and(|other| {
+                                        egui::Rect::from_center_size(
+                                            egui::Pos2::new(other.pos.x, other.pos.y),
+                                            GROUP_NODE_SIZE,
+                                        )
+                                        .contains(egui::Pos2::new(dragged_pos.x, dragged_pos.y))
+                                    })
                                 });
                                 if let Some(target_id) = dropped_on_group {
                                     group_merge_requested = Some((id.clone(), target_id));
@@ -7329,7 +7372,7 @@ impl App {
                             group_entered = Some(id.clone());
                         }
 
-                        if let Some(node) = self.groups.get(&id) {
+                        if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
                             if graph_filter_dims(&self.graph_filter, &[&node.name]) {
                                 overlay_painter.rect_filled(
                                     egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -7487,8 +7530,18 @@ impl App {
                 .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
             let pos = sum / count;
             let name = Self::default_group_name(&id);
-            self.groups.insert(id.clone(), GroupNode { name, pos, vel: egui::Vec2::ZERO, color: None });
-            self.group_order.push(id.clone());
+            self.nodes.insert(
+                id.clone(),
+                GraphNode {
+                    parent: None,
+                    group: None,
+                    pos,
+                    vel: egui::Vec2::ZERO,
+                    color: None,
+                    payload: NodePayload::Group(GroupPayload { name }),
+                },
+            );
+            self.node_order.push(id.clone());
             for tab_id in self.selected_tabs.drain() {
                 if let Some(node) = self.tabs.get_mut(&tab_id) {
                     node.group = Some(id.clone());
@@ -7501,7 +7554,7 @@ impl App {
             }
         }
         if ungroup_all_requested {
-            for id in std::mem::take(&mut self.group_order) {
+            for id in self.groups_at_current_level() {
                 self.dissolve_group(&id);
             }
         }
@@ -7526,7 +7579,7 @@ impl App {
             if let Some((id, _)) = self.renaming_group.take() {
                 let trimmed = new_name.trim();
                 if !trimmed.is_empty() {
-                    if let Some(node) = self.groups.get_mut(&id) {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_group_mut()) {
                         node.name = trimmed.to_string();
                     }
                 }
@@ -7589,7 +7642,7 @@ impl App {
             self.dissolve_group(&id);
         }
         if let Some(id) = color_cycle_requested {
-            if let Some(node) = self.groups.get_mut(&id) {
+            if let Some(node) = self.nodes.get_mut(&id) {
                 node.color = next_tag_color(node.color);
             }
         }
@@ -7604,8 +7657,8 @@ impl App {
                     node.group = Some(target_id.clone());
                 }
             }
-            self.groups.remove(&source_id);
-            self.group_order.retain(|g| g != &source_id);
+            self.nodes.remove(&source_id);
+            self.node_order.retain(|g| g != &source_id);
         }
         if let Some((id, draft)) = rename_start {
             self.renaming_group = Some((id, draft));
