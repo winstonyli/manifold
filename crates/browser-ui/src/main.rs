@@ -3775,41 +3775,42 @@ impl App {
         const SETTLE_ITERATIONS: u32 = 90;
         const SETTLE_DT: f32 = 1.0 / 60.0;
 
+        // Not doubled via a stray `.chain()` of the identical filter over
+        // itself any more -- **found during a performance audit**: all
+        // three of these (plus the write-back loop below) collected the
+        // exact same filtered `self.nodes.iter()` twice, a duplicate-loop
+        // artifact from the tabs/downloads/groups -> one `self.nodes` map
+        // migration (the same recurring bug this project has already found
+        // and fixed four separate times elsewhere -- `group_merge_requested`,
+        // `dissolve_group` twice, `replace_running_session`). Harmless for
+        // `positions`/`velocities` (a `HashMap` insert of the same key
+        // twice just overwrites itself), but a real correctness bug for
+        // `edges`: a plain `Vec`, so every spring edge was fed into
+        // `graph_layout::step` *twice* -- doubling the effective spring
+        // strength for every one of this function's 90 warmup iterations.
+        // `settle_current_level` is `graph_layout::step`'s only call site
+        // in this whole app (the layout doesn't run continuously every
+        // frame -- see this function's own doc comment on why: it's a
+        // one-time burst triggered only when the visible node set actually
+        // changes), so this bug affected every settle animation, not a
+        // background steady-state cost.
         let mut positions: HashMap<String, egui::Vec2> = self
             .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.pos))
-            .chain(
-                self.nodes
-                    .iter()
-                    .filter(|(_, n)| n.group == self.current_group)
-                    .map(|(id, n)| (id.clone(), n.pos)),
-            )
             .collect();
         let mut velocities: HashMap<String, egui::Vec2> = self
             .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .map(|(id, n)| (id.clone(), n.vel))
-            .chain(
-                self.nodes
-                    .iter()
-                    .filter(|(_, n)| n.group == self.current_group)
-                    .map(|(id, n)| (id.clone(), n.vel)),
-            )
             .collect();
         let edges: Vec<(String, String)> = self
             .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
             .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
-            .chain(
-                self.nodes
-                    .iter()
-                    .filter(|(_, n)| n.group == self.current_group)
-                    .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone()))),
-            )
             .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
             .collect();
         let pinned: HashSet<String> = self
@@ -3830,14 +3831,6 @@ impl App {
             );
         }
 
-        for (id, node) in self.nodes.iter_mut() {
-            if let Some(p) = positions.get(id) {
-                node.pos = *p;
-            }
-            if let Some(v) = velocities.get(id) {
-                node.vel = *v;
-            }
-        }
         for (id, node) in self.nodes.iter_mut() {
             if let Some(p) = positions.get(id) {
                 node.pos = *p;
