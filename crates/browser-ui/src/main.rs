@@ -9854,20 +9854,26 @@ impl App {
 
                 // The empty-canvas "New Tab/Note/Group/File" card -- see
                 // `pending_new_node`'s own doc comment for what spawns/
-                // dismisses it. Drawn the same "real egui widgets embedded
-                // in the Scene's own transformed `Ui`" way a note's
-                // `TextEdit` already is, so the buttons scale/reposition
-                // with zoom exactly like a real card's own contents would,
-                // without this needing to be a real node itself.
+                // dismisses it. A vertical text-label list, same visual
+                // language every other right-click menu in this app
+                // already uses (tab/group/note/image/pdf/json), rather
+                // than the icon-only horizontal row this started as --
+                // this was the one context menu here that didn't match.
+                // Drawn the same "real egui widgets embedded in the
+                // Scene's own transformed `Ui`" way a note's `TextEdit`
+                // already is, so it scales/repositions with zoom exactly
+                // like a real card's own contents would, without this
+                // needing to be a real node itself.
                 if let Some(pos) = self.pending_new_node {
                     let center_pos = egui::Pos2::new(pos.x, pos.y);
-                    let card_size = egui::vec2(if self.headless { 148.0 } else { 192.0 }, 40.0);
+                    let row_count = if self.headless { 3.0 } else { 4.0 };
+                    let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0);
                     let rect = egui::Rect::from_center_size(center_pos, card_size);
-                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                    ui.painter().rect_filled(rect, 4.0 * inv_zoom, TOOLBAR_FILL);
                     ui.painter().rect_stroke(
                         rect,
-                        6.0 * inv_zoom,
-                        egui::Stroke::new(1.0 * inv_zoom, ACCENT),
+                        4.0 * inv_zoom,
+                        egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                         egui::StrokeKind::Inside,
                     );
                     let mut clicked_tab = false;
@@ -9876,22 +9882,42 @@ impl App {
                     let mut clicked_file = false;
                     ui.scope_builder(
                         egui::UiBuilder::new()
-                            .max_rect(rect.shrink(4.0 * inv_zoom))
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            .max_rect(rect.shrink(6.0 * inv_zoom))
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
                         |ui| {
-                            if ui.button("+").on_hover_text("New Tab").clicked() {
+                            let full_width = ui.available_width();
+                            if ui
+                                .add(
+                                    egui::Button::new(format!(
+                                        "{} New Tab",
+                                        egui_phosphor::regular::PLUS
+                                    ))
+                                    .min_size(egui::vec2(full_width, 0.0)),
+                                )
+                                .clicked()
+                            {
                                 clicked_tab = true;
                             }
                             if ui
-                                .button(egui_phosphor::regular::NOTE_PENCIL)
-                                .on_hover_text("New Note")
+                                .add(
+                                    egui::Button::new(format!(
+                                        "{} New Note",
+                                        egui_phosphor::regular::NOTE_PENCIL
+                                    ))
+                                    .min_size(egui::vec2(full_width, 0.0)),
+                                )
                                 .clicked()
                             {
                                 clicked_note = true;
                             }
                             if ui
-                                .button(egui_phosphor::regular::FOLDER_PLUS)
-                                .on_hover_text("New Group")
+                                .add(
+                                    egui::Button::new(format!(
+                                        "{} New Group",
+                                        egui_phosphor::regular::FOLDER_PLUS
+                                    ))
+                                    .min_size(egui::vec2(full_width, 0.0)),
+                                )
                                 .clicked()
                             {
                                 clicked_group = true;
@@ -9902,8 +9928,13 @@ impl App {
                             // mode.
                             if !self.headless
                                 && ui
-                                    .button(egui_phosphor::regular::FILE_PLUS)
-                                    .on_hover_text("Add File...")
+                                    .add(
+                                        egui::Button::new(format!(
+                                            "{} Add File...",
+                                            egui_phosphor::regular::FILE_PLUS
+                                        ))
+                                        .min_size(egui::vec2(full_width, 0.0)),
+                                    )
                                     .clicked()
                             {
                                 clicked_file = true;
