@@ -235,12 +235,12 @@ fn main() {
         });
     }
 
-    // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own doc
-    // comments -- filled in once per navigation, right after `loading`
+    // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s own
+    // doc comments -- filled in once per navigation, right after `loading`
     // transitions true -> false below, by the same `document.contentType`
     // script-eval check every engine that sends either message uses.
     let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    let pending_image_page: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let pending_redirect_content_type: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
@@ -435,18 +435,19 @@ fn main() {
                 loading: nav_now.4,
             });
             // Loading just finished -- check once whether the page that
-            // loaded is a raw JSON or image response (see `EngineToHost::
-            // JsonBody`/`ImagePage`'s own doc comments for why this checks
-            // `document.contentType` rather than guessing from the url).
-            // The `"json\n"` prefix disambiguates the two outcomes over one
-            // script-eval round trip -- safe since it's prepended here
-            // before any real page content, never something a real JSON
-            // body could itself start with by coincidence.
+            // loaded is a raw JSON response, or anything else non-HTML (see
+            // `EngineToHost::JsonBody`/`RedirectableContent`'s own doc
+            // comments for why this checks `document.contentType` rather
+            // than guessing from the url). The `"json\n"`/`"type\n"`
+            // prefixes disambiguate the two outcomes over one script-eval
+            // round trip -- safe since they're prepended here before any
+            // real page content, never something a real JSON body could
+            // itself start with by coincidence.
             if was_loading && !nav_now.4 {
                 let pending_json = pending_json_body.clone();
-                let pending_image = pending_image_page.clone();
+                let pending_redirect = pending_redirect_content_type.clone();
                 webview.run_javascript(
-                    "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
+                    "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
                     gtk::gio::Cancellable::NONE,
                     move |result| {
                         if let Ok(js_result) = result {
@@ -455,8 +456,8 @@ fn main() {
                                     let text = value.to_str().to_string();
                                     if let Some(body) = text.strip_prefix("json\n") {
                                         *pending_json.borrow_mut() = Some(body.to_string());
-                                    } else if text == "image" {
-                                        *pending_image.borrow_mut() = true;
+                                    } else if let Some(content_type) = text.strip_prefix("type\n") {
+                                        *pending_redirect.borrow_mut() = Some(content_type.to_string());
                                     }
                                 }
                             }
@@ -478,8 +479,8 @@ fn main() {
             let _ = to_host.send(&EngineToHost::JsonBody { body });
         }
 
-        if std::mem::take(&mut *pending_image_page.borrow_mut()) {
-            let _ = to_host.send(&EngineToHost::ImagePage);
+        if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::RedirectableContent { content_type });
         }
 
         if let Some(playing) = pending_audio_playing.borrow_mut().take() {

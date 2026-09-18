@@ -15,11 +15,12 @@ use cef::{rc::Rc, *};
 /// gets picked up.
 pub const CHECK_JSON_BODY: &str = "check-json-body";
 pub const JSON_BODY_RESULT: &str = "json-body-result";
-/// See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment -- same
-/// request/`document.contentType` check as `JSON_BODY_RESULT`, just the
-/// other branch; carries no argument list of its own since `browser-ui`
-/// doesn't need anything back beyond "yes, this is an image."
-pub const IMAGE_PAGE_RESULT: &str = "image-page-result";
+/// See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc comment
+/// -- same request/`document.contentType` check as `JSON_BODY_RESULT`, just
+/// the other branch; carries the raw content-type string as its one
+/// argument, same as every other engine forwards it, so `browser-ui`'s own
+/// allowlist (not this handler) decides what it means.
+pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// See `ipc_protocol::EngineToHost::AudioPlayingChanged`'s own doc comment
 /// for why CEF never sent this before -- a real native read would need the
 /// same all-or-nothing `AudioHandler` `HostToEngine::SetMuted`'s own doc
@@ -74,8 +75,13 @@ wrap_render_process_handler! {
             // Only reply for an actual outcome -- `browser-ui` already
             // clears a tab's `json_body` on any real URL change regardless
             // of which engine it's on (see `EngineToHost::JsonBody`'s own
-            // doc comment), and simply never gets an `ImagePage` for a page
-            // that isn't one, so a "neither" page needs no reply at all.
+            // doc comment), and a missing/unreadable `document.contentType`
+            // needs no reply at all (unlike the other three engines, which
+            // always forward whatever content-type string they got -- CEF's
+            // own `eval` can genuinely come back empty if the V8 context
+            // isn't in a state to run it, which isn't "this page has no
+            // content-type", so treating that as silence rather than an
+            // empty-string report is deliberate here).
             match frame.v8_context().map(|context| eval_page_kind(&context)) {
                 Some(Some(PageKind::Json(body))) => {
                     if let Some(mut reply) = process_message_create(Some(&JSON_BODY_RESULT.into())) {
@@ -85,8 +91,11 @@ wrap_render_process_handler! {
                         frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
                     }
                 }
-                Some(Some(PageKind::Image)) => {
-                    if let Some(mut reply) = process_message_create(Some(&IMAGE_PAGE_RESULT.into())) {
+                Some(Some(PageKind::Other(content_type))) => {
+                    if let Some(mut reply) = process_message_create(Some(&REDIRECT_RESULT.into())) {
+                        if let Some(args) = reply.argument_list() {
+                            args.set_string(0, Some(&content_type.as_str().into()));
+                        }
                         frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
                     }
                 }
@@ -105,7 +114,10 @@ impl RenderProcessHandlerBuilder {
 
 enum PageKind {
     Json(String),
-    Image,
+    /// Any other (non-JSON) content-type, carried through verbatim --
+    /// `browser-ui`'s own `redirect_fetch::classify` allowlist is what
+    /// actually decides whether it means anything.
+    Other(String),
 }
 
 /// `V8Context::eval` must run inside an entered context when called outside
@@ -117,10 +129,12 @@ enum PageKind {
 fn eval_page_kind(context: &V8Context) -> Option<PageKind> {
     context.enter();
     let content_type = eval_string(context, "document.contentType");
-    let kind = match content_type.as_deref() {
-        Some("application/json") => eval_string(context, "document.body.innerText").map(PageKind::Json),
-        Some(t) if t.starts_with("image/") => Some(PageKind::Image),
-        _ => None,
+    let kind = match content_type {
+        Some(t) if t == "application/json" => {
+            eval_string(context, "document.body.innerText").map(PageKind::Json)
+        }
+        Some(t) => Some(PageKind::Other(t)),
+        None => None,
     };
     context.exit();
     kind

@@ -4,7 +4,7 @@ mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod group_export;
-mod image_redirect_fetch;
+mod redirect_fetch;
 mod pdf;
 mod pdf_fetch;
 mod process_manager;
@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
-use image_redirect_fetch::ImageRedirectFetcher;
+use redirect_fetch::{RedirectFetcher, RedirectKind};
 use pdf_fetch::PdfFetcher;
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
@@ -1503,8 +1503,8 @@ struct App {
     favicon_fetcher: FaviconFetcher,
     /// See `PdfPayload::outcome`'s own doc comment.
     pdf_fetcher: PdfFetcher,
-    /// See `image_redirect_fetch`'s own module doc comment.
-    image_redirect_fetcher: ImageRedirectFetcher,
+    /// See `redirect_fetch`'s own module doc comment.
+    redirect_fetcher: RedirectFetcher,
     /// Origins already resolved (successfully or not) by `favicon_fetcher`
     /// -- checked before requesting again, so a failed origin (no
     /// `/favicon.ico`, a network error, undecodable bytes) isn't refetched
@@ -1854,7 +1854,7 @@ impl Default for App {
             suggestion_fetcher: SuggestionFetcher::new(),
             favicon_fetcher: FaviconFetcher::new(),
             pdf_fetcher: PdfFetcher::new(),
-            image_redirect_fetcher: ImageRedirectFetcher::new(),
+            redirect_fetcher: RedirectFetcher::new(),
             favicon_resolved: HashSet::new(),
             dropdown_highlighted: None,
             dragging: None,
@@ -4164,8 +4164,8 @@ impl App {
 
     /// Converts a tab whose page turned out to be a raw image response into
     /// a real `Image` graph node at the same position -- see `ipc_protocol::
-    /// EngineToHost::ImagePage`'s own doc comment. `path` is wherever
-    /// `image_redirect_fetch` already saved the downloaded bytes; reuses
+    /// EngineToHost::RedirectableContent`'s own doc comment. `path` is
+    /// wherever `redirect_fetch` already saved the downloaded bytes; reuses
     /// `insert_image_node_with_id` verbatim, so a redirected image is
     /// indistinguishable from one added via "+ Image" from this point on.
     /// Reparents the tab's own children to its own parent and clears the
@@ -6504,7 +6504,16 @@ impl App {
             self.json_viewer_node = None;
             return;
         };
+        // Only a tab's own live `json_body` is worth offering "Save as
+        // Node" for -- a JSON node's own popup is already a saved node,
+        // nothing to save. Cloned out before `source` is moved into the
+        // render match below.
+        let raw_body = match &source {
+            Source::Raw(body) => Some(body.clone()),
+            Source::Parsed(_) => None,
+        };
         let mut close = false;
+        let mut save_as_node = false;
         egui::Area::new(egui::Id::new("json_viewer"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -6519,6 +6528,21 @@ impl App {
                         ui.set_height(520.0);
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("JSON").strong().color(TEXT_PRIMARY));
+                            // See `ipc_protocol::EngineToHost::
+                            // RedirectableContent`'s own doc comment for
+                            // why this is the *only* opt-in, user-
+                            // triggered way a JSON tab ever becomes a
+                            // node -- unlike image/etc., which redirect
+                            // automatically, a JSON response is often a
+                            // live, refetchable API call worth keeping as
+                            // an ordinary tab.
+                            if raw_body.is_some()
+                                && ui.button("Save as Node").on_hover_text(
+                                    "Keep this JSON as a permanent graph node -- the tab keeps navigating normally",
+                                ).clicked()
+                            {
+                                save_as_node = true;
+                            }
                             if ui.button("Close").clicked() {
                                 close = true;
                             }
@@ -6539,8 +6563,39 @@ impl App {
                         });
                     });
             });
+        if save_as_node {
+            if let Some(body) = raw_body {
+                self.save_json_body_as_node(&body);
+            }
+        }
         if close {
             self.json_viewer_node = None;
+        }
+    }
+
+    /// The JSON viewer popup's "Save as Node" button -- materializes the
+    /// *currently showing* tab's own `json_body` as a real, permanent JSON
+    /// node, without touching the tab itself (it keeps navigating/
+    /// refreshing normally). Writes `body` to a real temp file first and
+    /// reuses `insert_json_node_with_id` completely unchanged, same
+    /// "downloaded bytes become a real file first" pattern `redirect_fetch`
+    /// uses for the automatic kinds -- a node made this way is
+    /// indistinguishable from one added via "+ JSON" from this point on.
+    fn save_json_body_as_node(&mut self, body: &str) {
+        let dir = std::env::temp_dir().join("multiengine-browser-redirects");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let id = self.alloc_json_id();
+        let path = dir.join(format!("{id}.bin"));
+        if std::fs::write(&path, body).is_err() {
+            return;
+        }
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        let group = self.current_group.clone();
+        if self.insert_json_node_with_id(id, path.to_string_lossy().into_owned(), pos, group) {
+            self.save_session();
+            self.save_toast = Some(("Saved as JSON node".to_string(), std::time::Instant::now()));
         }
     }
 
@@ -10832,15 +10887,15 @@ impl App {
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
-        // `(tab_id, url)` pairs to hand to `image_redirect_fetcher` once
+        // `(tab_id, url, kind)` triples to hand to `redirect_fetcher` once
         // this whole per-tab loop finishes -- deferred for the same reason
         // as `download_events` below (`node` holds a live mutable borrow of
         // this one `self.nodes` entry for the whole drain; the actual
-        // tab-to-image-node conversion, once the fetch completes, needs
+        // tab-to-node conversion, once the fetch completes, needs
         // `self.nodes.remove`/`insert`, so even just *starting* the fetch
         // here stays consistent with that rule rather than being a special
         // case).
-        let mut image_page_tabs: Vec<(String, String)> = Vec::new();
+        let mut redirect_content_tabs: Vec<(String, String, RedirectKind)> = Vec::new();
         // Download events, deferred the same way as `frame_updates`/
         // `crashes`/etc. above rather than applied inline: unlike before the
         // Tab/Download merge onto one shared `self.nodes` map, `node` here
@@ -10952,8 +11007,10 @@ impl App {
                     EngineToHost::JsonBody { body } => {
                         node.json_body = Some(body);
                     }
-                    EngineToHost::ImagePage => {
-                        image_page_tabs.push((tab_id.clone(), node.url.clone()));
+                    EngineToHost::RedirectableContent { content_type } => {
+                        if let Some(kind) = redirect_fetch::classify(&content_type) {
+                            redirect_content_tabs.push((tab_id.clone(), node.url.clone(), kind));
+                        }
                     }
                     EngineToHost::ContextMenuLink { x, y, href } => {
                         // Content-area coordinates -> window point space:
@@ -11093,13 +11150,13 @@ impl App {
             self.spawn_new_tab(parent, group, &url);
         }
 
-        // See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment --
-        // kicks off `browser-ui`'s own independent fetch of this tab's
-        // current url; the actual tab-to-image-node conversion happens once
-        // that completes, in `image_redirect_fetcher`'s own `tick()` drain
-        // below, not here.
-        for (tab_id, url) in image_page_tabs {
-            self.image_redirect_fetcher.request(tab_id, url);
+        // See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+        // comment -- kicks off `browser-ui`'s own independent fetch of this
+        // tab's current url; the actual tab-to-node conversion happens once
+        // that completes, in `redirect_fetcher`'s own `tick()` drain below,
+        // not here.
+        for (tab_id, url, kind) in redirect_content_tabs {
+            self.redirect_fetcher.request(tab_id, url, kind);
         }
 
         for (origin, result) in self.favicon_fetcher.tick() {
@@ -11142,7 +11199,7 @@ impl App {
             }
         }
 
-        for result in self.image_redirect_fetcher.tick() {
+        for result in self.redirect_fetcher.tick() {
             // The tab may have been closed, or navigated somewhere else,
             // while this fetch was still in flight -- only convert it if
             // it's still the same tab still showing the same url that
@@ -11153,7 +11210,9 @@ impl App {
                 .and_then(|n| n.as_tab())
                 .is_some_and(|t| t.url == result.url);
             if let (true, Some(path)) = (still_current, result.path) {
-                self.redirect_tab_to_image(&result.tab_id, path);
+                match result.kind {
+                    RedirectKind::Image => self.redirect_tab_to_image(&result.tab_id, path),
+                }
             }
         }
 

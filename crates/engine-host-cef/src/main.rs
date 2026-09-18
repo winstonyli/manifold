@@ -17,7 +17,7 @@ use cef::*;
 use ipc_protocol::{EngineToHost, HostToEngine, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::{ClientBuilder, new_shared_audio_playing, new_shared_image_page, new_shared_json_body};
+use client::{ClientBuilder, new_shared_audio_playing, new_shared_json_body, new_shared_redirect_content_type};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
@@ -128,7 +128,7 @@ fn main() {
     let closed = new_shared_closed();
     let context_menu_link = new_shared_context_menu_link();
     let json_body = new_shared_json_body();
-    let image_page = new_shared_image_page();
+    let redirect_content_type = new_shared_redirect_content_type();
     let audio_playing = new_shared_audio_playing();
     let mut last_reported_audio_playing = false;
     let mut last_audio_poll = std::time::Instant::now();
@@ -157,7 +157,7 @@ fn main() {
             closed.clone(),
             context_menu_link.clone(),
             json_body.clone(),
-            image_page.clone(),
+            redirect_content_type.clone(),
             audio_playing.clone(),
         )),
         Some(&initial_url.as_str().into()),
@@ -343,8 +343,8 @@ fn main() {
             let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
-        if std::mem::take(&mut *image_page.borrow_mut()) {
-            let _ = control.send(&EngineToHost::ImagePage);
+        if let Some(content_type) = redirect_content_type.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
         }
 
         // See `AUDIO_PLAYING_POLL_INTERVAL`'s own doc comment for why this

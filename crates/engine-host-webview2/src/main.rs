@@ -125,12 +125,12 @@ fn main() {
 
     let nav_state = new_shared_nav_state(initial_url.clone());
     let pending_json_body = nav_state::new_shared_json_body();
-    let pending_image_page = nav_state::new_shared_image_page();
+    let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
     nav_state::register_handlers(
         &webview,
         nav_state.clone(),
         pending_json_body.clone(),
-        pending_image_page.clone(),
+        pending_redirect_content_type.clone(),
     );
     let pending_popup = popup::register(&webview);
     // Best-effort -- an `ICoreWebView2_28`/`ICoreWebView2Environment15`-less
@@ -271,8 +271,8 @@ fn main() {
             let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
-        if std::mem::take(&mut *pending_image_page.borrow_mut()) {
-            let _ = control.send(&EngineToHost::ImagePage);
+        if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
         }
 
         for url in pending_popup.borrow_mut().drain(..) {

@@ -15,7 +15,7 @@ use crate::nav_handler::{
     DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
-use crate::render_process_handler::{AUDIO_PLAYING_RESULT, IMAGE_PAGE_RESULT, JSON_BODY_RESULT};
+use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, REDIRECT_RESULT};
 
 /// The renderer subprocess's own answer to a `check-json-body`
 /// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
@@ -29,12 +29,13 @@ pub fn new_shared_json_body() -> SharedJsonBody {
     Rc::new(RefCell::new(None))
 }
 
-/// Same shape as `SharedJsonBody`, for the `image-page-result` reply --
-/// see `ipc_protocol::EngineToHost::ImagePage`'s own doc comment.
-pub type SharedImagePage = Rc<RefCell<bool>>;
+/// Same shape as `SharedJsonBody`, for the `redirect-content-result` reply
+/// -- see `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+/// comment.
+pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
 
-pub fn new_shared_image_page() -> SharedImagePage {
-    Rc::new(RefCell::new(false))
+pub fn new_shared_redirect_content_type() -> SharedRedirectContentType {
+    Rc::new(RefCell::new(None))
 }
 
 /// The renderer's latest `check-audio-playing` reply -- unlike
@@ -59,7 +60,7 @@ wrap_client! {
         download_handler: DownloadHandler,
         context_menu_handler: ContextMenuHandler,
         json_body: SharedJsonBody,
-        image_page: SharedImagePage,
+        redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
     }
 
@@ -79,8 +80,11 @@ wrap_client! {
                 }
                 return 1;
             }
-            if name == IMAGE_PAGE_RESULT {
-                *self.image_page.borrow_mut() = true;
+            if name == REDIRECT_RESULT {
+                if let Some(args) = message.argument_list() {
+                    *self.redirect_content_type.borrow_mut() =
+                        Some(CefString::from(&args.string(0)).to_string());
+                }
                 return 1;
             }
             if name == AUDIO_PLAYING_RESULT {
@@ -132,7 +136,7 @@ impl ClientBuilder {
         closed: SharedClosed,
         context_menu_link: SharedContextMenuLink,
         json_body: SharedJsonBody,
-        image_page: SharedImagePage,
+        redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
     ) -> Client {
         Self::new(
@@ -144,7 +148,7 @@ impl ClientBuilder {
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
             ContextMenuHandlerBuilder::build(EngineContextMenuHandler::new(context_menu_link)),
             json_body,
-            image_page,
+            redirect_content_type,
             audio_playing,
         )
     }

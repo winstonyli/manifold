@@ -62,11 +62,11 @@ struct Delegate {
     /// this method's `&self` borrow has ended -- can hold an owned clone of
     /// just this one cell, not the whole `Delegate`.
     json_body: Rc<RefCell<Option<String>>>,
-    /// See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment -- same
-    /// `evaluate_javascript` call as `json_body`, just the other branch of
-    /// the same `document.contentType` check, `Rc`-wrapped for the same
-    /// reason.
-    image_page: Rc<RefCell<bool>>,
+    /// See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+    /// comment -- same `evaluate_javascript` call as `json_body`, just the
+    /// other branch of the same `document.contentType` check, `Rc`-wrapped
+    /// for the same reason.
+    redirect_content_type: Rc<RefCell<Option<String>>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -113,23 +113,24 @@ impl WebViewDelegate for Delegate {
         nav.dirty = true;
         drop(nav);
 
-        // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own doc
-        // comments. Unlike WebKit/WebView2's `ExecuteScript`, Servo's own
-        // `evaluate_javascript` hands back a real structured `JSValue`, not
-        // a JSON-encoded string -- no unescaping step needed here. The
-        // `"json\n"` prefix still disambiguates the two outcomes over this
-        // one script round trip, same as the other two script-eval engines.
+        // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s
+        // own doc comments. Unlike WebKit/WebView2's `ExecuteScript`,
+        // Servo's own `evaluate_javascript` hands back a real structured
+        // `JSValue`, not a JSON-encoded string -- no unescaping step needed
+        // here. The `"json\n"`/`"type\n"` prefixes still disambiguate the
+        // two outcomes over this one script round trip, same as the other
+        // two script-eval engines.
         if complete {
             let json_body = self.json_body.clone();
-            let image_page = self.image_page.clone();
+            let redirect_content_type = self.redirect_content_type.clone();
             webview.evaluate_javascript(
-                "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
+                "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
                 move |result| {
                     if let Ok(JSValue::String(text)) = result {
                         if let Some(body) = text.strip_prefix("json\n") {
                             *json_body.borrow_mut() = Some(body.to_string());
-                        } else if text == "image" {
-                            *image_page.borrow_mut() = true;
+                        } else if let Some(content_type) = text.strip_prefix("type\n") {
+                            *redirect_content_type.borrow_mut() = Some(content_type.to_string());
                         }
                     }
                 },
@@ -230,7 +231,7 @@ fn main() {
         }),
         context_menu_link: RefCell::new(None),
         json_body: Rc::new(RefCell::new(None)),
-        image_page: Rc::new(RefCell::new(false)),
+        redirect_content_type: Rc::new(RefCell::new(None)),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -367,8 +368,8 @@ fn main() {
             let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
-        if std::mem::take(&mut *delegate.image_page.borrow_mut()) {
-            let _ = control.send(&EngineToHost::ImagePage);
+        if let Some(content_type) = delegate.redirect_content_type.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::RedirectableContent { content_type });
         }
 
         if visible && *delegate.frame_ready.borrow() {

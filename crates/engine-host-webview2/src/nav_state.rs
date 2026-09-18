@@ -47,13 +47,13 @@ pub fn new_shared_json_body() -> SharedJsonBody {
     Rc::new(RefCell::new(None))
 }
 
-/// See `ipc_protocol::EngineToHost::ImagePage`'s own doc comment -- same
-/// `NavigationCompleted` handler as `SharedJsonBody`, just the other branch
-/// of the same `document.contentType` check.
-pub type SharedImagePage = Rc<RefCell<bool>>;
+/// See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc comment
+/// -- same `NavigationCompleted` handler as `SharedJsonBody`, just the
+/// other branch of the same `document.contentType` check.
+pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
 
-pub fn new_shared_image_page() -> SharedImagePage {
-    Rc::new(RefCell::new(false))
+pub fn new_shared_redirect_content_type() -> SharedRedirectContentType {
+    Rc::new(RefCell::new(None))
 }
 
 /// The raw COM binding's `CanGoBack`/`CanGoForward` are `[out, retval]
@@ -80,7 +80,7 @@ pub fn register_handlers(
     webview: &ICoreWebView2,
     state: SharedNavState,
     json_body: SharedJsonBody,
-    image_page: SharedImagePage,
+    redirect_content_type: SharedRedirectContentType,
 ) {
     let mut token = Default::default();
 
@@ -113,7 +113,7 @@ pub fn register_handlers(
         let webview_for_query = webview.clone();
         let webview_for_json = webview.clone();
         let json_body = json_body.clone();
-        let image_page = image_page.clone();
+        let redirect_content_type = redirect_content_type.clone();
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
@@ -128,27 +128,27 @@ pub fn register_handlers(
             s.dirty = true;
             drop(s);
 
-            // See `ipc_protocol::EngineToHost::JsonBody`/`ImagePage`'s own
-            // doc comments. `ExecuteScript`'s own return value comes back
-            // JSON-encoded (an already-quoted-and-escaped string, or the
-            // literal text `null`) -- `serde_json::from_str::<Option<String>>`
+            // See `ipc_protocol::EngineToHost::JsonBody`/`RedirectableContent`'s
+            // own doc comments. `ExecuteScript`'s own return value comes
+            // back JSON-encoded (an already-quoted-and-escaped string, or
+            // the literal text `null`) -- `serde_json::from_str::<Option<String>>`
             // decodes both cases correctly and un-escapes real page content
             // (quotes/newlines/etc a JSON body can genuinely contain),
             // unlike `input.rs`'s own plain strip-outer-quotes trick, which
             // only stays safe there because a link href effectively never
-            // contains a literal `"`. The `"json\n"` prefix disambiguates
-            // the JSON-body and image-page outcomes over this one script
-            // round trip -- safe since it's prepended before any real page
-            // content, never something a real JSON body could itself start
-            // with by coincidence.
+            // contains a literal `"`. The `"json\n"`/`"type\n"` prefixes
+            // disambiguate the two outcomes over this one script round trip
+            // -- safe since they're prepended before any real page content,
+            // never something a real JSON body could itself start with by
+            // coincidence.
             let json_body = json_body.clone();
-            let image_page = image_page.clone();
+            let redirect_content_type = redirect_content_type.clone();
             let exec_handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                 if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
                     if let Some(body) = text.strip_prefix("json\n") {
                         *json_body.borrow_mut() = Some(body.to_string());
-                    } else if text == "image" {
-                        *image_page.borrow_mut() = true;
+                    } else if let Some(content_type) = text.strip_prefix("type\n") {
+                        *redirect_content_type.borrow_mut() = Some(content_type.to_string());
                     }
                 }
                 Ok(())
@@ -156,7 +156,7 @@ pub fn register_handlers(
             unsafe {
                 let _ = webview_for_json.ExecuteScript(
                     &HSTRING::from(
-                        "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t&&t.indexOf('image/')===0){return 'image';}return null;})();",
+                        "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
                     ),
                     &exec_handler,
                 );
