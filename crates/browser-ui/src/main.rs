@@ -1703,6 +1703,23 @@ struct App {
     /// (a plain click on empty background, or Escape).
     rect_select_start: Option<egui::Pos2>,
     selected_tabs: HashSet<String>,
+    /// World position of the small "New Tab/Note/Group/File" card shown
+    /// after a plain right-click (no real drag) on empty Graph-view
+    /// background -- see the marquee-release logic below for where this
+    /// gets set (same gesture, disambiguated from a real rectangle-select
+    /// drag by movement distance) and `build_graph_ui`'s own rendering of
+    /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
+    /// pending choice, not real graph content, so it never needs excluding
+    /// from `groups_at_current_level`/session persistence/drag-into-group/
+    /// filters the way a real new node kind would. Cleared on any camera
+    /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
+    /// click), Escape, clicking elsewhere, or picking one of its own
+    /// actions -- deliberately short-lived rather than a droppable/
+    /// draggable placeholder (a real node's card lingers regardless of
+    /// camera movement; this one is a transient choice, not content, so
+    /// letting it silently drift out of sync with a moved camera would be
+    /// the wrong feel for it).
+    pending_new_node: Option<egui::Vec2>,
     /// The graph view's current pan/zoom state (visible world-space rect),
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
@@ -2021,6 +2038,7 @@ impl Default for App {
             peek_suppressed: None,
             rect_select_start: None,
             selected_tabs: HashSet::new(),
+            pending_new_node: None,
             graph_scene_rect: default_graph_scene_rect(),
             graph_camera_tween: None,
             graph_settled_key: None,
@@ -4466,6 +4484,13 @@ impl App {
     fn new_group_shortcut(&mut self) {
         let id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        self.insert_group_at(id, pos);
+    }
+
+    /// Shared by `new_group_shortcut` (fresh id/jittered position) and the
+    /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
+    /// which passes the exact position that was right-clicked instead.
+    fn insert_group_at(&mut self, id: String, pos: egui::Vec2) {
         let name = Self::default_group_name(&id);
         self.nodes.insert(
             id.clone(),
@@ -4488,6 +4513,13 @@ impl App {
     fn new_note_shortcut(&mut self) {
         let id = self.alloc_note_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        self.insert_note_at(id, pos);
+    }
+
+    /// Shared by `new_note_shortcut` (fresh id/jittered position) and the
+    /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
+    /// which passes the exact position that was right-clicked instead.
+    fn insert_note_at(&mut self, id: String, pos: egui::Vec2) {
         self.nodes.insert(
             id.clone(),
             GraphNode {
@@ -4693,7 +4725,13 @@ impl App {
     /// remain the headless equivalents, each still supplying its own path
     /// directly to the matching `insert_*_node` without going through this
     /// dispatch at all.
-    fn add_file_node(&mut self) {
+    /// `pos`: `None` for the toolbar button (fresh id per kind, jittered
+    /// around world center internally by `insert_image_node`/
+    /// `insert_pdf_node`/`insert_json_node`, same as always); `Some(pos)`
+    /// for the empty-canvas "New Tab/Note/Group/File" card
+    /// (`pending_new_node`), which already knows exactly where it should
+    /// land and calls the `_with_id` variants directly instead.
+    fn add_file_node(&mut self, pos: Option<egui::Vec2>) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Image, PDF, or JSON",
@@ -4708,13 +4746,31 @@ impl App {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase());
-        let inserted = match extension.as_deref() {
-            Some("pdf") => {
+        let inserted = match (extension.as_deref(), pos) {
+            (Some("pdf"), Some(pos)) => {
+                let id = self.alloc_pdf_id();
+                let group = self.current_group.clone();
+                self.insert_pdf_node_with_id(id, path, pos, group);
+                true
+            }
+            (Some("pdf"), None) => {
                 self.insert_pdf_node(path);
                 true
             }
-            Some("json") => self.insert_json_node(path),
-            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico") => self.insert_image_node(path),
+            (Some("json"), Some(pos)) => {
+                let id = self.alloc_json_id();
+                let group = self.current_group.clone();
+                self.insert_json_node_with_id(id, path, pos, group)
+            }
+            (Some("json"), None) => self.insert_json_node(path),
+            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), Some(pos)) => {
+                let id = self.alloc_image_id();
+                let group = self.current_group.clone();
+                self.insert_image_node_with_id(id, path, pos, group)
+            }
+            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), None) => {
+                self.insert_image_node(path)
+            }
             _ => false,
         };
         if inserted {
@@ -7444,6 +7500,14 @@ impl App {
         let mut new_note_requested = false;
         let mut note_close_requested: Option<String> = None;
         let mut add_file_requested = false;
+        // Set by `pending_new_node`'s own card -- unlike `new_group_requested`/
+        // `new_note_requested`/`add_file_requested` above (always the
+        // toolbar's own jittered-position spawn), each of these carries the
+        // exact world position that was right-clicked.
+        let mut pending_new_tab_at: Option<egui::Vec2> = None;
+        let mut pending_new_note_at: Option<egui::Vec2> = None;
+        let mut pending_new_group_at: Option<egui::Vec2> = None;
+        let mut pending_new_file_at: Option<egui::Vec2> = None;
         let mut image_close_requested: Option<String> = None;
         let mut pdf_close_requested: Option<String> = None;
         let mut json_close_requested: Option<String> = None;
@@ -7655,6 +7719,7 @@ impl App {
         // this point in the function.
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            self.pending_new_node = None;
         }
 
         if self.nodes.is_empty() {
@@ -7740,6 +7805,7 @@ impl App {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
                 self.group_context_menu = None;
+                self.pending_new_node = None;
                 self.dismiss_hover_peek();
             }
         }
@@ -7809,6 +7875,11 @@ impl App {
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
         if secondary_pressed {
+            // A fresh right-click press always cancels any still-open
+            // "New Tab/Note/Group/File" card from a previous one -- same
+            // "starting a new gesture dismisses the old one" rule every
+            // other popup here already follows.
+            self.pending_new_node = None;
             if let Some(pos) = pointer_pos.filter(|p| scene_outer_rect.contains(*p)) {
                 // A press landing on a group's own card opens its context
                 // menu instead of starting a marquee -- groups aren't
@@ -7992,23 +8063,34 @@ impl App {
             );
             if !secondary_down {
                 self.rect_select_start = None;
-                let world_rect = egui::Rect::from_two_pos(
-                    ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
-                    ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
-                );
-                self.selected_tabs = self
-                    .tabs_at_current_level()
-                    .into_iter()
-                    .filter(|id| {
-                        self.nodes.get(id).is_some_and(|node| {
-                            let card = egui::Rect::from_center_size(
-                                egui::Pos2::new(node.pos.x, node.pos.y),
-                                GRAPH_NODE_SIZE,
-                            );
-                            world_rect.intersects(card)
+                // Barely moved -- a plain right-click, not a real
+                // rectangle-select drag. `groups_at_current_level`/etc.
+                // hit-testing above already ruled out landing on any real
+                // node, so this is genuinely empty background: show the
+                // "New Tab/Note/Group/File" card here instead of computing
+                // a select-nothing zero-area marquee.
+                if (current - start).length() < 4.0 {
+                    let world_pos = ((start.to_vec2() - translation) / zoom_scale).to_pos2();
+                    self.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
+                } else {
+                    let world_rect = egui::Rect::from_two_pos(
+                        ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
+                        ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
+                    );
+                    self.selected_tabs = self
+                        .tabs_at_current_level()
+                        .into_iter()
+                        .filter(|id| {
+                            self.nodes.get(id).is_some_and(|node| {
+                                let card = egui::Rect::from_center_size(
+                                    egui::Pos2::new(node.pos.x, node.pos.y),
+                                    GRAPH_NODE_SIZE,
+                                );
+                                world_rect.intersects(card)
+                            })
                         })
-                    })
-                    .collect();
+                        .collect();
+                }
             }
         }
 
@@ -8112,6 +8194,11 @@ impl App {
             egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
             egui::StrokeKind::Inside,
         );
+        // Compared against after `Scene`'s own closure runs, below --
+        // an actual pan drag or scroll-wheel zoom this frame changes this,
+        // and dismisses `pending_new_node` the same as every other camera
+        // move already does (see that field's own doc comment).
+        let scene_rect_before_pan_zoom = self.graph_scene_rect;
         let mut scene_rect = self.graph_scene_rect;
         egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
@@ -9765,6 +9852,91 @@ impl App {
                         }
                     }
 
+                // The empty-canvas "New Tab/Note/Group/File" card -- see
+                // `pending_new_node`'s own doc comment for what spawns/
+                // dismisses it. Drawn the same "real egui widgets embedded
+                // in the Scene's own transformed `Ui`" way a note's
+                // `TextEdit` already is, so the buttons scale/reposition
+                // with zoom exactly like a real card's own contents would,
+                // without this needing to be a real node itself.
+                if let Some(pos) = self.pending_new_node {
+                    let center_pos = egui::Pos2::new(pos.x, pos.y);
+                    let card_size = egui::vec2(if self.headless { 148.0 } else { 192.0 }, 40.0);
+                    let rect = egui::Rect::from_center_size(center_pos, card_size);
+                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0 * inv_zoom,
+                        egui::Stroke::new(1.0 * inv_zoom, ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
+                    let mut clicked_tab = false;
+                    let mut clicked_note = false;
+                    let mut clicked_group = false;
+                    let mut clicked_file = false;
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(rect.shrink(4.0 * inv_zoom))
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            if ui.button("+").on_hover_text("New Tab").clicked() {
+                                clicked_tab = true;
+                            }
+                            if ui
+                                .button(egui_phosphor::regular::NOTE_PENCIL)
+                                .on_hover_text("New Note")
+                                .clicked()
+                            {
+                                clicked_note = true;
+                            }
+                            if ui
+                                .button(egui_phosphor::regular::FOLDER_PLUS)
+                                .on_hover_text("New Group")
+                                .clicked()
+                            {
+                                clicked_group = true;
+                            }
+                            // Same reasoning as every other file-dialog
+                            // button in this app -- a real picker blocks on
+                            // OS/human input neither exists in headless
+                            // mode.
+                            if !self.headless
+                                && ui
+                                    .button(egui_phosphor::regular::FILE_PLUS)
+                                    .on_hover_text("Add File...")
+                                    .clicked()
+                            {
+                                clicked_file = true;
+                            }
+                        },
+                    );
+                    if clicked_tab {
+                        pending_new_tab_at = Some(pos);
+                        self.pending_new_node = None;
+                    }
+                    if clicked_note {
+                        pending_new_note_at = Some(pos);
+                        self.pending_new_node = None;
+                    }
+                    if clicked_group {
+                        pending_new_group_at = Some(pos);
+                        self.pending_new_node = None;
+                    }
+                    if clicked_file {
+                        pending_new_file_at = Some(pos);
+                        self.pending_new_node = None;
+                    }
+                    // Same dismiss-on-click-elsewhere mechanism every other
+                    // popup here uses, just projected to screen space first
+                    // -- this card's own rect is in world-space (Scene's
+                    // transformed coordinates), but `clicked_outside_popup`
+                    // reads the real screen-space pointer position.
+                    let screen_rect = egui::Rect::from_min_max(project(rect.min), project(rect.max));
+                    if clicked_outside_popup(ui, screen_rect, None) {
+                        self.pending_new_node = None;
+                    }
+                }
+
                 // Peek preview: an enlarged view of the hovered node's cached
                 // thumbnail, floating near it, without changing focus. Painted
                 // directly in this same world-space layer (not a separate
@@ -9824,6 +9996,9 @@ impl App {
                 }
             });
         self.graph_scene_rect = scene_rect;
+        if scene_rect != scene_rect_before_pan_zoom {
+            self.pending_new_node = None;
+        }
 
         // Minimap click-to-recenter: deliberately registered *after*
         // `Scene::show` above (not alongside the minimap's own drawing,
@@ -9852,6 +10027,7 @@ impl App {
                     world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
                 self.graph_scene_rect =
                     egui::Rect::from_center_size(world_click, self.graph_scene_rect.size());
+                self.pending_new_node = None;
             }
         }
 
@@ -9916,7 +10092,33 @@ impl App {
             self.save_session();
         }
         if add_file_requested {
-            self.add_file_node();
+            self.add_file_node(None);
+        }
+        // The empty-canvas card's own four actions -- each spawns at the
+        // exact position that was right-clicked, unlike the toolbar
+        // buttons above (always jittered around world center). New Tab is
+        // the one exception: `spawn_new_tab` has no explicit-position
+        // parameter at all (a tab's real position is only ever derived
+        // from its parent/group, since the actual engine-host process
+        // spawn this triggers is asynchronous -- see `spawn_new_tab_with_kind`'s
+        // own doc comment) plumbing one through wasn't part of this pass,
+        // so this still lands wherever the normal "+ New Tab" jitter puts
+        // it, just parented/grouped the same as any other new tab here.
+        if pending_new_tab_at.is_some() {
+            let home_page = self.settings.home_page.clone();
+            let group = self.current_group.clone();
+            self.spawn_new_tab(self.focused.clone(), group, &home_page);
+        }
+        if let Some(pos) = pending_new_note_at {
+            let id = self.alloc_note_id();
+            self.insert_note_at(id, pos);
+        }
+        if let Some(pos) = pending_new_group_at {
+            let id = self.alloc_group_id();
+            self.insert_group_at(id, pos);
+        }
+        if pending_new_file_at.is_some() {
+            self.add_file_node(pending_new_file_at);
         }
         if let Some(id) = image_close_requested {
             if let Some(gpu) = &mut self.gpu {
@@ -10044,6 +10246,7 @@ impl App {
             // even visible here anymore.
             self.selected_tabs.clear();
             self.rect_select_start = None;
+            self.pending_new_node = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
             self.image_context_menu = None;
@@ -10067,6 +10270,7 @@ impl App {
             self.renaming_group = None;
             self.selected_tabs.clear();
             self.rect_select_start = None;
+            self.pending_new_node = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
             self.image_context_menu = None;
