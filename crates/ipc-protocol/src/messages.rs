@@ -255,4 +255,25 @@ pub enum EngineToHost {
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
+    /// The page that just finished loading is a raw JSON response --
+    /// `body` is its full text, so `browser-ui` can parse and show a real
+    /// tree view instead of whatever a given engine's own default
+    /// plain-text/JSON-viewer rendering looks like (inconsistent across
+    /// engines, and not this project's own uniform UI). Detected the same
+    /// way on every engine that sends it: once the load finishes, a script
+    /// eval checks `document.contentType === 'application/json'` and, only
+    /// then, reads back `document.body.innerText` -- `document.contentType`
+    /// is a real DOM property every engine here already exposes to script,
+    /// reflecting the actual HTTP response header, not a guess from the
+    /// URL's own file extension. Sent by WebKit/WebView2/Servo, which all
+    /// already have (or, for Servo, expose but hadn't yet used) a script-
+    /// eval-with-a-result-callback API -- see `ContextMenuLink`'s own doc
+    /// comment for the same three-way split. CEF's `execute_java_script`
+    /// has no way to return a value at all (would need a real V8 extension
+    /// to bind a native callback the script could call into, a much bigger
+    /// change than this feature warrants on its own) — deferred, so CEF
+    /// tabs never send this. Cleared (an empty page) whenever the same
+    /// tab's own URL changes for real, same as any other per-navigation
+    /// state — see `App::json_body`'s own doc comment.
+    JsonBody { body: String },
 }

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
+use javascriptcore::ValueExt;
 use webkit2gtk::{
     DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView,
     WebViewExt,
@@ -234,6 +235,12 @@ fn main() {
         });
     }
 
+    // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment --
+    // filled in once per navigation, right after `loading` transitions
+    // true -> false below, by the same `document.contentType` script-eval
+    // check every engine that sends this message uses.
+    let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
     // fire its own real `context-menu` signal -- suppressed here (`true` =
@@ -417,6 +424,7 @@ fn main() {
             webview.is_loading(),
         );
         if nav_now != last_nav {
+            let was_loading = last_nav.4;
             last_nav = nav_now.clone();
             let _ = to_host.send(&EngineToHost::NavigationStateChanged {
                 url: nav_now.0,
@@ -425,6 +433,26 @@ fn main() {
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
             });
+            // Loading just finished -- check once whether the page that
+            // loaded is a raw JSON response (see `EngineToHost::JsonBody`'s
+            // own doc comment for why this checks `document.contentType`
+            // rather than guessing from the url).
+            if was_loading && !nav_now.4 {
+                let pending = pending_json_body.clone();
+                webview.run_javascript(
+                    "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                    gtk::gio::Cancellable::NONE,
+                    move |result| {
+                        if let Ok(js_result) = result {
+                            if let Some(value) = js_result.js_value() {
+                                if value.is_string() {
+                                    *pending.borrow_mut() = Some(value.to_str().to_string());
+                                }
+                            }
+                        }
+                    },
+                );
+            }
         }
 
         for url in pending_open_tab.borrow_mut().drain(..) {
@@ -433,6 +461,10 @@ fn main() {
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::FindResult { count, active_index });
+        }
+
+        if let Some(body) = pending_json_body.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::JsonBody { body });
         }
 
         if let Some(playing) = pending_audio_playing.borrow_mut().take() {

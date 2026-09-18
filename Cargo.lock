@@ -2335,6 +2335,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "ipc-protocol",
+ "serde_json",
  "webview2-com",
  "windows 0.62.2",
 ]

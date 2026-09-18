@@ -9,7 +9,7 @@ use ipc_protocol::{
     KeyCode as HostKeyCode, SharedFrameBuffer,
 };
 use servo::{
-    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, Key, KeyState,
+    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState,
     KeyboardEvent, Location, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction,
     MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta,
@@ -54,6 +54,14 @@ struct Delegate {
     /// click, unlike WebKit/WebView2's own `document.elementFromPoint`
     /// JS-query workaround -- no script round-trip needed here.
     context_menu_link: RefCell<Option<(f64, f64, String)>>,
+    /// See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment --
+    /// filled in once per navigation by `notify_load_status_changed`'s own
+    /// `WebView::evaluate_javascript` call. `Rc`-wrapped (unlike every
+    /// other field here) specifically so its own callback -- a `'static`
+    /// closure `evaluate_javascript` stores and invokes later, well after
+    /// this method's `&self` borrow has ended -- can hold an owned clone of
+    /// just this one cell, not the whole `Delegate`.
+    json_body: Rc<RefCell<Option<String>>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -93,10 +101,28 @@ impl WebViewDelegate for Delegate {
         nav.dirty = true;
     }
 
-    fn notify_load_status_changed(&self, _webview: WebView, status: servo::LoadStatus) {
+    fn notify_load_status_changed(&self, webview: WebView, status: servo::LoadStatus) {
+        let complete = matches!(status, servo::LoadStatus::Complete);
         let mut nav = self.nav.borrow_mut();
-        nav.loading = !matches!(status, servo::LoadStatus::Complete);
+        nav.loading = !complete;
         nav.dirty = true;
+        drop(nav);
+
+        // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
+        // Unlike WebKit/WebView2's `ExecuteScript`, Servo's own
+        // `evaluate_javascript` hands back a real structured `JSValue`, not
+        // a JSON-encoded string -- no unescaping step needed here.
+        if complete {
+            let json_body = self.json_body.clone();
+            webview.evaluate_javascript(
+                "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                move |result| {
+                    if let Ok(JSValue::String(text)) = result {
+                        *json_body.borrow_mut() = Some(text);
+                    }
+                },
+            );
+        }
     }
 
     fn notify_history_changed(&self, _webview: WebView, entries: Vec<Url>, current: usize) {
@@ -191,6 +217,7 @@ fn main() {
             ..Default::default()
         }),
         context_menu_link: RefCell::new(None),
+        json_body: Rc::new(RefCell::new(None)),
     });
 
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
@@ -321,6 +348,10 @@ fn main() {
 
         if let Some((x, y, href)) = delegate.context_menu_link.borrow_mut().take() {
             let _ = control.send(&EngineToHost::ContextMenuLink { x, y, href });
+        }
+
+        if let Some(body) = delegate.json_body.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
         if visible && *delegate.frame_ready.borrow() {

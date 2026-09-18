@@ -218,6 +218,42 @@ fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
+/// Recursively renders one `serde_json::Value` inside the JSON viewer's
+/// tree -- an object/array as a `CollapsingHeader` (its own children
+/// indented beneath, count shown in the header so a collapsed node still
+/// tells you how much it holds), a scalar as a plain `"key: value"` label.
+/// `top_level` only controls whether *this* node starts expanded --
+/// `false` for everything but the document root, so a large real-world
+/// payload doesn't dump every nested level open at once.
+fn draw_json_value(ui: &mut egui::Ui, key: &str, value: &serde_json::Value, top_level: bool) {
+    match value {
+        serde_json::Value::Object(map) => {
+            egui::CollapsingHeader::new(format!("{key}  {{{}}}", map.len()))
+                .default_open(top_level)
+                .show(ui, |ui| {
+                    for (k, v) in map {
+                        draw_json_value(ui, k, v, false);
+                    }
+                });
+        }
+        serde_json::Value::Array(items) => {
+            egui::CollapsingHeader::new(format!("{key}  [{}]", items.len()))
+                .default_open(top_level)
+                .show(ui, |ui| {
+                    for (i, v) in items.iter().enumerate() {
+                        draw_json_value(ui, &i.to_string(), v, false);
+                    }
+                });
+        }
+        // `Value`'s own `Display` already renders exactly the compact form
+        // wanted here -- a quoted string, a bare number, `true`/`false`, or
+        // `null` -- no need to match each scalar variant separately.
+        other => {
+            ui.label(format!("{key}: {other}"));
+        }
+    }
+}
+
 /// An image node's own card size: `width`x`height` scaled down (never up)
 /// to fit inside `IMAGE_NODE_MAX_SIZE` while preserving aspect ratio --
 /// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
@@ -884,6 +920,14 @@ struct TabPayload {
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     swap_target: Option<EngineKind>,
+    /// The current page's own raw JSON text, if `EngineToHost::JsonBody`
+    /// reported it as one -- see that message's own doc comment for
+    /// detection/per-engine support. Cleared back to `None` whenever this
+    /// tab's url changes for real (same gate `history`/`nav_url_changed`
+    /// already use), so navigating away from a JSON response doesn't leave
+    /// a stale "View as JSON" affordance pointing at content that's no
+    /// longer showing.
+    json_body: Option<String>,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -1192,6 +1236,13 @@ struct App {
     tab_context_menu: Option<(String, egui::Pos2)>,
     /// Same fade-out role as `group_context_menu_cache`, for `tab_context_menu`.
     tab_context_menu_cache: Option<(String, egui::Pos2)>,
+    /// `Some(tab_id)` while that tab's `TabPayload::json_body` is showing
+    /// full-screen (`build_json_viewer`) -- opened from Tab view's own
+    /// toolbar button or Graph view's tab context menu's "View as JSON",
+    /// closed via its own close button or Escape. Not `bool`: needs to
+    /// remember *which* tab, since it can be opened from Graph view for a
+    /// tab other than whichever is focused.
+    json_viewer_tab: Option<String>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
@@ -1583,6 +1634,7 @@ impl Default for App {
             image_context_menu_cache: None,
             tab_context_menu: None,
             tab_context_menu_cache: None,
+            json_viewer_tab: None,
             quick_switcher: None,
             quick_switcher_cache: None,
             shortcuts_help_open: false,
@@ -2458,6 +2510,7 @@ impl App {
                             muted: false,
                             pinned,
                             swap_target: None,
+                            json_body: None,
                         }),
                     },
                 );
@@ -5335,6 +5388,9 @@ impl App {
         let mut duplicate_requested = false;
         let mut fit_subtree_requested = false;
         let mut set_color: Option<Option<egui::Color32>> = None;
+        let mut view_json_requested = false;
+        let has_json =
+            self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|t| t.json_body.is_some());
 
         let area = egui::Area::new(egui::Id::new("tab_context_menu"))
             .fixed_pos(pos)
@@ -5360,6 +5416,10 @@ impl App {
                             if let Some(url) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.url.clone()) {
                                 ui.ctx().copy_text(url);
                             }
+                            close = true;
+                        }
+                        if has_json && ui.button("View as JSON").clicked() {
+                            view_json_requested = true;
                             close = true;
                         }
                         if ui
@@ -5440,6 +5500,9 @@ impl App {
         }
         if duplicate_requested {
             self.duplicate_tab(&id);
+        }
+        if view_json_requested {
+            self.json_viewer_tab = Some(id.clone());
         }
         if fit_subtree_requested {
             self.graph_scene_rect = self.fit_subtree_scene_rect(&id);
@@ -5558,6 +5621,7 @@ impl App {
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
+        self.build_json_viewer(ui);
     }
 
     /// "Import Session..." confirm popup -- shown whenever `pending_import`
@@ -5624,6 +5688,68 @@ impl App {
         }
         if cancel {
             self.pending_import = None;
+        }
+    }
+
+    /// Full-screen popup showing a tab's own `TabPayload::json_body` as a
+    /// real collapsible tree -- opened from Tab view's toolbar button or
+    /// Graph view's tab context menu's "View as JSON", not tied to
+    /// whichever view is currently active (see `json_viewer_tab`'s own doc
+    /// comment), so this renders every frame regardless of `view_mode`.
+    fn build_json_viewer(&mut self, ui: &mut egui::Ui) {
+        let Some(tab_id) = self.json_viewer_tab.clone() else { return };
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.json_viewer_tab = None;
+            return;
+        }
+        let Some(body) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).and_then(|t| t.json_body.clone())
+        else {
+            self.json_viewer_tab = None;
+            return;
+        };
+        let mut close = false;
+        egui::Area::new(egui::Id::new("json_viewer"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .corner_radius(6u8)
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(560.0);
+                        ui.set_height(520.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("JSON").strong().color(TEXT_PRIMARY));
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            match serde_json::from_str::<serde_json::Value>(&body) {
+                                Ok(value) => draw_json_value(ui, "root", &value, true),
+                                Err(err) => {
+                                    // Shouldn't normally happen -- `body` only
+                                    // ever got here because the engine's own
+                                    // `document.contentType` check already
+                                    // confirmed `application/json` -- but a
+                                    // server can lie about its own header, so
+                                    // fall back to showing the raw text rather
+                                    // than a blank popup.
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(220, 60, 60),
+                                        format!("Invalid JSON: {err}"),
+                                    );
+                                    ui.add(egui::Label::new(&body).wrap());
+                                }
+                            }
+                        });
+                    });
+            });
+        if close {
+            self.json_viewer_tab = None;
         }
     }
 
@@ -5868,6 +5994,18 @@ impl App {
                         .clicked()
                     {
                         toggle_bookmark_requested = true;
+                    }
+                    if self
+                        .nodes
+                        .get(&focused_id)
+                        .and_then(|n| n.as_tab())
+                        .is_some_and(|n| n.json_body.is_some())
+                        && ui
+                            .button(egui_phosphor::regular::BRACKETS_CURLY)
+                            .on_hover_text("View as JSON")
+                            .clicked()
+                    {
+                        self.json_viewer_tab = Some(focused_id.clone());
                     }
                     if !self.bookmarks.is_empty() {
                         let label = format!("Bookmarks ({})", self.bookmarks.len());
@@ -9368,6 +9506,7 @@ impl App {
                     } => {
                         if node.url != url {
                             nav_url_changed = true;
+                            node.json_body = None;
                             self.history.push(HistoryEntry { title: title.clone(), url: url.clone() });
                             if self.history.len() > MAX_HISTORY_ENTRIES {
                                 self.history.remove(0);
@@ -9412,6 +9551,9 @@ impl App {
                     }
                     EngineToHost::AudioPlayingChanged { playing } => {
                         node.audio_playing = playing;
+                    }
+                    EngineToHost::JsonBody { body } => {
+                        node.json_body = Some(body);
                     }
                     EngineToHost::ContextMenuLink { x, y, href } => {
                         // Content-area coordinates -> window point space:

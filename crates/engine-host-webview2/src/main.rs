@@ -124,7 +124,8 @@ fn main() {
     }
 
     let nav_state = new_shared_nav_state(initial_url.clone());
-    nav_state::register_handlers(&webview, nav_state.clone());
+    let pending_json_body = nav_state::new_shared_json_body();
+    nav_state::register_handlers(&webview, nav_state.clone(), pending_json_body.clone());
     let pending_popup = popup::register(&webview);
     // Best-effort -- an `ICoreWebView2_28`/`ICoreWebView2Environment15`-less
     // WebView2 Runtime just means this tab's find bar never reports results.
@@ -258,6 +259,10 @@ fn main() {
                     loading: state.loading,
                 });
             }
+        }
+
+        if let Some(body) = pending_json_body.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::JsonBody { body });
         }
 
         for url in pending_popup.borrow_mut().drain(..) {

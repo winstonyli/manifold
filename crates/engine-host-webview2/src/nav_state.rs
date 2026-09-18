@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{
-    take_pwstr, DocumentTitleChangedEventHandler, HistoryChangedEventHandler,
-    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    take_pwstr, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
+    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
 };
-use windows::core::{PWSTR, BOOL};
+use windows::core::{HSTRING, PWSTR, BOOL};
 
 pub struct NavState {
     pub url: String,
@@ -38,6 +38,15 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     }))
 }
 
+/// See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment -- filled
+/// in once per navigation, from the same `NavigationCompleted` handler
+/// below that also updates `NavState`.
+pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
+
+pub fn new_shared_json_body() -> SharedJsonBody {
+    Rc::new(RefCell::new(None))
+}
+
 /// The raw COM binding's `CanGoBack`/`CanGoForward` are `[out, retval]
 /// BOOL` params, not idiomatic return values -- this is the shared
 /// out-param dance for both.
@@ -58,7 +67,7 @@ fn can_go_forward(webview: &ICoreWebView2) -> bool {
 /// never explicitly removed -- matches this project's other engine-hosts,
 /// which live exactly as long as the process and never unregister handlers
 /// either (nothing to clean up, the whole process exits on `Shutdown`).
-pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState) {
+pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState, json_body: SharedJsonBody) {
     let mut token = Default::default();
 
     {
@@ -88,6 +97,8 @@ pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState) {
     {
         let state = state.clone();
         let webview_for_query = webview.clone();
+        let webview_for_json = webview.clone();
+        let json_body = json_body.clone();
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
@@ -100,6 +111,32 @@ pub fn register_handlers(webview: &ICoreWebView2, state: SharedNavState) {
             s.can_go_back = can_go_back(&webview_for_query);
             s.can_go_forward = can_go_forward(&webview_for_query);
             s.dirty = true;
+            drop(s);
+
+            // See `ipc_protocol::EngineToHost::JsonBody`'s own doc comment.
+            // `ExecuteScript`'s own return value comes back JSON-encoded
+            // (an already-quoted-and-escaped string, or the literal text
+            // `null`) -- `serde_json::from_str::<Option<String>>` decodes
+            // both cases correctly and un-escapes real page content
+            // (quotes/newlines/etc a JSON body can genuinely contain),
+            // unlike `input.rs`'s own plain strip-outer-quotes trick, which
+            // only stays safe there because a link href effectively never
+            // contains a literal `"`.
+            let json_body = json_body.clone();
+            let exec_handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
+                if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
+                    *json_body.borrow_mut() = Some(text);
+                }
+                Ok(())
+            }));
+            unsafe {
+                let _ = webview_for_json.ExecuteScript(
+                    &HSTRING::from(
+                        "(function(){if(document.contentType==='application/json'){return document.body.innerText;}return null;})();",
+                    ),
+                    &exec_handler,
+                );
+            }
             Ok(())
         }));
         unsafe {
