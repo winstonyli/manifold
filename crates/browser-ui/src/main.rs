@@ -931,6 +931,18 @@ impl NodePayload {
 /// point of writing one down.
 struct NotePayload {
     text: String,
+    /// `true` shows a real, focused `TextEdit` (today's own behavior);
+    /// `false` renders `text` as real Markdown (`egui_commonmark`) instead,
+    /// read-only, with the whole card (not just its header strip) clickable
+    /// to switch back to editing -- the same "click to edit, blur to
+    /// render" split Obsidian/Notion use, since a rendered view has no
+    /// natural place to put a text cursor. Session-only, like `TabPayload::
+    /// pinned` -- not persisted (`session::SessionNote` still only holds
+    /// `text`), so a restored note always starts rendered regardless of
+    /// what it was showing when the app last closed. A freshly created
+    /// note starts `true` instead, so typing into it works immediately
+    /// with no extra click.
+    editing: bool,
 }
 
 /// A locally-added picture, embedded directly on the graph -- the second
@@ -1461,6 +1473,10 @@ struct App {
     next_image_id: u64,
     next_pdf_id: u64,
     next_json_id: u64,
+    /// Shared across every note's own rendered (non-`editing`) view --
+    /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
+    /// state, not per-note content), not a fresh cache per card per frame.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
     cursor_pos: (f64, f64),
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
@@ -1826,6 +1842,7 @@ impl Default for App {
             next_image_id: 0,
             next_pdf_id: 0,
             next_json_id: 0,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             key_modifiers: 0,
             egui_ctx,
@@ -2576,7 +2593,7 @@ impl App {
                     pos: egui::vec2(note.pos_x, note.pos_y),
                     vel: egui::Vec2::ZERO,
                     color: None,
-                    payload: NodePayload::Note(NotePayload { text: note.text }),
+                    payload: NodePayload::Note(NotePayload { text: note.text, editing: false }),
                 },
             );
             self.node_order.push(note.id);
@@ -4090,7 +4107,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Note(NotePayload { text: String::new() }),
+                payload: NodePayload::Note(NotePayload { text: String::new(), editing: true }),
             },
         );
         self.node_order.push(id);
@@ -8806,11 +8823,8 @@ impl App {
                     let is_hovered =
                         self.hovered.as_deref() == Some(id.as_str()) || hover_response.hovered();
 
-                    let response = ui.interact(
-                        header_rect,
-                        egui::Id::new(("graph_note_node", id.as_str())),
-                        egui::Sense::click_and_drag(),
-                    );
+                    let is_editing =
+                        self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
                     ui.painter().rect_filled(rect, 6.0 * inv_zoom, NOTE_CARD_COLOR);
                     let (border_width, border_color) = if is_hovered {
@@ -8833,17 +8847,79 @@ impl App {
                     );
 
                     let mut note_text_lost_focus = false;
-                    if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
-                        let text_response = ui.put(
-                            text_rect,
-                            egui::TextEdit::multiline(&mut note.text)
-                                .frame(egui::Frame::NONE)
-                                .font(egui::FontId::proportional(13.0))
-                                .text_color(egui::Color32::from_black_alpha(220))
-                                .hint_text("Type a note..."),
+                    let mut switch_to_editing = false;
+                    // The card's own click_and_drag interact is registered
+                    // *after* whatever content it draws in each branch, not
+                    // before -- **found live**: registering it first (the
+                    // original, seemingly more natural order) meant a click
+                    // squarely on a rendered note never registered at all.
+                    // `ui.scope_builder`'s own child `Ui` allocates space
+                    // over most of the same `rect` `response` covers when
+                    // not editing, and -- the same "later-registered content
+                    // wins hit-testing over an earlier same-region interact"
+                    // rule already documented for the minimap/Scene-
+                    // background bug elsewhere in this project -- that
+                    // later allocation was winning the pointer every time,
+                    // leaving `response` permanently unhovered. The editing
+                    // branch doesn't have this problem (`header_rect` and
+                    // `text_rect` don't overlap), so its interact stays
+                    // first, matching `close_rect`'s own registration order
+                    // below.
+                    let response = if is_editing {
+                        let response = ui.interact(
+                            header_rect,
+                            egui::Id::new(("graph_note_node", id.as_str())),
+                            egui::Sense::click_and_drag(),
                         );
-                        note_text_lost_focus = text_response.lost_focus();
-                    }
+                        if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
+                            let text_response = ui.put(
+                                text_rect,
+                                egui::TextEdit::multiline(&mut note.text)
+                                    .frame(egui::Frame::NONE)
+                                    .font(egui::FontId::proportional(13.0))
+                                    .text_color(egui::Color32::from_black_alpha(220))
+                                    .hint_text("Type a note..."),
+                            );
+                            note_text_lost_focus = text_response.lost_focus();
+                        }
+                        response
+                    } else {
+                        // `text` is cloned out before the closure below --
+                        // `ui.scope_builder`'s closure borrows `self.
+                        // commonmark_cache` mutably, which the borrow
+                        // checker only allows alongside a *finished*
+                        // borrow of `self.nodes`, not one still live inside
+                        // the same closure.
+                        let text = self
+                            .nodes
+                            .get(&id)
+                            .and_then(|n| n.as_note())
+                            .map(|n| n.text.clone())
+                            .unwrap_or_default();
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(text_rect)
+                                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                            |ui| {
+                                ui.style_mut().visuals.override_text_color =
+                                    Some(egui::Color32::from_black_alpha(220));
+                                egui_commonmark::CommonMarkViewer::new().show(
+                                    ui,
+                                    &mut self.commonmark_cache,
+                                    &text,
+                                );
+                            },
+                        );
+                        let response = ui.interact(
+                            rect,
+                            egui::Id::new(("graph_note_node", id.as_str())),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if response.clicked() {
+                            switch_to_editing = true;
+                        }
+                        response
+                    };
                     // Committed on blur, not on every keystroke -- a note is
                     // persisted (unlike every other per-node display state
                     // in `session.json`, see `NotePayload`'s own doc
@@ -8851,7 +8927,15 @@ impl App {
                     // writing it once per edit *session* rather than once
                     // per character avoids hammering disk while typing.
                     if note_text_lost_focus {
+                        if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
+                            note.editing = false;
+                        }
                         self.save_session();
+                    }
+                    if switch_to_editing {
+                        if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
+                            note.editing = true;
+                        }
                     }
 
                     if is_hovered {

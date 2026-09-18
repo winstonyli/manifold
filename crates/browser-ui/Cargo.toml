@@ -8,6 +8,15 @@ egui = "0.36.2"
 egui-phosphor = "0.14.0"
 egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
+# Notes rendered as real Markdown -- `default-features = false` drops this
+# crate's own `load-images` (default-on): a note's body is user-typed text,
+# and rendering an `![alt](url)` inside it would otherwise fire a real,
+# unreviewed HTTP GET the instant a note renders, purely from typing a URL
+# into it -- the same passive-tracking-pixel concern email clients disable
+# remote image loading for by default. `pulldown_cmark` is the actual
+# Markdown parser backend; nothing here needs the crate's other optional
+# features (syntax highlighting, SVG, its own macros).
+egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 # PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
