@@ -3473,6 +3473,7 @@ impl App {
             },
         );
         self.node_order.push(id);
+        self.save_session();
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
@@ -7327,8 +7328,9 @@ impl App {
                         egui::Color32::from_black_alpha(160),
                     );
 
+                    let mut note_text_lost_focus = false;
                     if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
-                        ui.put(
+                        let text_response = ui.put(
                             text_rect,
                             egui::TextEdit::multiline(&mut note.text)
                                 .frame(egui::Frame::NONE)
@@ -7336,6 +7338,16 @@ impl App {
                                 .text_color(egui::Color32::from_black_alpha(220))
                                 .hint_text("Type a note..."),
                         );
+                        note_text_lost_focus = text_response.lost_focus();
+                    }
+                    // Committed on blur, not on every keystroke -- a note is
+                    // persisted (unlike every other per-node display state
+                    // in `session.json`, see `NotePayload`'s own doc
+                    // comment), and `save_session` is real file I/O, so
+                    // writing it once per edit *session* rather than once
+                    // per character avoids hammering disk while typing.
+                    if note_text_lost_focus {
+                        self.save_session();
                     }
 
                     if is_hovered {
@@ -7379,6 +7391,7 @@ impl App {
                         }
                     } else if self.dragging.as_deref() == Some(id.as_str()) {
                         self.dragging = None;
+                        self.save_session();
                     }
                     if is_hovered {
                         self.hovered = Some(id.clone());
@@ -7811,6 +7824,7 @@ impl App {
         }
         if let Some(id) = note_close_requested {
             self.remove_node(&id);
+            self.save_session();
         }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
