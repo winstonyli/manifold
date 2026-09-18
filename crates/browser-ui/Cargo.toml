@@ -10,6 +10,24 @@ egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+# PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
+# version `pdfium-auto` itself depends on exactly (`0.3.1` -> `0.8.37`, one
+# version older than this crate's own latest `0.9.4`) -- a mismatched pin
+# here resolves as two distinct, incompatible `Pdfium` types in the
+# dependency graph (confirmed live: `cargo build` failed with exactly that
+# type mismatch until pinned to match). Default features (pdfium_latest/
+# image_latest/thread_safe) already give the exact `image_025` ->
+# `image::RgbaImage` integration this project wants -- see README's own
+# research writeup for why this over mupdf-rs (AGPL) / poppler-rs (GTK,
+# Linux-first).
+pdfium-render = "=0.8.37"
+# Downloads and caches the actual `pdfium.dll` (pdfium-render only vendors
+# the FFI bindings, not a real binary) from the canonical bblanchon/
+# pdfium-binaries releases, lazily on first real use -- not a build.rs
+# fetch, so `cargo build` itself stays offline-friendly and there's no
+# `sync-runtime-deps.sh`-style copy step needed the way CEF/Servo's own
+# bundled runtimes require.
+pdfium-auto = "0.3"
 pollster = "1.0.1"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }

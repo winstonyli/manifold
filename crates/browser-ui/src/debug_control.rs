@@ -172,6 +172,10 @@ pub enum DebugCommand {
     /// of a real file dialog — same "bypass the dialog entirely" reason as
     /// `ExportSession`/`PrintToPdf`. See `App::insert_image_node`.
     AddImage(String),
+    /// The Graph toolbar's "+ PDF" button with an explicit path instead of
+    /// a real file dialog — same reasoning as `AddImage`. See
+    /// `App::insert_pdf_node`.
+    AddPdf(String),
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -395,6 +399,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
         "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
+        "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         _ => None,
     }

@@ -55,6 +55,18 @@ pub struct SessionImage {
     pub pos_y: f32,
 }
 
+/// A PDF node's own saved data -- same "just the file path" posture
+/// `SessionImage` already has, for the same reason: `width`/`height`/
+/// `page_count` are all re-derived by rendering the file's first page
+/// again at restore, not duplicated here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionPdf {
+    pub id: String,
+    pub path: String,
+    pub pos_x: f32,
+    pub pos_y: f32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
@@ -64,6 +76,8 @@ pub struct Session {
     pub notes: Vec<SessionNote>,
     #[serde(default)]
     pub images: Vec<SessionImage>,
+    #[serde(default)]
+    pub pdfs: Vec<SessionPdf>,
     pub focused: Option<String>,
     pub view_mode_tab: bool,
     pub next_tab_id: u64,
@@ -71,6 +85,8 @@ pub struct Session {
     pub next_note_id: u64,
     #[serde(default)]
     pub next_image_id: u64,
+    #[serde(default)]
+    pub next_pdf_id: u64,
 }
 
 fn session_dir() -> Option<PathBuf> {
