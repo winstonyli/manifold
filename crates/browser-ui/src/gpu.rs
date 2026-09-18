@@ -52,17 +52,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 /// resolution.
 const THUMBNAIL_MAX_SIZE: (u32, u32) = (256, 192);
 
-/// Holds the currently focused tab's frame as a GPU texture for the
-/// hand-rolled content pipeline. Recreated on every uploaded frame — no
-/// dirty-tracking, see `upload_frame`. Since only the focused tab ever
-/// produces frames (background tabs are `SetVisible(false)`, M5), a single
-/// slot (not a per-tab map) is enough here; `tab_id` records which tab it
-/// belongs to so `render` can avoid briefly showing a just-defocused tab's
-/// stale content in a newly-focused tab's viewport before its own first
-/// frame arrives.
+/// One visible tab's frame as a GPU texture for the hand-rolled content
+/// pipeline. Recreated on every uploaded frame — no dirty-tracking, see
+/// `upload_frame`. Keyed by tab id in `GpuState::tab_textures` -- split view
+/// needs two of these live at once (the primary and secondary pane), so a
+/// single slot no longer suffices the way it did when only ever one tab
+/// could be `SetVisible(true)` at a time.
 struct TabTexture {
     bind_group: wgpu::BindGroup,
-    tab_id: String,
 }
 
 /// A tab's cached frame re-uploaded as a plain `Rgba8Unorm` texture and
@@ -86,7 +83,13 @@ pub struct GpuState {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    tab_texture: Option<TabTexture>,
+    /// Keyed by tab id -- see `TabTexture`'s own doc comment for why this
+    /// isn't a single slot. Bounded by however many tabs are currently
+    /// visible (at most two, focused + split partner) rather than every tab
+    /// ever focused: entries are removed via `free_tab_texture` whenever a
+    /// tab stops being visible (unfocused, split closed, or closed
+    /// outright).
+    tab_textures: HashMap<String, TabTexture>,
     thumbnails: HashMap<String, ThumbTexture>,
     /// Keyed by *origin* (`scheme://host[:port]`, see `favicon_fetch::
     /// url_origin`), not tab id -- favicons are fetched independently of
@@ -268,7 +271,7 @@ impl GpuState {
             pipeline,
             bind_group_layout,
             sampler,
-            tab_texture: None,
+            tab_textures: HashMap::new(),
             thumbnails: HashMap::new(),
             favicons: HashMap::new(),
             favicon_order: std::collections::VecDeque::new(),
@@ -362,10 +365,9 @@ impl GpuState {
     /// (`Rgba8UnormSrgb`), CEF's OSR `on_paint` produces BGRA8
     /// (`Bgra8UnormSrgb`). Passing the wrong format silently swaps red/blue.
     ///
-    /// Updates two things: the single hand-rolled-pipeline content texture
-    /// (used only for whichever tab is currently focused in Tab view — see
-    /// `TabTexture`'s doc comment for why one slot suffices) and that tab's
-    /// persistent graph-view thumbnail (see `ThumbTexture`).
+    /// Updates two things: `tab_id`'s own hand-rolled-pipeline content
+    /// texture (see `TabTexture`'s doc comment) and its persistent
+    /// graph-view thumbnail (see `ThumbTexture`).
     pub fn upload_frame(
         &mut self,
         tab_id: &str,
@@ -408,10 +410,7 @@ impl GpuState {
                 },
             ],
         });
-        self.tab_texture = Some(TabTexture {
-            bind_group,
-            tab_id: tab_id.to_string(),
-        });
+        self.tab_textures.insert(tab_id.to_string(), TabTexture { bind_group });
 
         let thumb_pixels = Self::to_thumbnail_rgba(pixels, format);
         let (thumb_pixels, thumb_width, thumb_height) =
@@ -475,6 +474,16 @@ impl GpuState {
         // free to do here. `upload_favicon`'s own `MAX_CACHED_FAVICONS`
         // eviction is what eventually reclaims an origin nothing visits
         // anymore.
+    }
+
+    /// Drops `tab_id`'s own content-pipeline texture (see `tab_textures`'
+    /// own doc comment) -- called whenever a tab stops being visible
+    /// (unfocused, a split closed, or the tab closes outright) so a
+    /// suspended tab's last frame doesn't sit on the GPU indefinitely for no
+    /// reason (unlike `thumbnails`, which deliberately persists past
+    /// suspension so a graph node keeps showing its last frame).
+    pub fn free_tab_texture(&mut self, tab_id: &str) {
+        self.tab_textures.remove(tab_id);
     }
 
     /// `rgba` is already tightly-packed RGBA -- registered the same way as
@@ -579,36 +588,47 @@ impl GpuState {
         }
     }
 
-    /// `viewport` is the exact rect (physical pixels: x, y, w, h) the
-    /// content quad draws at — normally the full window below chrome, but
-    /// during a Tab↔Graph shrink/expand animation (`main.rs`'s
-    /// `Transition`) the caller passes an interpolated, animated rect
-    /// instead, sized/positioned partway between that and the target
-    /// graph-node's thumbnail spot. `egui` is `None` on the very first
-    /// frames before egui has produced any output yet.
-    ///
-    /// `focused_tab_id` is the tab whose live content should fill the
-    /// content viewport (Tab view, or the tab a `Transition` is animating)
-    /// — `None` when there is no single tab whose content belongs on
-    /// screen (plain Graph view, no animation). If it doesn't match
-    /// whichever tab most recently produced a frame (e.g. focus just
-    /// switched and the new tab hasn't painted yet), the content pass is
-    /// skipped rather than briefly showing the previous tab's stale frame.
-    ///
-    /// `content_on_top`: which of the content quad / egui layer is drawn
-    /// first (the base, cleared layer) vs. second (drawn over it). Normal
-    /// Tab view wants content as the base and chrome/dropdowns on top
-    /// (`false`); a `Transition` wants the graph as the base and the
-    /// shrinking/expanding content quad on top of it, so the animated
-    /// tab content is never hidden underneath graph nodes/edges (`true`).
-    /// Records the hand-rolled content-pipeline pass (the focused tab's live
-    /// frame, if any) into `view`. A free function (not a `&self` method) so
-    /// `render` can call it against two different targets — the real
-    /// swapchain view and, when a screenshot was requested, a second
-    /// offscreen view — without the borrow checker treating `encoder`/
-    /// `pipeline` as aliasing `self` (see `render`'s own comment on why the
-    /// screenshot path re-renders rather than reads back the swapchain
-    /// texture directly).
+    /// Draws every entry in `panes` (0 for Graph view/nothing focused yet,
+    /// 1 for ordinary Tab view, 2 for a split) as its own viewport-clipped
+    /// content-pipeline quad -- `record_content_pass`'s own fullscreen-
+    /// triangle-plus-`set_viewport` trick already confines each draw to its
+    /// own rect, so compositing more than one is just calling it more than
+    /// once with a different rect/texture, no scissor-rect bookkeeping
+    /// needed. Only the first entry actually clears the color attachment
+    /// (`clear`, matching whatever the caller would have passed for a
+    /// single pane); every later one loads, so it doesn't erase the pane(s)
+    /// already drawn this same pass. Still issues exactly one clearing pass
+    /// even with zero panes -- something has to clear the screen before
+    /// egui's own chrome/graph draws on top of it.
+    fn record_content_layers(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        panes: &[((f32, f32, f32, f32), Option<&TabTexture>)],
+        pipeline: &wgpu::RenderPipeline,
+        clear: bool,
+    ) {
+        if panes.is_empty() {
+            Self::record_content_pass(encoder, view, (0.0, 0.0, 0.0, 0.0), None, pipeline, clear);
+            return;
+        }
+        for (i, (rect, showing)) in panes.iter().enumerate() {
+            Self::record_content_pass(encoder, view, *rect, *showing, pipeline, clear && i == 0);
+        }
+    }
+
+    /// Renders one pane's content-pipeline quad, clipped to `viewport`
+    /// (physical pixels: x, y, w, h) via `set_viewport` rather than a real
+    /// scissor rect — the fullscreen-triangle trick this pipeline's own
+    /// vertex shader uses only ever rasterizes within whatever viewport is
+    /// currently set, so this is enough on its own to confine each of
+    /// `record_content_layers`' calls to its own screen region. `showing` is
+    /// `None` when that pane's own tab hasn't produced a frame yet (or its
+    /// texture was already freed) — the render pass still runs (for its
+    /// `clear` side effect), it just draws nothing. A free function (not a
+    /// `&self` method) so `render` can call it against two different
+    /// targets — the real swapchain view and, when a screenshot was
+    /// requested, a second offscreen view — without the borrow checker
+    /// treating `encoder`/`pipeline` as aliasing `self`.
     fn record_content_pass(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
@@ -690,6 +710,22 @@ impl GpuState {
         renderer.render(&mut pass.forget_lifetime(), clipped_primitives, screen_descriptor);
     }
 
+    /// `panes` is 0, 1, or 2 `(viewport_px, tab_id)` pairs -- empty for
+    /// plain Graph view (nothing to composite, `record_content_layers`
+    /// still clears the screen), one for ordinary Tab view or a `Transition`
+    /// (`main.rs`'s animated shrink/expand rect, in place of the full
+    /// content area), two for a split-view pane pair. Each pane draws
+    /// nothing (rather than a stale previous frame) until its own tab_id
+    /// has an uploaded texture -- see `record_content_pass`'s own doc
+    /// comment.
+    ///
+    /// `content_on_top`: which of the content quad(s) / egui layer is drawn
+    /// first (the base, cleared layer) vs. second (drawn over it). Normal
+    /// Tab view wants content as the base and chrome/dropdowns on top
+    /// (`false`); a `Transition` wants the graph as the base and the
+    /// shrinking/expanding content quad on top of it, so the animated tab
+    /// content is never hidden underneath graph nodes/edges (`true`).
+    ///
     /// `screenshot_path`: when set, saves this frame (chrome, any open
     /// dropdown, and content — the full composited picture, not just tab
     /// content) as a PNG there — headless mode's replacement for PrintWindow-
@@ -707,8 +743,7 @@ impl GpuState {
     /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
-        content_rect_px: (f32, f32, f32, f32),
-        focused_tab_id: Option<&str>,
+        panes: &[((f32, f32, f32, f32), &str)],
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
@@ -760,10 +795,14 @@ impl GpuState {
 
         let width = self.config.width;
         let height = self.config.height;
-        let showing = self
-            .tab_texture
-            .as_ref()
-            .filter(|t| focused_tab_id == Some(t.tab_id.as_str()));
+        // Resolved once, up front -- `panes` (the parameter) is just
+        // `(rect, tab_id)` pairs; this pairs each with whatever texture
+        // `tab_id` currently has uploaded, if any (a tab that hasn't sent
+        // its first frame yet, or whose texture was already freed, simply
+        // draws nothing for this frame, same tolerance a single-pane render
+        // already had).
+        let panes: Vec<((f32, f32, f32, f32), Option<&TabTexture>)> =
+            panes.iter().map(|(rect, id)| (*rect, self.tab_textures.get(*id))).collect();
 
         // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
         // and reused for both the on-screen pass and, if requested, the
@@ -804,12 +843,12 @@ impl GpuState {
                     screen_descriptor,
                     true,
                 );
-                Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, false);
+                Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, false);
             } else {
-                Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, true);
+                Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, true);
             }
         } else {
-            Self::record_content_pass(&mut encoder, &view, content_rect_px, showing, &self.pipeline, true);
+            Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, true);
             if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
                 Self::record_egui_pass(
                     &mut encoder,
@@ -844,12 +883,12 @@ impl GpuState {
                         screen_descriptor,
                         true,
                     );
-                    Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, false);
+                    Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, false);
                 } else {
-                    Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, true);
+                    Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, true);
                 }
             } else {
-                Self::record_content_pass(&mut encoder, &readback_view, content_rect_px, showing, &self.pipeline, true);
+                Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, true);
                 if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
                     Self::record_egui_pass(
                         &mut encoder,

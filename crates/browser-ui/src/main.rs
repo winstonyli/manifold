@@ -1259,6 +1259,12 @@ enum SpawnPurpose {
     /// whatever `self.focused` was set to before any of them were issued,
     /// not capture time.
     Restore,
+    /// `App::start_split`'s secondary pane -- spawned invisible like `New`,
+    /// but once it completes it becomes `self.split_tab` and turns visible
+    /// (a split's secondary pane is always live, unlike an ordinary
+    /// background tab) rather than gaining focus. See `App::split_tab`'s
+    /// own doc comment.
+    Split,
 }
 
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
@@ -1436,6 +1442,17 @@ struct App {
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
     focused: Option<String>,
+    /// The secondary pane's tab id while a split (engine-vs-engine compare
+    /// view) is showing, alongside `focused` in the primary pane -- `None`
+    /// for ordinary single-pane Tab view. Set once the tab `start_split`
+    /// spawns actually finishes (`SpawnPurpose::Split`). Unlike `focused`,
+    /// this tab never receives keyboard/mouse input in this first cut --
+    /// it's a live, real graph node (its own engine-host process, closable
+    /// and reachable from Graph view like any other tab), just view-only
+    /// while shown here. Cleared (not the tab itself closed) whenever the
+    /// split closes, `focused` changes to a different tab, or this tab
+    /// closes out from under the split -- see `close_split`.
+    split_tab: Option<String>,
     view_mode: ViewMode,
     next_tab_id: u64,
     next_download_id: u64,
@@ -1800,6 +1817,7 @@ impl Default for App {
             graph_zoom_pct: 100.0,
             pending_focus_quick_switcher: false,
             focused: None,
+            split_tab: None,
             view_mode: ViewMode::Tab,
             next_tab_id: 0,
             next_download_id: 0,
@@ -1919,14 +1937,38 @@ impl App {
     /// the compositor only ever displays it in the smaller content
     /// viewport, see `gpu::GpuState::render`) would waste work and,
     /// because the viewport stretches whatever the engine sends to fill
-    /// it, visibly squash the page.
+    /// it, visibly squash the page. Halved (no divider gap reserved) while
+    /// `split_tab` is set -- both the primary and secondary pane are
+    /// exactly half the window wide on screen, so each engine should
+    /// render at that same real footprint rather than the full width, the
+    /// same "match the actual on-screen size" reasoning this already
+    /// applied to chrome height. `send_resize_to` is the only caller, and
+    /// both `focused` and `split_tab` get resent through it whenever this
+    /// value would change for either of them (window resize, or a split
+    /// opening/closing) -- see those call sites.
     fn content_size_px(&self) -> (u32, u32) {
         let full = self
             .window
             .as_ref()
             .map(|w| w.inner_size())
             .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
-        (full.width, full.height.saturating_sub(self.chrome_height_px()))
+        let height = full.height.saturating_sub(self.chrome_height_px());
+        let width = if self.split_tab.is_some() { full.width / 2 } else { full.width };
+        (width, height)
+    }
+
+    /// The on-screen boundary (physical pixels, x) between the primary and
+    /// secondary pane while a split is open -- `None` when there's no
+    /// split, meaning the whole content width belongs to the primary pane.
+    /// `window_event`'s mouse handlers only ever forward to the primary
+    /// pane (`self.focused`) in this first cut -- the secondary pane is
+    /// view-only, see `split_tab`'s own doc comment -- so they gate on the
+    /// cursor being left of this boundary (or there being no split at all)
+    /// on top of the existing below-chrome check.
+    fn split_divider_x_px(&self) -> Option<f64> {
+        self.split_tab.as_ref()?;
+        let width = self.window.as_ref().map_or(1024, |w| w.inner_size().width);
+        Some(width as f64 / 2.0)
     }
 
     fn send_resize_to(&mut self, tab_id: &str) {
@@ -2692,12 +2734,20 @@ impl App {
             Ok(mut tab) => {
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
-                    SpawnPurpose::New => false,
+                    SpawnPurpose::New | SpawnPurpose::Split => false,
                     SpawnPurpose::Respawn | SpawnPurpose::Restore => {
                         self.focused.as_deref() == Some(id.as_str())
                     }
                 };
-                tab.set_visible(is_focused);
+                // A split's secondary pane is always live even though it's
+                // never `focused` -- true for a fresh `Split` spawn, and
+                // also (the `self.split_tab` check) for a crash-respawn of
+                // whatever tab currently happens to be playing that role,
+                // which arrives as an ordinary `Respawn`, not `Split` --
+                // see `SpawnPurpose::Split`'s own doc comment.
+                let is_split = matches!(purpose, SpawnPurpose::Split) || self.split_tab.as_deref() == Some(id.as_str());
+                let visible = is_focused || is_split;
+                tab.set_visible(visible);
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
@@ -2735,11 +2785,24 @@ impl App {
                     SpawnPurpose::New => {
                         self.send_zoom_to(&id);
                     }
+                    SpawnPurpose::Split => {
+                        self.split_tab = Some(id.clone());
+                        self.send_zoom_to(&id);
+                        self.send_resize_to(&id);
+                        // The primary pane was rendering at full width until
+                        // now -- it needs to shrink to half now that
+                        // `content_size_px` sees `split_tab` as set.
+                        if let Some(focused_id) = self.focused.clone() {
+                            self.send_resize_to(&focused_id);
+                        }
+                    }
                     SpawnPurpose::Respawn => {
                         if is_focused {
                             if !self.address_bar_focused && !self.debug_address_bar_pin {
                                 self.address_bar_text = url;
                             }
+                            self.send_resize_to(&id);
+                        } else if is_split {
                             self.send_resize_to(&id);
                         }
                     }
@@ -2758,6 +2821,7 @@ impl App {
                 self.tab_spawn_error = Some(match purpose {
                     SpawnPurpose::Root => format!("Couldn't start a browser tab: {err}"),
                     SpawnPurpose::New => format!("Couldn't start a new tab: {err}"),
+                    SpawnPurpose::Split => format!("Couldn't start split view: {err}"),
                     SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
                     SpawnPurpose::Restore => format!("Couldn't restore tab: {err}"),
                 });
@@ -3373,23 +3437,38 @@ impl App {
         }) else {
             return;
         };
-        self.spawn_new_tab_with_kind(parent, group, &url, kind);
+        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New);
     }
 
     fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
-        self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine);
+        self.spawn_new_tab_with_kind(
+            parent,
+            group,
+            url,
+            self.settings.default_starting_engine,
+            SpawnPurpose::New,
+        );
     }
 
-    /// Shared by `spawn_new_tab` (always `default_starting_engine`) and
+    /// Shared by `spawn_new_tab` (always `default_starting_engine`),
     /// `reopen_closed_tab_shortcut` (the closed tab's own engine, not
-    /// necessarily today's default).
+    /// necessarily today's default), and `start_split` (`SpawnPurpose::
+    /// Split` instead of `New`, everything else identical) -- `purpose` is
+    /// threaded through to `spawn_tab_async` rather than hardcoded, since
+    /// those three cases genuinely differ in what should happen once the
+    /// spawn completes (see `handle_tab_spawn_result`'s own per-purpose
+    /// match). Returns the new tab's id, allocated synchronously even
+    /// though the real engine-host process spawn (and thus the node's own
+    /// insertion into `self.nodes`) completes asynchronously -- see
+    /// `spawn_tab_async`'s own doc comment.
     fn spawn_new_tab_with_kind(
         &mut self,
         parent: Option<String>,
         group: Option<String>,
         url: &str,
         kind: EngineKind,
-    ) {
+        purpose: SpawnPurpose,
+    ) -> String {
         let id = self.alloc_tab_id();
         // `parent`'s own position only if it actually shares `group` --
         // the toolbar's "+ New Tab" passes `self.current_group` as `group`
@@ -3408,20 +3487,40 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        self.spawn_tab_async(id, parent, group, false, None, url.to_string(), pos, egui::Vec2::ZERO, SpawnPurpose::New, kind);
+        self.spawn_tab_async(
+            id.clone(),
+            parent,
+            group,
+            false,
+            None,
+            url.to_string(),
+            pos,
+            egui::Vec2::ZERO,
+            purpose,
+            kind,
+        );
+        id
     }
 
     /// Peek-click commits focus: the tab losing focus (if any, and if
     /// different) is told to stop rendering, the newly focused one is told
-    /// to start, and the view switches to Tab. At most one tab is ever
-    /// visible at a time.
+    /// to start, and the view switches to Tab. At most one tab is ever the
+    /// primary/focused one at a time -- a split's own secondary pane
+    /// (`split_tab`) is the one exception, also visible but never focused;
+    /// switching primary focus to a genuinely different tab always closes
+    /// whatever split was open, since a split is only ever meaningful
+    /// paired with the specific tab it was opened against.
     fn focus_tab(&mut self, id: &str) {
         if self.focused.as_deref() != Some(id) {
             self.close_find_bar();
             self.context_menu = None;
+            self.close_split();
             if let Some(old_id) = self.focused.clone() {
                 if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
                     old.tab.set_visible(false);
+                }
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.free_tab_texture(&old_id);
                 }
             }
         }
@@ -3435,6 +3534,46 @@ impl App {
         self.view_mode = ViewMode::Tab;
         self.send_resize_to(id);
         self.save_session();
+    }
+
+    /// Opens (or replaces) split view: the Tab-view toolbar's "Split"
+    /// picker -- spawns a new tab at the focused tab's own current url on
+    /// `kind`, parented to it and sharing its group, shown as the secondary
+    /// pane once it finishes spawning (`SpawnPurpose::Split` -- see
+    /// `handle_tab_spawn_result`). A no-op if there's no focused tab to
+    /// compare against. Replacing an already-open split just spawns a
+    /// fresh secondary tab and overwrites `split_tab` once *that* finishes
+    /// spawning -- the old secondary tab is left exactly as `close_split`
+    /// would leave it (unpaired, but not closed), since a real tab node no
+    /// longer being shown in a split isn't otherwise different from any
+    /// other background tab.
+    fn start_split(&mut self, kind: EngineKind) {
+        let Some(focused_id) = self.focused.clone() else { return };
+        let Some(url) = self.nodes.get(&focused_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
+            return;
+        };
+        let group = self.group_of(&Some(focused_id.clone()));
+        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split);
+    }
+
+    /// Closes split view -- unpairs the secondary pane and stops its
+    /// rendering/GPU texture, but doesn't close the tab itself: it remains
+    /// a normal graph node, reachable and closable from Graph view like any
+    /// other tab. A no-op if no split is open.
+    fn close_split(&mut self) {
+        let Some(id) = self.split_tab.take() else { return };
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+            node.tab.set_visible(false);
+        }
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_texture(&id);
+        }
+        // The primary pane was rendering at half width for the split --
+        // needs to grow back to the full content width now that
+        // `content_size_px` no longer sees `split_tab` as set.
+        if let Some(focused_id) = self.focused.clone() {
+            self.send_resize_to(&focused_id);
+        }
     }
 
     /// Leaves Tab view for Graph view: starts a shrink animation (see
@@ -3630,12 +3769,22 @@ impl App {
         self.node_order.retain(|t| t != id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
+            gpu.free_tab_texture(id);
         }
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
+        }
+        // A split only ever makes sense paired with a specific focused tab
+        // (see `focus_tab`'s own doc comment) -- closing either half of it
+        // (the tab node is already gone either way, so no `set_visible`/
+        // resize cleanup to do the way `close_split` normally would) clears
+        // the whole thing rather than leaving a dangling reference to a
+        // node that no longer exists.
+        if self.split_tab.as_deref() == Some(id) || self.focused.as_deref() == Some(id) {
+            self.split_tab = None;
         }
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
@@ -4283,7 +4432,7 @@ impl App {
     fn respawn_closed_tab(&mut self, closed: ClosedTab) {
         // A stale/dissolved `closed.group` is sanitized centrally in
         // `handle_tab_spawn_result` once this spawn actually completes.
-        self.spawn_new_tab_with_kind(closed.parent, closed.group, &closed.url, closed.kind);
+        self.spawn_new_tab_with_kind(closed.parent, closed.group, &closed.url, closed.kind, SpawnPurpose::New);
     }
 
     /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
@@ -6452,6 +6601,8 @@ impl App {
         let mut downloads_button_rect: Option<egui::Rect> = None;
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
+        let mut split_requested: Option<EngineKind> = None;
+        let mut close_split_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
@@ -6590,6 +6741,31 @@ impl App {
                     };
                     if ui.selectable_label(node_muted, mute_icon).on_hover_text("Muted").clicked() {
                         mute_toggle = true;
+                    }
+                    // Engine-vs-engine compare view -- see `App::split_tab`'s
+                    // own doc comment. Picking an engine here (re-)opens a
+                    // split against the focused tab's current url; the
+                    // secondary pane is view-only in this first cut, so its
+                    // own toolbar/address-bar controls only ever apply to
+                    // the primary (left) pane.
+                    egui::ComboBox::from_id_salt("split_picker")
+                        .selected_text(if self.split_tab.is_some() { "Split ▾" } else { "Split" })
+                        .show_ui(ui, |ui| {
+                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
+                                ui.horizontal(|ui| {
+                                    engine_dot(ui, kind, 8.0);
+                                    if ui.selectable_label(false, engine_label(kind)).clicked() {
+                                        split_requested = Some(kind);
+                                    }
+                                });
+                            }
+                        });
+                    if self.split_tab.is_some()
+                        && icon_button_eased(ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::regular::X)
+                            .on_hover_text("Close Split")
+                            .clicked()
+                    {
+                        close_split_requested = true;
                     }
                     // "Mute Others"/"Close Others"/"Pin All"/"Unpin All"
                     // folded into one dropdown -- a later session pass
@@ -6915,6 +7091,45 @@ impl App {
         }
         if mute_toggle {
             self.toggle_muted(&focused_id);
+        }
+        if let Some(kind) = split_requested {
+            self.start_split(kind);
+        }
+        if close_split_requested {
+            self.close_split();
+        }
+        // The secondary pane's own small "which engine is this" label plus
+        // a thin divider line -- drawn here (real egui, on top of both raw
+        // content quads) rather than as part of either pane's own content,
+        // since the secondary pane has no toolbar of its own to put it in
+        // (view-only in this first cut, see `split_tab`'s own doc comment).
+        if let Some(split_id) = self.split_tab.clone() {
+            let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+            let screen_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let screen_max_y = screen_size.height as f32 / ppp;
+            let divider_x = (screen_size.width as f32 / ppp) / 2.0;
+            let kind = self.nodes.get(&split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+            ui.painter().line_segment(
+                [egui::pos2(divider_x, CHROME_HEIGHT_POINTS), egui::pos2(divider_x, screen_max_y)],
+                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+            );
+            egui::Area::new(egui::Id::new("split_pane_label"))
+                .fixed_pos(egui::pos2(divider_x + 8.0, CHROME_HEIGHT_POINTS + 6.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::default()
+                        .fill(TOOLBAR_FILL)
+                        .corner_radius(4u8)
+                        .inner_margin(egui::Margin::symmetric(8, 3))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(kind) = kind {
+                                    engine_dot(ui, kind, 8.0);
+                                }
+                                ui.label(kind.map(engine_label).unwrap_or("?"));
+                            });
+                        });
+                });
         }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
@@ -9883,11 +10098,15 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(id) = self.focused.clone() {
                     self.send_resize_to(&id);
                 }
+                if let Some(id) = self.split_tab.clone() {
+                    self.send_resize_to(&id);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
                 let chrome_height = self.chrome_height_px() as f64;
-                if in_tab_view && !consumed_by_egui && position.y >= chrome_height {
+                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| position.x < divider);
+                if in_tab_view && !consumed_by_egui && position.y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             node.tab.send(&HostToEngine::Input(InputEvent::MouseMove {
@@ -9911,7 +10130,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // content still reaches `InputEvent::MouseDown`/`MouseUp`
                 // the same way every left-click already does.
                 let egui_wants_it = consumed_by_egui && button != WinitMouseButton::Right;
-                if in_tab_view && !egui_wants_it && y >= chrome_height {
+                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
+                if in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane {
                     if let Some(button) = translate_mouse_button(button) {
                         if let Some(id) = self.focused.clone() {
                             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
@@ -9938,7 +10158,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
                 let (x, y) = self.cursor_pos;
-                if in_tab_view && !consumed_by_egui && y >= chrome_height {
+                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
+                if in_tab_view && !consumed_by_egui && y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             let (dx, dy) = match delta {
@@ -10052,17 +10273,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 };
 
-                // The content quad's rect (points, screen space) and which
-                // tab's texture to draw there — a `Transition` overrides
-                // both to the animated in-between rect and that tab's id,
-                // regardless of `view_mode`; otherwise the normal
-                // full-content-area-in-Tab-view/nothing-in-Graph-view rule.
+                // The content quad's rect(s) (points, screen space) and
+                // which tab's texture to draw at each — a `Transition`
+                // overrides this to one entry, the animated in-between rect
+                // and that tab's id, regardless of `view_mode`; otherwise
+                // the normal Tab-view rule, which is two entries (primary +
+                // secondary, side by side) while a split is open, one
+                // otherwise, none in Graph view.
                 let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-                let (content_rect_pts, focused_for_content) = if let Some(transition) = &self.transition {
-                    (
-                        self.transition_content_rect_points(transition),
-                        Some(transition.tab_id.clone()),
-                    )
+                let content_panes_pts: Vec<(egui::Rect, String)> = if let Some(transition) = &self.transition {
+                    vec![(self.transition_content_rect_points(transition), transition.tab_id.clone())]
                 } else if self.view_mode == ViewMode::Tab {
                     let screen = self
                         .window
@@ -10070,20 +10290,32 @@ impl ApplicationHandler<UserEvent> for App {
                         .map(|w| w.inner_size())
                         .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
                     let top = self.chrome_height_points();
-                    let rect = egui::Rect::from_min_size(
+                    let full_rect = egui::Rect::from_min_size(
                         egui::pos2(0.0, top),
                         egui::vec2(screen.width as f32 / ppp, (screen.height as f32 / ppp - top).max(0.0)),
                     );
-                    (rect, self.focused.clone())
+                    match (&self.focused, &self.split_tab) {
+                        (Some(focused_id), Some(split_id)) => {
+                            let mid_x = full_rect.center().x;
+                            let left = egui::Rect::from_min_max(full_rect.min, egui::pos2(mid_x, full_rect.max.y));
+                            let right = egui::Rect::from_min_max(egui::pos2(mid_x, full_rect.min.y), full_rect.max);
+                            vec![(left, focused_id.clone()), (right, split_id.clone())]
+                        }
+                        (Some(focused_id), None) => vec![(full_rect, focused_id.clone())],
+                        (None, _) => vec![],
+                    }
                 } else {
-                    (egui::Rect::ZERO, None)
+                    vec![]
                 };
-                let content_rect_px = (
-                    content_rect_pts.min.x * ppp,
-                    content_rect_pts.min.y * ppp,
-                    content_rect_pts.width() * ppp,
-                    content_rect_pts.height() * ppp,
-                );
+                let content_panes_px: Vec<((f32, f32, f32, f32), &str)> = content_panes_pts
+                    .iter()
+                    .map(|(rect, id)| {
+                        (
+                            (rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp),
+                            id.as_str(),
+                        )
+                    })
+                    .collect();
 
                 let content_on_top = self.transition.is_some();
                 // Not taken yet -- a transient surface-acquire failure
@@ -10094,15 +10326,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(gpu) = &mut self.gpu {
                     let outcome = match egui_output {
                         Some(output) => gpu.render(
-                            content_rect_px,
-                            focused_for_content.as_deref(),
+                            &content_panes_px,
                             content_on_top,
                             Some((&self.egui_ctx, output)),
                             screenshot_path.as_deref(),
                         ),
                         None => gpu.render(
-                            content_rect_px,
-                            focused_for_content.as_deref(),
+                            &content_panes_px,
                             content_on_top,
                             None,
                             screenshot_path.as_deref(),
@@ -10455,6 +10685,8 @@ impl App {
                     self.save_session();
                 }
             }
+            DebugCommand::Split(kind) => self.start_split(kind),
+            DebugCommand::CloseSplit => self.close_split(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;

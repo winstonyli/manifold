@@ -4,6 +4,7 @@ use ipc_protocol::KeyCode;
 use winit::event::MouseButton;
 use winit::event_loop::EventLoopProxy;
 
+use crate::process_manager::EngineKind;
 use crate::UserEvent;
 
 /// A headless-mode automation command, one per stdin line (see `parse_line`
@@ -222,6 +223,24 @@ pub enum DebugCommand {
     ImportGroup(String),
     /// `Ctrl+D` equivalent — see `App::duplicate_focused_tab_shortcut`.
     DuplicateTab,
+    /// The Tab-view toolbar's "Split" picker with an explicit engine
+    /// instead of a real click-through dropdown — see `App::start_split`.
+    Split(EngineKind),
+    /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
+    CloseSplit,
+}
+
+/// Case-insensitive, matching `engine_kind_serde`'s own lowercase
+/// convention (`settings.json`/`session.json` use the same strings) --
+/// `SPLIT`'s one argument.
+fn parse_engine_kind(name: &str) -> Option<EngineKind> {
+    match name.to_ascii_lowercase().as_str() {
+        "servo" => Some(EngineKind::Servo),
+        "cef" => Some(EngineKind::Cef),
+        "webkit" => Some(EngineKind::Webkit),
+        "webview2" => Some(EngineKind::Webview2),
+        _ => None,
+    }
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -406,6 +425,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
+        "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
+        "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         _ => None,
     }
 }
