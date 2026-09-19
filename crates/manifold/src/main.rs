@@ -9857,6 +9857,30 @@ impl App {
                         );
 
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
+                        // Whether the currently-dragged node (if any) is
+                        // positioned over this group right now -- the same
+                        // rect-containment check `finish_draggable_node`'s
+                        // own drop-release logic uses, just evaluated live
+                        // during the drag itself so there's some signal
+                        // *before* letting go, confirmed missing entirely
+                        // live (dragging a tab toward a group showed no
+                        // feedback at all until release). Not tied to
+                        // `hover_t`'s own eased transition below -- real-time
+                        // drag feedback should track the cursor immediately,
+                        // not ease in -- and drawn as a separate, much
+                        // bolder ring (not just a stronger version of the
+                        // ordinary hover glow) since the dragged card itself
+                        // is larger than a group's own footprint
+                        // (`GRAPH_NODE_SIZE` vs `GROUP_NODE_SIZE`) and would
+                        // otherwise cover a same-style highlight almost
+                        // entirely.
+                        let is_drag_target = self.dragging.as_deref().is_some_and(|dragging_id| {
+                            dragging_id != id.as_str()
+                                && self
+                                    .nodes
+                                    .get(dragging_id)
+                                    .is_some_and(|n| rect.contains(egui::Pos2::new(n.pos.x, n.pos.y)))
+                        });
                         let tag_color = self.nodes.get(&id).and_then(|n| n.color);
                         let member_ids: Vec<String> = self
                             .nodes
@@ -9883,6 +9907,18 @@ impl App {
                             egui::Stroke::new((1.0 + hover_t * 0.5) * inv_zoom, border_color),
                             egui::StrokeKind::Inside,
                         );
+                        if is_drag_target {
+                            // Expanded well past the dragged card's own
+                            // (larger) footprint so it still peeks out
+                            // visibly from behind it -- see `is_drag_target`'s
+                            // own doc comment above.
+                            ui.painter().rect_stroke(
+                                rect.expand(16.0 * inv_zoom),
+                                10.0 * inv_zoom,
+                                egui::Stroke::new(4.0 * inv_zoom, ACCENT),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
 
                         if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
