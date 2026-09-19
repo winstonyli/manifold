@@ -1,0 +1,9 @@
+[package]
+name = "manifold-engine-cef"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }
+ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+url = "2.5.8"

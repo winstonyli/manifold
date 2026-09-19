@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for browser-ui's --headless mode (see README.md's "Headless
+# Smoke test for manifold's --headless mode (see README.md's "Headless
 # mode" section for the stdin text-command protocol this drives). Not a
 # full test framework, and not content-level assertions — there is no
 # state-query debug command yet, only screenshots — so this catches
@@ -19,15 +19,15 @@
 # that click reliable, so it's left to manual verification for now (see
 # project memory for the one-off manual pass that confirmed it works).
 #
-# Run after `cargo build -p browser-ui`. Exits 0 if every check passed.
+# Run after `cargo build -p manifold`. Exits 0 if every check passed.
 set -uo pipefail # not -e: a failed check should still let later checks run
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exe="$repo_root/target/debug/browser-ui.exe"
+exe="$repo_root/target/debug/manifold.exe"
 out_dir="${HEADLESS_TEST_OUT:-$repo_root/target/headless-test-output}"
 
 if [ ! -x "$exe" ]; then
-    echo "headless-smoke-test: $exe not found — build first (cargo build -p browser-ui)" >&2
+    echo "headless-smoke-test: $exe not found — build first (cargo build -p manifold)" >&2
     exit 1
 fi
 
@@ -43,7 +43,7 @@ rm -f "$out_dir"/*.png
 # actually needs.
 out_dir_win="$(cygpath -w "$out_dir")"
 
-# A stray engine-host-servo.exe left over from an earlier crashed/killed
+# A stray manifold-engine-servo.exe left over from an earlier crashed/killed
 # run collides with this run's own root tab on the deterministic "tab-0"
 # named pipe, silently leaving the app with zero tabs (see project
 # memory) — always start from a verified-clean process slate. The extra
@@ -51,8 +51,8 @@ out_dir_win="$(cygpath -w "$out_dir")"
 # can take a moment to actually release (documented in project memory as
 # a real, if rare, race), and a fresh spawn attempted too soon can fail
 # with a plain "Access is denied" rather than a pipe-already-exists error.
-taskkill //F //IM browser-ui.exe >/dev/null 2>&1 || true
-taskkill //F //IM engine-host-servo.exe >/dev/null 2>&1 || true
+taskkill //F //IM manifold.exe >/dev/null 2>&1 || true
+taskkill //F //IM manifold-engine-servo.exe >/dev/null 2>&1 || true
 sleep 2
 
 fail=0
@@ -89,7 +89,7 @@ send() { echo "$1" >&"${BROWSER[1]}"; }
 cleanup() {
     kill "$browser_pid" 2>/dev/null || true
     wait "$browser_pid" 2>/dev/null
-    taskkill //F //IM engine-host-servo.exe >/dev/null 2>&1 || true
+    taskkill //F //IM manifold-engine-servo.exe >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

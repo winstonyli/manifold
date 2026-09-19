@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Recopies Servo's ANGLE DLLs and CEF's runtime files from their build.rs
-# output directories into target/debug/, where engine-host-servo.exe and
-# engine-host-cef.exe (via its isolated cef-runtime/ subdirectory) actually
+# output directories into target/debug/, where manifold-engine-servo.exe and
+# manifold-engine-cef.exe (via its isolated cef-runtime/ subdirectory) actually
 # load them from. Cargo does not do this itself, and — as this project has
 # hit repeatedly, see README.md's "Manual runtime-file placement" section —
 # the fingerprint hash directory these live under can change even on a
@@ -9,8 +9,8 @@
 # any earlier manual copy.
 #
 # Safe to run any time (no-op if everything's already current); run it
-# after every `cargo build` that touches engine-host-servo or
-# engine-host-cef. Not a build.rs: a build script only sees its own
+# after every `cargo build` that touches manifold-engine-servo or
+# manifold-engine-cef. Not a build.rs: a build script only sees its own
 # crate's OUT_DIR, not a sibling crate's, and there is no reliable
 # cross-crate coordination here without mozangle/cef-dll-sys themselves
 # cooperating (they don't) - a plain script is simpler and more honest
@@ -95,10 +95,10 @@ else
     echo "sync-runtime-deps: no cef-dll-sys output directory found, skipping CEF runtime" >&2
 fi
 
-# engine-host-cef.exe itself is rebuilt every time engine-host-cef changes,
+# manifold-engine-cef.exe itself is rebuilt every time manifold-engine-cef changes,
 # unlike the DLLs above - always resync it, cmp-gated same as everything
 # else.
-sync_file "$target_debug/engine-host-cef.exe" "$cef_runtime_dir/engine-host-cef.exe" "cef-runtime/engine-host-cef.exe"
+sync_file "$target_debug/manifold-engine-cef.exe" "$cef_runtime_dir/manifold-engine-cef.exe" "cef-runtime/manifold-engine-cef.exe"
 
 if [ "$changed" -eq 0 ]; then
     echo "sync-runtime-deps: everything already current, nothing to do"

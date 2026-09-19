@@ -9,7 +9,7 @@ use interprocess::local_socket::{
 
 use crate::channel::MessageChannel;
 
-/// Control-channel connection between `browser-ui` and a same-machine
+/// Control-channel connection between `manifold` and a same-machine
 /// engine-host (CEF, Servo). Frame pixels travel separately via
 /// `SharedFrameBuffer`; this only carries `HostToEngine`/`EngineToHost`
 /// messages. Each `LocalTransport` is one-directional by convention (see
@@ -25,26 +25,26 @@ pub type LocalTransport = MessageChannel<LocalStream>;
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
 fn socket_name(socket_id: &str, suffix: &str) -> io::Result<Name<'static>> {
-    format!("multiengine-browser-{socket_id}-{suffix}")
+    format!("manifold-{socket_id}-{suffix}")
         .to_ns_name::<GenericNamespaced>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
 }
 
 pub struct LocalListenerPair {
-    /// browser-ui writes `HostToEngine` here; the engine-host reads it.
+    /// manifold writes `HostToEngine` here; the engine-host reads it.
     pub host_to_engine: Listener,
-    /// the engine-host writes `EngineToHost` here; browser-ui reads it.
+    /// the engine-host writes `EngineToHost` here; manifold reads it.
     pub engine_to_host: Listener,
 }
 
-/// Called by browser-ui (the process manager) right before spawning an
+/// Called by manifold (the process manager) right before spawning an
 /// engine-host child process, so both sockets exist before the child
 /// tries to connect to them.
 ///
 /// `socket_id` names the pipes and is normally the tab's `tab_id`, but
 /// callers may pass a distinct disambiguating id instead (e.g. when a
 /// stale engine-host from a prior crashed run still holds `tab_id`'s
-/// pipes) — it never needs to match browser-ui's own tab bookkeeping.
+/// pipes) — it never needs to match manifold's own tab bookkeeping.
 pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     Ok(LocalListenerPair {
         host_to_engine: ListenerOptions::new()
@@ -62,7 +62,7 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
 /// this mirrors (there, a cold WSL2 boot; here, in principle a
 /// same-machine child process that fails to reach `connect_local_pair` at
 /// all — e.g. a corrupted/mismatched binary that exits before connecting —
-/// would otherwise hang browser-ui's main/event-loop thread just the same,
+/// would otherwise hang manifold's main/event-loop thread just the same,
 /// just without the "it can take literal hours" cold-boot severity that
 /// made the remote case the first one actually hit in practice).
 fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream> {
@@ -85,7 +85,7 @@ fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream>
     }
 }
 
-/// Called by browser-ui once the engine-host child process has connected.
+/// Called by manifold once the engine-host child process has connected.
 /// Returns `(sender, receiver)`: send `HostToEngine` on the first, recv
 /// `EngineToHost` on the second. `timeout` applies to each socket in turn
 /// (so the real worst case is up to `2 * timeout`, not shared/split between
@@ -103,12 +103,12 @@ pub fn accept_local_pair(
 }
 
 /// Called by an engine-host child process on startup to connect back to
-/// the two control sockets its parent (`browser-ui`) already created.
+/// the two control sockets its parent (`manifold`) already created.
 /// Returns `(receiver, sender)`: recv `HostToEngine` on the first, send
 /// `EngineToHost` on the second.
 ///
 /// `socket_id` must match whatever id `listen_local_pair` was called
-/// with for this tab (browser-ui passes it down as `ENGINE_SOCKET_ID`,
+/// with for this tab (manifold passes it down as `ENGINE_SOCKET_ID`,
 /// separate from the user-visible `ENGINE_TAB_ID`).
 pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
     let receiver = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "h2e")?)?);
@@ -116,7 +116,7 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
     Ok((receiver, sender))
 }
 
-/// Used only for the WSL2-hosted WebKit engine-host: browser-ui listens on
+/// Used only for the WSL2-hosted WebKit engine-host: manifold listens on
 /// a TCP port, the WebKit host (spawned via `wsl.exe`) connects to it.
 ///
 /// Bound on all interfaces (0.0.0.0), not just loopback: WSL2's NAT-mode
@@ -125,7 +125,7 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
 /// `ECONNREFUSED`, not a timeout). The WSL2 guest instead reaches the
 /// Windows host at its default-gateway IP (`ip route`'s `default via`
 /// address, which is the host's own `vEthernet (WSL)` adapter) — see
-/// `connect_remote`'s caller in engine-host-webkit for the matching side.
+/// `connect_remote`'s caller in manifold-engine-webkit for the matching side.
 pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }
@@ -134,7 +134,7 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
 /// `TcpListener::accept`'s unbounded block — a cold/idle WSL2 instance can
 /// take an extremely long, unpredictable time to boot its lightweight VM,
 /// start Xvfb, and get far enough into GTK/WebKit init to connect, and this
-/// call happens on browser-ui's own main/event-loop thread (`spawn_root_tab`
+/// call happens on manifold's own main/event-loop thread (`spawn_root_tab`
 /// runs from winit's `resumed()`), so an unbounded wait here freezes the
 /// entire app — window redraw, OS message pump, and headless stdin command
 /// dispatch alike — for as long as that takes (confirmed live: from
@@ -178,7 +178,7 @@ mod tests {
 
     /// Regression test for the WebKit-engine-host hang: `accept_remote`
     /// used to call `TcpListener::accept()` directly, which blocks
-    /// indefinitely if nobody ever connects — on browser-ui's main/
+    /// indefinitely if nobody ever connects — on manifold's main/
     /// event-loop thread, that meant the *entire app* froze (window,
     /// input, headless stdin commands) for as long as a WSL2-hosted
     /// engine-host took to dial back, unbounded, confirmed live to reach

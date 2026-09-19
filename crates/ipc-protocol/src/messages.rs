@@ -24,7 +24,7 @@ pub enum MouseButton {
 /// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
 /// (not guaranteed FFI/serialization-stable across winit versions) or any
 /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
-/// for WebKitGTK, `keyboard_types::Code` for Servo). `browser-ui` translates
+/// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
 /// winit's key into this; each engine-host translates this into whatever
 /// its own embedding API wants — see each engine-host's own translation
 /// table, kept local to that crate the same way `MouseButton` translation
@@ -48,7 +48,7 @@ pub enum KeyCode {
 /// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
 /// modifier keys held *at the time of* this key event, not the event's own
 /// key (a `Shift` keypress itself also arrives as a normal `KeyDown` with
-/// `Self::SHIFT` set). Combine with `|`; `browser-ui` is the only producer
+/// `Self::SHIFT` set). Combine with `|`; `manifold` is the only producer
 /// (tracked from winit's `WindowEvent::ModifiersChanged`).
 pub mod modifiers {
     pub const SHIFT: u8 = 1 << 0;
@@ -79,7 +79,7 @@ pub enum InputEvent {
     Char { codepoint: u32 },
 }
 
-/// Messages sent from the browser-ui process manager to an engine-host.
+/// Messages sent from the manifold process manager to an engine-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostToEngine {
     Navigate { url: String, referrer: Option<String> },
@@ -129,7 +129,7 @@ pub enum HostToEngine {
     /// Mutes/unmutes this tab's audio output — host-initiated (the mute
     /// button), unlike `EngineToHost::AudioPlayingChanged`'s passive
     /// engine-reported state, so there's no matching `EngineToHost` reply:
-    /// `browser-ui` already knows the state it just asked for, same
+    /// `manifold` already knows the state it just asked for, same
     /// fire-and-forget shape as `SetZoom`. WebView2 (`ICoreWebView2_8::
     /// SetIsMuted` — the same interface `IsDocumentPlayingAudio` already
     /// uses) and WebKitGTK (`WebView::set_is_muted`, needing the
@@ -148,7 +148,7 @@ pub enum HostToEngine {
     Shutdown,
 }
 
-/// Messages sent from an engine-host back to the browser-ui process manager.
+/// Messages sent from an engine-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
 /// same-machine engine-host (Servo, CEF) leaves it `None` and writes pixels
@@ -176,9 +176,9 @@ pub enum EngineToHost {
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
-    /// place — `browser-ui` spawns a real child tab for `url` instead.
+    /// place — `manifold` spawns a real child tab for `url` instead.
     /// CEF, WebKit, and WebView2 (`ICoreWebView2::NewWindowRequested`, see
-    /// `engine-host-webview2/src/popup.rs`) send this: their
+    /// `manifold-engine-webview2/src/popup.rs`) send this: their
     /// popup-interception APIs all hand over the target URL before creating
     /// anything. Servo's equivalent
     /// (`WebViewDelegate::request_create_new`) doesn't expose a URL until
@@ -192,7 +192,7 @@ pub enum EngineToHost {
     /// selected match among them (0 if `count` is 0). WebKitGTK's
     /// `WebKitFindController` only ever reports a total count, never which
     /// match is currently selected — its engine-host always sends
-    /// `active_index: 0`, so `browser-ui` shows just the count for a WebKit
+    /// `active_index: 0`, so `manifold` shows just the count for a WebKit
     /// tab rather than "3 of 12".
     FindResult { count: u32, active_index: u32 },
     /// Whether this tab's page is currently producing audio — shown as a
@@ -209,7 +209,7 @@ pub enum EngineToHost {
     /// not a passive read, and a much bigger and riskier change than a tab
     /// icon warrants (get it wrong and CEF tabs go silent). CEF sends this
     /// too, by a different and much lighter route instead: a periodic
-    /// `V8Context::eval` (`engine-host-cef`'s own polling timer, see
+    /// `V8Context::eval` (`manifold-engine-cef`'s own polling timer, see
     /// `AUDIO_PLAYING_POLL_INTERVAL`) checking whether any `<video>`/
     /// `<audio>` element is currently playing and unmuted -- a real
     /// approximation, not the same guarantee the other two engines'
@@ -219,7 +219,7 @@ pub enum EngineToHost {
     /// has no such property at all, passive or otherwise.
     AudioPlayingChanged { playing: bool },
     /// A right-click landed on a link — `href` is its resolved absolute
-    /// target URL. `browser-ui` shows a minimal single-item "Open in new
+    /// target URL. `manifold` shows a minimal single-item "Open in new
     /// tab" menu at `(x, y)` when this arrives; a right-click that didn't
     /// land on a link sends nothing (no menu to show). All four engines
     /// send this now, each via whichever mechanism fits how that engine
@@ -229,7 +229,7 @@ pub enum EngineToHost {
     /// reuses that directly — `document.elementFromPoint(x, y)`, walking up
     /// to the nearest `<a href>` ancestor (see `input.rs` in each). CEF
     /// drives input via real native mouse-event injection instead (a
-    /// completely different mechanism — see `engine-host-cef/src/input.rs`)
+    /// completely different mechanism — see `manifold-engine-cef/src/input.rs`)
     /// but has its own native `ContextMenuHandler::on_before_context_menu`
     /// API that hands over `link_url`/`xcoord`/`ycoord` directly, no script
     /// round-trip needed (`context_menu_handler.rs`); `run_context_menu`
@@ -246,14 +246,14 @@ pub enum EngineToHost {
     /// project never prompts for a save location; each engine picks its own
     /// default: WebView2's own real Downloads-folder default, CEF's
     /// `%USERPROFILE%\Downloads` plus the server's suggested filename
-    /// chosen by `browser-ui`'s equivalent, WebKit's own default -- see each
+    /// chosen by `manifold`'s equivalent, WebKit's own default -- see each
     /// engine-host's own download-handling code). `total_bytes` is the
     /// expected final size if the server reported a real `Content-Length`;
     /// `None` for a chunked/unknown-length response, shown as a byte count
     /// with no percentage rather than a guessed bar. `path` is the stable
     /// key `DownloadProgress`/`DownloadCompleted` for this same download are
     /// reported under -- final by contract at this point (the engine has
-    /// already decided the save location before this fires), so `browser-ui`
+    /// already decided the save location before this fires), so `manifold`
     /// never needs to re-derive it. WebView2, CEF, and WebKit all have a
     /// real native download-progress API; Servo's embedding surface has no
     /// download hook of any kind, so it never sends any `Download*` message.
@@ -262,12 +262,12 @@ pub enum EngineToHost {
     /// `path` its own `DownloadStarted` reported.
     DownloadProgress { path: String, bytes_received: u64 },
     /// A download finished — `path` is the same one its `DownloadStarted`
-    /// reported. `browser-ui` shows a brief "Saved <path>" toast here and
+    /// reported. `manifold` shows a brief "Saved <path>" toast here and
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
     /// The page that just finished loading is a raw JSON response --
-    /// `body` is its full text, so `browser-ui` can parse and show a real
+    /// `body` is its full text, so `manifold` can parse and show a real
     /// tree view instead of whatever a given engine's own default
     /// plain-text/JSON-viewer rendering looks like (inconsistent across
     /// engines, and not this project's own uniform UI). Detected the same
@@ -284,7 +284,7 @@ pub enum EngineToHost {
     /// runs the same two checks via `V8Context::eval` and hands the result
     /// back to the browser process over a `ProcessMessage` -- no V8
     /// extension needed, just CEF's own real mechanism for a renderer to
-    /// return a value at all (see `engine-host-cef`'s `render_process_
+    /// return a value at all (see `manifold-engine-cef`'s `render_process_
     /// handler.rs`). Cleared (an empty page) whenever the same tab's own
     /// URL changes for real, same as any other per-navigation state — see
     /// `App::json_body`'s own doc comment.
@@ -293,9 +293,9 @@ pub enum EngineToHost {
     /// detected the exact same way as `JsonBody` (once the load finishes, a
     /// script/`V8Context` eval reads `document.contentType`), just carrying
     /// that raw content-type string back instead of the page's own body.
-    /// `browser-ui` never tries to read the response's actual bytes back
+    /// `manifold` never tries to read the response's actual bytes back
     /// out of the engine for this message -- it does its own independent
-    /// `GET` of the tab's current url (same "browser-ui does its own
+    /// `GET` of the tab's current url (same "manifold does its own
     /// uniform HTTP fetch, engine-agnostic" posture `favicon_fetch` already
     /// established for favicons), classifies `content_type` against a
     /// small, explicit allowlist (`redirect_fetch::classify` -- currently
@@ -311,7 +311,7 @@ pub enum EngineToHost {
     /// already forwards the real content-type string regardless of what it
     /// says. Sent by all four engines (the same detection path `JsonBody`
     /// uses on each) for any content-type that isn't `application/json` --
-    /// `browser-ui`'s own allowlist is what actually decides whether it
+    /// `manifold`'s own allowlist is what actually decides whether it
     /// means anything; an ordinary `text/html` page just gets classified as
     /// "nothing to do" and ignored. JSON deliberately isn't classified into
     /// this same automatic path despite being detected identically -- a

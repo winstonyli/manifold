@@ -1,0 +1,13 @@
+[package]
+name = "manifold-engine-servo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpi = "0.1.2"
+euclid = "0.22.14"
+ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+rustls = { version = "0.23.44", default-features = false, features = ["aws-lc-rs"] }
+servo = { version = "0.5.0", features = ["no-wgl"] }
+url = "2.5.8"
+webrender_api = "0.70.0"

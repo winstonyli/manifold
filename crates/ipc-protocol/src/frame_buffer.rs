@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use memmap2::MmapMut;
 
 /// A file-backed memory-mapped raw pixel buffer shared between a
-/// same-machine engine-host and `browser-ui`. Backed by a temp file rather
+/// same-machine engine-host and `manifold`. Backed by a temp file rather
 /// than a raw Windows shared-memory section or POSIX shm — file-backed
 /// mmap works identically on Windows and Linux, which keeps `wpe-sys`'s
 /// eventual native (non-WSL2) port free of a second implementation later.
@@ -13,7 +13,7 @@ use memmap2::MmapMut;
 /// Pixel format is NOT fixed across engines: Servo's
 /// `SoftwareRenderingContext::read_to_image()` writes RGBA8, while CEF's
 /// OSR `OnPaint` writes BGRA8 natively. Each engine-host's `FrameReady`
-/// consumer on the browser-ui side must know which format that engine
+/// consumer on the manifold side must know which format that engine
 /// produces — this buffer just carries opaque bytes.
 pub struct SharedFrameBuffer {
     mmap: MmapMut,
@@ -22,11 +22,11 @@ pub struct SharedFrameBuffer {
     height: u32,
 }
 
-/// Deterministic from `name` alone so browser-ui can re-derive the path of
+/// Deterministic from `name` alone so manifold can re-derive the path of
 /// a frame buffer the engine-host created, without the engine having to
 /// send the path over the control channel.
 pub fn frame_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("multiengine-browser-frame-{name}.bin"))
+    std::env::temp_dir().join(format!("manifold-frame-{name}.bin"))
 }
 
 impl SharedFrameBuffer {
@@ -34,7 +34,7 @@ impl SharedFrameBuffer {
     /// don't collide on the same backing file.
     ///
     /// Retries a few times on Windows error 1224 ("a file with a
-    /// user-mapped section open"): browser-ui opens and drops its own
+    /// user-mapped section open"): manifold opens and drops its own
     /// mapping of this same file on every redraw to read the latest frame,
     /// so an engine-host resizing/recreating the file (a new size means a
     /// new call here — see `open_existing`'s width/height contract) can
