@@ -1927,10 +1927,20 @@ struct App {
     /// A brief toast message (full text, not just a path -- see `build_
     /// save_toast`'s own doc comment) for the most recent completed
     /// download/save or crash/respawn notice, and when it was set —
-    /// cleared once `SAVE_TOAST_DURATION` has passed. No queue: a second
-    /// message arriving while one toast is showing just replaces it, same
-    /// "latest wins" simplicity as `find_result`.
+    /// cleared once `SAVE_TOAST_DURATION` has passed, at which point the
+    /// next queued message (`save_toast_queue`) takes over, if any. Was
+    /// "latest wins" with no queue at all until this session, when a
+    /// second toast (e.g. a crash notice) arriving while a download's own
+    /// "Saved <path>" toast was still showing was confirmed to silently
+    /// replace it, unlike `find_result`'s own "latest wins" (correct
+    /// there -- a stale search count would be actively wrong, whereas a
+    /// dropped one-time notification like "tab crashed" is just gone).
     save_toast: Option<(String, std::time::Instant)>,
+    /// See `save_toast`'s own doc comment -- messages that arrived while
+    /// another was already showing, shown one at a time in order once the
+    /// current one's `SAVE_TOAST_DURATION` elapses. Set via `queue_toast`,
+    /// never pushed to directly.
+    save_toast_queue: std::collections::VecDeque<String>,
 
     /// When the auto-restore `session.json` was last written -- shown in
     /// the settings popup's Sessions section next to a "Save Now" button,
@@ -2140,6 +2150,7 @@ impl Default for App {
             context_menu: None,
             context_menu_cache: None,
             save_toast: None,
+            save_toast_queue: std::collections::VecDeque::new(),
             last_session_save: None,
             find_bar_open: false,
             find_text: String::new(),
@@ -2622,7 +2633,7 @@ impl App {
             let name = sanitize_session_name(&self.session_name_draft);
             if !name.is_empty() {
                 self.build_session_snapshot().save_as(&name);
-                self.save_toast = Some((format!("Saved session '{name}'"), std::time::Instant::now()));
+                self.queue_toast(format!("Saved session '{name}'"));
                 self.session_name_draft.clear();
             }
         }
@@ -2636,7 +2647,7 @@ impl App {
         if export_requested {
             if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {
                 self.build_session_snapshot().save_to(&path);
-                self.save_toast = Some(toast);
+                self.queue_toast(toast.0);
             }
         }
         if import_requested {
@@ -2652,7 +2663,7 @@ impl App {
         if export_bookmarks_requested {
             if let Some((path, toast)) = save_dialog_with_toast("bookmarks.json", "Bookmarks") {
                 bookmarks::save_to(&self.bookmarks, &path);
-                self.save_toast = Some(toast);
+                self.queue_toast(toast.0);
             }
         }
         if import_bookmarks_requested {
@@ -6238,7 +6249,7 @@ impl App {
                     save_dialog_with_toast(format!("{}.json", export.name), "Group")
                 {
                     group_export::save_to(&export, &path);
-                    self.save_toast = Some(toast);
+                    self.queue_toast(toast.0);
                 }
             }
         }
@@ -6849,13 +6860,28 @@ impl App {
     /// "Saved " to -- every original "Saved <path>" call site now includes
     /// that itself, freeing this up for unrelated short-lived messages too
     /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
+    /// Every `save_toast` call site now goes through this instead of
+    /// setting the field directly -- shows `message` immediately if
+    /// nothing's currently showing, otherwise queues it behind whatever
+    /// is (see `save_toast_queue`'s own doc comment).
+    fn queue_toast(&mut self, message: String) {
+        if self.save_toast.is_some() {
+            self.save_toast_queue.push_back(message);
+        } else {
+            self.save_toast = Some((message, std::time::Instant::now()));
+        }
+    }
+
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
         let Some((message, shown_at)) = &self.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
-            self.save_toast = None;
+            self.save_toast = self
+                .save_toast_queue
+                .pop_front()
+                .map(|message| (message, std::time::Instant::now()));
             return;
         }
         let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
@@ -7130,7 +7156,7 @@ impl App {
         let group = self.current_group.clone();
         if self.insert_json_node_with_id(id, path.to_string_lossy().into_owned(), pos, group) {
             self.save_session();
-            self.save_toast = Some(("Saved as JSON node".to_string(), std::time::Instant::now()));
+            self.queue_toast("Saved as JSON node".to_string());
         }
     }
 
@@ -11021,17 +11047,13 @@ impl ApplicationHandler<UserEvent> for App {
                                             std::path::Path::new(&pdf_path),
                                         ) {
                                             Ok(()) => {
-                                                self.save_toast = Some((
-                                                    format!("Saved {pdf_path}"),
-                                                    std::time::Instant::now(),
-                                                ));
+                                                self.queue_toast(format!("Saved {pdf_path}"));
                                             }
                                             Err(err) => eprintln!("print to pdf: {err}"),
                                         }
                                         let _ = std::fs::remove_file(&path);
                                     } else {
-                                        self.save_toast =
-                                            Some((format!("Saved {path}"), std::time::Instant::now()));
+                                        self.queue_toast(format!("Saved {path}"));
                                     }
                                 }
                             }
@@ -11630,7 +11652,16 @@ impl App {
                         }
                     }
                     EngineToHost::DownloadCompleted { path } => {
-                        self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
+                        // Not `self.queue_toast(...)` -- `node` above still
+                        // holds a live borrow of `self.nodes` for this whole
+                        // drain, which a method call on `self` can't see
+                        // past even though `save_toast`/`save_toast_queue`
+                        // are disjoint fields; direct field access can.
+                        if self.save_toast.is_some() {
+                            self.save_toast_queue.push_back(format!("Saved {path}"));
+                        } else {
+                            self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
+                        }
                         download_events.push(DownloadEvent::Completed { path });
                     }
                 }
@@ -11710,7 +11741,7 @@ impl App {
             // has (generalized to a plain message, see `save_toast`'s own
             // doc comment) rather than a second, separate notification
             // mechanism.
-            self.save_toast = Some((format!("Tab crashed, restarted: {url}"), std::time::Instant::now()));
+            self.queue_toast(format!("Tab crashed, restarted: {url}"));
             self.nodes.remove(&tab_id);
             // Same stale-state guard `close_tab`/`finish_swap` apply — see
             // `finish_swap`'s own comment on this.
