@@ -12450,6 +12450,17 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 fn main() {
     crash_report::install();
     let headless = std::env::args().any(|arg| arg == "--headless");
+    // Independent of `--headless` -- accepts the exact same stdin-driven
+    // `DebugCommand` protocol, but on a completely normal, visible,
+    // on-screen window (real position, file dialogs available, window
+    // geometry saved) rather than headless mode's off-screen one. Doesn't
+    // touch `app.headless` itself, since none of that other headless-only
+    // behavior is what this flag is for -- only `spawn_stdin_reader`'s own
+    // gate below cares about it. Lets a real running window be driven by
+    // debug commands (e.g. `SCREENSHOT`, which already just captures
+    // whatever `GpuState::render` actually drew, headless or not) instead
+    // of scripting an OS-level window capture around it.
+    let debug_commands = std::env::args().any(|arg| arg == "--debug-commands");
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
@@ -12462,7 +12473,7 @@ fn main() {
     // which needs this to hand its background spawn thread a way to report
     // back (see `TabSpawnOutcome`'s doc comment).
     app.event_proxy = Some(event_loop.create_proxy());
-    if headless {
+    if headless || debug_commands {
         debug_control::spawn_stdin_reader(event_loop.create_proxy());
     }
 
