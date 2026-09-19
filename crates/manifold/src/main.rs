@@ -8116,6 +8116,28 @@ impl App {
                         leave_group_button_rect = Some(leave_group_response.rect);
                         let crumb_count = breadcrumb.len();
                         for (i, (id, name)) in breadcrumb.iter().enumerate() {
+                            // Each crumb's own name comes straight from a
+                            // Group's name -- unbounded, and now often an
+                            // object key or `[index]` from "Expand as
+                            // Graph" (see that feature's own doc comment),
+                            // which tend to run longer than a hand-typed
+                            // group name. A plain `ui.button(name)` has no
+                            // width limit of its own in this horizontal,
+                            // non-wrapping row, so a deeply-nested chain of
+                            // long names could push clean off the toolbar's
+                            // own visible edge -- the exact overflow this
+                            // toolbar's other buttons were already
+                            // confirmed live to hit once before (see the
+                            // icon-only button conversion elsewhere in this
+                            // file). Truncated the same char-count way
+                            // `json_summary` already bounds a JSON card's
+                            // own label, for the same "small fixed chrome,
+                            // not a place for arbitrarily long text" reason.
+                            let display_name = if name.chars().count() > 20 {
+                                format!("{}…", name.chars().take(19).collect::<String>())
+                            } else {
+                                name.clone()
+                            };
                             if i + 1 == crumb_count {
                                 let is_renaming =
                                     self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
@@ -8135,7 +8157,15 @@ impl App {
                                             }
                                         }
                                     }
-                                } else if ui.button(name).on_hover_text("Click to rename").clicked() {
+                                } else if ui
+                                    .button(&display_name)
+                                    .on_hover_text(if display_name == *name {
+                                        "Click to rename".to_string()
+                                    } else {
+                                        format!("Click to rename ({name})")
+                                    })
+                                    .clicked()
+                                {
                                     rename_start = Some((id.clone(), name.clone()));
                                 }
                             } else {
@@ -8145,7 +8175,15 @@ impl App {
                                 // current_group and ease the camera" effect
                                 // double-clicking a group card triggers;
                                 // it doesn't care which direction that is).
-                                if ui.button(name).on_hover_text("Jump to this group").clicked() {
+                                if ui
+                                    .button(&display_name)
+                                    .on_hover_text(if display_name == *name {
+                                        "Jump to this group".to_string()
+                                    } else {
+                                        format!("Jump to this group ({name})")
+                                    })
+                                    .clicked()
+                                {
                                     group_entered = Some(id.clone());
                                 }
                                 ui.label("\u{203a}");
