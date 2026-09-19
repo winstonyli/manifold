@@ -28,8 +28,8 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 const SCHEME_NAME: &str = "manifold";
 
 /// The real `manifold://welcome` page -- a feature tour, embedded at
-/// compile time (same `include_str!`/`include_bytes!` convention this
-/// crate's own icon/font assets already use elsewhere in this workspace).
+/// compile time (same `include_str!`/`include_bytes!` convention the
+/// `manifold` crate's own icon/font assets already use).
 const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
 
 /// Builds the `ICoreWebView2EnvironmentOptions` that `create_environment`
@@ -87,7 +87,11 @@ pub fn register(
         let page = page_name(&uri).and_then(page_content);
         let (status, reason, body) = match page {
             Some(html) => (200, "OK", html),
-            None => (404, "Not Found", "<!doctype html><body>Not found</body></html>"),
+            None => (
+                404,
+                "Not Found",
+                "<!doctype html><html><head><meta charset=\"utf-8\"><style>body{background:#1E1F24;color:#E6E7EB;font-family:sans-serif;padding:2em}</style></head><body><h1>Not found</h1></body></html>",
+            ),
         };
         let Some(stream) = (unsafe { SHCreateMemStream(Some(body.as_bytes())) }) else {
             return Ok(());
@@ -97,7 +101,7 @@ pub fn register(
                 &stream,
                 status,
                 &HSTRING::from(reason),
-                &HSTRING::from("Content-Type: text/html"),
+                &HSTRING::from("Content-Type: text/html; charset=utf-8"),
             )
         } {
             let _ = unsafe { args.SetResponse(&response) };
@@ -124,7 +128,7 @@ fn page_name(uri: &str) -> Option<&str> {
 /// abstraction for what is, for now, a single page (see the design spec's
 /// own reasoning for why this is deliberately not over-built).
 fn page_content(page: &str) -> Option<&'static str> {
-    match page {
+    match page.to_ascii_lowercase().as_str() {
         "welcome" => Some(WELCOME_HTML),
         _ => None,
     }
