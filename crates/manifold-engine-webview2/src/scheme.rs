@@ -27,11 +27,10 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 /// shape `http`/`https` URLs already have.
 const SCHEME_NAME: &str = "manifold";
 
-/// Placeholder content for Task 1 -- proves the whole pipe (environment
-/// registration -> WebResourceRequested -> a real page rendering) works
-/// end to end before Task 2 replaces this with the real, designed
-/// feature-tour content.
-const WELCOME_HTML_PLACEHOLDER: &str = "<!doctype html><html><body style=\"background:#1E1F24;color:#E6E7EB;font-family:sans-serif;padding:2em;\"><h1>manifold://welcome</h1><p>placeholder -- Task 2 replaces this.</p></body></html>";
+/// The real `manifold://welcome` page -- a feature tour, embedded at
+/// compile time (same `include_str!`/`include_bytes!` convention this
+/// crate's own icon/font assets already use elsewhere in this workspace).
+const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
 
 /// Builds the `ICoreWebView2EnvironmentOptions` that `create_environment`
 /// passes to `CreateCoreWebView2EnvironmentWithOptions`, with the
@@ -126,7 +125,7 @@ fn page_name(uri: &str) -> Option<&str> {
 /// own reasoning for why this is deliberately not over-built).
 fn page_content(page: &str) -> Option<&'static str> {
     match page {
-        "welcome" => Some(WELCOME_HTML_PLACEHOLDER),
+        "welcome" => Some(WELCOME_HTML),
         _ => None,
     }
 }
