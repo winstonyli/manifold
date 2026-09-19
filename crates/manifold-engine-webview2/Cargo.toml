@@ -2,6 +2,7 @@
 name = "manifold-engine-webview2"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 
 [dependencies]
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }

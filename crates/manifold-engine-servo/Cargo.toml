@@ -2,6 +2,7 @@
 name = "manifold-engine-servo"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 
 [dependencies]
 dpi = "0.1.2"

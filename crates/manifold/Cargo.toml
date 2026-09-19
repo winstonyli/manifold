@@ -2,6 +2,7 @@
 name = "manifold"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 
 [dependencies]
 egui = "0.36.2"

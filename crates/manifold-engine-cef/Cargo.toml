@@ -2,6 +2,7 @@
 name = "manifold-engine-cef"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 
 [dependencies]
 cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }

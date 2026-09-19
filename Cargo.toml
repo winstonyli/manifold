@@ -12,6 +12,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+description = "A browser where each tab can run on a different rendering engine (Servo, CEF, WebKit, or WebView2), swappable live without closing it."
 
 # Full debug info produces multi-hundred-MB PDBs for the Servo/CEF-linked
 # binaries specifically (SpiderMonkey/Chromium bring enormous debug info),

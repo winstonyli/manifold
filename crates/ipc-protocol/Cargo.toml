@@ -2,6 +2,7 @@
 name = "ipc-protocol"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 
 [dependencies]
 interprocess = "2.4.4"
