@@ -228,6 +228,11 @@ pub enum DebugCommand {
     Split(EngineKind),
     /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
     CloseSplit,
+    /// The JSON node context menu's "Expand as Graph" button, targeting an
+    /// explicit node id instead of `self.focused` (a plain `ADDJSON` doesn't
+    /// focus the node it creates, so a headless test can't rely on focus
+    /// here) — see `App::expand_json_as_graph`.
+    ExpandJsonAsGraph(String),
 }
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
@@ -427,6 +432,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
+        "EXPANDJSONASGRAPH" => {
+            Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty())
+        }
         _ => None,
     }
 }

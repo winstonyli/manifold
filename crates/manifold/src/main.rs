@@ -213,6 +213,7 @@ enum NodeMenuAction {
     CopyText,
     Reveal,
     CopyPath,
+    ExpandAsGraph,
     RemoveFromGroup,
     Delete,
 }
@@ -227,6 +228,9 @@ enum NodeMenuAction {
 struct NodeMenuConfig {
     copy_text: bool,
     reveal_and_copy_path: bool,
+    /// Shows an "Expand as Graph" button -- only ever `true` for a JSON
+    /// node's own menu. See `App::expand_json_as_graph`.
+    show_expand: bool,
     has_group: bool,
     delete_label: &'static str,
     width: f32,
@@ -264,6 +268,9 @@ fn build_node_context_menu(
             if ui.button("Copy Path").clicked() {
                 action = Some(NodeMenuAction::CopyPath);
             }
+        }
+        if config.show_expand && ui.button("Expand as Graph").clicked() {
+            action = Some(NodeMenuAction::ExpandAsGraph);
         }
         if config.has_group {
             ui.separator();
@@ -1223,6 +1230,14 @@ struct PdfOutcome {
 struct JsonPayload {
     path: String,
     value: serde_json::Value,
+    /// The JSON key (or `[index]` for an array element) this value came
+    /// from -- `None` for a genuine top-level file-backed JSON node (its
+    /// card just shows the value's own shape), `Some(k)` for a leaf created
+    /// by "Expand as Graph" (see `App::expand_json_entries`), whose card
+    /// shows `"{k}: {value}"` instead so it's clear which field this is.
+    /// Never persisted -- exploded leaves are session-only, matching
+    /// `GroupPayload`'s own doc comment for the containers they live in.
+    key: Option<String>,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -4969,11 +4984,96 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Json(JsonPayload { path, value }),
+                payload: NodePayload::Json(JsonPayload { path, value, key: None }),
             },
         );
         self.node_order.push(id);
         true
+    }
+
+    /// "Expand as Graph" -- explodes a JSON node's structure into real,
+    /// nested graph nodes: an object/array becomes a `Group` (matching this
+    /// app's existing unlimited Group-nesting model), a scalar becomes a
+    /// plain `JsonPayload` leaf (see that struct's own doc comment for why
+    /// no new node kind exists for this). Read-only, one-way, and
+    /// session-only, per this feature's own design doc
+    /// (`docs/superpowers/specs/2026-09-19-json-expand-as-graph-design.md`):
+    /// there's no "collapse back," and nothing here is written to
+    /// `session.json`. The original node is converted in place (`payload`
+    /// is swapped, not the node removed and reinserted) so its existing
+    /// `pos`/`group`/`color` (all on the shared `GraphNode`) carry over
+    /// untouched. A bare scalar at the JSON's own root has nothing to
+    /// explode into -- this just leaves such a node as it already is,
+    /// a harmless no-op rather than something worth guarding against.
+    fn expand_json_as_graph(&mut self, json_node_id: &str) {
+        let Some((path, value)) =
+            self.nodes.get(json_node_id).and_then(|n| n.as_json().map(|j| (j.path.clone(), j.value.clone())))
+        else {
+            return;
+        };
+        if matches!(value, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
+            let root_name = download_filename(&path).to_string();
+            if let Some(node) = self.nodes.get_mut(json_node_id) {
+                node.payload = NodePayload::Group(GroupPayload { name: root_name });
+            }
+            self.expand_json_entries(json_node_id, &value, &path);
+        }
+    }
+
+    /// Recursive step shared by `expand_json_as_graph`: creates one child
+    /// node per entry of `value` (already known to be an `Object`/`Array`)
+    /// inside `parent_group_id`, recursing into any entry that's itself a
+    /// container. `path` is the *source file's* path, inherited by every
+    /// leaf purely for "Reveal in Explorer"/"Copy Path" display purposes --
+    /// it does not mean the leaf independently owns that file (see
+    /// `JsonPayload`'s own doc comment on `key`).
+    fn expand_json_entries(&mut self, parent_group_id: &str, value: &serde_json::Value, path: &str) {
+        let entries: Vec<(String, &serde_json::Value)> = match value {
+            serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            serde_json::Value::Array(items) => {
+                items.iter().enumerate().map(|(i, v)| (format!("[{i}]"), v)).collect()
+            }
+            _ => return,
+        };
+        let parent_pos = self.nodes.get(parent_group_id).map(|n| n.pos).unwrap_or(GRAPH_WORLD_CENTER);
+        for (key, entry_value) in entries {
+            if matches!(entry_value, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
+                let id = self.alloc_group_id();
+                let pos = parent_pos + graph_layout::spawn_jitter(&id);
+                self.nodes.insert(
+                    id.clone(),
+                    GraphNode {
+                        parent: None,
+                        group: Some(parent_group_id.to_string()),
+                        pos,
+                        vel: egui::Vec2::ZERO,
+                        color: None,
+                        payload: NodePayload::Group(GroupPayload { name: key }),
+                    },
+                );
+                self.node_order.push(id.clone());
+                self.expand_json_entries(&id, entry_value, path);
+            } else {
+                let id = self.alloc_json_id();
+                let pos = parent_pos + graph_layout::spawn_jitter(&id);
+                self.nodes.insert(
+                    id.clone(),
+                    GraphNode {
+                        parent: None,
+                        group: Some(parent_group_id.to_string()),
+                        pos,
+                        vel: egui::Vec2::ZERO,
+                        color: None,
+                        payload: NodePayload::Json(JsonPayload {
+                            path: path.to_string(),
+                            value: entry_value.clone(),
+                            key: Some(key),
+                        }),
+                    },
+                );
+                self.node_order.push(id);
+            }
+        }
     }
 
     /// The Graph toolbar's single "+ File" button -- one file picker
@@ -6493,6 +6593,7 @@ impl App {
             NodeMenuConfig {
                 copy_text: false,
                 reveal_and_copy_path: true,
+                show_expand: false,
                 has_group: false,
                 delete_label: "Remove from List",
                 width: 170.0,
@@ -6542,6 +6643,7 @@ impl App {
             NodeMenuConfig {
                 copy_text: true,
                 reveal_and_copy_path: false,
+                show_expand: false,
                 has_group,
                 delete_label: "Delete",
                 width: 150.0,
@@ -6600,6 +6702,7 @@ impl App {
             NodeMenuConfig {
                 copy_text: false,
                 reveal_and_copy_path: true,
+                show_expand: false,
                 has_group,
                 delete_label: "Delete",
                 width: 170.0,
@@ -6661,6 +6764,7 @@ impl App {
             NodeMenuConfig {
                 copy_text: false,
                 reveal_and_copy_path: true,
+                show_expand: false,
                 has_group,
                 delete_label: "Delete",
                 width: 170.0,
@@ -6723,6 +6827,7 @@ impl App {
             NodeMenuConfig {
                 copy_text: false,
                 reveal_and_copy_path: true,
+                show_expand: true,
                 has_group,
                 delete_label: "Delete",
                 width: 170.0,
@@ -6731,6 +6836,10 @@ impl App {
 
         match action {
             Some(NodeMenuAction::Reveal) => self.reveal_json(&id),
+            Some(NodeMenuAction::ExpandAsGraph) => {
+                self.expand_json_as_graph(&id);
+                self.save_session();
+            }
             Some(NodeMenuAction::CopyPath) => {
                 if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
                     ui.ctx().copy_text(path);
@@ -9874,7 +9983,11 @@ impl App {
                 for id in jsons_at_level.clone() {
                     let Some((node_pos, summary, path)) = self.nodes.get(&id).and_then(|n| {
                         let json = n.as_json()?;
-                        Some((n.pos, json_summary(&json.value), json.path.clone()))
+                        let summary = match &json.key {
+                            Some(key) => format!("{key}: {}", json_summary(&json.value)),
+                            None => json_summary(&json.value),
+                        };
+                        Some((n.pos, summary, json.path.clone()))
                     }) else {
                         continue;
                     };
@@ -11455,6 +11568,10 @@ impl App {
             }
             DebugCommand::Split(kind) => self.start_split(kind),
             DebugCommand::CloseSplit => self.close_split(),
+            DebugCommand::ExpandJsonAsGraph(id) => {
+                self.expand_json_as_graph(&id);
+                self.save_session();
+            }
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;
