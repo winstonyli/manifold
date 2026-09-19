@@ -3066,7 +3066,7 @@ impl App {
             .map(|(id, path, pos_x, pos_y)| session::SessionPdf { id, path, pos_x, pos_y })
             .collect();
         let jsons = self
-            .collect_session_field(|n| n.as_json().map(|json| json.path.as_str()))
+            .collect_session_field(|n| n.as_json().filter(|json| json.key.is_none()).map(|json| json.path.as_str()))
             .into_iter()
             .map(|(id, path, pos_x, pos_y)| session::SessionJson { id, path, pos_x, pos_y })
             .collect();
