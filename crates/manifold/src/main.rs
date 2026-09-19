@@ -311,6 +311,41 @@ fn next_id(counter: &mut u64, prefix: &str) -> String {
     id
 }
 
+/// One row of the empty-canvas "New Tab/Note/Group/File" menu -- see
+/// `App::pending_new_node`'s own doc comment for the menu itself. Paints its
+/// own hover-highlighted background in world-space (scales with zoom like
+/// the rest of the card, via `ui.painter()`), but its label through
+/// `overlay_painter` at a fixed screen font size instead of as a real
+/// `egui::Button`'s text -- a real widget's text would scale down with zoom
+/// the same way a note's own body text does, which is exactly what made
+/// this specific menu illegible/overflowing at low zoom (every other
+/// right-click menu in this app is a plain screen-space `Area`, so this was
+/// the only one with the problem at all). Same world-space-hit-rect-plus-
+/// fixed-screen-text split `draw_node_close_button` above already uses, for
+/// the same reason. Returns whether it was clicked.
+fn draw_new_node_menu_row(
+    ui: &egui::Ui,
+    overlay_painter: &egui::Painter,
+    project: &impl Fn(egui::Pos2) -> egui::Pos2,
+    row_rect: egui::Rect,
+    id_salt: &str,
+    inv_zoom: f32,
+    label: &str,
+) -> bool {
+    let response = ui.interact(row_rect, egui::Id::new(id_salt), egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(row_rect, 3.0 * inv_zoom, ACCENT.gamma_multiply(0.35));
+    }
+    overlay_painter.text(
+        project(row_rect.left_center()) + egui::vec2(6.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        TEXT_PRIMARY,
+    );
+    response.clicked()
+}
+
 /// Small hover-revealed "X" close button at a Graph-view card's top-right
 /// corner -- shared by Note/Image/Pdf/Json's own card loops in
 /// `build_graph_ui`, previously hand-copied once per kind. Colors are
@@ -2801,6 +2836,26 @@ impl App {
         self.last_session_save = Some(std::time::Instant::now());
     }
 
+    /// Shared body for the Note/Image/Pdf/Json cases of
+    /// `build_session_snapshot` below -- each of those four kinds' own
+    /// snapshot is just `(id, one string field, position)`, differing only
+    /// in which node accessor supplies the string. Returns id/field/pos_x/
+    /// pos_y tuples; the caller maps each into its own concrete `Session*`
+    /// struct.
+    fn collect_session_field<'a>(
+        &'a self,
+        extract: impl Fn(&'a GraphNode) -> Option<&'a str>,
+    ) -> Vec<(String, String, f32, f32)> {
+        self.node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let field = extract(node)?;
+                Some((id.clone(), field.to_string(), node.pos.x, node.pos.y))
+            })
+            .collect()
+    }
+
     /// The `session::Session` value both the auto-restore `save_session`
     /// and "Save Session As..." serialize -- factored out so the two never
     /// drift into building this differently.
@@ -2821,61 +2876,32 @@ impl App {
                 })
             })
             .collect();
+        // Note/Image/Pdf/Json's own snapshots are all "id, one string field,
+        // position" -- only a tab's needs the extra `parent`/`engine` fields
+        // above, so it stays its own block. `collect_session_field` shares
+        // the actual duplicated part (the `node_order` walk, the id clone,
+        // the position read); each kind still builds its own concrete
+        // `Session*` struct, since there's no shared trait across them worth
+        // introducing just for this.
         let notes = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let note = node.as_note()?;
-                Some(session::SessionNote {
-                    id: id.clone(),
-                    text: note.text.clone(),
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                })
-            })
+            .collect_session_field(|n| n.as_note().map(|note| note.text.as_str()))
+            .into_iter()
+            .map(|(id, text, pos_x, pos_y)| session::SessionNote { id, text, pos_x, pos_y })
             .collect();
         let images = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let image = node.as_image()?;
-                Some(session::SessionImage {
-                    id: id.clone(),
-                    path: image.path.clone(),
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                })
-            })
+            .collect_session_field(|n| n.as_image().map(|image| image.path.as_str()))
+            .into_iter()
+            .map(|(id, path, pos_x, pos_y)| session::SessionImage { id, path, pos_x, pos_y })
             .collect();
         let pdfs = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let pdf = node.as_pdf()?;
-                Some(session::SessionPdf {
-                    id: id.clone(),
-                    path: pdf.path.clone(),
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                })
-            })
+            .collect_session_field(|n| n.as_pdf().map(|pdf| pdf.path.as_str()))
+            .into_iter()
+            .map(|(id, path, pos_x, pos_y)| session::SessionPdf { id, path, pos_x, pos_y })
             .collect();
         let jsons = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let json = node.as_json()?;
-                Some(session::SessionJson {
-                    id: id.clone(),
-                    path: json.path.clone(),
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                })
-            })
+            .collect_session_field(|n| n.as_json().map(|json| json.path.as_str()))
+            .into_iter()
+            .map(|(id, path, pos_x, pos_y)| session::SessionJson { id, path, pos_x, pos_y })
             .collect();
         session::Session {
             tabs,
@@ -3491,8 +3517,19 @@ impl App {
     /// collects the whole chain instead of stopping at the first one.
     fn group_breadcrumb(&self) -> Vec<(String, String)> {
         let mut chain = Vec::new();
+        let mut visited = std::collections::HashSet::new();
         let mut current = self.current_group.clone();
+        // Guards against an infinite loop if a cycle ever existed in the
+        // `.group` parent chain -- not reachable today (the only path that
+        // reparents an *existing* group, the merge-drag gesture, already
+        // refuses a cycle at the source -- see `group_merge_requested`'s own
+        // `creates_cycle` check), but this would hang the whole app with no
+        // error if it ever did happen, called every frame as it is, so the
+        // guard is cheap insurance rather than something to skip.
         while let Some(id) = current {
+            if !visited.insert(id.clone()) {
+                break;
+            }
             let Some(node) = self.nodes.get(&id) else { break };
             let name = node.as_group().map(|g| g.name.clone()).unwrap_or_default();
             current = node.group.clone();
@@ -9973,7 +10010,16 @@ impl App {
                 if let Some(pos) = self.pending_new_node {
                     let center_pos = egui::Pos2::new(pos.x, pos.y);
                     let row_count = if self.headless { 3.0 } else { 4.0 };
-                    let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0);
+                    // `* inv_zoom`: the background box's own world-space
+                    // size must grow as zoom shrinks, the same trick
+                    // `draw_node_close_button`'s own `close_rect` already
+                    // uses, so it still renders at a constant on-screen size
+                    // after Scene's transform scales it back down -- without
+                    // this, the box shrinks with zoom exactly like ordinary
+                    // card content does, while the now-fixed-size row text
+                    // below stays constant, and would visibly overflow a
+                    // background that's shrunk out from under it.
+                    let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0) * inv_zoom;
                     let rect = egui::Rect::from_center_size(center_pos, card_size);
                     ui.painter().rect_filled(rect, 4.0 * inv_zoom, TOOLBAR_FILL);
                     ui.painter().rect_stroke(
@@ -9982,71 +10028,56 @@ impl App {
                         egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                         egui::StrokeKind::Inside,
                     );
-                    let mut clicked_tab = false;
-                    let mut clicked_note = false;
-                    let mut clicked_group = false;
-                    let mut clicked_file = false;
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(rect.shrink(6.0 * inv_zoom))
-                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                        |ui| {
-                            let full_width = ui.available_width();
-                            if ui
-                                .add(
-                                    egui::Button::new(format!(
-                                        "{} New Tab",
-                                        egui_phosphor::regular::PLUS
-                                    ))
-                                    .min_size(egui::vec2(full_width, 0.0)),
-                                )
-                                .clicked()
-                            {
-                                clicked_tab = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(format!(
-                                        "{} New Note",
-                                        egui_phosphor::regular::NOTE_PENCIL
-                                    ))
-                                    .min_size(egui::vec2(full_width, 0.0)),
-                                )
-                                .clicked()
-                            {
-                                clicked_note = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(format!(
-                                        "{} New Group",
-                                        egui_phosphor::regular::FOLDER_PLUS
-                                    ))
-                                    .min_size(egui::vec2(full_width, 0.0)),
-                                )
-                                .clicked()
-                            {
-                                clicked_group = true;
-                            }
-                            // Same reasoning as every other file-dialog
-                            // button in this app -- a real picker blocks on
-                            // OS/human input neither exists in headless
-                            // mode.
-                            if !self.headless
-                                && ui
-                                    .add(
-                                        egui::Button::new(format!(
-                                            "{} Add File...",
-                                            egui_phosphor::regular::FILE_PLUS
-                                        ))
-                                        .min_size(egui::vec2(full_width, 0.0)),
-                                    )
-                                    .clicked()
-                            {
-                                clicked_file = true;
-                            }
-                        },
+                    let row_height = 26.0 * inv_zoom;
+                    let mut row_top = rect.min.y + 6.0 * inv_zoom;
+                    let mut next_row_rect = || {
+                        let row_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.min.x + 6.0 * inv_zoom, row_top),
+                            egui::vec2(rect.width() - 12.0 * inv_zoom, row_height - 4.0 * inv_zoom),
+                        );
+                        row_top += row_height;
+                        row_rect
+                    };
+                    let clicked_tab = draw_new_node_menu_row(
+                        ui,
+                        &overlay_painter,
+                        &project,
+                        next_row_rect(),
+                        "pending_new_node_tab",
+                        inv_zoom,
+                        &format!("{} New Tab", egui_phosphor::regular::PLUS),
                     );
+                    let clicked_note = draw_new_node_menu_row(
+                        ui,
+                        &overlay_painter,
+                        &project,
+                        next_row_rect(),
+                        "pending_new_node_note",
+                        inv_zoom,
+                        &format!("{} New Note", egui_phosphor::regular::NOTE_PENCIL),
+                    );
+                    let clicked_group = draw_new_node_menu_row(
+                        ui,
+                        &overlay_painter,
+                        &project,
+                        next_row_rect(),
+                        "pending_new_node_group",
+                        inv_zoom,
+                        &format!("{} New Group", egui_phosphor::regular::FOLDER_PLUS),
+                    );
+                    // Same reasoning as every other file-dialog button in
+                    // this app -- a real picker blocks on OS/human input
+                    // neither exists in headless mode.
+                    let clicked_file = !self.headless
+                        && draw_new_node_menu_row(
+                            ui,
+                            &overlay_painter,
+                            &project,
+                            next_row_rect(),
+                            "pending_new_node_file",
+                            inv_zoom,
+                            &format!("{} Add File...", egui_phosphor::regular::FILE_PLUS),
+                        );
                     if clicked_tab {
                         pending_new_tab_at = Some(pos);
                         self.pending_new_node = None;
