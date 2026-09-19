@@ -339,6 +339,46 @@ fn next_id(counter: &mut u64, prefix: &str) -> String {
     id
 }
 
+/// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
+/// content closure and actually painted only after it returns -- see
+/// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
+/// the *real* `overlay_painter`/`project` (recomputed fresh post-`Scene`)
+/// as arguments at call time, not at queue time.
+type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egui::Pos2)>;
+
+/// A frame's worth of `overlay_painter` decorations (node labels, pin/audio/
+/// close/eject icons, the empty-canvas menu's own row labels, ...), queued
+/// during `Scene::show`'s content closure instead of painted immediately.
+///
+/// Root cause this works around: `overlay_painter` draws on a screen-space
+/// layer deliberately untransformed by `Scene` (see that field's own doc
+/// comment for why -- crisp text at any zoom, not blurry rescaled glyphs),
+/// so anything painted on it has to convert its own world position to
+/// screen space manually via `project`. But `project` is built from
+/// `self.graph_scene_rect`, which -- confirmed by reading `egui::Scene::
+/// show`'s actual source (0.36.2) -- is only updated *after* the whole
+/// content closure returns for the frame; a live pan/zoom drag is applied
+/// to `Scene`'s own *internal* transform before the closure runs, which is
+/// why `ui.painter()`-drawn card content (rendered on `Scene`'s own
+/// transformed layer, where egui applies that internal transform
+/// automatically) is always correctly positioned, while anything computed
+/// from `project` during the same closure is exactly one frame stale --
+/// invisible at rest, but a growing pixel gap between a card and its own
+/// label/icons the faster the camera pans, since a fixed one-frame timing
+/// lag becomes a bigger on-screen offset the more distance the camera
+/// covers in that frame.
+///
+/// Fix: instead of painting through `overlay_painter` immediately (using
+/// the stale `project` captured before `Scene::show`), every such call
+/// queues a closure capturing its own world position and paint parameters.
+/// Once `Scene::show` returns and `self.graph_scene_rect` has been updated
+/// to reflect this frame's actual pan/zoom, `project` is recomputed fresh
+/// and every queued closure is invoked with it -- so overlay decorations
+/// are painted using the *same* up-to-date transform the card content
+/// itself already reflects, closing the gap entirely rather than just
+/// making it smaller.
+type DeferredOverlays = Vec<DeferredOverlay>;
+
 /// One row of the empty-canvas "New Tab/Note/Group/File" menu -- see
 /// `App::pending_new_node`'s own doc comment for the menu itself. Paints its
 /// own hover-highlighted background in world-space (scales with zoom like
@@ -350,11 +390,12 @@ fn next_id(counter: &mut u64, prefix: &str) -> String {
 /// right-click menu in this app is a plain screen-space `Area`, so this was
 /// the only one with the problem at all). Same world-space-hit-rect-plus-
 /// fixed-screen-text split `draw_node_close_button` above already uses, for
-/// the same reason. Returns whether it was clicked.
+/// the same reason. The label paint itself is deferred -- see
+/// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
+/// are no longer parameters here at all. Returns whether it was clicked.
 fn draw_new_node_menu_row(
     ui: &egui::Ui,
-    overlay_painter: &egui::Painter,
-    project: &impl Fn(egui::Pos2) -> egui::Pos2,
+    deferred_overlays: &mut DeferredOverlays,
     row_rect: egui::Rect,
     id_salt: &str,
     inv_zoom: f32,
@@ -364,13 +405,17 @@ fn draw_new_node_menu_row(
     if response.hovered() {
         ui.painter().rect_filled(row_rect, 3.0 * inv_zoom, ACCENT.gamma_multiply(0.35));
     }
-    overlay_painter.text(
-        project(row_rect.left_center()) + egui::vec2(6.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        TEXT_PRIMARY,
-    );
+    let label = label.to_string();
+    let text_pos = row_rect.left_center();
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        overlay_painter.text(
+            project(text_pos) + egui::vec2(6.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &label,
+            egui::FontId::proportional(13.0),
+            TEXT_PRIMARY,
+        );
+    }));
     response.clicked()
 }
 
@@ -380,14 +425,14 @@ fn draw_new_node_menu_row(
 /// parameters rather than hardcoded: Note's card deliberately uses a
 /// different (warm, black-alpha-based) palette than Image/Pdf/Json's
 /// shared dark-chrome one, so the button needs to match whichever card
-/// it's drawn on. `project` maps a world-space point to screen space, same
-/// as every other `overlay_painter` call in this canvas. Returns whether
-/// it was clicked this frame -- the caller still decides what that means
-/// for its own kind (which `*_close_requested` to set).
+/// it's drawn on. The icon's own paint is deferred -- see
+/// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
+/// are no longer parameters here at all. Returns whether it was clicked
+/// this frame -- the caller still decides what that means for its own kind
+/// (which `*_close_requested` to set).
 fn draw_node_close_button(
     ui: &egui::Ui,
-    overlay_painter: &egui::Painter,
-    project: &impl Fn(egui::Pos2) -> egui::Pos2,
+    deferred_overlays: &mut DeferredOverlays,
     card_rect: egui::Rect,
     close_id_salt: (&str, &str),
     inv_zoom: f32,
@@ -405,13 +450,16 @@ fn draw_node_close_button(
         egui::Stroke::new(1.0 * inv_zoom, border_color),
         egui::StrokeKind::Inside,
     );
-    overlay_painter.text(
-        project(close_rect.center()),
-        egui::Align2::CENTER_CENTER,
-        egui_phosphor::regular::X,
-        egui::FontId::proportional(14.0),
-        icon_color,
-    );
+    let icon_pos = close_rect.center();
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        overlay_painter.text(
+            project(icon_pos),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::X,
+            egui::FontId::proportional(14.0),
+            icon_color,
+        );
+    }));
     close_response.clicked()
 }
 
@@ -8931,10 +8979,16 @@ impl App {
         // move already does (see that field's own doc comment).
         let scene_rect_before_pan_zoom = self.graph_scene_rect;
         let mut scene_rect = self.graph_scene_rect;
-        egui::Scene::new()
+        let scene_response = egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
             .show(ui, &mut scene_rect, |ui| {
+                // Every `overlay_painter` decoration painted inside this
+                // closure is deferred rather than painted immediately -- see
+                // `DeferredOverlays`'s own doc comment for why (this frame's
+                // real pan/zoom isn't reflected in `project`, captured
+                // above, until after this whole closure returns).
+                let mut deferred_overlays: DeferredOverlays = Vec::new();
                 // Dot grid first, under everything -- a fixed-world-spacing
                 // reference so panning/zooming reads as moving through a
                 // real space rather than an empty void, the same idea every
@@ -9145,14 +9199,16 @@ impl App {
                             // room on the right.
                             let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
                             let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
-                            overlay_painter.text(
-                                project(egui::Pos2::new(title_strip.left(), title_strip.center().y))
-                                    + egui::vec2(16.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                label_font,
-                                egui::Color32::WHITE,
-                            );
+                            let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(label_pos) + egui::vec2(16.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    label,
+                                    label_font,
+                                    egui::Color32::WHITE,
+                                );
+                            }));
                         }
                     }
                     if let Some(tex_id) = self
@@ -9209,13 +9265,16 @@ impl App {
                             // so drawn on `overlay_painter` like the pin/
                             // eject icons, not `ui.painter()` like the
                             // waveform's own vector bars below.
-                            overlay_painter.text(
-                                project(audio_rect.center()),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::SPEAKER_X,
-                                egui::FontId::proportional(12.0),
-                                egui::Color32::from_rgb(220, 60, 60),
-                            );
+                            let icon_pos = audio_rect.center();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(icon_pos),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::SPEAKER_X,
+                                    egui::FontId::proportional(12.0),
+                                    egui::Color32::from_rgb(220, 60, 60),
+                                );
+                            }));
                         } else {
                             // Actually playing: a tiny 3-bar waveform
                             // instead of a static dot -- painter-drawn
@@ -9299,13 +9358,16 @@ impl App {
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    overlay_painter.text(
-                        project(pin_rect.center()),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::PUSH_PIN,
-                        egui::FontId::proportional(14.0),
-                        pin_color,
-                    );
+                    let pin_icon_pos = pin_rect.center();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(pin_icon_pos),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::PUSH_PIN,
+                            egui::FontId::proportional(14.0),
+                            pin_color,
+                        );
+                    }));
                     if pin_response.clicked() {
                         pin_toggle_requested = Some(id.clone());
                     }
@@ -9342,13 +9404,17 @@ impl App {
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
-                            ui.visuals().text_color(),
-                        );
+                        let close_icon_pos = close_rect.center();
+                        let close_icon_color = ui.visuals().text_color();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(close_icon_pos),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::X,
+                                egui::FontId::proportional(14.0),
+                                close_icon_color,
+                            );
+                        }));
                         if close_response.clicked() {
                             close_requested = Some(id.clone());
                         }
@@ -9394,13 +9460,17 @@ impl App {
                         // was: a caret is genuinely ambiguous here (reads
                         // as "expand" as easily as "leave"), where a real
                         // "step out" icon states its own meaning.
-                        overlay_painter.text(
-                            project(eject_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::SIGN_OUT,
-                            egui::FontId::proportional(14.0),
-                            ui.visuals().text_color(),
-                        );
+                        let eject_icon_pos = eject_rect.center();
+                        let eject_icon_color = ui.visuals().text_color();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(eject_icon_pos),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::SIGN_OUT,
+                                egui::FontId::proportional(14.0),
+                                eject_icon_color,
+                            );
+                        }));
                         if eject_response.clicked() {
                             eject_clicked = true;
                             remove_from_group_requested = Some(id.clone());
@@ -9640,11 +9710,13 @@ impl App {
                     // covers the whole card in one shot.
                     if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
                         if graph_filter_dims(&self.graph_filter, &[&node.title, &node.url]) {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                6.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    6.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }));
                         }
                     }
                 }
@@ -9692,13 +9764,17 @@ impl App {
                         // claim of avoiding exactly that gamble; migrated
                         // to a real icon for consistency once the icon
                         // font was already in place for everything else.
-                        overlay_painter.text(
-                            project(rect.center_top()) + egui::vec2(0.0, 10.0),
-                            egui::Align2::CENTER_TOP,
-                            egui_phosphor::regular::DOWNLOAD_SIMPLE,
-                            egui::FontId::proportional(18.0),
-                            ui.visuals().text_color(),
-                        );
+                        let download_icon_pos = rect.center_top();
+                        let download_icon_color = ui.visuals().text_color();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(download_icon_pos) + egui::vec2(0.0, 10.0),
+                                egui::Align2::CENTER_TOP,
+                                egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                                egui::FontId::proportional(18.0),
+                                download_icon_color,
+                            );
+                        }));
                         // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
                         // filename entirely rather than truncating to a
                         // near-illegible sliver -- the download-icon glyph
@@ -9709,13 +9785,17 @@ impl App {
                             let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                             let filename =
                                 truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
-                            overlay_painter.text(
-                                project(rect.center_bottom()) + egui::vec2(0.0, -8.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                filename,
-                                filename_font,
-                                ui.visuals().text_color(),
-                            );
+                            let filename_pos = rect.center_bottom();
+                            let filename_color = ui.visuals().text_color();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(filename_pos) + egui::vec2(0.0, -8.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    filename,
+                                    filename_font,
+                                    filename_color,
+                                );
+                            }));
                         }
                         // Live progress bar, only while not yet complete
                         // and only when the server reported a real total
@@ -9777,13 +9857,17 @@ impl App {
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
-                        overlay_painter.text(
-                            project(close_rect.center()),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::X,
-                            egui::FontId::proportional(14.0),
-                            ui.visuals().text_color(),
-                        );
+                        let close_icon_pos = close_rect.center();
+                        let close_icon_color = ui.visuals().text_color();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(close_icon_pos),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::X,
+                                egui::FontId::proportional(14.0),
+                                close_icon_color,
+                            );
+                        }));
                         if close_response.clicked() {
                             download_close_requested = Some(id.clone());
                         }
@@ -9808,11 +9892,13 @@ impl App {
 
                     if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_download()) {
                         if graph_filter_dims(&self.graph_filter, &[&node.path]) {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                6.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    6.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }));
                         }
                     }
                 }
@@ -9872,13 +9958,16 @@ impl App {
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
-                    overlay_painter.text(
-                        project(header_rect.left_center()) + egui::vec2(8.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        egui_phosphor::regular::NOTE_PENCIL,
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_black_alpha(160),
-                    );
+                    let note_icon_pos = header_rect.left_center();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(note_icon_pos) + egui::vec2(8.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            egui_phosphor::regular::NOTE_PENCIL,
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_black_alpha(160),
+                        );
+                    }));
 
                     let mut note_text_lost_focus = false;
                     let mut switch_to_editing = false;
@@ -9975,8 +10064,7 @@ impl App {
                     if is_hovered
                         && draw_node_close_button(
                             ui,
-                            &overlay_painter,
-                            &project,
+                            &mut deferred_overlays,
                             rect,
                             ("graph_note_node_close", id.as_str()),
                             inv_zoom,
@@ -9992,11 +10080,13 @@ impl App {
 
                     if let Some(note) = self.nodes.get(&id).and_then(|n| n.as_note()) {
                         if graph_filter_dims(&self.graph_filter, &[&note.text]) {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                6.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    6.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }));
                         }
                     }
                 }
@@ -10051,13 +10141,17 @@ impl App {
                                 4.0 * inv_zoom,
                                 ui.visuals().extreme_bg_color,
                             );
-                            overlay_painter.text(
-                                project(rect.center()),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::IMAGE_BROKEN,
-                                egui::FontId::proportional(24.0),
-                                ui.visuals().weak_text_color(),
-                            );
+                            let broken_icon_pos = rect.center();
+                            let broken_icon_color = ui.visuals().weak_text_color();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(broken_icon_pos),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::IMAGE_BROKEN,
+                                    egui::FontId::proportional(24.0),
+                                    broken_icon_color,
+                                );
+                            }));
                         }
                     }
                     let (border_width, border_color) = if is_hovered {
@@ -10075,8 +10169,7 @@ impl App {
                     if is_hovered
                         && draw_node_close_button(
                             ui,
-                            &overlay_painter,
-                            &project,
+                            &mut deferred_overlays,
                             rect,
                             ("graph_image_node_close", id.as_str()),
                             inv_zoom,
@@ -10092,11 +10185,13 @@ impl App {
 
                     if let Some(image) = self.nodes.get(&id).and_then(|n| n.as_image()) {
                         if graph_filter_dims(&self.graph_filter, &[download_filename(&image.path)]) {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                4.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    4.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }));
                         }
                     }
                 }
@@ -10161,36 +10256,48 @@ impl App {
                             // of the file-type distinction the icon in the
                             // context menu/toolbar already gives.
                             if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                                overlay_painter.text(
-                                    project(rect.right_bottom()) + egui::vec2(-4.0, -4.0),
-                                    egui::Align2::RIGHT_BOTTOM,
-                                    format!("{page_count} page{}", if page_count == 1 { "" } else { "s" }),
-                                    egui::FontId::proportional(11.0),
-                                    egui::Color32::WHITE,
-                                );
+                                let page_count_pos = rect.right_bottom();
+                                let page_count_text =
+                                    format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(page_count_pos) + egui::vec2(-4.0, -4.0),
+                                        egui::Align2::RIGHT_BOTTOM,
+                                        page_count_text,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::WHITE,
+                                    );
+                                }));
                             }
                         }
                         // Reachable the same rare way an `Image` node's own
                         // `None` case is -- the node outlived its texture.
                         Some(Ok((None, _))) => {
                             ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                            overlay_painter.text(
-                                project(rect.center()),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::IMAGE_BROKEN,
-                                egui::FontId::proportional(24.0),
-                                ui.visuals().weak_text_color(),
-                            );
+                            let broken_icon_pos = rect.center();
+                            let broken_icon_color = ui.visuals().weak_text_color();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(broken_icon_pos),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::IMAGE_BROKEN,
+                                    egui::FontId::proportional(24.0),
+                                    broken_icon_color,
+                                );
+                            }));
                         }
                         Some(Err(_)) => {
                             ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                            overlay_painter.text(
-                                project(rect.center()),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::FILE_X,
-                                egui::FontId::proportional(24.0),
-                                GROUP_OVERLOAD_COLOR,
-                            );
+                            let error_icon_pos = rect.center();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(error_icon_pos),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::FILE_X,
+                                    egui::FontId::proportional(24.0),
+                                    GROUP_OVERLOAD_COLOR,
+                                );
+                            }));
                         }
                         None => {
                             ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
@@ -10212,8 +10319,7 @@ impl App {
                     if is_hovered
                         && draw_node_close_button(
                             ui,
-                            &overlay_painter,
-                            &project,
+                            &mut deferred_overlays,
                             rect,
                             ("graph_pdf_node_close", id.as_str()),
                             inv_zoom,
@@ -10229,11 +10335,13 @@ impl App {
 
                     if let Some(pdf) = self.nodes.get(&id).and_then(|n| n.as_pdf()) {
                         if graph_filter_dims(&self.graph_filter, &[download_filename(&pdf.path)]) {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                4.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.rect_filled(
+                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                    4.0,
+                                    egui::Color32::from_black_alpha(190),
+                                );
+                            }));
                         }
                     }
                 }
@@ -10272,20 +10380,24 @@ impl App {
 
                     ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                        overlay_painter.text(
-                            project(rect.center()) + egui::vec2(0.0, -12.0),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::BRACKETS_CURLY,
-                            egui::FontId::proportional(22.0),
-                            ACCENT,
-                        );
-                        overlay_painter.text(
-                            project(rect.center()) + egui::vec2(0.0, 14.0),
-                            egui::Align2::CENTER_CENTER,
-                            &summary,
-                            egui::FontId::proportional(12.0),
-                            ui.visuals().text_color(),
-                        );
+                        let json_center = rect.center();
+                        let summary_color = ui.visuals().text_color();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(json_center) + egui::vec2(0.0, -12.0),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::BRACKETS_CURLY,
+                                egui::FontId::proportional(22.0),
+                                ACCENT,
+                            );
+                            overlay_painter.text(
+                                project(json_center) + egui::vec2(0.0, 14.0),
+                                egui::Align2::CENTER_CENTER,
+                                summary,
+                                egui::FontId::proportional(12.0),
+                                summary_color,
+                            );
+                        }));
                     }
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
@@ -10302,8 +10414,7 @@ impl App {
                     if is_hovered
                         && draw_node_close_button(
                             ui,
-                            &overlay_painter,
-                            &project,
+                            &mut deferred_overlays,
                             rect,
                             ("graph_json_node_close", id.as_str()),
                             inv_zoom,
@@ -10322,11 +10433,13 @@ impl App {
                     self.finish_draggable_node(&id, &response, is_hovered);
 
                     if graph_filter_dims(&self.graph_filter, &[download_filename(&path)]) {
-                        overlay_painter.rect_filled(
-                            egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                            4.0,
-                            egui::Color32::from_black_alpha(190),
-                        );
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                4.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }));
                     }
                 }
 
@@ -10468,13 +10581,17 @@ impl App {
                                 }
                                 if show_labels {
                                     if member_count > 4 {
-                                        overlay_painter.text(
-                                            project(grid_rect.right_bottom()) + egui::vec2(-3.0, -3.0),
-                                            egui::Align2::RIGHT_BOTTOM,
-                                            format!("+{}", member_count - 4),
-                                            egui::FontId::proportional(12.0),
-                                            egui::Color32::WHITE,
-                                        );
+                                        let overflow_pos = grid_rect.right_bottom();
+                                        let overflow_text = format!("+{}", member_count - 4);
+                                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                            overlay_painter.text(
+                                                project(overflow_pos) + egui::vec2(-3.0, -3.0),
+                                                egui::Align2::RIGHT_BOTTOM,
+                                                overflow_text,
+                                                egui::FontId::proportional(12.0),
+                                                egui::Color32::WHITE,
+                                            );
+                                        }));
                                     }
                                     let title_strip = egui::Rect::from_min_max(
                                         egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
@@ -10489,13 +10606,16 @@ impl App {
                                     let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                                     let name =
                                         truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
-                                    overlay_painter.text(
-                                        project(title_strip.center()),
-                                        egui::Align2::CENTER_CENTER,
-                                        name,
-                                        name_font,
-                                        egui::Color32::WHITE,
-                                    );
+                                    let name_pos = title_strip.center();
+                                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                        overlay_painter.text(
+                                            project(name_pos),
+                                            egui::Align2::CENTER_CENTER,
+                                            name,
+                                            name_font,
+                                            egui::Color32::WHITE,
+                                        );
+                                    }));
                                 }
                             } else if show_labels {
                                 // Nothing to preview (empty group), or
@@ -10508,25 +10628,33 @@ impl App {
                                 let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                                 let name =
                                     truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
-                                overlay_painter.text(
-                                    project(rect.center_top()) + egui::vec2(0.0, 14.0),
-                                    egui::Align2::CENTER_TOP,
-                                    name,
-                                    name_font,
-                                    ui.visuals().text_color(),
-                                );
+                                let name_pos = rect.center_top();
+                                let name_color = ui.visuals().text_color();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(name_pos) + egui::vec2(0.0, 14.0),
+                                        egui::Align2::CENTER_TOP,
+                                        name,
+                                        name_font,
+                                        name_color,
+                                    );
+                                }));
                                 let count_label = format!(
                                     "{} member{}",
                                     member_count,
                                     if member_count == 1 { "" } else { "s" }
                                 );
-                                overlay_painter.text(
-                                    project(rect.center_bottom()) + egui::vec2(0.0, -10.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    count_label,
-                                    egui::FontId::proportional(14.0),
-                                    ui.visuals().weak_text_color(),
-                                );
+                                let count_pos = rect.center_bottom();
+                                let count_color = ui.visuals().weak_text_color();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(count_pos) + egui::vec2(0.0, -10.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        count_label,
+                                        egui::FontId::proportional(14.0),
+                                        count_color,
+                                    );
+                                }));
                             }
                         }
 
@@ -10552,13 +10680,17 @@ impl App {
                                 egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                                 egui::StrokeKind::Inside,
                             );
-                            overlay_painter.text(
-                                project(close_rect.center()),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::X,
-                                egui::FontId::proportional(14.0),
-                                ui.visuals().text_color(),
-                            );
+                            let close_icon_pos = close_rect.center();
+                            let close_icon_color = ui.visuals().text_color();
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(close_icon_pos),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::X,
+                                    egui::FontId::proportional(14.0),
+                                    close_icon_color,
+                                );
+                            }));
                             if close_response.clicked() {
                                 group_close_requested = Some(id.clone());
                             }
@@ -10633,11 +10765,13 @@ impl App {
 
                         if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
                             if graph_filter_dims(&self.graph_filter, &[&node.name]) {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    6.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.rect_filled(
+                                        egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                        6.0,
+                                        egui::Color32::from_black_alpha(190),
+                                    );
+                                }));
                             }
                         }
                     }
@@ -10687,8 +10821,7 @@ impl App {
                     };
                     let clicked_tab = draw_new_node_menu_row(
                         ui,
-                        &overlay_painter,
-                        &project,
+                        &mut deferred_overlays,
                         next_row_rect(),
                         "pending_new_node_tab",
                         inv_zoom,
@@ -10696,8 +10829,7 @@ impl App {
                     );
                     let clicked_note = draw_new_node_menu_row(
                         ui,
-                        &overlay_painter,
-                        &project,
+                        &mut deferred_overlays,
                         next_row_rect(),
                         "pending_new_node_note",
                         inv_zoom,
@@ -10705,8 +10837,7 @@ impl App {
                     );
                     let clicked_group = draw_new_node_menu_row(
                         ui,
-                        &overlay_painter,
-                        &project,
+                        &mut deferred_overlays,
                         next_row_rect(),
                         "pending_new_node_group",
                         inv_zoom,
@@ -10718,8 +10849,7 @@ impl App {
                     let clicked_file = !self.headless
                         && draw_new_node_menu_row(
                             ui,
-                            &overlay_painter,
-                            &project,
+                            &mut deferred_overlays,
                             next_row_rect(),
                             "pending_new_node_file",
                             inv_zoom,
@@ -10809,8 +10939,24 @@ impl App {
                         }
                     }
                 }
+                deferred_overlays
             });
         self.graph_scene_rect = scene_rect;
+        // Now that `self.graph_scene_rect` reflects this frame's actual
+        // pan/zoom (not the stale value `project`/`overlay_painter` calls
+        // inside the closure above had to work with -- see
+        // `DeferredOverlays`'s own doc comment), recompute the transform
+        // fresh and paint every decoration queued during that closure with
+        // it, closing the one-frame gap between a card and its own
+        // overlay-painted label/icons that was otherwise most visible
+        // during a fast pan or zoom.
+        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let project = move |world: egui::Pos2| -> egui::Pos2 {
+            (translation + zoom_scale * world.to_vec2()).to_pos2()
+        };
+        for overlay in scene_response.inner {
+            overlay(&overlay_painter, &project);
+        }
         if scene_rect != scene_rect_before_pan_zoom {
             self.pending_new_node = None;
         }
