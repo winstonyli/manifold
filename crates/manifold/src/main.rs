@@ -6453,7 +6453,12 @@ impl App {
     /// exists), then dissolves the now-empty group itself. Snapshots
     /// the group into `closed_groups` *before* touching anything, via the
     /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
-    /// Group" can recreate it -- the individual `ClosedTab` entries
+    /// Group" can recreate it -- skipped when the export has no tabs (a
+    /// group containing only Notes/Images/Pdfs/Jsons/nested-empty-groups,
+    /// e.g. an "Expand as Graph" subtree), since reopening that snapshot
+    /// would only recreate an empty, useless group and would otherwise
+    /// flood the 5-slot stack and evict genuinely useful entries -- the
+    /// individual `ClosedTab` entries
     /// `close_tab` pushes along the way are then thrown away (`closed_tabs`
     /// truncated back to its pre-loop length) rather than left behind
     /// alongside the group-level snapshot, which would otherwise let a user
@@ -6466,9 +6471,11 @@ impl App {
     /// duplicate.
     fn close_group(&mut self, id: &str) {
         if let Some(export) = self.export_group(id) {
-            self.closed_groups.push(export);
-            if self.closed_groups.len() > MAX_CLOSED_GROUPS {
-                self.closed_groups.remove(0);
+            if !export.tabs.is_empty() {
+                self.closed_groups.push(export);
+                if self.closed_groups.len() > MAX_CLOSED_GROUPS {
+                    self.closed_groups.remove(0);
+                }
             }
         }
         let closed_tabs_before = self.closed_tabs.len();
