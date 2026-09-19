@@ -6431,13 +6431,14 @@ impl App {
         }
     }
 
-    /// Closes every tab member of a group (each through the normal
-    /// `close_tab` path -- teardown, reparenting, thumbnail cleanup all
-    /// still apply, same as `close_all_except`/`close_selected`), then
-    /// dissolves the now-tabless group itself. A download member is never
-    /// closed by this (downloads have no "closed" state of their own,
-    /// see `App::close_tab`'s own scope) -- `dissolve_group` returns it to
-    /// the top level exactly as a plain Dissolve already would. Snapshots
+    /// Closes every member of a group via `close_group_member` (a tab
+    /// through the normal `close_tab` path -- teardown, reparenting,
+    /// thumbnail cleanup all still apply, same as `close_all_except`/
+    /// `close_selected`; a nested subgroup recurses into this same
+    /// function; a Note/Image/Pdf/Json/Download member is destroyed too,
+    /// via the same cleanup its own "Delete" context-menu action already
+    /// applies -- see `close_group_member`'s own doc comment for why this
+    /// exists), then dissolves the now-empty group itself. Snapshots
     /// the group into `closed_groups` *before* touching anything, via the
     /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
     /// Group" can recreate it -- the individual `ClosedTab` entries
