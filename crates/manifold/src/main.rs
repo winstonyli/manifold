@@ -7821,14 +7821,10 @@ impl App {
         let mut remove_from_group_requested: Option<String> = None;
         let mut tab_color_cycle_requested: Option<String> = None;
         let mut mute_toggle_requested: Option<String> = None;
-        let mut new_group_requested = false;
-        let mut new_note_requested = false;
         let mut note_close_requested: Option<String> = None;
-        let mut add_file_requested = false;
-        // Set by `pending_new_node`'s own card -- unlike `new_group_requested`/
-        // `new_note_requested`/`add_file_requested` above (always the
-        // toolbar's own jittered-position spawn), each of these carries the
-        // exact world position that was right-clicked.
+        // Set by `pending_new_node`'s own card -- unlike `new_tab_parent`
+        // above (the toolbar's own jittered-position spawn), each of these
+        // carries the exact world position that was right-clicked.
         let mut pending_new_tab_at: Option<egui::Vec2> = None;
         let mut pending_new_note_at: Option<egui::Vec2> = None;
         let mut pending_new_group_at: Option<egui::Vec2> = None;
@@ -7951,47 +7947,34 @@ impl App {
                             }
                         }
                     }
+                    // "+ New Tab" is the only toolbar spawn action kept --
+                    // it's also the sole recovery path when `self.nodes` is
+                    // completely empty (see the early-return branch below),
+                    // where the right-click empty-canvas card can't appear
+                    // yet. New Note/Add File/New Group used to sit here too,
+                    // but that card already offers all three identically
+                    // once any node exists, and while the graph is fully
+                    // empty those buttons' own flags were silently dropped
+                    // anyway (their sole consumption site is unreachable
+                    // from the early-return branch) -- removing them is a
+                    // pure simplification, not a capability loss.
                     if ui.button("+ New Tab").clicked() {
                         new_tab_parent = Some(self.focused.clone());
                     }
-                    if ui
-                        .button(egui_phosphor::regular::NOTE_PENCIL)
-                        .on_hover_text("New Note")
-                        .clicked()
-                    {
-                        new_note_requested = true;
-                    }
-                    // One button, one file picker, covering every locally-
-                    // addable node kind (Image/PDF/JSON) -- see
-                    // `App::add_file_node`'s own doc comment for why this
-                    // replaced three separate buttons/pickers that only
-                    // ever differed in extension filter and which
-                    // `insert_*_node` got called after. File picker blocks
-                    // on OS/human input neither exists in headless mode --
-                    // same `!self.headless` gate every other file-dialog
-                    // button here already has.
-                    if !self.headless
-                        && ui.button(egui_phosphor::regular::FILE_PLUS).on_hover_text("Add File...").clicked()
-                    {
-                        add_file_requested = true;
-                    }
-                    // These four buttons used to carry full text labels
-                    // ("+ New Group", "Import Group...", "Ungroup All",
-                    // "Collapse Groups"/"Expand Groups") and, together with
+                    // These three buttons used to carry full text labels
+                    // ("Import Group...", "Ungroup All", "Collapse Groups"/
+                    // "Expand Groups") and, together with "+ New Group"/
                     // "+ New Tab"/"Reset View", made this toolbar cramped
                     // enough to confirm live (text touching the window
                     // edge at 1300pt wide). Switched to `egui_phosphor`
                     // icons instead of folding into a dropdown -- each
                     // stays a one-click action, just narrower, with the
                     // old label preserved as a hover tooltip so the action
-                    // is still discoverable. All four now work at any
+                    // is still discoverable. All three now work at any
                     // level, not just the top -- see `GroupPayload`'s own
                     // doc comment on nesting; each already acts on
                     // `self.current_group`/`groups_at_current_level()`
                     // (its own level), never hardcoding the top level.
-                    if ui.button(egui_phosphor::regular::FOLDER_PLUS).on_hover_text("New Group").clicked() {
-                        new_group_requested = true;
-                    }
                     // Same "real file dialog blocks on OS/human input
                     // neither exists in headless mode" reasoning as every
                     // other Export/Import button -- `IMPORTGROUP <path>`
@@ -10525,18 +10508,9 @@ impl App {
         if let Some(id) = mute_toggle_requested {
             self.toggle_muted(&id);
         }
-        if new_group_requested {
-            self.new_group_shortcut();
-        }
-        if new_note_requested {
-            self.new_note_shortcut();
-        }
         if let Some(id) = note_close_requested {
             self.remove_node(&id);
             self.save_session();
-        }
-        if add_file_requested {
-            self.add_file_node(None);
         }
         // The empty-canvas card's own four actions -- each spawns at the
         // exact position that was right-clicked, unlike the toolbar
