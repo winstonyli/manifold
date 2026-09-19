@@ -1422,6 +1422,24 @@ const MAX_CLOSED_TABS: usize = 10;
 /// whole group is a rarer, heavier action than closing one tab.
 const MAX_CLOSED_GROUPS: usize = 5;
 
+/// A Note/Image/Pdf/Json node's content, captured just before its own
+/// "Delete" context-menu action removes it -- unlike a tab or group,
+/// deleting one of these four kinds previously had no undo path at all,
+/// a real risk specifically for Notes (user-typed content, permanently
+/// gone on a single misclick, unlike a tab/group's own already-existing
+/// "Recently Closed" recovery). Doesn't preserve the original position,
+/// same as `ClosedTab`'s own reopen behavior -- a fresh jittered spawn,
+/// not a restored one.
+enum ClosedNode {
+    Note(String),
+    Image(String),
+    Pdf(String),
+    Json(String),
+}
+
+/// Same reasoning as `MAX_CLOSED_TABS`.
+const MAX_CLOSED_NODES: usize = 10;
+
 /// One entry in `App::history` -- see that field's own doc comment.
 struct HistoryEntry {
     title: String,
@@ -1893,6 +1911,12 @@ struct App {
     /// oldest dropped first. Not reachable from `Ctrl+Shift+T` (that
     /// shortcut only ever looks at `closed_tabs`) -- only the dropdown.
     closed_groups: Vec<group_export::GroupExport>,
+    /// Note/Image/Pdf/Json nodes deleted via their own context menu's
+    /// "Delete" -- see `ClosedNode`'s own doc comment for why this exists.
+    /// Listed in the same "Recently Closed" dropdown as `closed_tabs`/
+    /// `closed_groups`, in their own section. Capped at `MAX_CLOSED_NODES`,
+    /// oldest dropped first.
+    closed_nodes: Vec<ClosedNode>,
 
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
@@ -2111,6 +2135,7 @@ impl Default for App {
             pending_screenshot: None,
             pending_print_to_pdf: None,
             closed_tabs: Vec::new(),
+            closed_nodes: Vec::new(),
             closed_groups: Vec::new(),
             context_menu: None,
             context_menu_cache: None,
@@ -2707,6 +2732,7 @@ impl App {
         let mut close = false;
         let mut reopen_tab_index: Option<usize> = None;
         let mut reopen_group_index: Option<usize> = None;
+        let mut reopen_node_index: Option<usize> = None;
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             for (index, group) in self.closed_groups.iter().enumerate().rev() {
@@ -2729,6 +2755,25 @@ impl App {
                     }
                 });
             }
+            if !self.closed_nodes.is_empty() && (!self.closed_groups.is_empty() || !self.closed_tabs.is_empty()) {
+                ui.separator();
+            }
+            for (index, node) in self.closed_nodes.iter().enumerate().rev() {
+                let (icon, label) = match node {
+                    ClosedNode::Note(text) => {
+                        (egui_phosphor::regular::NOTE_PENCIL, text.lines().next().unwrap_or("(empty note)"))
+                    }
+                    ClosedNode::Image(path) => (egui_phosphor::regular::IMAGE, path.as_str()),
+                    ClosedNode::Pdf(path) => (egui_phosphor::regular::FILE_PDF, path.as_str()),
+                    ClosedNode::Json(path) => (egui_phosphor::regular::BRACKETS_CURLY, path.as_str()),
+                };
+                ui.horizontal(|ui| {
+                    ui.label(icon);
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                        reopen_node_index = Some(index);
+                    }
+                });
+            }
         });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
@@ -2743,11 +2788,39 @@ impl App {
             self.respawn_closed_tab(closed);
             close = true;
         }
+        if let Some(index) = reopen_node_index {
+            match self.closed_nodes.remove(index) {
+                ClosedNode::Note(text) => self.respawn_closed_note(text),
+                ClosedNode::Image(path) => {
+                    self.insert_image_node(path);
+                    self.save_session();
+                }
+                ClosedNode::Pdf(path) => {
+                    self.insert_pdf_node(path);
+                    self.save_session();
+                }
+                ClosedNode::Json(path) => {
+                    self.insert_json_node(path);
+                    self.save_session();
+                }
+            }
+            close = true;
+        }
         if clicked_outside {
             close = true;
         }
-        if close || (self.closed_tabs.is_empty() && self.closed_groups.is_empty()) {
+        if close || (self.closed_tabs.is_empty() && self.closed_groups.is_empty() && self.closed_nodes.is_empty()) {
             self.recently_closed_open = false;
+        }
+    }
+
+    /// Shared by the four `build_*_context_menu`'s own `Delete` handlers --
+    /// same bound-then-push shape `close_tab`'s own `closed_tabs` push
+    /// already has.
+    fn record_closed_node(&mut self, node: ClosedNode) {
+        self.closed_nodes.push(node);
+        if self.closed_nodes.len() > MAX_CLOSED_NODES {
+            self.closed_nodes.remove(0);
         }
     }
 
@@ -4600,6 +4673,28 @@ impl App {
         self.insert_note_at(id, pos);
     }
 
+    /// "Recently Closed" reopening a deleted `ClosedNode::Note` -- unlike
+    /// `insert_note_at` (always blank, `editing: true`, for a genuinely new
+    /// note), this restores real saved text and starts rendered rather than
+    /// mid-edit, matching how a restored/imported note should look.
+    fn respawn_closed_note(&mut self, text: String) {
+        let id = self.alloc_note_id();
+        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: None,
+                group: self.current_group.clone(),
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Note(NotePayload { text, editing: false }),
+            },
+        );
+        self.node_order.push(id);
+        self.save_session();
+    }
+
     /// Shared by `new_note_shortcut` (fresh id/jittered position) and the
     /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
     /// which passes the exact position that was right-clicked instead.
@@ -6380,6 +6475,9 @@ impl App {
                 }
             }
             Some(NodeMenuAction::Delete) => {
+                if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
+                    self.record_closed_node(ClosedNode::Note(text));
+                }
                 self.remove_node(&id);
                 self.save_session();
             }
@@ -6436,6 +6534,9 @@ impl App {
                 }
             }
             Some(NodeMenuAction::Delete) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                    self.record_closed_node(ClosedNode::Image(path));
+                }
                 if let Some(gpu) = &mut self.gpu {
                     gpu.free_image(&id);
                 }
@@ -6494,6 +6595,9 @@ impl App {
                 }
             }
             Some(NodeMenuAction::Delete) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
+                    self.record_closed_node(ClosedNode::Pdf(path));
+                }
                 if let Some(gpu) = &mut self.gpu {
                     gpu.free_image(&id);
                 }
@@ -6553,6 +6657,9 @@ impl App {
                 }
             }
             Some(NodeMenuAction::Delete) => {
+                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                    self.record_closed_node(ClosedNode::Json(path));
+                }
                 if self.json_viewer_node.as_deref() == Some(id.as_str()) {
                     self.json_viewer_node = None;
                 }
@@ -7799,8 +7906,8 @@ impl App {
                             .desired_width(120.0)
                             .hint_text("Filter..."),
                     );
-                    if !self.closed_tabs.is_empty() || !self.closed_groups.is_empty() {
-                        let count = self.closed_tabs.len() + self.closed_groups.len();
+                    if !self.closed_tabs.is_empty() || !self.closed_groups.is_empty() || !self.closed_nodes.is_empty() {
+                        let count = self.closed_tabs.len() + self.closed_groups.len() + self.closed_nodes.len();
                         let label = format!("Recently Closed ({count})");
                         let response = ui.button(label);
                         if response.clicked() {
