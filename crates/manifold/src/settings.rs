@@ -60,6 +60,23 @@ pub struct Settings {
     /// `send_zoom_to`), not stored converted here.
     pub zoom_factor: f64,
     pub home_page: String,
+    /// The OS window's own size/position last time it changed -- `None`
+    /// means no saved geometry yet (a fresh install, or a `settings.json`
+    /// from before this existed), falling back to winit's own default.
+    /// `#[serde(default)]` so an older file missing these fields still
+    /// loads instead of failing entirely (same fallback posture `Settings::
+    /// load` already has for the whole file). Not applied or updated in
+    /// headless mode, which already forces its own deliberate off-screen
+    /// position (see `resumed`'s own doc comment) -- saving that would
+    /// corrupt a real saved geometry the next normal launch would apply.
+    #[serde(default)]
+    pub window_width: Option<u32>,
+    #[serde(default)]
+    pub window_height: Option<u32>,
+    #[serde(default)]
+    pub window_x: Option<i32>,
+    #[serde(default)]
+    pub window_y: Option<i32>,
 }
 
 impl Default for Settings {
@@ -69,6 +86,10 @@ impl Default for Settings {
             default_starting_engine: EngineKind::Webview2,
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
+            window_width: None,
+            window_height: None,
+            window_x: None,
+            window_y: None,
         }
     }
 }

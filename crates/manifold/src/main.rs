@@ -10749,6 +10749,17 @@ impl ApplicationHandler<UserEvent> for App {
                 .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
                 .with_decorations(false)
                 .with_skip_taskbar(true);
+        } else {
+            // Restore the window to where the user last left it -- see
+            // `Settings::window_width`'s own doc comment. `None` (no saved
+            // geometry yet) just leaves `attrs` untouched, falling back to
+            // winit's own default the same as before this existed.
+            if let (Some(width), Some(height)) = (self.settings.window_width, self.settings.window_height) {
+                attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+            }
+            if let (Some(x), Some(y)) = (self.settings.window_x, self.settings.window_y) {
+                attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
+            }
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.gpu = Some(GpuState::new(window.clone()));
@@ -10791,6 +10802,21 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if let Some(id) = self.split_tab.clone() {
                     self.send_resize_to(&id);
+                }
+                // Not saved in headless mode -- see `Settings::window_width`'s
+                // own doc comment for why that would corrupt a real saved
+                // geometry with the deliberate off-screen placeholder size.
+                if !self.headless && size.width > 0 && size.height > 0 {
+                    self.settings.window_width = Some(size.width);
+                    self.settings.window_height = Some(size.height);
+                    self.settings.save();
+                }
+            }
+            WindowEvent::Moved(position) => {
+                if !self.headless {
+                    self.settings.window_x = Some(position.x);
+                    self.settings.window_y = Some(position.y);
+                    self.settings.save();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
