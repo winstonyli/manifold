@@ -301,6 +301,16 @@ fn fade_popup_state<T: Clone>(
     cache.clone().map(|value| (value, fade))
 }
 
+/// Shared body for the six `App::alloc_*_id` methods -- each owns a
+/// separate monotonic counter field (a distinct id space per node kind, so
+/// e.g. a tab and a note can both be "id 3" without colliding) and only
+/// ever differed in which counter and which string prefix it used.
+fn next_id(counter: &mut u64, prefix: &str) -> String {
+    let id = format!("{prefix}-{counter}");
+    *counter += 1;
+    id
+}
+
 /// Small hover-revealed "X" close button at a Graph-view card's top-right
 /// corner -- shared by Note/Image/Pdf/Json's own card loops in
 /// `build_graph_ui`, previously hand-copied once per kind. Colors are
@@ -3154,6 +3164,14 @@ impl App {
                         }
                     }
                     SpawnPurpose::Respawn => {
+                        // A respawned tab is a fresh engine-host process
+                        // that starts at that engine's own default zoom --
+                        // unlike Root/New/Split/Restore above, this arm
+                        // never told it about `zoom_factor` at all, so a
+                        // crash-recovery or engine-swap respawn silently
+                        // reset the page's zoom while Settings kept
+                        // showing the configured value.
+                        self.send_zoom_to(&id);
                         if is_focused {
                             if !self.address_bar_focused && !self.debug_address_bar_pin {
                                 self.address_bar_text = url;
@@ -3187,9 +3205,7 @@ impl App {
     }
 
     fn alloc_tab_id(&mut self) -> String {
-        let id = format!("tab-{}", self.next_tab_id);
-        self.next_tab_id += 1;
-        id
+        next_id(&mut self.next_tab_id, "tab")
     }
 
     /// Removes a download or note node from the graph -- a download's file
@@ -3320,41 +3336,31 @@ impl App {
     /// group ids share the same flat id space at the top level
     /// (`graph_layout::step` again sees ids only, not node kinds).
     fn alloc_group_id(&mut self) -> String {
-        let id = format!("grp-{}", self.next_group_id);
-        self.next_group_id += 1;
-        id
+        next_id(&mut self.next_group_id, "grp")
     }
 
     /// Same reasoning as `alloc_group_id` -- a distinct `"note-"` prefix in
     /// the same flat id space.
     fn alloc_note_id(&mut self) -> String {
-        let id = format!("note-{}", self.next_note_id);
-        self.next_note_id += 1;
-        id
+        next_id(&mut self.next_note_id, "note")
     }
 
     /// Same reasoning as `alloc_note_id` -- a distinct `"img-"` prefix in
     /// the same flat id space.
     fn alloc_image_id(&mut self) -> String {
-        let id = format!("img-{}", self.next_image_id);
-        self.next_image_id += 1;
-        id
+        next_id(&mut self.next_image_id, "img")
     }
 
     /// Same reasoning as `alloc_image_id` -- a distinct `"pdf-"` prefix in
     /// the same flat id space.
     fn alloc_pdf_id(&mut self) -> String {
-        let id = format!("pdf-{}", self.next_pdf_id);
-        self.next_pdf_id += 1;
-        id
+        next_id(&mut self.next_pdf_id, "pdf")
     }
 
     /// Same reasoning as `alloc_pdf_id` -- a distinct `"json-"` prefix in
     /// the same flat id space.
     fn alloc_json_id(&mut self) -> String {
-        let id = format!("json-{}", self.next_json_id);
-        self.next_json_id += 1;
-        id
+        next_id(&mut self.next_json_id, "json")
     }
 
     /// A fresh group's default display name -- derived from its own id's
@@ -3563,50 +3569,77 @@ impl App {
     /// fit (an empty group, or before any tab has spawned) — an empty
     /// bounding box has no sensible center/size to frame.
     fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
+        self.bounds_for_level(
+            &self.tabs_at_current_level(),
+            &self.downloads_at_current_level(),
+            &self.notes_at_current_level(),
+            &self.images_at_current_level(),
+            &self.pdfs_at_current_level(),
+            &self.jsons_at_current_level(),
+            &self.groups_at_current_level(),
+        )
+    }
+
+    /// Same computation `fit_all_nodes_scene_rect` needs, but taking
+    /// already-known id lists for a level instead of recomputing them --
+    /// lets the minimap (drawn every frame, well after `build_graph_ui`'s
+    /// own per-frame `*_at_level` locals are already in hand) reuse this
+    /// without redoing all seven level scans a second time per frame.
+    #[allow(clippy::too_many_arguments)]
+    fn bounds_for_level(
+        &self,
+        tabs: &[String],
+        downloads: &[String],
+        notes: &[String],
+        images: &[String],
+        pdfs: &[String],
+        jsons: &[String],
+        groups: &[String],
+    ) -> egui::Rect {
         const MARGIN: f32 = 60.0;
         let mut bounds = egui::Rect::NOTHING;
-        for id in self.tabs_at_current_level() {
-            if let Some(node) = self.nodes.get(&id) {
+        for id in tabs {
+            if let Some(node) = self.nodes.get(id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
             }
         }
-        for id in self.downloads_at_current_level() {
-            if let Some(node) = self.nodes.get(&id) {
+        for id in downloads {
+            if let Some(node) = self.nodes.get(id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, DOWNLOAD_NODE_SIZE));
             }
         }
-        for id in self.notes_at_current_level() {
-            if let Some(node) = self.nodes.get(&id) {
+        for id in notes {
+            if let Some(node) = self.nodes.get(id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, NOTE_NODE_SIZE));
             }
         }
-        for id in self.images_at_current_level() {
-            if let Some(node) = self.nodes.get(&id).and_then(|n| Some((n, n.as_image()?))) {
+        for id in images {
+            if let Some(node) = self.nodes.get(id).and_then(|n| Some((n, n.as_image()?))) {
                 let (n, image) = node;
                 let center = egui::Pos2::new(n.pos.x, n.pos.y);
                 let size = image_node_card_size(image.width, image.height);
                 bounds = bounds.union(egui::Rect::from_center_size(center, size));
             }
         }
-        for id in self.pdfs_at_current_level() {
-            if let Some(node) = self.nodes.get(&id).and_then(|n| Some((n, n.as_pdf()?))) {
+        for id in pdfs {
+            if let Some(node) = self.nodes.get(id).and_then(|n| Some((n, n.as_pdf()?))) {
                 let (n, pdf) = node;
                 let center = egui::Pos2::new(n.pos.x, n.pos.y);
                 let size = pdf_card_size(pdf);
                 bounds = bounds.union(egui::Rect::from_center_size(center, size));
             }
         }
-        for id in self.jsons_at_current_level() {
-            if let Some(node) = self.nodes.get(&id) {
+        for id in jsons {
+            if let Some(node) = self.nodes.get(id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, JSON_NODE_SIZE));
             }
         }
-        for id in self.groups_at_current_level() {
-            if let Some(node) = self.nodes.get(&id) {
+        for id in groups {
+            if let Some(node) = self.nodes.get(id) {
                 let center = egui::Pos2::new(node.pos.x, node.pos.y);
                 bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
             }
@@ -4187,6 +4220,14 @@ impl App {
         }
         self.nodes.remove(id);
         self.node_order.retain(|t| t != id);
+        // A rectangle-selected tab closed through any path other than
+        // "Close Selected" itself (its own card close button, or its
+        // containing group being closed) otherwise leaves a stale id in
+        // `selected_tabs` -- harmless to the no-op `close_tab`/`nodes.get`
+        // callers that already tolerate a missing id, but it skews
+        // "Group Selected"'s centroid (divides by a count that includes
+        // dead ids) and overcounts the toolbar's own "(N)" labels.
+        self.selected_tabs.remove(id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
@@ -6091,7 +6132,16 @@ impl App {
             .map(|(tid, _)| tid.clone())
             .collect();
         for tid in member_ids {
-            self.close_tab(&tid);
+            // A member can itself be a nested subgroup now that groups
+            // nest -- `close_tab` silently no-ops on a non-tab node, which
+            // left a nested subgroup (and everything in it) alive,
+            // reparented to the closed group's own parent instead of
+            // destroyed. Recurse into it instead.
+            if self.nodes.get(&tid).is_some_and(|n| n.as_group().is_some()) {
+                self.close_group(&tid);
+            } else {
+                self.close_tab(&tid);
+            }
         }
         self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
@@ -8164,7 +8214,15 @@ impl App {
             scene_outer_rect.right_bottom() - minimap_size - egui::Vec2::splat(12.0),
             minimap_size,
         );
-        let world_bounds = self.fit_all_nodes_scene_rect();
+        let world_bounds = self.bounds_for_level(
+            &tabs_at_level,
+            &downloads_at_level,
+            &notes_at_level,
+            &images_at_level,
+            &pdfs_at_level,
+            &jsons_at_level,
+            &groups_at_level,
+        );
         let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
         let world_to_minimap = |p: egui::Pos2| -> egui::Pos2 {
@@ -8850,7 +8908,19 @@ impl App {
                                         if let Some(node) = self.nodes.get_mut(&other_id) {
                                             node.group = Some(group_id.clone());
                                         }
-                                        if let Some(node) = self.nodes.get_mut(&id) {
+                                        // Same "whole selection joins, not
+                                        // just the dragged node" rule the
+                                        // drop-onto-an-existing-group branch
+                                        // above already applies -- this
+                                        // sibling gesture (drop onto a plain
+                                        // tab instead) was missing it.
+                                        if self.selected_tabs.contains(&id) {
+                                            for tab_id in self.selected_tabs.drain() {
+                                                if let Some(node) = self.nodes.get_mut(&tab_id) {
+                                                    node.group = Some(group_id.clone());
+                                                }
+                                            }
+                                        } else if let Some(node) = self.nodes.get_mut(&id) {
                                             node.group = Some(group_id);
                                         }
                                     }
@@ -10140,11 +10210,6 @@ impl App {
                 node.group = grandparent;
             }
         }
-        if let Some(id) = tab_color_cycle_requested {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.color = next_tag_color(node.color);
-            }
-        }
         if let Some(id) = mute_toggle_requested {
             self.toggle_muted(&id);
         }
@@ -10187,14 +10252,13 @@ impl App {
         if pending_new_file_at.is_some() {
             self.add_file_node(pending_new_file_at);
         }
-        if let Some(id) = image_close_requested {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.free_image(&id);
-            }
-            self.remove_node(&id);
-            self.save_session();
-        }
-        if let Some(id) = pdf_close_requested {
+        // Image and PDF cards' close buttons share this exact handling (an
+        // image and a PDF are both freed from the GPU the same way) --
+        // `image_close_requested`/`pdf_close_requested` can't both be Some
+        // in the same frame (each is only ever set by its own card's close
+        // button, one click at a time), so `.or()` just picks whichever
+        // fired.
+        if let Some(id) = image_close_requested.or(pdf_close_requested) {
             if let Some(gpu) = &mut self.gpu {
                 gpu.free_image(&id);
             }
@@ -10314,6 +10378,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.pending_new_node = None;
+            self.group_context_menu = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
             self.image_context_menu = None;
@@ -10338,6 +10403,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.pending_new_node = None;
+            self.group_context_menu = None;
             self.download_context_menu = None;
             self.note_context_menu = None;
             self.image_context_menu = None;
@@ -10348,19 +10414,42 @@ impl App {
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
         }
-        if let Some(id) = color_cycle_requested {
+        // A tab's and a group's color-cycle swatch click both just advance
+        // the same `node.color` field the same way -- `tab_color_cycle_
+        // requested`/`color_cycle_requested` can't both be Some in the same
+        // frame (each is only set by its own card's swatch, one click at a
+        // time), so `.or()` just picks whichever fired.
+        if let Some(id) = tab_color_cycle_requested.or(color_cycle_requested) {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.color = next_tag_color(node.color);
             }
         }
         if let Some((source_id, target_id)) = group_merge_requested {
-            for node in self.nodes.values_mut() {
-                if node.group.as_deref() == Some(source_id.as_str()) {
-                    node.group = Some(target_id.clone());
+            // Refuse if `target_id` is nested inside `source_id` (directly
+            // or transitively, walking the same `.group` chain
+            // `group_breadcrumb` does) -- reassigning source's own members
+            // to target while target is one of them would leave it (or a
+            // group between them) pointing at itself once source is
+            // removed below, a self-reference cycle the tab-reparent drag
+            // path already guards against via `would_create_cycle`.
+            let mut ancestor = Some(target_id.clone());
+            let mut creates_cycle = false;
+            while let Some(cur) = ancestor {
+                if cur == source_id {
+                    creates_cycle = true;
+                    break;
                 }
+                ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
             }
-            self.nodes.remove(&source_id);
-            self.node_order.retain(|g| g != &source_id);
+            if !creates_cycle {
+                for node in self.nodes.values_mut() {
+                    if node.group.as_deref() == Some(source_id.as_str()) {
+                        node.group = Some(target_id.clone());
+                    }
+                }
+                self.nodes.remove(&source_id);
+                self.node_order.retain(|g| g != &source_id);
+            }
         }
         if let Some((id, draft)) = rename_start {
             self.renaming_group = Some((id, draft));
@@ -10482,10 +10571,15 @@ impl ApplicationHandler<UserEvent> for App {
                 // `consumed_by_egui=true` even over this project's own raw
                 // content quad, which isn't a real egui widget and has
                 // nothing there to legitimately claim it) — bypassed for
-                // the right button specifically so a right-click on tab
-                // content still reaches `InputEvent::MouseDown`/`MouseUp`
-                // the same way every left-click already does.
-                let egui_wants_it = consumed_by_egui && button != WinitMouseButton::Right;
+                // right and middle specifically so a right/middle-click on
+                // tab content still reaches `InputEvent::MouseDown`/
+                // `MouseUp` the same way every left-click already does.
+                // Middle was missing this even though every engine-host's
+                // own `translate_mouse_button`/native input path already
+                // fully implements `MouseButton::Middle`.
+                let egui_wants_it = consumed_by_egui
+                    && button != WinitMouseButton::Right
+                    && button != WinitMouseButton::Middle;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
                 if in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane {
                     if let Some(button) = translate_mouse_button(button) {

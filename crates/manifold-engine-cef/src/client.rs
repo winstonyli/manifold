@@ -12,7 +12,8 @@ use crate::life_span_handler::{
     EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab,
 };
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedNavState,
+    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedMuted,
+    SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
 use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, REDIRECT_RESULT};
@@ -130,6 +131,7 @@ impl ClientBuilder {
     pub fn build(
         render_handler: EngineRenderHandler,
         nav_state: SharedNavState,
+        muted: SharedMuted,
         pending_open_tab: SharedPendingOpenTab,
         find_result: SharedFindResult,
         download_path: SharedDownloadPath,
@@ -142,7 +144,7 @@ impl ClientBuilder {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
             DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
-            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state)),
+            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state, muted)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),

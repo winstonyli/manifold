@@ -20,3 +20,10 @@ edition = "2021"
 # tables (enough for panic backtraces) are all we actually use.
 [profile.dev]
 debug = "line-tables-only"
+
+# Most of that debug-info bulk comes from third-party dependencies (Servo's
+# own SpiderMonkey/WebRender/style dep tree especially), not this workspace's
+# own crates. Stripping debug info from deps only keeps panic backtraces
+# useful for our own code while cutting the PDB bloat at its actual source.
+[profile.dev.package."*"]
+debug = false

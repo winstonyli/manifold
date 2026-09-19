@@ -318,6 +318,12 @@ fn main() {
                     None => true,
                 };
                 if needs_new_buffer {
+                    // Drop the old mapping before recreating -- `create`
+                    // truncates the same backing file by name, and Windows
+                    // rejects resizing a file with a live mapped section
+                    // still open. Plain assignment wouldn't drop the old
+                    // value until after this call already ran.
+                    drop(frame_buffer);
                     frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
                 }
                 if let Some(buf) = &mut frame_buffer {

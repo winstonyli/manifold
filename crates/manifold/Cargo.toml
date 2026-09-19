@@ -17,6 +17,11 @@ egui-winit = "0.36.2"
 # Markdown parser backend; nothing here needs the crate's other optional
 # features (syntax highlighting, SVG, its own macros).
 egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
+# Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows,
+# Application Support on macOS) -- for the not-yet-built on-demand
+# engine-host download/install step, so that logic won't need rewriting
+# when this project ports off Windows-only.
+etcetera = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 # PDF node rendering. Pinned to `0.8.37` specifically, matching whatever

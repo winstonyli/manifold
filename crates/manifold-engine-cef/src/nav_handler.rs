@@ -37,6 +37,19 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
     std::rc::Rc::new(RefCell::new(NavState::new(initial_url)))
 }
 
+/// The last `HostToEngine::SetMuted` value requested for this tab -- CEF's
+/// own mute (`main.rs`'s `SetMuted` handler) is a one-shot JS write against
+/// whatever `<video>`/`<audio>` elements exist at that instant, unlike
+/// WebView2/WebKit's real view-level mute property, which persists through
+/// navigation on its own. Re-applying this on every load completion (see
+/// `on_loading_state_change` below) gets CEF the same "stays muted across
+/// navigation" behavior the other two engines get for free.
+pub type SharedMuted = std::rc::Rc<std::cell::Cell<bool>>;
+
+pub fn new_shared_muted() -> SharedMuted {
+    std::rc::Rc::new(std::cell::Cell::new(false))
+}
+
 #[derive(Clone)]
 pub struct EngineDisplayHandler {
     state: SharedNavState,
@@ -101,11 +114,12 @@ impl DisplayHandlerBuilder {
 #[derive(Clone)]
 pub struct EngineLoadHandler {
     state: SharedNavState,
+    muted: SharedMuted,
 }
 
 impl EngineLoadHandler {
-    pub fn new(state: SharedNavState) -> Self {
-        Self { state }
+    pub fn new(state: SharedNavState, muted: SharedMuted) -> Self {
+        Self { state, muted }
     }
 }
 
@@ -141,6 +155,14 @@ wrap_load_handler! {
                         process_message_create(Some(&crate::render_process_handler::CHECK_JSON_BODY.into()))
                     {
                         frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                    }
+                    // Re-apply the last requested mute state to this
+                    // newly-loaded page's own elements -- see `SharedMuted`'s
+                    // own doc comment for why CEF needs this and the other
+                    // three engines don't.
+                    if self.handler.muted.get() {
+                        let code = "document.querySelectorAll('video,audio').forEach(function(el){el.muted=true;});";
+                        frame.execute_java_script(Some(&code.into()), None, 0);
                     }
                 }
             }

@@ -7,3 +7,7 @@ edition.workspace = true
 cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 url = "2.5.8"
+# Only for the browser-process Job Object setup in main.rs (kills orphaned
+# CEF renderer/GPU subprocesses on exit) -- same crate/features
+# engine-host-webview2 already uses for the identical purpose.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }

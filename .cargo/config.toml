@@ -1,0 +1,6 @@
+# Smaller, faster-to-write PDBs: the linker emits a PDB that references
+# target/debug/deps/*.obj instead of copying all debug info into it. Keeps
+# line-table info (panic backtraces still work), unlike /PDBSTRIPPED. Only
+# a dev-machine win -- don't delete the .obj files or ship this PDB anywhere.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/DEBUG:FASTLINK"]

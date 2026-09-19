@@ -22,7 +22,7 @@ use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
-use nav_handler::new_shared_nav_state;
+use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
 use render_process_handler::CHECK_AUDIO_PLAYING;
 
@@ -34,6 +34,31 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// (nothing here needs sub-second precision) against the real cost of an
 /// extra `V8Context::eval` round trip every tick.
 const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Same job-object setup `engine-host-webview2` already uses for its own
+/// multi-process tree -- see this function's own call site for why.
+fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let job = CreateJobObjectW(None, None)?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )?;
+        AssignProcessToJobObject(job, GetCurrentProcess())?;
+        Ok(job)
+    }
+}
 
 fn main() {
     // Matches cefsimple's shared::load_cef(): initializes the CEF API
@@ -66,6 +91,18 @@ fn main() {
         std::process::exit(if ret >= 0 { 0 } else { 1 });
     }
     assert_eq!(ret, -1, "cannot execute browser process");
+
+    // CEF's own renderer/GPU/utility subprocesses are spawned by CEF
+    // itself, not tracked by anything else in this process -- a Job Object
+    // with KILL_ON_JOB_CLOSE, assigned to this (browser) process only,
+    // fixes that generally: Windows terminates every process still in the
+    // job the moment this process's own job handle closes, on any exit
+    // path (graceful, crashed, or force-killed), since child processes
+    // created by a process already in a job join the same job
+    // automatically. Same fix `engine-host-webview2` already applies for
+    // its own equivalent multi-process tree; `_job`'s only purpose is to
+    // stay alive for the whole process lifetime.
+    let _job = setup_kill_on_exit_job();
 
     // Read via env vars, not argv: this process's argv is CEF's own command
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own
@@ -122,6 +159,7 @@ fn main() {
     let (render_handler, size, latest_frame) =
         EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let nav_state = new_shared_nav_state(initial_url.clone());
+    let muted_state = new_shared_muted();
     let pending_open_tab = new_shared_pending_open_tab();
     let find_result = new_shared_find_result();
     let download_path = new_shared_download_path();
@@ -151,6 +189,7 @@ fn main() {
         Some(&mut ClientBuilder::build(
             render_handler,
             nav_state.clone(),
+            muted_state.clone(),
             pending_open_tab.clone(),
             find_result.clone(),
             download_path.clone(),
@@ -289,6 +328,12 @@ fn main() {
                 // (YouTube, most players) a `<video>`/`<audio>` tag actually
                 // backs.
                 HostToEngine::SetMuted { muted } => {
+                    // Recorded so `nav_handler`'s `on_loading_state_change`
+                    // can re-apply it on every future navigation -- this
+                    // JS write only ever affects elements that already
+                    // exist right now, unlike WebView2/WebKit's real
+                    // view-level mute property.
+                    muted_state.set(muted);
                     if let Some(frame) = browser.main_frame() {
                         let code = format!(
                             "document.querySelectorAll('video,audio').forEach(function(el){{el.muted={muted};}});"

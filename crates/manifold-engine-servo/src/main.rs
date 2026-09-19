@@ -261,10 +261,14 @@ fn main() {
                     }
                 }
                 HostToEngine::GoBack => {
-                    webview.go_back(1);
+                    if delegate.nav.borrow().can_go_back {
+                        webview.go_back(1);
+                    }
                 }
                 HostToEngine::GoForward => {
-                    webview.go_forward(1);
+                    if delegate.nav.borrow().can_go_forward {
+                        webview.go_forward(1);
+                    }
                 }
                 HostToEngine::Reload => {
                     webview.reload();
