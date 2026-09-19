@@ -13,6 +13,7 @@ mod find;
 mod input;
 mod nav_state;
 mod popup;
+mod scheme;
 mod window;
 
 use capture::Capture;
@@ -139,6 +140,7 @@ fn main() {
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
     let pending_download = download::register(&webview).ok();
+    let _ = scheme::register(&environment, &webview);
 
     unsafe {
         webview
@@ -370,11 +372,17 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
 }
 
 fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
+    let options = scheme::environment_options().map_err(webview2_com::Error::WindowsError)?;
     let (tx, rx) = mpsc::channel();
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
-        Box::new(|handler| unsafe {
-            webview2_com::Microsoft::Web::WebView2::Win32::CreateCoreWebView2Environment(&handler)
-                .map_err(webview2_com::Error::WindowsError)
+        Box::new(move |handler| unsafe {
+            webview2_com::Microsoft::Web::WebView2::Win32::CreateCoreWebView2EnvironmentWithOptions(
+                windows::core::PCWSTR::null(),
+                windows::core::PCWSTR::null(),
+                &options,
+                &handler,
+            )
+            .map_err(webview2_com::Error::WindowsError)
         }),
         Box::new(move |error_code, environment| {
             error_code?;
