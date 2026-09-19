@@ -9051,12 +9051,26 @@ impl App {
                         continue;
                     };
                     let _ = id;
-                    draw_graph_edge(
-                        ui.painter(),
-                        egui::Pos2::new(parent.pos.x, parent.pos.y),
-                        egui::Pos2::new(node.pos.x, node.pos.y),
-                        egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
-                    );
+                    let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
+                    let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
+                    // Viewport culling: unlike a node's own rect, an edge
+                    // can have one endpoint off-screen and the other on --
+                    // or pass through the viewport with both endpoints
+                    // outside it -- so this checks the bounding box of the
+                    // whole segment against the viewport, not either
+                    // endpoint alone. Not pixel-exact for a steep diagonal
+                    // that grazes past a corner of its own bounding box
+                    // without actually crossing the viewport, but that's a
+                    // rare, cheap-to-tolerate false negative, not a
+                    // visible edge going missing.
+                    if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
+                        draw_graph_edge(
+                            ui.painter(),
+                            parent_pos,
+                            node_pos,
+                            egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
+                        );
+                    }
                 }
                 // Download nodes are always parented to a tab (never to
                 // another download), so the same `self.nodes` lookup works.
@@ -9070,12 +9084,17 @@ impl App {
                     let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
                         continue;
                     };
-                    draw_graph_edge(
-                        ui.painter(),
-                        egui::Pos2::new(parent.pos.x, parent.pos.y),
-                        egui::Pos2::new(node.pos.x, node.pos.y),
-                        egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
-                    );
+                    let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
+                    let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
+                    // Viewport culling -- see the tab-edge loop's own comment.
+                    if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
+                        draw_graph_edge(
+                            ui.painter(),
+                            parent_pos,
+                            node_pos,
+                            egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
+                        );
+                    }
                 }
 
                 for id in tabs_at_level.clone() {
@@ -9084,6 +9103,20 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, GRAPH_NODE_SIZE);
+                    // Viewport culling: skip every bit of interact/paint
+                    // work below for a node that isn't actually visible --
+                    // the single highest-leverage fix for a graph with many
+                    // more nodes than fit on screen at once. Never culls
+                    // the node currently being dragged, even once it's
+                    // moved outside the viewport -- `ui.interact`'s own
+                    // drag tracking is what keeps a drag alive frame to
+                    // frame, so skipping it mid-drag would freeze the node
+                    // in place the instant it crossed the visible edge.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("graph_node", id.as_str())),
@@ -9731,6 +9764,12 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, DOWNLOAD_NODE_SIZE);
+                    // Viewport culling -- see the tab loop's own comment.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("graph_download_node", id.as_str())),
@@ -9924,6 +9963,12 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, NOTE_NODE_SIZE);
+                    // Viewport culling -- see the tab loop's own comment.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let header_h = 20.0 * inv_zoom;
                     let header_rect = egui::Rect::from_min_max(
                         rect.min,
@@ -10113,6 +10158,12 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, image_size);
+                    // Viewport culling -- see the tab loop's own comment.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("graph_image_node", id.as_str())),
@@ -10227,6 +10278,12 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, size);
+                    // Viewport culling -- see the tab loop's own comment.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("graph_pdf_node", id.as_str())),
@@ -10371,6 +10428,12 @@ impl App {
                     };
                     let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                     let rect = egui::Rect::from_center_size(center_pos, JSON_NODE_SIZE);
+                    // Viewport culling -- see the tab loop's own comment.
+                    if self.dragging.as_deref() != Some(id.as_str())
+                        && !rect.intersects(self.graph_scene_rect)
+                    {
+                        continue;
+                    }
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("graph_json_node", id.as_str())),
@@ -10454,6 +10517,12 @@ impl App {
                         };
                         let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
                         let rect = egui::Rect::from_center_size(center_pos, GROUP_NODE_SIZE);
+                        // Viewport culling -- see the tab loop's own comment.
+                        if self.dragging.as_deref() != Some(id.as_str())
+                            && !rect.intersects(self.graph_scene_rect)
+                        {
+                            continue;
+                        }
                         let response = ui.interact(
                             rect,
                             egui::Id::new(("graph_group_node", id.as_str())),
