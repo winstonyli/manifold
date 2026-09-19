@@ -93,17 +93,25 @@ const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
 /// Fixed tag-color choices a group or tab card's color swatch cycles
-/// through (see `next_tag_color`) -- red/orange/yellow/green/cyan/purple,
-/// chosen for mutual distinguishability against this app's dark chrome
-/// rather than any particular meaning. Used via the now-shared
-/// `GraphNode::color`, for both `Tab` and `Group`.
+/// through (see `next_tag_color`) -- vermillion/orange/yellow/bluish
+/// green/sky blue/reddish purple, chosen for mutual distinguishability
+/// against this app's dark chrome rather than any particular meaning.
+/// Used via the now-shared `GraphNode::color`, for both `Tab` and
+/// `Group`. These are the Okabe-Ito colorblind-safe palette values
+/// (Okabe & Ito, 2008) -- every swatch here is rendered as a plain
+/// filled circle with no secondary encoding (shape, letter, pattern) to
+/// distinguish them, confirmed live: the original arbitrary red/orange/
+/// yellow/green/cyan/purple choice had several genuinely confusable
+/// pairs (red/orange, green/cyan) for common colorblindness types.
+/// Swapping the six RGB values keeps the same visual role per slot and
+/// needs no rendering changes at all.
 const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(235, 87, 87),
-    egui::Color32::from_rgb(242, 153, 74),
-    egui::Color32::from_rgb(242, 201, 76),
-    egui::Color32::from_rgb(111, 207, 151),
-    egui::Color32::from_rgb(86, 204, 242),
-    egui::Color32::from_rgb(187, 107, 217),
+    egui::Color32::from_rgb(213, 94, 0),
+    egui::Color32::from_rgb(230, 159, 0),
+    egui::Color32::from_rgb(240, 228, 66),
+    egui::Color32::from_rgb(0, 158, 115),
+    egui::Color32::from_rgb(86, 180, 233),
+    egui::Color32::from_rgb(204, 121, 167),
 ];
 
 /// One click on a card's color swatch advances to the next palette entry,
