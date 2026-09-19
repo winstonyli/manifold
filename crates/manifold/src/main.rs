@@ -1246,6 +1246,21 @@ struct TabPayload {
     /// engine swap, same as every other per-tab UI-only flag here (nothing
     /// about mute state survives a swap to a different engine process).
     muted: bool,
+    /// This tab's own current zoom, as last sent via `SetZoom` -- was
+    /// implicitly just "whatever `Settings::zoom_factor` happens to be
+    /// right now" (a single global value with no per-tab tracking at
+    /// all), confirmed live to cause a real discrepancy: zooming tab A
+    /// then switching to tab B left the Settings page's zoom control
+    /// showing tab A's value while tab B's engine was still at its own
+    /// (different) real zoom, so pressing "-" from that stale display
+    /// jumped tab B's actual zoom by an unexpected amount. Initialized
+    /// from `Settings::zoom_factor` at spawn time (a fresh tab still
+    /// picks up "whatever the default is right now", unchanged), then
+    /// tracked per-tab from there -- carried through a respawn/engine
+    /// swap/crash recovery the same way `pinned`/`color` already are, not
+    /// persisted to `session.json`, same smaller-scope reasoning
+    /// `pinned`'s own doc comment gives.
+    zoom_factor: f64,
     /// Graph view's pin toggle — a pinned node is excluded from the
     /// force-directed layout entirely (same `pinned` exclusion
     /// `graph_layout::step` already gives a node currently being dragged),
@@ -1541,6 +1556,11 @@ struct TabSpawnOutcome {
     /// Same "carried through respawn, `None` for a genuinely new tab"
     /// treatment as `pinned` above, but for `GraphNode::color`.
     color: Option<egui::Color32>,
+    /// Same "carried through respawn" treatment as `pinned`/`color`, but
+    /// for `TabPayload::zoom_factor` -- see that field's own doc comment.
+    /// `Settings::zoom_factor` (the current default) for a genuinely new
+    /// tab, since there's no prior per-tab value to inherit.
+    zoom_factor: f64,
     url: String,
     pos: egui::Vec2,
     vel: egui::Vec2,
@@ -2279,27 +2299,54 @@ impl App {
         }
     }
 
-    /// Applies `self.settings.zoom_factor` to one tab — called right after
-    /// spawning it (new tabs pick up whatever the default is *at spawn
-    /// time*; this never retroactively revisits already-open tabs, matching
-    /// every other "default" setting here) and again by the Settings
-    /// page's zoom control for the currently focused tab specifically
-    /// (`build_settings_page`), since seeing the zoom control move with no
-    /// visible effect on the tab you're looking at would be confusing.
+    /// Sends `tab_id`'s own `TabPayload::zoom_factor` to its engine — called
+    /// right after spawning it (already initialized from `Settings::
+    /// zoom_factor` at that point, see `TabPayload::zoom_factor`'s own doc
+    /// comment) and again whenever `set_focused_zoom` changes that specific
+    /// tab's value. Deliberately reads the *tab's own* field, not `self.
+    /// settings.zoom_factor` directly -- see `set_focused_zoom`'s own doc
+    /// comment for the bug this replaced.
     fn send_zoom_to(&mut self, tab_id: &str) {
-        let factor = self.settings.zoom_factor;
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+            let factor = node.zoom_factor;
             node.tab.send(&HostToEngine::SetZoom { factor });
         }
     }
 
-    /// Persists the current zoom setting and immediately applies it to
-    /// whichever tab is focused right now — otherwise moving the zoom
-    /// control would have no visible effect until the *next* tab spawn,
-    /// which reads as broken rather than "this is a default for new tabs."
-    fn apply_zoom_change(&mut self) {
+    /// The focused tab's own real zoom, for the Settings page's display and
+    /// as the base the `+`/`-` shortcuts adjust from -- falls back to
+    /// `Settings::zoom_factor` (the default for new tabs) only when nothing
+    /// is focused at all (e.g. Graph view, nothing selected), since there's
+    /// no tab-specific value to show in that case.
+    fn focused_zoom_factor(&self) -> f64 {
+        self.focused
+            .as_deref()
+            .and_then(|id| self.nodes.get(id))
+            .and_then(|n| n.as_tab())
+            .map(|t| t.zoom_factor)
+            .unwrap_or(self.settings.zoom_factor)
+    }
+
+    /// Sets `factor` as both the new default for future tabs (`Settings::
+    /// zoom_factor`, persisted) and, immediately, the focused tab's own
+    /// zoom -- replaces the old `apply_zoom_change`, which only ever
+    /// touched the shared global value and re-sent *that* to the focused
+    /// tab. Confirmed live to cause a real bug: zooming tab A then
+    /// switching to tab B left the Settings page's zoom control showing
+    /// tab A's value (the stale global) while tab B's engine was still at
+    /// its own different real zoom -- pressing "-" from that display then
+    /// jumped tab B's actual zoom by an unexpected amount, not the 10%
+    /// step the button claimed. Now every read/write of "the current zoom"
+    /// goes through this pair (`focused_zoom_factor`/`set_focused_zoom`)
+    /// instead of `self.settings.zoom_factor` directly, so the display and
+    /// the tab it's supposedly controlling can't diverge.
+    fn set_focused_zoom(&mut self, factor: f64) {
+        self.settings.zoom_factor = factor;
         self.settings.save();
         if let Some(id) = self.focused.clone() {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                node.zoom_factor = factor;
+            }
             self.send_zoom_to(&id);
         }
     }
@@ -2411,18 +2458,18 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("Zoom (new tabs; also applies to the current tab now)");
                 ui.horizontal(|ui| {
+                    // Reads/writes the *focused tab's own* zoom, not the raw
+                    // `Settings::zoom_factor` -- see `set_focused_zoom`'s own
+                    // doc comment for the display-vs-reality bug this fixed.
                     if ui.button(egui_phosphor::regular::MINUS).clicked() {
-                        self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
-                        self.apply_zoom_change();
+                        self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
                     }
-                    ui.label(format!("{:.0}%", self.settings.zoom_factor * 100.0));
+                    ui.label(format!("{:.0}%", self.focused_zoom_factor() * 100.0));
                     if ui.button(egui_phosphor::regular::PLUS).clicked() {
-                        self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
-                        self.apply_zoom_change();
+                        self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
                     }
                     if ui.button("Reset").clicked() {
-                        self.settings.zoom_factor = 1.0;
-                        self.apply_zoom_change();
+                        self.set_focused_zoom(1.0);
                     }
                 });
 
@@ -3114,6 +3161,7 @@ impl App {
                 None,
                 false,
                 None,
+                self.settings.zoom_factor,
                 tab.url,
                 pos,
                 egui::Vec2::ZERO,
@@ -3165,7 +3213,19 @@ impl App {
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
-        self.spawn_tab_async(id, None, None, false, None, home_page, egui::Vec2::ZERO, egui::Vec2::ZERO, SpawnPurpose::Root, kind);
+        self.spawn_tab_async(
+            id,
+            None,
+            None,
+            false,
+            None,
+            self.settings.zoom_factor,
+            home_page,
+            egui::Vec2::ZERO,
+            egui::Vec2::ZERO,
+            SpawnPurpose::Root,
+            kind,
+        );
     }
 
     /// Runs `process_manager::spawn_tab` on a background thread and posts
@@ -3181,6 +3241,7 @@ impl App {
         group: Option<String>,
         pinned: bool,
         color: Option<egui::Color32>,
+        zoom_factor: f64,
         url: String,
         pos: egui::Vec2,
         vel: egui::Vec2,
@@ -3199,6 +3260,7 @@ impl App {
                 group,
                 pinned,
                 color,
+                zoom_factor,
                 url,
                 pos,
                 vel,
@@ -3215,7 +3277,8 @@ impl App {
     /// Focus/visibility for `Respawn` is decided here, at completion time —
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
-        let TabSpawnOutcome { id, parent, group, pinned, color, url, pos, vel, purpose, result } = outcome;
+        let TabSpawnOutcome { id, parent, group, pinned, color, zoom_factor, url, pos, vel, purpose, result } =
+            outcome;
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
@@ -3264,6 +3327,7 @@ impl App {
                             audio_playing: false,
                             muted: false,
                             pinned,
+                            zoom_factor,
                             swap_target: None,
                             json_body: None,
                         }),
@@ -4088,6 +4152,7 @@ impl App {
             group,
             false,
             None,
+            self.settings.zoom_factor,
             url.to_string(),
             pos,
             egui::Vec2::ZERO,
@@ -4417,8 +4482,9 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, group, pinned, color, pos, vel)) = self.nodes.get(tab_id).and_then(|n| {
-            n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.pinned, n.color, n.pos, n.vel))
+        let Some((parent, group, pinned, color, zoom_factor, pos, vel)) = self.nodes.get(tab_id).and_then(|n| {
+            n.as_tab()
+                .map(|t| (n.parent.clone(), n.group.clone(), t.pinned, n.color, t.zoom_factor, n.pos, n.vel))
         }) else {
             return;
         };
@@ -4437,7 +4503,7 @@ impl App {
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
         }
-        self.respawn_tab(tab_id, target, url, parent, group, pinned, color, pos, vel);
+        self.respawn_tab(tab_id, target, url, parent, group, pinned, color, zoom_factor, pos, vel);
     }
 
     /// Shared by swap-finish and crash recovery: (re)spawn `kind` at `url`
@@ -4453,6 +4519,7 @@ impl App {
         group: Option<String>,
         pinned: bool,
         color: Option<egui::Color32>,
+        zoom_factor: f64,
         pos: egui::Vec2,
         vel: egui::Vec2,
     ) {
@@ -4465,6 +4532,7 @@ impl App {
             group,
             pinned,
             color,
+            zoom_factor,
             url,
             pos,
             vel,
@@ -5036,22 +5104,19 @@ impl App {
     /// `Ctrl+=`/`Ctrl++` / headless `ZOOMIN` — same step/cap the settings
     /// popup's own "+" button uses.
     fn zoom_in_shortcut(&mut self) {
-        self.settings.zoom_factor = (self.settings.zoom_factor + 0.1).min(2.0);
-        self.apply_zoom_change();
+        self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
     }
 
     /// `Ctrl+-` / headless `ZOOMOUT` — same step/floor the settings popup's
     /// own "−" button uses.
     fn zoom_out_shortcut(&mut self) {
-        self.settings.zoom_factor = (self.settings.zoom_factor - 0.1).max(0.5);
-        self.apply_zoom_change();
+        self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
     }
 
     /// `Ctrl+0` / headless `ZOOMRESET` — same as the settings popup's own
     /// "Reset" button.
     fn zoom_reset_shortcut(&mut self) {
-        self.settings.zoom_factor = 1.0;
-        self.apply_zoom_change();
+        self.set_focused_zoom(1.0);
     }
 
     /// `F12` / headless `OPENDEVTOOLS` — opens the focused tab's engine's
@@ -6386,6 +6451,7 @@ impl App {
                 Some(group_id.clone()),
                 false,
                 None,
+                self.settings.zoom_factor,
                 tab.url,
                 pos,
                 egui::Vec2::ZERO,
@@ -11757,10 +11823,20 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, group, pinned, color, pos, vel)) =
+            let Some((kind, url, parent, group, pinned, color, zoom_factor, pos, vel)) =
                 self.nodes.get(&tab_id).and_then(|n| {
                     n.as_tab().map(|t| {
-                        (t.tab.kind, t.url.clone(), n.parent.clone(), n.group.clone(), t.pinned, n.color, n.pos, n.vel)
+                        (
+                            t.tab.kind,
+                            t.url.clone(),
+                            n.parent.clone(),
+                            n.group.clone(),
+                            t.pinned,
+                            n.color,
+                            t.zoom_factor,
+                            n.pos,
+                            n.vel,
+                        )
                     })
                 })
             else {
@@ -11785,7 +11861,7 @@ impl App {
             if self.hovered.as_deref() == Some(tab_id.as_str()) {
                 self.hovered = None;
             }
-            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, color, pos, vel);
+            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, color, zoom_factor, pos, vel);
         }
 
         for (tab_id, target, url) in swap_finishes {
