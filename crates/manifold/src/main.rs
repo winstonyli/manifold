@@ -1,4 +1,5 @@
 mod bookmarks;
+mod crash_report;
 mod debug_control;
 mod favicon_fetch;
 mod gpu;
@@ -10699,6 +10700,16 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let focused_tab = self
+                    .focused
+                    .as_deref()
+                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|n| n.as_tab())
+                    .map(|t| format!("{:?} {}", t.tab.kind, t.url));
+                crash_report::record_state(format!(
+                    "view_mode={:?} headless={} node_count={} focused_tab={:?}",
+                    self.view_mode, self.headless, self.nodes.len(), focused_tab
+                ));
                 self.drain_tab_events();
                 // Checked before building this frame's UI so that, the
                 // instant a `Transition` completes, this same frame already
@@ -11743,6 +11754,7 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 }
 
 fn main() {
+    crash_report::install();
     let headless = std::env::args().any(|arg| arg == "--headless");
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
