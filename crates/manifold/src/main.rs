@@ -1460,14 +1460,15 @@ const MAX_CLOSED_TABS: usize = 10;
 /// whole group is a rarer, heavier action than closing one tab.
 const MAX_CLOSED_GROUPS: usize = 5;
 
-/// A Note/Image/Pdf/Json node's content, captured just before its own
-/// "Delete" context-menu action removes it -- unlike a tab or group,
-/// deleting one of these four kinds previously had no undo path at all,
-/// a real risk specifically for Notes (user-typed content, permanently
-/// gone on a single misclick, unlike a tab/group's own already-existing
-/// "Recently Closed" recovery). Doesn't preserve the original position,
-/// same as `ClosedTab`'s own reopen behavior -- a fresh jittered spawn,
-/// not a restored one.
+/// A Note/Image/Pdf/Json node's content, captured just before it's
+/// destroyed -- either via its own "Delete" context-menu action, or via
+/// `close_group_member` when its containing group is closed. Unlike a tab
+/// or group, deleting one of these four kinds previously had no undo path
+/// at all, a real risk specifically for Notes (user-typed content,
+/// permanently gone on a single misclick, unlike a tab/group's own
+/// already-existing "Recently Closed" recovery). Doesn't preserve the
+/// original position, same as `ClosedTab`'s own reopen behavior -- a fresh
+/// jittered spawn, not a restored one.
 enum ClosedNode {
     Note(String),
     Image(String),
@@ -1955,7 +1956,8 @@ struct App {
     /// shortcut only ever looks at `closed_tabs`) -- only the dropdown.
     closed_groups: Vec<group_export::GroupExport>,
     /// Note/Image/Pdf/Json nodes deleted via their own context menu's
-    /// "Delete" -- see `ClosedNode`'s own doc comment for why this exists.
+    /// "Delete", or via `close_group_member` when a containing group is
+    /// closed -- see `ClosedNode`'s own doc comment for why this exists.
     /// Listed in the same "Recently Closed" dropdown as `closed_tabs`/
     /// `closed_groups`, in their own section. Capped at `MAX_CLOSED_NODES`,
     /// oldest dropped first.
@@ -5002,16 +5004,26 @@ impl App {
     /// `session.json`. The original node is converted in place (`payload`
     /// is swapped, not the node removed and reinserted) so its existing
     /// `pos`/`group`/`color` (all on the shared `GraphNode`) carry over
-    /// untouched. A bare scalar at the JSON's own root has nothing to
-    /// explode into -- this just leaves such a node as it already is,
-    /// a harmless no-op rather than something worth guarding against.
+    /// untouched -- but since a `Group` is never persisted, this also means
+    /// the *source file itself* drops out of `session.json` entirely the
+    /// next time it saves, not just the exploded subtree: after a restart
+    /// there's no compact card left to click back to, only "Add File..."
+    /// to bring the file back as a fresh node. A bare scalar at the JSON's
+    /// own root has nothing to explode into -- this just leaves such a
+    /// node as it already is, a harmless no-op rather than something worth
+    /// guarding against.
     fn expand_json_as_graph(&mut self, json_node_id: &str) {
         let Some((path, value)) =
             self.nodes.get(json_node_id).and_then(|n| n.as_json().map(|j| (j.path.clone(), j.value.clone())))
         else {
             return;
         };
-        if matches!(value, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
+        let has_entries = match &value {
+            serde_json::Value::Object(map) => !map.is_empty(),
+            serde_json::Value::Array(items) => !items.is_empty(),
+            _ => false,
+        };
+        if has_entries {
             let root_name = download_filename(&path).to_string();
             if let Some(node) = self.nodes.get_mut(json_node_id) {
                 node.payload = NodePayload::Group(GroupPayload { name: root_name });
@@ -6447,6 +6459,11 @@ impl App {
     /// alongside the group-level snapshot, which would otherwise let a user
     /// reopen the same tabs twice (once via the group, once via the plain
     /// tab list) and end up with duplicates.
+    /// `closed_nodes` (Note/Image/Pdf/Json members, via `close_group_member`)
+    /// needs no equivalent truncation -- `export_group`'s own snapshot only
+    /// ever captures tab members, never those four kinds, so there's no
+    /// analogous group-level copy for an individual `ClosedNode` entry to
+    /// duplicate.
     fn close_group(&mut self, id: &str) {
         if let Some(export) = self.export_group(id) {
             self.closed_groups.push(export);
@@ -6487,7 +6504,7 @@ impl App {
             Note(String),
             Image(String),
             Pdf(String),
-            Json(String),
+            Json(Option<String>),
             Download,
         }
         let Some(kind) = self.nodes.get(id).map(|node| match &node.payload {
@@ -6496,7 +6513,7 @@ impl App {
             NodePayload::Note(note) => MemberKind::Note(note.text.clone()),
             NodePayload::Image(image) => MemberKind::Image(image.path.clone()),
             NodePayload::Pdf(pdf) => MemberKind::Pdf(pdf.path.clone()),
-            NodePayload::Json(json) => MemberKind::Json(json.path.clone()),
+            NodePayload::Json(json) => MemberKind::Json(json.key.is_none().then(|| json.path.clone())),
             NodePayload::Download(_) => MemberKind::Download,
         }) else {
             return;
@@ -6523,7 +6540,14 @@ impl App {
                 self.remove_node(id);
             }
             MemberKind::Json(path) => {
-                self.record_closed_node(ClosedNode::Json(path));
+                // `None` for a synthetic "Expand as Graph" leaf -- recording
+                // it as a `ClosedNode::Json` would let "undo" re-add the
+                // *whole source file* as a fresh top-level card, not the
+                // leaf that was actually closed. Only a genuine top-level
+                // JSON node's own path is real undo-worthy state.
+                if let Some(path) = path {
+                    self.record_closed_node(ClosedNode::Json(path));
+                }
                 if self.json_viewer_node.as_deref() == Some(id) {
                     self.json_viewer_node = None;
                 }
@@ -6858,9 +6882,11 @@ impl App {
     }
 
     /// Right-click menu for a JSON node's card -- Open Containing Folder,
-    /// Copy Path, Remove from Group (only while grouped), and Delete. Same
-    /// shape as `build_pdf_context_menu`, minus the `gpu.free_image` call --
-    /// a JSON node has no GPU texture of any kind, same as a note.
+    /// Copy Path, Expand as Graph, Remove from Group (only while grouped),
+    /// and Delete. Same shape as `build_pdf_context_menu`, minus the
+    /// `gpu.free_image` call -- a JSON node has no GPU texture of any kind,
+    /// same as a note -- plus the one JSON-only "Expand as Graph" action
+    /// (see `App::expand_json_as_graph`).
     fn build_json_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.json_context_menu.clone();
         let Some(((id, pos), fade)) = fade_popup_state(
@@ -6908,7 +6934,13 @@ impl App {
                 }
             }
             Some(NodeMenuAction::Delete) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                if let Some(path) = self
+                    .nodes
+                    .get(&id)
+                    .and_then(|n| n.as_json())
+                    .filter(|json| json.key.is_none())
+                    .map(|json| json.path.clone())
+                {
                     self.record_closed_node(ClosedNode::Json(path));
                 }
                 if self.json_viewer_node.as_deref() == Some(id.as_str()) {
@@ -10041,7 +10073,14 @@ impl App {
                     let Some((node_pos, summary, path)) = self.nodes.get(&id).and_then(|n| {
                         let json = n.as_json()?;
                         let summary = match &json.key {
-                            Some(key) => format!("{key}: {}", json_summary(&json.value)),
+                            Some(key) => {
+                                let key_display = if key.chars().count() > 16 {
+                                    format!("{}…", key.chars().take(15).collect::<String>())
+                                } else {
+                                    key.clone()
+                                };
+                                format!("{key_display}: {}", json_summary(&json.value))
+                            }
                             None => json_summary(&json.value),
                         };
                         Some((n.pos, summary, json.path.clone()))
