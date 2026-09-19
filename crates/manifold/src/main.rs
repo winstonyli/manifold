@@ -35,7 +35,7 @@ use winit::event::{DeviceId, ElementState, MouseButton as WinitMouseButton, Mous
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{Window, WindowId};
+use winit::window::{Icon, Window, WindowId};
 
 /// Tab view's chrome is a single top `Panel` of this exact height, in egui
 /// points — kept as a constant rather than read back from egui's layout so
@@ -300,6 +300,18 @@ fn fade_popup_state<T: Clone>(
         return None;
     }
     cache.clone().map(|value| (value, fade))
+}
+
+/// The app's own window/taskbar icon -- embedded at compile time (`include_
+/// bytes!`, same posture `IBMPlexSerif-Regular.ttf` already uses) rather
+/// than loaded from disk at runtime, so the binary stays self-contained.
+/// `None` on decode failure rather than panicking -- a missing icon just
+/// means winit's own default, not a reason to fail to start.
+fn load_app_icon() -> Option<Icon> {
+    let bytes = include_bytes!("../assets/icon/icon-64.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), width, height).ok()
 }
 
 /// Shared body for the six `App::alloc_*_id` methods -- each owns a
@@ -10516,7 +10528,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let mut attrs = Window::default_attributes().with_title("manifold");
+        let mut attrs = Window::default_attributes().with_title("manifold").with_window_icon(load_app_icon());
         if self.headless {
             // NOT `.with_visible(false)`: found live that a genuinely
             // invisible window's swapchain never successfully acquires a
