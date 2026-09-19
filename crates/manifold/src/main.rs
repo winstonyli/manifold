@@ -7659,6 +7659,31 @@ impl App {
                         });
                 });
         }
+        // A freshly-spawned or just-respawned tab's content pane draws as
+        // plain black until its engine-host's first real frame arrives (see
+        // `record_content_pass`'s own doc comment -- the pane still clears,
+        // it just has nothing to draw) -- confirmed live, a genuinely jarring
+        // blank screen with zero feedback, unlike the Graph-view card's own
+        // spinner for the exact same "no thumbnail yet" state. Only covers
+        // the primary pane; the split view's secondary pane (view-only,
+        // still a first cut per `split_tab`'s own doc comment) is left as-is.
+        let has_content = self.gpu.as_ref().is_some_and(|g| g.has_tab_texture(&focused_id));
+        if !has_content {
+            let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+            let screen_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let screen_width = screen_size.width as f32 / ppp;
+            let screen_height = screen_size.height as f32 / ppp;
+            let primary_width = if self.split_tab.is_some() { screen_width / 2.0 } else { screen_width };
+            let content_rect = egui::Rect::from_min_max(
+                egui::pos2(0.0, CHROME_HEIGHT_POINTS),
+                egui::pos2(primary_width, screen_height),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Spinner::new().size(32.0));
+                });
+            });
+        }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
         }

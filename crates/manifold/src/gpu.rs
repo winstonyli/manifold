@@ -486,6 +486,15 @@ impl GpuState {
         self.tab_textures.remove(tab_id);
     }
 
+    /// Whether `upload_frame` has ever run for this tab -- `false` right
+    /// after a fresh spawn/respawn, until its engine-host's first real
+    /// frame arrives. Lets Tab view show a loading spinner instead of the
+    /// plain black clear `record_content_pass` draws for a pane with no
+    /// texture yet (see that function's own doc comment).
+    pub fn has_tab_texture(&self, tab_id: &str) -> bool {
+        self.tab_textures.contains_key(tab_id)
+    }
+
     /// `rgba` is already tightly-packed RGBA -- registered the same way as
     /// a thumbnail, in its own map since a favicon and a tab's content
     /// thumbnail are unrelated sizes and update independently. `key` is an
