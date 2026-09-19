@@ -109,7 +109,16 @@ impl Capture {
                 move |pool: windows::core::Ref<Direct3D11CaptureFramePool>, _| {
                     if let Some(pool) = pool.as_ref() {
                         if let Ok(frame) = pool.TryGetNextFrame() {
-                            *latest.lock().unwrap() = Some(frame);
+                            // If a previous frame was still sitting here
+                            // unconsumed (the main loop hasn't called
+                            // `try_get_latest_frame` since it arrived), it
+                            // gets replaced here and must be explicitly
+                            // `Close()`d -- same real leak `try_get_latest_
+                            // frame` below fixes on the consume side, just
+                            // hit here on the discard side instead.
+                            if let Some(old) = latest.lock().unwrap().replace(frame) {
+                                let _ = old.Close();
+                            }
                         }
                     }
                     Ok(())
@@ -140,68 +149,90 @@ impl Capture {
     /// pitch-aligned wider than their nominal width).
     pub fn try_get_latest_frame(&mut self) -> Option<(Vec<u8>, u32, u32)> {
         let frame = self.latest.lock().unwrap().take()?;
-        let surface = frame.Surface().ok()?;
-        let access: IDirect3DDxgiInterfaceAccess = surface.cast().ok()?;
-        let texture: ID3D11Texture2D = unsafe { access.GetInterface().ok()? };
+        // `Direct3D11CaptureFrame::Close()` must be called explicitly once
+        // we're done reading it -- dropping the COM wrapper alone (plain
+        // `Release()`) does not return the frame to the capture pipeline
+        // or free its underlying D3D11 surface. This was a real,
+        // confirmed leak: every captured frame accumulated indefinitely,
+        // reproduced live via a headless idle-memory test (WebView2 as
+        // the default engine: ~20MB/s continuous growth from a single
+        // idle tab; CEF as the default: flat over the same window,
+        // ruling out anything shared on the manifold side). The rest of
+        // this function's body is unchanged and wrapped in a closure
+        // purely so its several early `?` returns still reach the
+        // `frame.Close()` call below via `result`, rather than needing
+        // one repeated at each early-return point.
+        let result = (|| {
+            let surface = frame.Surface().ok()?;
+            let access: IDirect3DDxgiInterfaceAccess = surface.cast().ok()?;
+            let texture: ID3D11Texture2D = unsafe { access.GetInterface().ok()? };
 
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe { texture.GetDesc(&mut desc) };
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { texture.GetDesc(&mut desc) };
 
-        let need_new_staging = match &self.staging {
-            Some((_, w, h)) => *w != desc.Width || *h != desc.Height,
-            None => true,
-        };
-        if need_new_staging {
-            let staging_desc = D3D11_TEXTURE2D_DESC {
-                Usage: D3D11_USAGE_STAGING,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                BindFlags: 0,
-                MiscFlags: 0,
-                ..desc
+            let need_new_staging = match &self.staging {
+                Some((_, w, h)) => *w != desc.Width || *h != desc.Height,
+                None => true,
             };
-            let mut staging: Option<ID3D11Texture2D> = None;
+            if need_new_staging {
+                let staging_desc = D3D11_TEXTURE2D_DESC {
+                    Usage: D3D11_USAGE_STAGING,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                    BindFlags: 0,
+                    MiscFlags: 0,
+                    ..desc
+                };
+                let mut staging: Option<ID3D11Texture2D> = None;
+                unsafe {
+                    self.d3d_device
+                        .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+                        .ok()?;
+                }
+                self.staging = Some((staging?, desc.Width, desc.Height));
+            }
+            let staging = &self.staging.as_ref()?.0;
+
+            unsafe { self.d3d_context.CopyResource(staging, &texture) };
+
+            let mut mapped = Default::default();
             unsafe {
-                self.d3d_device
-                    .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+                self.d3d_context
+                    .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                     .ok()?;
             }
-            self.staging = Some((staging?, desc.Width, desc.Height));
-        }
-        let staging = &self.staging.as_ref()?.0;
+            // Crop to just the client area (see `client_rect_in_window`'s
+            // doc comment) -- falls back to the full captured frame if the
+            // window handle is somehow invalid by the time this runs
+            // (process shutting down mid-capture), rather than losing the
+            // frame entirely.
+            let (crop_x, crop_y, crop_w, crop_h) = client_rect_in_window(self.hwnd)
+                .filter(|(x, y, w, h)| {
+                    *w > 0
+                        && *h > 0
+                        && *x >= 0
+                        && *y >= 0
+                        && x + *w as i32 <= desc.Width as i32
+                        && y + *h as i32 <= desc.Height as i32
+                })
+                .unwrap_or((0, 0, desc.Width, desc.Height));
 
-        unsafe { self.d3d_context.CopyResource(staging, &texture) };
-
-        let mut mapped = Default::default();
-        unsafe {
-            self.d3d_context
-                .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .ok()?;
-        }
-        // Crop to just the client area (see `client_rect_in_window`'s doc
-        // comment) -- falls back to the full captured frame if the window
-        // handle is somehow invalid by the time this runs (process
-        // shutting down mid-capture), rather than losing the frame
-        // entirely.
-        let (crop_x, crop_y, crop_w, crop_h) = client_rect_in_window(self.hwnd)
-            .filter(|(x, y, w, h)| {
-                *w > 0 && *h > 0 && *x >= 0 && *y >= 0 && x + *w as i32 <= desc.Width as i32 && y + *h as i32 <= desc.Height as i32
-            })
-            .unwrap_or((0, 0, desc.Width, desc.Height));
-
-        let mut pixels = vec![0u8; (crop_w * crop_h * 4) as usize];
-        unsafe {
-            let src = mapped.pData as *const u8;
-            for row in 0..crop_h as usize {
-                let src_row = src
-                    .add((row + crop_y as usize) * mapped.RowPitch as usize)
-                    .add(crop_x as usize * 4);
-                let dst_row = pixels.as_mut_ptr().add(row * crop_w as usize * 4);
-                std::ptr::copy_nonoverlapping(src_row, dst_row, crop_w as usize * 4);
+            let mut pixels = vec![0u8; (crop_w * crop_h * 4) as usize];
+            unsafe {
+                let src = mapped.pData as *const u8;
+                for row in 0..crop_h as usize {
+                    let src_row = src
+                        .add((row + crop_y as usize) * mapped.RowPitch as usize)
+                        .add(crop_x as usize * 4);
+                    let dst_row = pixels.as_mut_ptr().add(row * crop_w as usize * 4);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, crop_w as usize * 4);
+                }
+                self.d3d_context.Unmap(staging, 0);
             }
-            self.d3d_context.Unmap(staging, 0);
-        }
 
-        Some((pixels, crop_w, crop_h))
+            Some((pixels, crop_w, crop_h))
+        })();
+        let _ = frame.Close();
+        result
     }
 
     /// Recreates the frame pool at the new size -- unlike CEF (lazy resize,

@@ -11224,7 +11224,35 @@ impl App {
         }
 
         let tab_ids: Vec<String> = self.node_order.clone();
-        let mut frame_updates: Vec<FrameUpdate> = Vec::new();
+        // Keyed by tab id, not a plain `Vec` -- only the *latest* `FrameReady`
+        // for a tab ever matters (each one fully supersedes the last in
+        // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
+        // same "keep only the newest, drop the rest" policy the WebView2
+        // engine-host's own capture code already applies one layer down (see
+        // `capture.rs`'s `latest` field). A plain `Vec` here used to `push`
+        // every buffered `FrameReady` this drain found and then process each
+        // one in turn -- harmless while the main loop keeps up with the
+        // engine-host's own frame rate, but a real, confirmed bug once it
+        // falls behind even slightly: found live via temporary
+        // instrumentation showing bursts of up to 81 queued frames processed
+        // in a single tick for one idle tab, each one a real, wasted GPU
+        // texture+bind-group+thumbnail creation immediately thrown away by
+        // the next -- severe enough burst GPU churn to both stall the main
+        // thread for whole seconds at a time (Windows' own "(Not
+        // Responding)", confirmed live) and outpace wgpu's own resource
+        // reclamation, observed as continuous unbounded memory growth
+        // (roughly 20MB/s from one idle default WebView2 tab). This bug
+        // itself is engine-agnostic -- every engine's `FrameReady` messages
+        // go through this same drain loop -- but WebView2 is the one that
+        // actually triggers it in practice: its `Windows.Graphics.Capture`
+        // pipeline captures continuously at the compositor's own refresh
+        // rate regardless of whether the page changed, while CEF/Servo/
+        // WebKit's paint-driven capture sends far fewer frames for a static,
+        // idle page, staying well within what this loop could already keep
+        // up with (confirmed live: an otherwise-identical idle-memory test
+        // with CEF as the default engine stayed flat).
+        let mut frame_updates: std::collections::HashMap<String, FrameUpdate> =
+            std::collections::HashMap::new();
         let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
         let mut crashes: Vec<(String, String)> = Vec::new();
         let mut open_tab_requests: Vec<(String, String)> = Vec::new();
@@ -11276,14 +11304,17 @@ impl App {
                         pixels,
                         ..
                     } => {
-                        frame_updates.push(FrameUpdate {
-                            tab_id: tab_id.clone(),
-                            socket_id: node.tab.socket_id.clone(),
-                            kind: node.tab.kind,
-                            width,
-                            height,
-                            pixels,
-                        });
+                        frame_updates.insert(
+                            tab_id.clone(),
+                            FrameUpdate {
+                                tab_id: tab_id.clone(),
+                                socket_id: node.tab.socket_id.clone(),
+                                kind: node.tab.kind,
+                                width,
+                                height,
+                                pixels,
+                            },
+                        );
                     }
                     EngineToHost::StateSnapshot(state) => {
                         if let Some(target) = node.swap_target.take() {
@@ -11557,7 +11588,7 @@ impl App {
             }
         }
 
-        for update in frame_updates {
+        for update in frame_updates.into_values() {
             let format = match update.kind {
                 EngineKind::Servo | EngineKind::Webkit => wgpu::TextureFormat::Rgba8UnormSrgb,
                 EngineKind::Cef | EngineKind::Webview2 => wgpu::TextureFormat::Bgra8UnormSrgb,
