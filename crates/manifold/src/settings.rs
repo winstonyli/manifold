@@ -77,6 +77,24 @@ pub struct Settings {
     pub window_x: Option<i32>,
     #[serde(default)]
     pub window_y: Option<i32>,
+    /// Whether the one-time first-launch demo graph (see `App::
+    /// spawn_first_launch_demo`) has already been shown. Defaults to `true`
+    /// when *missing from an existing settings.json* (`default_already_shown`
+    /// below) -- deliberately the opposite of this field's own `Default for
+    /// Settings` value (`false`, for a genuinely fresh install with no
+    /// settings.json at all) -- so upgrading from a build that predates
+    /// this field never replays the demo for an existing user, only a
+    /// brand-new one. Deliberately a `Settings` field rather than living in
+    /// `session.json`: it needs to survive exactly the case `session.json`
+    /// doesn't (a user with zero saved tabs), and `Settings` is the one
+    /// file already guaranteed to persist across an empty session the same
+    /// way `home_page`/`default_starting_engine` do.
+    #[serde(default = "default_already_shown")]
+    pub has_shown_first_launch_demo: bool,
+}
+
+fn default_already_shown() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -90,6 +108,7 @@ impl Default for Settings {
             window_height: None,
             window_x: None,
             window_y: None,
+            has_shown_first_launch_demo: false,
         }
     }
 }

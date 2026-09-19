@@ -32,6 +32,11 @@ const SCHEME_NAME: &str = "manifold";
 /// `manifold` crate's own icon/font assets already use).
 const WELCOME_HTML: &str = include_str!("../assets/welcome.html");
 
+/// `manifold://tips` -- a short keyboard-shortcut reference, used as one
+/// of the first-launch demo group's two member tabs (see `App::
+/// spawn_first_launch_demo` in the `manifold` crate).
+const TIPS_HTML: &str = include_str!("../assets/tips.html");
+
 /// Builds the `ICoreWebView2EnvironmentOptions` that `create_environment`
 /// passes to `CreateCoreWebView2EnvironmentWithOptions`, with the
 /// `"manifold"` custom scheme registered on it. Called once, before the
@@ -130,6 +135,7 @@ fn page_name(uri: &str) -> Option<&str> {
 fn page_content(page: &str) -> Option<&'static str> {
     match page.to_ascii_lowercase().as_str() {
         "welcome" => Some(WELCOME_HTML),
+        "tips" => Some(TIPS_HTML),
         _ => None,
     }
 }
