@@ -6461,19 +6461,75 @@ impl App {
             .map(|(tid, _)| tid.clone())
             .collect();
         for tid in member_ids {
-            // A member can itself be a nested subgroup now that groups
-            // nest -- `close_tab` silently no-ops on a non-tab node, which
-            // left a nested subgroup (and everything in it) alive,
-            // reparented to the closed group's own parent instead of
-            // destroyed. Recurse into it instead.
-            if self.nodes.get(&tid).is_some_and(|n| n.as_group().is_some()) {
-                self.close_group(&tid);
-            } else {
-                self.close_tab(&tid);
-            }
+            self.close_group_member(&tid);
         }
         self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
+    }
+
+    /// Destroys one member of a group being closed, applying the same
+    /// per-kind cleanup its own "Delete"/"Close" action already would: a
+    /// nested subgroup recurses (`close_group`), a tab goes through
+    /// `close_tab` (feeding "Recently Closed" tabs), and a Note/Image/Pdf/
+    /// Json member captures a `ClosedNode` (feeding "Recently Closed"
+    /// nodes) before `remove_node`, freeing a GPU texture first for an
+    /// Image/Pdf. Without this, `close_tab`'s own no-op-on-non-tab guard
+    /// left every non-tab, non-group member merely reparented to the
+    /// closed group's own parent by `dissolve_group` below, never actually
+    /// destroyed -- a real gap confirmed while building "Expand as Graph"
+    /// (see that feature's own design doc), whose whole output is
+    /// `JsonPayload` leaves nested inside Groups.
+    fn close_group_member(&mut self, id: &str) {
+        enum MemberKind {
+            Group,
+            Tab,
+            Note(String),
+            Image(String),
+            Pdf(String),
+            Json(String),
+            Download,
+        }
+        let Some(kind) = self.nodes.get(id).map(|node| match &node.payload {
+            NodePayload::Group(_) => MemberKind::Group,
+            NodePayload::Tab(_) => MemberKind::Tab,
+            NodePayload::Note(note) => MemberKind::Note(note.text.clone()),
+            NodePayload::Image(image) => MemberKind::Image(image.path.clone()),
+            NodePayload::Pdf(pdf) => MemberKind::Pdf(pdf.path.clone()),
+            NodePayload::Json(json) => MemberKind::Json(json.path.clone()),
+            NodePayload::Download(_) => MemberKind::Download,
+        }) else {
+            return;
+        };
+        match kind {
+            MemberKind::Group => self.close_group(id),
+            MemberKind::Tab => self.close_tab(id),
+            MemberKind::Note(text) => {
+                self.record_closed_node(ClosedNode::Note(text));
+                self.remove_node(id);
+            }
+            MemberKind::Image(path) => {
+                self.record_closed_node(ClosedNode::Image(path));
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.free_image(id);
+                }
+                self.remove_node(id);
+            }
+            MemberKind::Pdf(path) => {
+                self.record_closed_node(ClosedNode::Pdf(path));
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.free_image(id);
+                }
+                self.remove_node(id);
+            }
+            MemberKind::Json(path) => {
+                self.record_closed_node(ClosedNode::Json(path));
+                if self.json_viewer_node.as_deref() == Some(id) {
+                    self.json_viewer_node = None;
+                }
+                self.remove_node(id);
+            }
+            MemberKind::Download => self.remove_node(id),
+        }
     }
 
     /// Builds an exportable snapshot of `group_id`'s own subtree -- its
@@ -11571,6 +11627,11 @@ impl App {
             DebugCommand::ExpandJsonAsGraph(id) => {
                 self.expand_json_as_graph(&id);
                 self.save_session();
+            }
+            DebugCommand::CloseGroup(id) => {
+                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                    self.close_group(&id);
+                }
             }
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {

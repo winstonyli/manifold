@@ -233,6 +233,11 @@ pub enum DebugCommand {
     /// focus the node it creates, so a headless test can't rely on focus
     /// here) — see `App::expand_json_as_graph`.
     ExpandJsonAsGraph(String),
+    /// A group card's own "Close" context-menu action, targeting an
+    /// explicit group id instead of `self.focused` -- same "deterministic
+    /// headless test" reasoning as `ExpandJsonAsGraph`. No-ops if `id`
+    /// isn't actually a group. See `App::close_group`.
+    CloseGroup(String),
 }
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
@@ -435,6 +440,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "EXPANDJSONASGRAPH" => {
             Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty())
         }
+        "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
         _ => None,
     }
 }
