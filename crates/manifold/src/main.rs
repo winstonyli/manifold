@@ -11411,7 +11411,32 @@ impl App {
                         });
                     }
                     EngineToHost::DownloadProgress { path, bytes_received } => {
-                        download_events.push(DownloadEvent::Progress { path, bytes_received });
+                        // Only the *last* Progress value for a given path
+                        // ever has any visible effect -- the apply loop
+                        // below just overwrites `bytes_received`
+                        // unconditionally, so a run of same-path Progress
+                        // events back to back is the same "processed every
+                        // one, only the newest visible" waste `FrameReady`'s
+                        // own drain had, just far cheaper per instance (an
+                        // O(n) node scan, not a GPU texture). Coalesced here
+                        // by updating the last-pushed entry in place when
+                        // it's already a Progress for this same path,
+                        // rather than a separate HashMap -- keeps
+                        // Started/Progress/Completed ordering (see this
+                        // `Vec`'s own doc comment) exactly as before for
+                        // everything else, since only adjacent same-path
+                        // entries coalesce.
+                        if let Some(DownloadEvent::Progress { path: last_path, bytes_received: last_bytes }) =
+                            download_events.last_mut()
+                        {
+                            if *last_path == path {
+                                *last_bytes = bytes_received;
+                            } else {
+                                download_events.push(DownloadEvent::Progress { path, bytes_received });
+                            }
+                        } else {
+                            download_events.push(DownloadEvent::Progress { path, bytes_received });
+                        }
                     }
                     EngineToHost::DownloadCompleted { path } => {
                         self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
