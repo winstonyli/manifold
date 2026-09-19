@@ -11853,6 +11853,7 @@ impl App {
                     self.close_group(&id);
                 }
             }
+            DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;

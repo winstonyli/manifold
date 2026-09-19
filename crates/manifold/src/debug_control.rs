@@ -238,6 +238,16 @@ pub enum DebugCommand {
     /// headless test" reasoning as `ExpandJsonAsGraph`. No-ops if `id`
     /// isn't actually a group. See `App::close_group`.
     CloseGroup(String),
+    /// Dev-only: re-runs the one-time first-launch demo graph on demand
+    /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
+    /// why it otherwise only ever fires once) -- adds a fresh copy of the
+    /// demo layout to whatever's currently open rather than clearing
+    /// anything first, same "acts on current state, never auto-resets"
+    /// posture every other debug command already has. Never touches the
+    /// `has_shown_first_launch_demo` flag itself -- purely a look-at-it
+    /// aid, not a way to simulate real first-launch persistence. See
+    /// `App::spawn_first_launch_demo`.
+    TriggerFirstLaunchDemo,
 }
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
@@ -441,6 +451,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty())
         }
         "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
         _ => None,
     }
 }
