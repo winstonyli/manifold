@@ -11854,6 +11854,7 @@ impl App {
                 }
             }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
+            DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
             DebugCommand::ToggleShortcutsHelp => {
                 self.shortcuts_help_open = !self.shortcuts_help_open;

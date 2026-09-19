@@ -248,7 +248,99 @@ pub enum DebugCommand {
     /// aid, not a way to simulate real first-launch persistence. See
     /// `App::spawn_first_launch_demo`.
     TriggerFirstLaunchDemo,
+    /// `HELP` (or `?`) -- prints `COMMAND_HELP` to stderr. See that table's
+    /// own doc comment for why this exists and its one maintenance cost.
+    Help,
 }
+
+/// The full command reference `HELP`/`?` prints, and the single source of
+/// truth for it -- `(usage, one-line description)` pairs, one per
+/// `parse_line` match arm below, in the same order. There is no way to
+/// generate this from the match arms themselves (Rust has no runtime
+/// reflection over a `match`'s own string patterns), so this is a second,
+/// hand-maintained list that can drift from `parse_line` if one is updated
+/// without the other -- accepted as the cheapest way to give this protocol
+/// any discoverability at all, given ~70 commands and no existing registry
+/// to hang help text off of. **Adding, renaming, or removing a command?
+/// Update this table in the same commit.**
+const COMMAND_HELP: &[(&str, &str)] = &[
+    ("MOUSEMOVE x y", "Move the mouse to (x, y)"),
+    ("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left"),
+    ("MOUSEUP x y [button]", "Release a mouse button at (x, y)"),
+    ("CLICK x y [button]", "Full click (move+press+release) at (x, y)"),
+    ("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)"),
+    ("ADDRESSBAR text", "Set the address bar's text and focus"),
+    ("ENTER", "Accept the address bar / confirm a dropdown row"),
+    ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
+    ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
+    ("ARROWUP", "Move the address-bar suggestion highlight up"),
+    ("GRAPHLEFT", "Graph view: move focus left"),
+    ("GRAPHRIGHT", "Graph view: move focus right"),
+    ("GRAPHUP", "Graph view: move focus up"),
+    ("GRAPHDOWN", "Graph view: move focus down"),
+    ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
+    ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
+    ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
+    ("REOPENTAB", "Ctrl+Shift+T -- reopen the last closed tab"),
+    ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
+    ("ZOOMOUT", "Ctrl+- -- zoom out"),
+    ("ZOOMRESET", "Ctrl+0 -- reset zoom"),
+    ("OPENDEVTOOLS", "F12 -- open devtools"),
+    ("NEWTAB", "Ctrl+T -- new tab"),
+    ("CLOSETAB", "Ctrl+W -- close the focused tab"),
+    ("FOCUSADDRESS", "Ctrl+L -- focus the address bar"),
+    ("NEXTTAB", "Ctrl+Tab -- cycle to the next tab"),
+    ("PREVTAB", "Ctrl+Shift+Tab -- cycle to the previous tab"),
+    ("OPENFINDBAR", "Ctrl+F -- open find-in-page"),
+    ("FINDTEXT text", "Set the find bar's search text and search"),
+    ("FINDMATCHCASE true|false", "Toggle the find bar's case-sensitivity"),
+    ("FINDNEXT", "Find bar: next match"),
+    ("FINDPREVIOUS", "Find bar: previous match"),
+    ("CLOSEFINDBAR", "Close the find bar"),
+    ("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)"),
+    ("SCREENSHOT path", "Render the next frame and save it as a PNG at `path`"),
+    ("RESIZE w h", "Resize the window to (w, h)"),
+    ("QUIT", "Exit the app"),
+    ("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher"),
+    ("QUICKSWITCHTEXT text", "Set the quick switcher's search text"),
+    ("QUICKSWITCHDOWN", "Quick switcher: move highlight down"),
+    ("QUICKSWITCHUP", "Quick switcher: move highlight up"),
+    ("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row"),
+    ("QUICKSWITCHESCAPE", "Close the quick switcher"),
+    ("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field"),
+    ("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box"),
+    ("HISTORYFILTERTEXT text", "Set the History popup's own filter box"),
+    ("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box"),
+    ("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view"),
+    ("EXPORTSESSION path", "Save the current session to `path`"),
+    ("IMPORTSESSION path", "Load a session from `path`"),
+    ("EXPORTBOOKMARKS path", "Save bookmarks to `path`"),
+    ("IMPORTBOOKMARKS path", "Load bookmarks from `path`"),
+    ("CLOSEALLLEVEL", "Ctrl+Shift+W -- close every tab at the current level"),
+    ("CONFIRMIMPORT", "Click the \"Import Session...\" confirm popup's Import button"),
+    ("CANCELIMPORT", "Click the confirm popup's Cancel button"),
+    ("RENAMEGROUP", "F2 -- rename the current group"),
+    ("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft"),
+    ("DISMISSPEEK", "Escape-dismisses-peek equivalent in Graph view"),
+    ("EXPORTGROUP path", "Export whichever group's context menu is currently open"),
+    ("IMPORTGROUP path", "Import a group from `path`"),
+    ("DUPLICATETAB", "Ctrl+D -- duplicate the focused tab"),
+    ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
+    ("TOGGLEPIN", "Ctrl+P -- pin/unpin the focused tab"),
+    ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
+    ("NEWGROUP", "Ctrl+Shift+G -- new group"),
+    ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
+    ("ADDIMAGE path", "Add an image node from `path`"),
+    ("ADDPDF path", "Add a PDF node from `path`"),
+    ("ADDJSON path", "Add a JSON node from `path`"),
+    ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
+    ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
+    ("CLOSESPLIT", "Close the Split pane"),
+    ("EXPANDJSONASGRAPH id", "\"Expand as Graph\" on the JSON node `id`"),
+    ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
+    ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
+    ("HELP", "Print this command list"),
+];
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
 /// convention (`settings.json`/`session.json` use the same strings) --
@@ -452,7 +544,19 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         }
         "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
         "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
+        "HELP" | "?" => Some(DebugCommand::Help),
         _ => None,
+    }
+}
+
+/// Prints `COMMAND_HELP` to stderr -- `eprintln!`, not `println!`, matching
+/// this protocol's own established convention of surfacing diagnostics on
+/// stderr (see e.g. the crash reporter) while stdout stays free for
+/// anything a driving script might want to parse on its own.
+pub fn print_help() {
+    eprintln!("Manifold debug commands:");
+    for (usage, description) in COMMAND_HELP {
+        eprintln!("  {usage:<32} {description}");
     }
 }
 
@@ -467,10 +571,21 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let Ok(line) = line else { break };
-            if let Some(cmd) = parse_line(&line) {
-                if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
-                    break;
+            match parse_line(&line) {
+                Some(cmd) => {
+                    if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
+                        break;
+                    }
                 }
+                // A blank line (an artifact of the stream itself, not
+                // something anyone typed) stays silent; anything else that
+                // failed to parse gets a visible error instead of a
+                // same-as-success no-op, so a typo doesn't read as "this
+                // command does nothing."
+                None if !line.trim().is_empty() => {
+                    eprintln!("Unrecognized debug command: {line:?} -- try HELP");
+                }
+                None => {}
             }
         }
         let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
