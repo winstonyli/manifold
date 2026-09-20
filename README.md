@@ -66,6 +66,14 @@ A rebuild also tends to leave the *previous* hash's directory behind alongside t
 
 ## Running
 
+**Use a release build (`cargo build --release`) for anything but debugging the app's own Rust code.** Investigated a real, reported "the app just feels slow, especially panning" complaint by adding temporary frame-timing instrumentation (`eprintln!` bracketing each phase of `WindowEvent::RedrawRequested`, removed after) and tracing it down layer by layer: total frame time (~60-80ms, ~13-16fps, even fully idle with a single tab) wasn't in `build_ui` (~1ms) or `gpu.render` (~2-3ms) -- it was almost entirely inside `GpuState::upload_frame`, specifically the per-frame `device.create_texture_with_data` calls (a brand-new GPU texture object created from scratch for both the full frame and its thumbnail on every single upload, never reused) plus the CPU-side format-conversion/downscale feeding the thumbnail one. None of that showed up as a *pan-specific* cost -- a control test holding a background-pan drag with zero further movement measured the same ~70ms/frame as sitting fully idle, so whatever this was, it wasn't the pan gesture. Confirmed the real explanation by building `--release` and re-running the identical test: idle frame time dropped to ~16.8ms (a full, smooth ~60fps, matching the display's own refresh rate) with the same session, same single tab, same everything else -- a debug build's lack of optimization on that CPU-bound pixel-processing path was the entire story. No code change came out of this investigation (there was nothing to fix in the app's own logic), but it's exactly the kind of thing worth writing down once discovered the hard way: **all of this project's own headless/manual verification throughout this file, and any perception of the app being slow during ordinary use, needs `--release` to mean anything -- a debug build's frame time isn't just "somewhat slower," it's roughly 4-5x worse specifically because of unoptimized per-frame GPU/pixel work, not a difference that stays proportionally small the way debug-vs-release usually does for typical UI logic.**
+
+```bash
+target/release/manifold.exe
+```
+
+Debug builds remain the right choice while actually working on the app's own Rust code (fast iteration, full debug info) -- just don't judge real-world feel, or run any kind of perceived-performance test, against one.
+
 ```bash
 target/debug/manifold.exe
 ```
