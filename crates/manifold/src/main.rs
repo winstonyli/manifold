@@ -8138,6 +8138,16 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
+                // Compact, not `apply_style`'s app-wide airy spacing --
+                // same reasoning as the Graph toolbar's own identical
+                // override: this row sits in a fixed `CHROME_HEIGHT_POINTS`
+                // (32pt), calibrated for the old compact `button_padding`.
+                // Missing this override here (while the Graph toolbar got
+                // it) was a real, live-confirmed bug -- the airy default's
+                // taller buttons no longer fit the fixed row height and
+                // visibly overflowed past it into the content area below.
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
                 // Not `horizontal_centered` (`Align::Center`): measured live
                 // that `egui::ComboBox` paints itself ~4.5pt lower than a
                 // plain `Button`/`TextEdit` even when all three report the
