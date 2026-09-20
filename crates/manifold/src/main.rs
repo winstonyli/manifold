@@ -416,7 +416,9 @@ fn draw_new_node_menu_row(
     inv_zoom: f32,
     label: &str,
 ) -> bool {
-    let response = ui.interact(row_rect, egui::Id::new(id_salt), egui::Sense::click());
+    let response = ui
+        .interact(row_rect, egui::Id::new(id_salt), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.hovered() {
         ui.painter().rect_filled(row_rect, 3.0 * inv_zoom, ACCENT.gamma_multiply(0.35));
     }
@@ -456,12 +458,14 @@ fn draw_node_close_button(
     icon_color: egui::Color32,
 ) -> bool {
     let close_rect = egui::Rect::from_center_size(card_rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-    let close_response = ui.interact(close_rect, egui::Id::new(close_id_salt), egui::Sense::click());
-    let close_fill = if close_response.hovered() { egui::Color32::from_rgb(220, 60, 60) } else { base_fill };
-    ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+    let close_response = ui
+        .interact(close_rect, egui::Id::new(close_id_salt), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let close_fill = if close_response.hovered() { DANGER_COLOR } else { base_fill };
+    ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
     ui.painter().rect_stroke(
         close_rect,
-        4.0 * inv_zoom,
+        2.0 * inv_zoom,
         egui::Stroke::new(1.0 * inv_zoom, border_color),
         egui::StrokeKind::Inside,
     );
@@ -470,7 +474,7 @@ fn draw_node_close_button(
         overlay_painter.text(
             project(icon_pos),
             egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::X,
+            egui_phosphor::light::X,
             egui::FontId::proportional(14.0),
             icon_color,
         );
@@ -660,7 +664,7 @@ const GRAPH_ZOOM_MAX: f32 = 3.0;
 /// Fill for the toolbar/chrome bars (Tab view's merged single bar, Graph
 /// view's "+ New Tab" bar, the settings popup) — distinct from the
 /// graph/content area below.
-const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(30, 31, 36);
+const TOOLBAR_FILL: egui::Color32 = egui::Color32::from_rgb(29, 26, 20);
 
 fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
@@ -689,18 +693,26 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// A single accent color used throughout — selection highlights, hyperlinks,
 /// the focused-tab-strip fill, the focused graph node's border — so the
 /// whole chrome reads as one coherent theme rather than egui's flat default
-/// dark gray-on-gray.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
+/// dark gray-on-gray. A muted gold rather than the cooler blue this used to
+/// be, to sit with the rest of the warm/editorial palette below instead of
+/// against it.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(215, 162, 74);
 
-/// A group card's border tints this color once its member count exceeds
-/// `GROUP_OVERLOAD_THRESHOLD` -- a cheap glanceable "this one's gotten big"
-/// cue, the same severity-red used nowhere else in this app's chrome so it
-/// reads unambiguously as a warning rather than just another tag color.
-/// Only applies while the group has no explicit tag color of its own (see
-/// its use below) -- a deliberate user choice always wins over this
-/// automatic one, same precedent tag colors already have over the plain
-/// default `ACCENT` border.
-const GROUP_OVERLOAD_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
+/// The one severity-red used everywhere this app needs to say "warning" or
+/// "destructive": a group card's overloaded border, every close/eject
+/// button's hover fill, error text, and the muted-audio icon all reference
+/// this single constant rather than each re-deriving the same RGB triple --
+/// so it reads unambiguously as one meaning across the whole chrome, and a
+/// future shade change only has one place to edit. A warm rust rather than a
+/// pure red, so it still reads unambiguously as "danger" without clashing
+/// with the rest of this palette the way a stop-sign red would.
+const DANGER_COLOR: egui::Color32 = egui::Color32::from_rgb(196, 87, 58);
+/// A group card's border tints `DANGER_COLOR` once its member count exceeds
+/// this threshold -- a cheap glanceable "this one's gotten big" cue. Only
+/// applies while the group has no explicit tag color of its own (see its use
+/// below) -- a deliberate user choice always wins over this automatic one,
+/// same precedent tag colors already have over the plain default `ACCENT`
+/// border.
 const GROUP_OVERLOAD_THRESHOLD: usize = 8;
 
 /// A sticky note's card fill -- a warm, light color deliberately unlike
@@ -719,19 +731,19 @@ const NOTE_CARD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 236, 148);
 /// This + `TOOLBAR_FILL` + `SURFACE_RAISED` form a three-step depth ladder
 /// (background < panel < raised widget) that egui's stock palette doesn't
 /// have at all.
-const BG: egui::Color32 = egui::Color32::from_rgb(16, 17, 20);
+const BG: egui::Color32 = egui::Color32::from_rgb(23, 20, 15);
 /// A button/field's own resting fill, one step up from `TOOLBAR_FILL` — the
 /// panel it sits on. Also used for the graph card's engine-picker `Frame`.
 /// Deliberately a wide jump from `TOOLBAR_FILL`, not a subtle one — the
 /// point is a button reads as its own raised chip at a glance, not just
 /// under close pixel inspection.
-const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(54, 58, 68);
+const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(41, 36, 27);
 /// Hover state, one step up again — every interactive widget in this app's
 /// toolbar/popups visibly lightens on hover, which stock egui's near-
 /// identical inactive/hovered grays don't make obvious at a glance.
-const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(72, 77, 90);
-const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(230, 231, 235);
-const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(148, 151, 161);
+const SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(58, 50, 37);
+const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(233, 226, 211);
+const TEXT_WEAK: egui::Color32 = egui::Color32::from_rgb(168, 154, 120);
 
 /// Applied once at startup (see `Default for App`). Bumps corner rounding
 /// and spacing up from egui's fairly tight defaults (which read as "plain
@@ -758,10 +770,17 @@ fn apply_style(ctx: &egui::Context) {
     // below apply on top.
     ctx.all_styles_mut(|style| {
         style.visuals = egui::Visuals::dark();
-        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        // Airier than egui's own defaults on purpose -- the editorial
+        // direction this app's chrome now takes wants real breathing room in
+        // dialogs/menus/settings. The one place this is deliberately *not*
+        // wanted -- the graph view's own toolbar, already packed with icon
+        // buttons and genuinely screen-space-constrained -- pushes narrower
+        // values back onto its own `Ui` locally (see wherever that toolbar
+        // is drawn) rather than fighting this global default.
+        style.spacing.item_spacing = egui::vec2(10.0, 7.0);
+        style.spacing.button_padding = egui::vec2(13.0, 7.0);
 
-        let corner_radius: egui::CornerRadius = 3u8.into();
+        let corner_radius: egui::CornerRadius = 2u8.into();
         style.visuals.widgets.noninteractive.corner_radius = corner_radius;
         style.visuals.widgets.noninteractive.bg_fill = TOOLBAR_FILL;
         style.visuals.widgets.noninteractive.weak_bg_fill = TOOLBAR_FILL;
@@ -791,8 +810,8 @@ fn apply_style(ctx: &egui::Context) {
         style.visuals.widgets.open.fg_stroke.color = TEXT_PRIMARY;
         style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ACCENT);
 
-        style.visuals.window_corner_radius = 4u8.into();
-        style.visuals.menu_corner_radius = 4u8.into();
+        style.visuals.window_corner_radius = 2u8.into();
+        style.visuals.menu_corner_radius = 2u8.into();
         style.visuals.window_fill = TOOLBAR_FILL;
         style.visuals.panel_fill = BG;
         style.visuals.extreme_bg_color = BG;
@@ -800,49 +819,131 @@ fn apply_style(ctx: &egui::Context) {
         style.visuals.window_stroke = egui::Stroke::new(1.0, SURFACE_RAISED);
 
         style.visuals.selection.bg_fill = ACCENT;
-        style.visuals.selection.stroke.color = egui::Color32::WHITE;
+        // Warm cream (`TEXT_PRIMARY`), not pure white -- white read cold and
+        // slightly out of place against a gold selection fill once the rest
+        // of this palette warmed up.
+        style.visuals.selection.stroke.color = TEXT_PRIMARY;
         style.visuals.hyperlink_color = ACCENT;
         style.visuals.override_text_color = None;
     });
 }
 
-/// Replaces egui's bundled default (`Ubuntu-Light`) with IBM Plex Serif,
-/// inserted ahead of it in the proportional family rather than instead of
-/// it — a glyph outside IBM Plex Serif's own coverage still falls back to
-/// the bundled default (and from there to egui's bundled emoji/symbol
-/// fonts) instead of tofu-boxing. Picked over the OS's own Segoe UI for
-/// one concrete reason: `egui`/`ab_glyph` needs the actual font bytes at
-/// build time, and there's no equivalent of a browser's "ask the OS for
-/// this family" for a native GPU-rendered glyph atlas — bundling a real
-/// file was required either way, so the choice came down to which file,
-/// not whether to bundle one. A real static `Regular` weight (unlike
-/// Nunito Sans, tried first, which only ships as a variable font) — the
-/// serif reading was picked as a deliberate "tinge of something else"
-/// out of the same side-by-side comparison Nunito Sans came from, not
-/// treated as final.
+/// The named font family `heading_text` requests for dialog titles and
+/// settings-section headers -- kept separate from `FontFamily::Proportional`
+/// (body text) so the two can be genuinely different typefaces rather than
+/// the same face at a bigger size. Both are static single-weight instances
+/// generated from Google's variable-only source files via `fonttools
+/// varLib.instancer` (neither Literata nor Newsreader ships a static build
+/// upstream any more, and egui/ab_glyph has no variable-axis support of its
+/// own -- it would otherwise just rasterize whatever the font's default
+/// `fvar` instance happens to be, ignoring any weight/opsz this app wants).
+fn heading_family() -> egui::FontFamily {
+    egui::FontFamily::Name("heading".into())
+}
+
+/// Replaces egui's bundled default (`Ubuntu-Light`) with Literata for body
+/// text, inserted ahead of it in the proportional family rather than
+/// instead of it — a glyph outside Literata's own coverage still falls back
+/// to the bundled default (and from there to egui's bundled emoji/symbol
+/// fonts) instead of tofu-boxing. Picked over the OS's own Segoe UI for one
+/// concrete reason: `egui`/`ab_glyph` needs the actual font bytes at build
+/// time, and there's no equivalent of a browser's "ask the OS for this
+/// family" for a native GPU-rendered glyph atlas — bundling a real file was
+/// required either way, so the choice came down to which file, not whether
+/// to bundle one. Literata is Google's own "built for reading apps" text
+/// face (tuned for legibility at small sizes on low-DPI screens), instanced
+/// here at a text-appropriate `opsz`, not IBM Plex Serif's old plain
+/// Regular-only cut, which read a little soft for UI chrome once compared
+/// side by side. Newsreader (also Google's, from the same reading-app
+/// design effort, so the pairing is deliberate) supplies just the separate
+/// `heading_family()` above, instanced Bold and at a display-sized `opsz`,
+/// for the handful of dialog titles/section headers that want more
+/// contrast than body text at any weight gives for free.
 fn apply_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
-        "IBMPlexSerif".to_owned(),
+        "Literata".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/IBMPlexSerif-Regular.ttf"
+            "../assets/fonts/Literata-Regular.ttf"
         ))),
     );
     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-        family.insert(0, "IBMPlexSerif".to_owned());
+        family.insert(0, "Literata".to_owned());
     }
-    // A real icon font, not a symbol glyph gamble -- IBM Plex Serif's own
-    // doc comment above notes a theoretical fallback chain to egui's
-    // bundled emoji/symbol font, but this project has repeatedly confirmed
-    // live that several such glyphs still render as empty tofu boxes
-    // regardless (see the pin/mute/audio-indicator dots, all painter-drawn
-    // shapes specifically to dodge this). Phosphor's own codepoints live
-    // in a private-use range no other font in this chain defines, so
-    // there's no coverage ambiguity: every `egui_phosphor::regular::*`
-    // constant used in this app's chrome is guaranteed to resolve here.
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    fonts.font_data.insert(
+        "Newsreader".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Newsreader-Bold.ttf"
+        ))),
+    );
+    // Falls back to the same Literata/default chain as body text for any
+    // glyph Newsreader's own Latin-focused coverage doesn't have (a heading
+    // is still just text -- it shouldn't tofu-box on a character body text
+    // would have rendered fine).
+    let mut heading_fallback = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    heading_fallback.insert(0, "Newsreader".to_owned());
+    fonts.families.insert(heading_family(), heading_fallback);
+    // A real icon font, not a symbol glyph gamble -- Literata's own doc
+    // comment above notes a theoretical fallback chain to egui's bundled
+    // emoji/symbol font, but this project has repeatedly confirmed live
+    // that several such glyphs still render as empty tofu boxes regardless
+    // (see the pin/mute/audio-indicator dots, all painter-drawn shapes
+    // specifically to dodge this). Phosphor's own codepoints live in a
+    // private-use range no other font in this chain defines, so there's no
+    // coverage ambiguity: every `egui_phosphor::light::*` constant used
+    // in this app's chrome is guaranteed to resolve here. `Light` (not
+    // `Regular`) to sit better against the now-serif-forward, less heavy
+    // typography around it.
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Light);
     ctx.set_fonts(fonts);
 }
+
+/// A dialog title or settings-section header — `heading_family()` (Newsreader
+/// Bold) at a size that reads as a real step up from body text, in
+/// `TEXT_PRIMARY`. Every such title in this app's chrome goes through this
+/// one helper rather than each popup separately picking a size/weight, so
+/// they stay visually identical to each other by construction.
+fn heading_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text)
+        .font(egui::FontId::new(17.0, heading_family()))
+        .color(TEXT_PRIMARY)
+}
+
+/// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
+/// `resumed`'s own window setup) titlebar dark, independent of the current
+/// Windows theme setting. Without this, a system in light mode draws a
+/// bright titlebar directly above this app's now warm-dark chrome -- a
+/// visible seam undermining the rest of this theming pass for the one strip
+/// of the window this app doesn't control. A full custom-drawn titlebar
+/// (matching the palette exactly, not just light/dark) was considered and
+/// deliberately deferred -- it would mean reimplementing drag/minimize/
+/// maximize/close hit-testing, a real feature addition, not a theme tweak.
+/// `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) is undocumented pre-Windows 11 but
+/// has shipped stably since a Windows 10 20H1 update; failure is silently
+/// ignored (`DwmSetWindowAttribute`'s return value discarded) the same way
+/// this app already treats titlebar theming as cosmetic, never fatal.
+#[cfg(target_os = "windows")]
+fn apply_dark_titlebar(window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
+    let hwnd: windows_sys::Win32::Foundation::HWND = win32.hwnd.get() as *mut core::ffi::c_void;
+    let enabled: windows_sys::Win32::Foundation::BOOL = 1;
+    unsafe {
+        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows_sys::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            &enabled as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<windows_sys::Win32::Foundation::BOOL>() as u32,
+        );
+    }
+}
+#[cfg(not(target_os = "windows"))]
+fn apply_dark_titlebar(_window: &Window) {}
 
 /// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
 /// no wider than `max_width` at `font_id`, or returns it unchanged if it
@@ -2666,13 +2767,13 @@ impl App {
                     if icon_button_eased(
                         ui,
                         egui::Id::new("icon_btn_settings_back"),
-                        format!("{} Back", egui_phosphor::regular::CARET_LEFT),
+                        format!("{} Back", egui_phosphor::light::CARET_LEFT),
                     )
                     .clicked()
                     {
                         self.close_settings_page();
                     }
-                    ui.label(egui::RichText::new("Settings").strong().color(TEXT_PRIMARY));
+                    ui.label(heading_text("Settings"));
                 });
             });
 
@@ -2724,11 +2825,11 @@ impl App {
                     // Reads/writes the *focused tab's own* zoom, not the raw
                     // `Settings::zoom_factor` -- see `set_focused_zoom`'s own
                     // doc comment for the display-vs-reality bug this fixed.
-                    if ui.button(egui_phosphor::regular::MINUS).clicked() {
+                    if ui.button(egui_phosphor::light::MINUS).clicked() {
                         self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
                     }
                     ui.label(format!("{:.0}%", self.focused_zoom_factor() * 100.0));
-                    if ui.button(egui_phosphor::regular::PLUS).clicked() {
+                    if ui.button(egui_phosphor::light::PLUS).clicked() {
                         self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
                     }
                     if ui.button("Reset").clicked() {
@@ -2747,7 +2848,7 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.label(egui::RichText::new("Current Tab").strong().color(TEXT_PRIMARY));
+                ui.label(heading_text("Current Tab"));
                 // Engine swap, Mute, Screenshot, and Print to PDF used to
                 // be live toolbar controls next to the address bar --
                 // moved here to keep that toolbar down to nav + address
@@ -2788,23 +2889,23 @@ impl App {
                         let node_muted =
                             self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
                         let mute_label = if node_muted {
-                            format!("{} Unmute", egui_phosphor::regular::SPEAKER_X)
+                            format!("{} Unmute", egui_phosphor::light::SPEAKER_X)
                         } else {
-                            format!("{} Mute", egui_phosphor::regular::SPEAKER_HIGH)
+                            format!("{} Mute", egui_phosphor::light::SPEAKER_HIGH)
                         };
                         if ui.selectable_label(node_muted, mute_label).clicked() {
                             mute_toggle = true;
                         }
                         ui.horizontal(|ui| {
                             if ui
-                                .button(format!("{} Screenshot", egui_phosphor::regular::CAMERA))
+                                .button(format!("{} Screenshot", egui_phosphor::light::CAMERA))
                                 .clicked()
                             {
                                 screenshot_requested = true;
                             }
                             if !self.headless
                                 && ui
-                                    .button(format!("{} Print to PDF", egui_phosphor::regular::PRINTER))
+                                    .button(format!("{} Print to PDF", egui_phosphor::light::PRINTER))
                                     .clicked()
                             {
                                 print_to_pdf_requested = true;
@@ -2820,7 +2921,7 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.label(egui::RichText::new("Lists").strong().color(TEXT_PRIMARY));
+                ui.label(heading_text("Lists"));
                 ui.horizontal(|ui| {
                     let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
                     if bookmarks_response.clicked() {
@@ -2852,7 +2953,7 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.label(egui::RichText::new("Sessions").strong().color(TEXT_PRIMARY));
+                ui.label(heading_text("Sessions"));
                 if ui
                     .button("Save Now")
                     .on_hover_text("Write the auto-restore session.json immediately")
@@ -2888,7 +2989,7 @@ impl App {
                             open_session_name = Some(name.clone());
                         }
                         if ui
-                            .small_button(egui_phosphor::regular::X)
+                            .small_button(egui_phosphor::light::X)
                             .on_hover_text("Delete")
                             .clicked()
                         {
@@ -2924,7 +3025,7 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.label(egui::RichText::new("Bookmarks").strong().color(TEXT_PRIMARY));
+                ui.label(heading_text("Bookmarks"));
                 // Same "real file dialog blocks on OS/human input
                 // neither exists in headless mode" reasoning as
                 // Export/Import Session above -- `EXPORTBOOKMARKS`/
@@ -3066,9 +3167,12 @@ impl App {
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
             for (index, group) in self.closed_groups.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
-                    ui.label(egui_phosphor::regular::FOLDER_SIMPLE);
+                    ui.label(egui_phosphor::light::FOLDER_SIMPLE);
                     let label = format!("{} ({})", group.name, group.tabs.len());
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         reopen_group_index = Some(index);
                     }
                 });
@@ -3079,7 +3183,10 @@ impl App {
             for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
                     engine_dot(ui, closed.kind, 8.0);
-                    if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click())).clicked() {
+                    if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         reopen_tab_index = Some(index);
                     }
                 });
@@ -3090,15 +3197,18 @@ impl App {
             for (index, node) in self.closed_nodes.iter().enumerate().rev() {
                 let (icon, label) = match node {
                     ClosedNode::Note(text) => {
-                        (egui_phosphor::regular::NOTE_PENCIL, text.lines().next().unwrap_or("(empty note)"))
+                        (egui_phosphor::light::NOTE_PENCIL, text.lines().next().unwrap_or("(empty note)"))
                     }
-                    ClosedNode::Image(path) => (egui_phosphor::regular::IMAGE, path.as_str()),
-                    ClosedNode::Pdf(path) => (egui_phosphor::regular::FILE_PDF, path.as_str()),
-                    ClosedNode::Json(path) => (egui_phosphor::regular::BRACKETS_CURLY, path.as_str()),
+                    ClosedNode::Image(path) => (egui_phosphor::light::IMAGE, path.as_str()),
+                    ClosedNode::Pdf(path) => (egui_phosphor::light::FILE_PDF, path.as_str()),
+                    ClosedNode::Json(path) => (egui_phosphor::light::BRACKETS_CURLY, path.as_str()),
                 };
                 ui.horizontal(|ui| {
                     ui.label(icon);
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         reopen_node_index = Some(index);
                     }
                 });
@@ -5866,11 +5976,12 @@ impl App {
                                         .truncate()
                                         .sense(egui::Sense::click()),
                                 )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {
                                 navigate_url = Some(bookmark.url.clone());
                             }
-                            if ui.small_button(egui_phosphor::regular::X).clicked() {
+                            if ui.small_button(egui_phosphor::light::X).clicked() {
                                 remove_index = Some(index);
                             }
                         });
@@ -5905,6 +6016,7 @@ impl App {
                                         .sense(egui::Sense::click()),
                                 )
                                 .on_hover_text("Click to set folder")
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {
                                 folder_rename_start = Some((
@@ -5984,7 +6096,10 @@ impl App {
                     if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
                         continue;
                     }
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click())).clicked() {
+                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         navigate_url = Some(entry.url.clone());
                     }
                 }
@@ -6040,11 +6155,12 @@ impl App {
                         let filename = download_filename(&node.path);
                         if ui
                             .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
                             reveal_id = Some(id.clone());
                         }
-                        if ui.small_button(egui_phosphor::regular::X).clicked() {
+                        if ui.small_button(egui_phosphor::light::X).clicked() {
                             remove_id = Some(id.clone());
                         }
                     });
@@ -6413,7 +6529,7 @@ impl App {
                             // glyph. Now the real `X` icon instead, once the
                             // icon font was already in place for the other
                             // close buttons in this app's chrome.
-                            if ui.button(egui_phosphor::regular::X).clicked() {
+                            if ui.button(egui_phosphor::light::X).clicked() {
                                 close = true;
                             }
                         });
@@ -6658,7 +6774,7 @@ impl App {
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_width(360.0);
-                        ui.label(egui::RichText::new("Keyboard Shortcuts").strong().color(TEXT_PRIMARY));
+                        ui.label(heading_text("Keyboard Shortcuts"));
                         ui.separator();
                         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                             egui::Grid::new("shortcuts_help_grid")
@@ -6815,6 +6931,7 @@ impl App {
                                         egui::vec2(18.0, 18.0),
                                         egui::Sense::click(),
                                     );
+                                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                                     ui.painter().circle_filled(rect.center(), 8.0, swatch);
                                     if current == Some(swatch) {
                                         ui.painter().circle_stroke(
@@ -6834,6 +6951,7 @@ impl App {
                                     egui::vec2(18.0, 18.0),
                                     egui::Sense::click(),
                                 );
+                                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                                 ui.painter().circle_stroke(
                                     rect.center(),
                                     8.0,
@@ -7495,6 +7613,7 @@ impl App {
                             for &swatch in &TAG_COLOR_PALETTE {
                                 let (rect, response) =
                                     ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                                 ui.painter().circle_filled(rect.center(), 8.0, swatch);
                                 if color == Some(swatch) {
                                     ui.painter().circle_stroke(
@@ -7510,6 +7629,7 @@ impl App {
                             }
                             let (rect, response) =
                                 ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                             ui.painter().circle_stroke(
                                 rect.center(),
                                 8.0,
@@ -7723,7 +7843,7 @@ impl App {
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_min_width(240.0);
-                        ui.label(egui::RichText::new("Import Session").strong().color(TEXT_PRIMARY));
+                        ui.label(heading_text("Import Session"));
                         ui.add_space(6.0);
                         ui.label(format!(
                             "Current session: {} tab{}",
@@ -7820,7 +7940,7 @@ impl App {
                         ui.set_width(560.0);
                         ui.set_height(520.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("JSON").strong().color(TEXT_PRIMARY));
+                            ui.label(heading_text("JSON"));
                             // See `ipc_protocol::EngineToHost::
                             // RedirectableContent`'s own doc comment for
                             // why this is the *only* opt-in, user-
@@ -7847,7 +7967,7 @@ impl App {
                                 Ok(value) => draw_json_value(ui, "root", &value, true),
                                 Err(err) => {
                                     ui.colored_label(
-                                        egui::Color32::from_rgb(220, 60, 60),
+                                        DANGER_COLOR,
                                         format!("Invalid JSON: {err}"),
                                     );
                                     ui.add(egui::Label::new(&body).wrap());
@@ -7906,13 +8026,13 @@ impl App {
         let help_response = icon_button_eased(
             ui,
             egui::Id::new("icon_btn_shortcuts_help"),
-            egui_phosphor::regular::QUESTION,
+            egui_phosphor::light::QUESTION,
         )
         .on_hover_text("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
-        if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::regular::GEAR)
+        if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
             .on_hover_text("Settings")
             .clicked()
         {
@@ -8033,7 +8153,7 @@ impl App {
                     // in place, for the same visual consistency the other
                     // icon migrations this session already have.
                     if ui
-                        .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::regular::CARET_LEFT))
+                        .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT))
                         .clicked()
                     {
                         go_back = true;
@@ -8041,7 +8161,7 @@ impl App {
                     if ui
                         .add_enabled(
                             node.can_go_forward,
-                            egui::Button::new(egui_phosphor::regular::CARET_RIGHT),
+                            egui::Button::new(egui_phosphor::light::CARET_RIGHT),
                         )
                         .clicked()
                     {
@@ -8055,14 +8175,14 @@ impl App {
                     if icon_button_eased(
                         ui,
                         egui::Id::new("icon_btn_reload"),
-                        egui_phosphor::regular::ARROW_CLOCKWISE,
+                        egui_phosphor::light::ARROW_CLOCKWISE,
                     )
                     .on_hover_text("Reload")
                     .clicked()
                     {
                         reload_requested = true;
                     }
-                    if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::regular::HOUSE)
+                    if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
                         .on_hover_text("Go to home page")
                         .clicked()
                     {
@@ -8141,7 +8261,7 @@ impl App {
                         .and_then(|n| n.as_tab())
                         .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
                     if ui
-                        .selectable_label(is_bookmarked, egui_phosphor::regular::BOOKMARK_SIMPLE)
+                        .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
                         .on_hover_text("Bookmark")
                         .clicked()
                     {
@@ -8153,7 +8273,7 @@ impl App {
                         .and_then(|n| n.as_tab())
                         .is_some_and(|n| n.json_body.is_some())
                         && ui
-                            .button(egui_phosphor::regular::BRACKETS_CURLY)
+                            .button(egui_phosphor::light::BRACKETS_CURLY)
                             .on_hover_text("View as JSON")
                             .clicked()
                     {
@@ -8178,7 +8298,7 @@ impl App {
                             }
                         });
                     if self.split_tab.is_some()
-                        && icon_button_eased(ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::regular::X)
+                        && icon_button_eased(ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::light::X)
                             .on_hover_text("Close Split")
                             .clicked()
                     {
@@ -8573,6 +8693,12 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| {
+                // Compact, not `apply_style`'s app-wide airy spacing --
+                // this toolbar is already packed with icon buttons and
+                // genuinely screen-space-constrained, unlike the dialogs/
+                // menus/settings that airier spacing was chosen for.
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
                 ui.horizontal_centered(|ui| {
                     // Empty at the true top level; one entry per ancestor
                     // group otherwise (root-most first, current group
@@ -8704,7 +8830,7 @@ impl App {
                     // calls the same underlying import directly instead.
                     if !self.headless
                         && ui
-                            .button(egui_phosphor::regular::UPLOAD_SIMPLE)
+                            .button(egui_phosphor::light::UPLOAD_SIMPLE)
                             .on_hover_text("Import Group...")
                             .clicked()
                     {
@@ -8712,7 +8838,7 @@ impl App {
                     }
                     if !groups_at_level.is_empty()
                         && ui
-                            .button(egui_phosphor::regular::FOLDER_MINUS)
+                            .button(egui_phosphor::light::FOLDER_MINUS)
                             .on_hover_text("Ungroup All")
                             .clicked()
                     {
@@ -8720,9 +8846,9 @@ impl App {
                     }
                     if !groups_at_level.is_empty() {
                         let (icon, hover) = if self.groups_collapsed {
-                            (egui_phosphor::regular::CORNERS_OUT, "Expand Groups")
+                            (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
                         } else {
-                            (egui_phosphor::regular::CORNERS_IN, "Collapse Groups")
+                            (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
                         };
                         if ui.button(icon).on_hover_text(hover).clicked() {
                             self.groups_collapsed = !self.groups_collapsed;
@@ -8764,7 +8890,7 @@ impl App {
                         }
                     }
                     if let Some(err) = &self.tab_spawn_error {
-                        ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+                        ui.colored_label(DANGER_COLOR, err);
                     }
                     shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                 });
@@ -8788,7 +8914,7 @@ impl App {
             ui.centered_and_justified(|ui| {
                 match &self.tab_spawn_error {
                     Some(err) => ui.colored_label(
-                        egui::Color32::from_rgb(220, 60, 60),
+                        DANGER_COLOR,
                         format!("{err}\nClick \"+ New Tab\" to try again."),
                     ),
                     None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
@@ -9496,11 +9622,11 @@ impl App {
                             lerp_color32(resting_color, ui.visuals().text_color(), hover_t),
                         )
                     };
-                    draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
-                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
+                    draw_card_glow(ui.painter(), rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
+                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, card_fill);
                     ui.painter().rect_stroke(
                         rect,
-                        6.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -9512,7 +9638,7 @@ impl App {
                     if is_selected {
                         ui.painter().rect_filled(
                             rect,
-                            6.0 * inv_zoom,
+                            2.0 * inv_zoom,
                             egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
                         );
                     }
@@ -9629,11 +9755,13 @@ impl App {
                             rect.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom,
                             egui::vec2(16.0, 16.0) * inv_zoom,
                         );
-                        let audio_response = ui.interact(
-                            audio_rect,
-                            egui::Id::new(("graph_node_audio", id.as_str())),
-                            egui::Sense::click(),
-                        );
+                        let audio_response = ui
+                            .interact(
+                                audio_rect,
+                                egui::Id::new(("graph_node_audio", id.as_str())),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         if node_muted {
                             // Muted stays static -- nothing is actually
                             // playing to animate. A real `SPEAKER_X` icon
@@ -9650,9 +9778,9 @@ impl App {
                                     overlay_painter.text(
                                         project(icon_pos),
                                         egui::Align2::CENTER_CENTER,
-                                        egui_phosphor::regular::SPEAKER_X,
+                                        egui_phosphor::light::SPEAKER_X,
                                         egui::FontId::proportional(12.0),
-                                        egui::Color32::from_rgb(220, 60, 60),
+                                        DANGER_COLOR,
                                     );
                                 }));
                             }
@@ -9676,7 +9804,12 @@ impl App {
                             // the end of every frame (see `RedrawRequested`'s
                             // own handling), so nothing further is needed
                             // to keep it animating on its own.
-                            let waveform_color = egui::Color32::from_rgb(80, 200, 120);
+                            // A warm sage rather than a minty green -- still
+                            // unambiguously "active/live" (the universal
+                            // recording-light color family), just shifted to
+                            // sit with the rest of this app's warm palette
+                            // instead of against it.
+                            let waveform_color = egui::Color32::from_rgb(150, 190, 90);
                             let t = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_secs_f64())
@@ -9728,11 +9861,13 @@ impl App {
                     // view.
                     let pin_rect =
                         egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
-                    let pin_response = ui.interact(
-                        pin_rect,
-                        egui::Id::new(("graph_node_pin", id.as_str())),
-                        egui::Sense::click(),
-                    );
+                    let pin_response = ui
+                        .interact(
+                            pin_rect,
+                            egui::Id::new(("graph_node_pin", id.as_str())),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let pin_color = if node_pinned {
                         ACCENT
                     } else {
@@ -9744,7 +9879,7 @@ impl App {
                             overlay_painter.text(
                                 project(pin_icon_pos),
                                 egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::PUSH_PIN,
+                                egui_phosphor::light::PUSH_PIN,
                                 egui::FontId::proportional(14.0),
                                 pin_color,
                             );
@@ -9769,20 +9904,22 @@ impl App {
                     if is_hovered {
                         let close_rect =
                             egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
+                        let close_response = ui
+                            .interact(
+                                close_rect,
+                                egui::Id::new(("graph_node_close", id.as_str())),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
+                            DANGER_COLOR
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                        ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
                         ui.painter().rect_stroke(
                             close_rect,
-                            4.0 * inv_zoom,
+                            2.0 * inv_zoom,
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
@@ -9792,7 +9929,7 @@ impl App {
                             overlay_painter.text(
                                 project(close_icon_pos),
                                 egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::X,
+                                egui_phosphor::light::X,
                                 egui::FontId::proportional(14.0),
                                 close_icon_color,
                             );
@@ -9820,20 +9957,22 @@ impl App {
                     if is_hovered && self.current_group.is_some() {
                         let eject_rect =
                             egui::Rect::from_center_size(rect.left_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-                        let eject_response = ui.interact(
-                            eject_rect,
-                            egui::Id::new(("graph_node_eject", id.as_str())),
-                            egui::Sense::click(),
-                        );
+                        let eject_response = ui
+                            .interact(
+                                eject_rect,
+                                egui::Id::new(("graph_node_eject", id.as_str())),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         let eject_fill = if eject_response.hovered() {
                             ACCENT
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(eject_rect, 4.0 * inv_zoom, eject_fill);
+                        ui.painter().rect_filled(eject_rect, 2.0 * inv_zoom, eject_fill);
                         ui.painter().rect_stroke(
                             eject_rect,
-                            4.0 * inv_zoom,
+                            2.0 * inv_zoom,
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
@@ -9848,7 +9987,7 @@ impl App {
                             overlay_painter.text(
                                 project(eject_icon_pos),
                                 egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::SIGN_OUT,
+                                egui_phosphor::light::SIGN_OUT,
                                 egui::FontId::proportional(14.0),
                                 eject_icon_color,
                             );
@@ -9866,11 +10005,13 @@ impl App {
                     // swatch.
                     let swatch_rect =
                         egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
-                    let swatch_response = ui.interact(
-                        swatch_rect,
-                        egui::Id::new(("graph_node_swatch", id.as_str())),
-                        egui::Sense::click(),
-                    );
+                    let swatch_response = ui
+                        .interact(
+                            swatch_rect,
+                            egui::Id::new(("graph_node_swatch", id.as_str())),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let mut swatch_clicked = false;
                     match tag_color {
                         Some(c) => {
@@ -10129,7 +10270,7 @@ impl App {
                     } else {
                         ui.visuals().extreme_bg_color
                     };
-                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
+                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, card_fill);
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
                     } else {
@@ -10137,7 +10278,7 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        6.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -10167,7 +10308,7 @@ impl App {
                                 overlay_painter.text(
                                     project(download_icon_pos) + egui::vec2(0.0, 10.0),
                                     egui::Align2::CENTER_TOP,
-                                    egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                                    egui_phosphor::light::DOWNLOAD_SIMPLE,
                                     egui::FontId::proportional(18.0),
                                     download_icon_color,
                                 );
@@ -10238,20 +10379,22 @@ impl App {
                     if is_hovered {
                         let close_rect =
                             egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new(("graph_download_node_close", id.as_str())),
-                            egui::Sense::click(),
-                        );
+                        let close_response = ui
+                            .interact(
+                                close_rect,
+                                egui::Id::new(("graph_download_node_close", id.as_str())),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         let close_fill = if close_response.hovered() {
-                            egui::Color32::from_rgb(220, 60, 60)
+                            DANGER_COLOR
                         } else {
                             ui.visuals().extreme_bg_color
                         };
-                        ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                        ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
                         ui.painter().rect_stroke(
                             close_rect,
-                            4.0 * inv_zoom,
+                            2.0 * inv_zoom,
                             egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                             egui::StrokeKind::Inside,
                         );
@@ -10261,7 +10404,7 @@ impl App {
                             overlay_painter.text(
                                 project(close_icon_pos),
                                 egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::X,
+                                egui_phosphor::light::X,
                                 egui::FontId::proportional(14.0),
                                 close_icon_color,
                             );
@@ -10350,7 +10493,7 @@ impl App {
                     let is_editing =
                         self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
-                    ui.painter().rect_filled(rect, 6.0 * inv_zoom, NOTE_CARD_COLOR);
+                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, NOTE_CARD_COLOR);
                     let (border_width, border_color) = if is_hovered {
                         (1.5, egui::Color32::from_black_alpha(200))
                     } else {
@@ -10358,7 +10501,7 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        6.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -10368,7 +10511,7 @@ impl App {
                             overlay_painter.text(
                                 project(note_icon_pos) + egui::vec2(8.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
-                                egui_phosphor::regular::NOTE_PENCIL,
+                                egui_phosphor::light::NOTE_PENCIL,
                                 egui::FontId::proportional(12.0),
                                 egui::Color32::from_black_alpha(160),
                             );
@@ -10573,7 +10716,7 @@ impl App {
                             None => {
                                 ui.painter().rect_filled(
                                     rect,
-                                    4.0 * inv_zoom,
+                                    2.0 * inv_zoom,
                                     ui.visuals().extreme_bg_color,
                                 );
                                 let broken_icon_pos = rect.center();
@@ -10582,7 +10725,7 @@ impl App {
                                     overlay_painter.text(
                                         project(broken_icon_pos),
                                         egui::Align2::CENTER_CENTER,
-                                        egui_phosphor::regular::IMAGE_BROKEN,
+                                        egui_phosphor::light::IMAGE_BROKEN,
                                         egui::FontId::proportional(24.0),
                                         broken_icon_color,
                                     );
@@ -10590,7 +10733,7 @@ impl App {
                             }
                         }
                     } else {
-                        ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                        ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     }
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
@@ -10599,7 +10742,7 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        4.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -10725,39 +10868,39 @@ impl App {
                             // Reachable the same rare way an `Image` node's own
                             // `None` case is -- the node outlived its texture.
                             Some(Ok((None, _))) => {
-                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                                 let broken_icon_pos = rect.center();
                                 let broken_icon_color = ui.visuals().weak_text_color();
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                     overlay_painter.text(
                                         project(broken_icon_pos),
                                         egui::Align2::CENTER_CENTER,
-                                        egui_phosphor::regular::IMAGE_BROKEN,
+                                        egui_phosphor::light::IMAGE_BROKEN,
                                         egui::FontId::proportional(24.0),
                                         broken_icon_color,
                                     );
                                 }));
                             }
                             Some(Err(_)) => {
-                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                                 let error_icon_pos = rect.center();
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                     overlay_painter.text(
                                         project(error_icon_pos),
                                         egui::Align2::CENTER_CENTER,
-                                        egui_phosphor::regular::FILE_X,
+                                        egui_phosphor::light::FILE_X,
                                         egui::FontId::proportional(24.0),
-                                        GROUP_OVERLOAD_COLOR,
+                                        DANGER_COLOR,
                                     );
                                 }));
                             }
                             None => {
-                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                                 ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
                             }
                         }
                     } else {
-                        ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                        ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     }
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
@@ -10766,7 +10909,7 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        4.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -10839,7 +10982,7 @@ impl App {
                     );
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
 
-                    ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     if !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
                         let json_center = rect.center();
                         let summary_color = ui.visuals().text_color();
@@ -10847,7 +10990,7 @@ impl App {
                             overlay_painter.text(
                                 project(json_center) + egui::vec2(0.0, -12.0),
                                 egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::BRACKETS_CURLY,
+                                egui_phosphor::light::BRACKETS_CURLY,
                                 egui::FontId::proportional(22.0),
                                 ACCENT,
                             );
@@ -10867,7 +11010,7 @@ impl App {
                     };
                     ui.painter().rect_stroke(
                         rect,
-                        4.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
@@ -10969,12 +11112,12 @@ impl App {
                         );
                         let card_fill = ui.visuals().extreme_bg_color.gamma_multiply(1.0 + hover_t * 0.35);
                         let border_color =
-                            tag_color.unwrap_or(if overloaded { GROUP_OVERLOAD_COLOR } else { ACCENT });
-                        draw_card_glow(ui.painter(), rect, 6.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
-                        ui.painter().rect_filled(rect, 6.0 * inv_zoom, card_fill);
+                            tag_color.unwrap_or(if overloaded { DANGER_COLOR } else { ACCENT });
+                        draw_card_glow(ui.painter(), rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
+                        ui.painter().rect_filled(rect, 2.0 * inv_zoom, card_fill);
                         ui.painter().rect_stroke(
                             rect,
-                            6.0 * inv_zoom,
+                            2.0 * inv_zoom,
                             egui::Stroke::new((1.0 + hover_t * 0.5) * inv_zoom, border_color),
                             egui::StrokeKind::Inside,
                         );
@@ -11148,20 +11291,22 @@ impl App {
                                 rect.right_top(),
                                 egui::vec2(18.0, 18.0) * inv_zoom,
                             );
-                            let close_response = ui.interact(
-                                close_rect,
-                                egui::Id::new(("graph_group_node_close", id.as_str())),
-                                egui::Sense::click(),
-                            );
+                            let close_response = ui
+                                .interact(
+                                    close_rect,
+                                    egui::Id::new(("graph_group_node_close", id.as_str())),
+                                    egui::Sense::click(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
                             let close_fill = if close_response.hovered() {
-                                egui::Color32::from_rgb(220, 60, 60)
+                                DANGER_COLOR
                             } else {
                                 ui.visuals().extreme_bg_color
                             };
-                            ui.painter().rect_filled(close_rect, 4.0 * inv_zoom, close_fill);
+                            ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
                             ui.painter().rect_stroke(
                                 close_rect,
-                                4.0 * inv_zoom,
+                                2.0 * inv_zoom,
                                 egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                                 egui::StrokeKind::Inside,
                             );
@@ -11171,7 +11316,7 @@ impl App {
                                 overlay_painter.text(
                                     project(close_icon_pos),
                                     egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::X,
+                                    egui_phosphor::light::X,
                                     egui::FontId::proportional(14.0),
                                     close_icon_color,
                                 );
@@ -11188,11 +11333,13 @@ impl App {
                         // be a glanceable identifier, not a hidden control.
                         let swatch_rect =
                             egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
-                        let swatch_response = ui.interact(
-                            swatch_rect,
-                            egui::Id::new(("graph_group_node_swatch", id.as_str())),
-                            egui::Sense::click(),
-                        );
+                        let swatch_response = ui
+                            .interact(
+                                swatch_rect,
+                                egui::Id::new(("graph_group_node_swatch", id.as_str())),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         match tag_color {
                             Some(c) => {
                                 ui.painter().circle_filled(swatch_rect.center(), 6.0 * inv_zoom, c);
@@ -11287,10 +11434,10 @@ impl App {
                     // background that's shrunk out from under it.
                     let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0) * inv_zoom;
                     let rect = egui::Rect::from_center_size(center_pos, card_size);
-                    ui.painter().rect_filled(rect, 4.0 * inv_zoom, TOOLBAR_FILL);
+                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, TOOLBAR_FILL);
                     ui.painter().rect_stroke(
                         rect,
-                        4.0 * inv_zoom,
+                        2.0 * inv_zoom,
                         egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
                         egui::StrokeKind::Inside,
                     );
@@ -11310,7 +11457,7 @@ impl App {
                         next_row_rect(),
                         "pending_new_node_tab",
                         inv_zoom,
-                        &format!("{} New Tab", egui_phosphor::regular::PLUS),
+                        &format!("{} New Tab", egui_phosphor::light::PLUS),
                     );
                     let clicked_note = draw_new_node_menu_row(
                         ui,
@@ -11318,7 +11465,7 @@ impl App {
                         next_row_rect(),
                         "pending_new_node_note",
                         inv_zoom,
-                        &format!("{} New Note", egui_phosphor::regular::NOTE_PENCIL),
+                        &format!("{} New Note", egui_phosphor::light::NOTE_PENCIL),
                     );
                     let clicked_group = draw_new_node_menu_row(
                         ui,
@@ -11326,7 +11473,7 @@ impl App {
                         next_row_rect(),
                         "pending_new_node_group",
                         inv_zoom,
-                        &format!("{} New Group", egui_phosphor::regular::FOLDER_PLUS),
+                        &format!("{} New Group", egui_phosphor::light::FOLDER_PLUS),
                     );
                     // Same reasoning as every other file-dialog button in
                     // this app -- a real picker blocks on OS/human input
@@ -11338,7 +11485,7 @@ impl App {
                             next_row_rect(),
                             "pending_new_node_file",
                             inv_zoom,
-                            &format!("{} Add File...", egui_phosphor::regular::FILE_PLUS),
+                            &format!("{} Add File...", egui_phosphor::light::FILE_PLUS),
                         );
                     if clicked_tab {
                         pending_new_tab_at = Some(pos);
@@ -11861,6 +12008,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
+        apply_dark_titlebar(&window);
         self.gpu = Some(GpuState::new(window.clone()));
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),

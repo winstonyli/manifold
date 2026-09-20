@@ -6,7 +6,10 @@ description.workspace = true
 
 [dependencies]
 egui = "0.36.2"
-egui-phosphor = "0.14.0"
+# `light` (not the default `regular`) -- see `apply_fonts`'s own doc comment
+# for why: a lighter icon weight sits better against the serif-forward,
+# less-heavy typography this app's chrome now uses.
+egui-phosphor = { version = "0.14.0", default-features = false, features = ["light"] }
 egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
 # Notes rendered as real Markdown -- `default-features = false` drops this
@@ -44,6 +47,10 @@ pdfium-render = "=0.8.37"
 # bundled runtimes require.
 pdfium-auto = "0.3"
 pollster = "1.0.1"
+# For pulling the window's raw HWND to force a dark native titlebar (see
+# `apply_dark_titlebar` in main.rs) -- winit 0.30 already implements this
+# trait internally, this just exposes its types to this crate directly.
+raw-window-handle = "0.6"
 # Hasher for `App::nodes` (a `HashMap<String, GraphNode>` keyed by an
 # app-generated, never untrusted-input-derived id, looked up many times
 # per frame across the Graph-view render loops) -- `std::collections::
@@ -66,3 +73,11 @@ serde_json = "1"
 ureq = "3"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+# Windows-only: forces the native titlebar dark regardless of the OS theme
+# setting (see `apply_dark_titlebar`'s own doc comment in main.rs) -- this
+# app is Windows-only today anyway (see `pdfium-auto`'s own comment above),
+# but this is `cfg`-gated rather than a plain dependency so that stays true
+# only until porting actually happens, not baked in twice.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }

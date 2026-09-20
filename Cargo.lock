@@ -4866,11 +4866,13 @@ dependencies = [
  "pdfium-auto",
  "pdfium-render",
  "pollster 1.0.1",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
  "ureq",
  "wgpu",
+ "windows-sys 0.59.0",
  "winit",
 ]
 
