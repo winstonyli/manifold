@@ -2,9 +2,13 @@
 //! `manifold-engine-cef/src/main.rs`'s shape (fixed-tick poll loop,
 //! `SharedNavState` + `dirty` flag) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
-//! Real frame capture via `Windows.Graphics.Capture` -- see `capture.rs`'s
-//! doc comment for why it captures the host window directly rather than
-//! the originally-planned DirectComposition Visual.
+//! WebView2 is hosted via the Composition controller against a
+//! `Windows.UI.Composition` visual (`composition.rs`), and frames are
+//! captured directly from that visual via
+//! `GraphicsCaptureItem::CreateFromVisual` (`capture.rs`) rather than from
+//! the host window -- see
+//! `docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md`
+//! for why.
 
 mod audio;
 mod capture;
@@ -167,7 +171,9 @@ fn main() {
     let (comp_controller, controller, webview) =
         create_composition_controller(environment.clone(), hwnd).expect("create CoreWebView2CompositionController");
     unsafe {
-        let _ = comp_controller.SetRootVisualTarget(&root_visual);
+        comp_controller
+            .SetRootVisualTarget(&root_visual)
+            .expect("set composition root visual target");
     }
 
     resize_controller(&controller, &root_visual, DEFAULT_WIDTH, DEFAULT_HEIGHT);
