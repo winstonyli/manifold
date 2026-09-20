@@ -412,8 +412,9 @@ fn main() {
                     None => true,
                 };
                 if needs_new_buffer {
-                    // TEMP diagnostic for the live black-bar bug -- remove
-                    // once resolved.
+                    // Logged permanently -- a frame-size change is rare
+                    // enough post-migration that seeing it in the log is
+                    // useful signal, not noise.
                     eprintln!("[input-diag] captured frame size changed to {width}x{height}");
                     // Drop the old mapping before recreating -- `create`
                     // truncates the same backing file by name, and Windows

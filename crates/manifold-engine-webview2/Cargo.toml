@@ -55,7 +55,6 @@ windows = { version = "0.62", features = [
     "Win32_System_WinRT_Composition",
     "System",
     "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_Input_Pointer",
 ] }
 # Real dependency now (`composition.rs`'s `Vector2` for visual sizing), not
 # example-only -- pinned to match the version `windows` 0.62.2 itself
