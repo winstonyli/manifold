@@ -178,6 +178,30 @@ fn main() {
 
     resize_controller(&controller, &root_visual, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
+    // Suppresses Chromium's own native right-click context menu. Confirmed
+    // live (see Task 4's follow-up report): once `input.rs` started sending
+    // genuine native `SendMouseInput` right-button events, WebView2's
+    // browser process really did pop up its native "Back/Refresh/Save
+    // as/.../Inspect" context menu as a real top-level `Chrome_WidgetWin_1`
+    // window -- and since this host window is a real (if off-screen) window,
+    // that popup renders at real, on-screen coordinates, landing right on
+    // top of `manifold`'s own visible window in a real desktop screen
+    // capture (invisible in `manifold`'s own composited-frame screenshots,
+    // since it's a separate top-level window, not part of the captured
+    // visual tree). `manifold` already has its own complete
+    // link-context-menu UI built on this tab's JS-based `elementFromPoint`
+    // href-detection (`input.rs`'s `MouseUp` right-click arm; see
+    // `ipc_protocol::EngineToHost::ContextMenuLink`) -- live-verified after
+    // this fix to still work correctly (the custom "Open in new tab" pill
+    // still appears right where expected) -- so Chromium's native menu is
+    // pure downside: a second, wrongly-positioned menu with no corresponding
+    // custom-menu upside.
+    unsafe {
+        let _ = webview
+            .Settings()
+            .and_then(|settings| settings.SetAreDefaultContextMenusEnabled(false));
+    }
+
     // Gives the webview logical focus programmatically -- no real OS window
     // activation (`SetForegroundWindow`) needed or wanted, this project's
     // off-screen host window deliberately never becomes the real foreground
