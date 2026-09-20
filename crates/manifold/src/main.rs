@@ -92,6 +92,21 @@ const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 /// summary (double-click opens the real content in `build_json_viewer`).
 const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
+/// Visible-node count (post-cull, current level, see `build_graph_ui`'s
+/// LOD pre-pass) above which Graph view switches to simplified rendering
+/// -- skipping thumbnail/favicon textures and always-drawn title/label
+/// text across every kind, the two genuinely expensive parts of painting
+/// a card (GPU texture sampling and glyph rasterization), while leaving
+/// backgrounds, borders, color swatches, and hover-gated buttons alone.
+/// Counts visible nodes rather than thresholding on zoom directly, since
+/// a dense cluster of many small-but-individually-zoomed-in cards is the
+/// actual cost driver this exists to bound, not zoom level itself.
+const LOD_SIMPLIFY_COUNT: usize = 60;
+/// Below this count, LOD returns to full detail. Deliberately lower than
+/// `LOD_SIMPLIFY_COUNT` (a hysteresis gap, not one shared threshold) so a
+/// count hovering right at a single boundary doesn't flip every frame.
+const LOD_RESTORE_COUNT: usize = 45;
+
 /// Fixed tag-color choices a group or tab card's color swatch cycles
 /// through (see `next_tag_color`) -- vermillion/orange/yellow/bluish
 /// green/sky blue/reddish purple, chosen for mutual distinguishability
@@ -571,6 +586,28 @@ fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
         Some(Ok(outcome)) => image_node_card_size(outcome.width, outcome.height),
         _ => PDF_PENDING_NODE_SIZE,
     }
+}
+
+/// How many of `ids` (one kind's own node-id list at the current level)
+/// have a `size`-sized card intersecting `viewport` -- the exact same
+/// per-node rect the render loops below build for their own cull check.
+/// Shared by `build_graph_ui`'s LOD pre-pass (see `LOD_SIMPLIFY_COUNT`)
+/// so it counts "visible" precisely the way culling already does, rather
+/// than a second, slightly different notion of visibility.
+fn count_visible_nodes(
+    nodes: &HashMap<String, GraphNode>,
+    ids: &[String],
+    size: egui::Vec2,
+    viewport: egui::Rect,
+) -> usize {
+    ids.iter()
+        .filter(|id| {
+            nodes.get(id.as_str()).is_some_and(|n| {
+                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), size)
+                    .intersects(viewport)
+            })
+        })
+        .count()
 }
 
 /// `1234` -> `"1.2 KB"`, binary (1024-based) units -- matches Windows
@@ -1892,6 +1929,14 @@ struct App {
     /// persisted across frames per `egui::Scene::show`'s own contract —
     /// mutated by the user dragging (pan) or scrolling (zoom).
     graph_scene_rect: egui::Rect,
+    /// Level-of-detail: true once a frame's own count of viewport-visible
+    /// nodes (post-cull, see `build_graph_ui`'s own pre-pass) crossed
+    /// `LOD_SIMPLIFY_COUNT`, gating the per-kind render loops' thumbnail/
+    /// title-text painting to keep dense views cheap. Flips back to
+    /// `false` only once the count drops under the lower `LOD_RESTORE_
+    /// COUNT` -- a deliberate hysteresis gap, not a single threshold, so
+    /// a count sitting right at one boundary doesn't flicker every frame.
+    graph_lod_simplified: bool,
     /// `Some` while entering/leaving a group is easing the camera toward
     /// the new level's framing instead of having already snapped there --
     /// see `GraphCameraTween`'s own doc comment.
@@ -2225,6 +2270,7 @@ impl Default for App {
             selected_tabs: HashSet::new(),
             pending_new_node: None,
             graph_scene_rect: default_graph_scene_rect(),
+            graph_lod_simplified: false,
             graph_camera_tween: None,
             graph_settled_key: None,
             headless: false,
@@ -8262,6 +8308,30 @@ impl App {
         let jsons_at_level = self.jsons_at_current_level();
         let groups_at_level = self.groups_at_current_level();
 
+        // Level-of-detail: count how many nodes at this level actually
+        // intersect the viewport (approximating a variable-size Image/Pdf
+        // card's footprint with its own typical/max size -- this only
+        // feeds a threshold decision, not real culling, so that's close
+        // enough), then flip `graph_lod_simplified` with a hysteresis gap
+        // -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for why. Uses
+        // this frame's not-yet-updated `graph_scene_rect`, the same one-
+        // frame-stale viewport the render loops' own cull check already
+        // accepts.
+        let lod_visible_count = count_visible_nodes(&self.nodes, &tabs_at_level, GRAPH_NODE_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &downloads_at_level, DOWNLOAD_NODE_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &notes_at_level, NOTE_NODE_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &images_at_level, IMAGE_NODE_MAX_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &pdfs_at_level, PDF_PENDING_NODE_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &jsons_at_level, JSON_NODE_SIZE, self.graph_scene_rect)
+            + count_visible_nodes(&self.nodes, &groups_at_level, GROUP_NODE_SIZE, self.graph_scene_rect);
+        if self.graph_lod_simplified {
+            if lod_visible_count < LOD_RESTORE_COUNT {
+                self.graph_lod_simplified = false;
+            }
+        } else if lod_visible_count > LOD_SIMPLIFY_COUNT {
+            self.graph_lod_simplified = true;
+        }
+
         egui::Panel::top("graph_toolbar")
             .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
             .frame(
@@ -9172,95 +9242,105 @@ impl App {
                         );
                     }
 
-                    let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
-                    let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
-                    if let Some(tex_id) = thumb_id {
-                        ui.painter().image(
-                            tex_id,
-                            thumb_rect,
-                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                    } else {
-                        ui.put(
-                            egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                            egui::Spinner::new().size(24.0 * inv_zoom),
-                        );
-                    }
-
-                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
-                        let label = if node.title.is_empty() {
-                            node.url.as_str()
+                    // LOD: the thumbnail texture blit and the title/
+                    // favicon text below are this card's two genuinely
+                    // expensive parts (a real GPU texture sample, and
+                    // glyph rasterization queued on `overlay_painter`) --
+                    // skipped once `graph_lod_simplified` is set (see its
+                    // own doc comment), leaving the plain background/
+                    // border/color-swatch painted above and below as the
+                    // simplified card's whole appearance.
+                    if !self.graph_lod_simplified {
+                        let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
+                        let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
+                        if let Some(tex_id) = thumb_id {
+                            ui.painter().image(
+                                tex_id,
+                                thumb_rect,
+                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
                         } else {
-                            node.title.as_str()
-                        };
-                        // A flat scrim behind the title strip so it stays
-                        // legible over a busy/light thumbnail — most real
-                        // pages are light-background, and plain text on top
-                        // of one was unreadable without this.
-                        let title_strip = egui::Rect::from_min_max(
-                            egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
-                            thumb_rect.right_bottom(),
-                        );
-                        ui.painter().rect_filled(
-                            title_strip,
-                            0.0,
-                            egui::Color32::from_black_alpha(160),
-                        );
-                        // Engine identity as a small colored dot rather than
-                        // repeating the "[Servo]"-style bracket text on every
-                        // single node — the dot alone is enough once you've
-                        // learned the color coding (also used in the tab
-                        // strip and engine picker), and reads faster at this
-                        // node's small size than another word would.
-                        ui.painter().circle_filled(
-                            egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
-                            4.0 * inv_zoom,
-                            engine_color(node.tab.kind),
-                        );
-                        // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
-                        // label entirely rather than truncating to a
-                        // near-illegible sliver -- the engine-color dot
-                        // above still conveys engine identity on its own.
-                        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                            let label_font = egui::FontId::proportional(14.0);
-                            // Available on-screen width for the label -- the
-                            // strip's own screen width (zoom shrinks the card,
-                            // but not this fixed-size text, so at low zoom the
-                            // label can be wider than the card it's on) minus
-                            // the fixed 16px left offset and a little breathing
-                            // room on the right.
-                            let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
-                            let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
-                            let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(label_pos) + egui::vec2(16.0, 0.0),
-                                    egui::Align2::LEFT_CENTER,
-                                    label,
-                                    label_font,
-                                    egui::Color32::WHITE,
-                                );
-                            }));
+                            ui.put(
+                                egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                                egui::Spinner::new().size(24.0 * inv_zoom),
+                            );
                         }
-                    }
-                    if let Some(tex_id) = self
-                        .nodes
-                        .get(&id)
-                        .and_then(|n| n.as_tab())
-                        .and_then(|n| favicon_fetch::url_origin(&n.url))
-                        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
-                    {
-                        let favicon_rect = egui::Rect::from_min_size(
-                            rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
-                            FAVICON_SIZE * inv_zoom,
-                        );
-                        ui.painter().image(
-                            tex_id,
-                            favicon_rect,
-                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+
+                        if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
+                            let label = if node.title.is_empty() {
+                                node.url.as_str()
+                            } else {
+                                node.title.as_str()
+                            };
+                            // A flat scrim behind the title strip so it stays
+                            // legible over a busy/light thumbnail — most real
+                            // pages are light-background, and plain text on top
+                            // of one was unreadable without this.
+                            let title_strip = egui::Rect::from_min_max(
+                                egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
+                                thumb_rect.right_bottom(),
+                            );
+                            ui.painter().rect_filled(
+                                title_strip,
+                                0.0,
+                                egui::Color32::from_black_alpha(160),
+                            );
+                            // Engine identity as a small colored dot rather than
+                            // repeating the "[Servo]"-style bracket text on every
+                            // single node — the dot alone is enough once you've
+                            // learned the color coding (also used in the tab
+                            // strip and engine picker), and reads faster at this
+                            // node's small size than another word would.
+                            ui.painter().circle_filled(
+                                egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
+                                4.0 * inv_zoom,
+                                engine_color(node.tab.kind),
+                            );
+                            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                            // label entirely rather than truncating to a
+                            // near-illegible sliver -- the engine-color dot
+                            // above still conveys engine identity on its own.
+                            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                                let label_font = egui::FontId::proportional(14.0);
+                                // Available on-screen width for the label -- the
+                                // strip's own screen width (zoom shrinks the card,
+                                // but not this fixed-size text, so at low zoom the
+                                // label can be wider than the card it's on) minus
+                                // the fixed 16px left offset and a little breathing
+                                // room on the right.
+                                let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
+                                let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
+                                let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(label_pos) + egui::vec2(16.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        label,
+                                        label_font,
+                                        egui::Color32::WHITE,
+                                    );
+                                }));
+                            }
+                        }
+                        if let Some(tex_id) = self
+                            .nodes
+                            .get(&id)
+                            .and_then(|n| n.as_tab())
+                            .and_then(|n| favicon_fetch::url_origin(&n.url))
+                            .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+                        {
+                            let favicon_rect = egui::Rect::from_min_size(
+                                rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                                FAVICON_SIZE * inv_zoom,
+                            );
+                            ui.painter().image(
+                                tex_id,
+                                favicon_rect,
+                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
                     }
                     // Audio-playing/muted indicator: a plain colored dot
                     // (like the engine-identity one below the thumbnail),
@@ -9298,16 +9378,18 @@ impl App {
                             // so drawn on `overlay_painter` like the pin/
                             // eject icons, not `ui.painter()` like the
                             // waveform's own vector bars below.
-                            let icon_pos = audio_rect.center();
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(icon_pos),
-                                    egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::SPEAKER_X,
-                                    egui::FontId::proportional(12.0),
-                                    egui::Color32::from_rgb(220, 60, 60),
-                                );
-                            }));
+                            if !self.graph_lod_simplified {
+                                let icon_pos = audio_rect.center();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(icon_pos),
+                                        egui::Align2::CENTER_CENTER,
+                                        egui_phosphor::regular::SPEAKER_X,
+                                        egui::FontId::proportional(12.0),
+                                        egui::Color32::from_rgb(220, 60, 60),
+                                    );
+                                }));
+                            }
                         } else {
                             // Actually playing: a tiny 3-bar waveform
                             // instead of a static dot -- painter-drawn
@@ -9391,16 +9473,18 @@ impl App {
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    let pin_icon_pos = pin_rect.center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(pin_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::PUSH_PIN,
-                            egui::FontId::proportional(14.0),
-                            pin_color,
-                        );
-                    }));
+                    if !self.graph_lod_simplified {
+                        let pin_icon_pos = pin_rect.center();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(pin_icon_pos),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::PUSH_PIN,
+                                egui::FontId::proportional(14.0),
+                                pin_color,
+                            );
+                        }));
+                    }
                     if pin_response.clicked() {
                         pin_toggle_requested = Some(id.clone());
                     }
@@ -9803,38 +9887,42 @@ impl App {
                         // claim of avoiding exactly that gamble; migrated
                         // to a real icon for consistency once the icon
                         // font was already in place for everything else.
-                        let download_icon_pos = rect.center_top();
-                        let download_icon_color = ui.visuals().text_color();
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.text(
-                                project(download_icon_pos) + egui::vec2(0.0, 10.0),
-                                egui::Align2::CENTER_TOP,
-                                egui_phosphor::regular::DOWNLOAD_SIMPLE,
-                                egui::FontId::proportional(18.0),
-                                download_icon_color,
-                            );
-                        }));
-                        // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
-                        // filename entirely rather than truncating to a
-                        // near-illegible sliver -- the download-icon glyph
-                        // above still marks the node as a download on its
-                        // own.
-                        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                            let filename_font = egui::FontId::proportional(14.0);
-                            let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                            let filename =
-                                truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
-                            let filename_pos = rect.center_bottom();
-                            let filename_color = ui.visuals().text_color();
+                        // LOD: icon/filename text skipped once simplified
+                        // -- see the tab loop's own doc comment.
+                        if !self.graph_lod_simplified {
+                            let download_icon_pos = rect.center_top();
+                            let download_icon_color = ui.visuals().text_color();
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                 overlay_painter.text(
-                                    project(filename_pos) + egui::vec2(0.0, -8.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    filename,
-                                    filename_font,
-                                    filename_color,
+                                    project(download_icon_pos) + egui::vec2(0.0, 10.0),
+                                    egui::Align2::CENTER_TOP,
+                                    egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                                    egui::FontId::proportional(18.0),
+                                    download_icon_color,
                                 );
                             }));
+                            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                            // filename entirely rather than truncating to a
+                            // near-illegible sliver -- the download-icon glyph
+                            // above still marks the node as a download on its
+                            // own.
+                            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                                let filename_font = egui::FontId::proportional(14.0);
+                                let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                                let filename =
+                                    truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
+                                let filename_pos = rect.center_bottom();
+                                let filename_color = ui.visuals().text_color();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(filename_pos) + egui::vec2(0.0, -8.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        filename,
+                                        filename_font,
+                                        filename_color,
+                                    );
+                                }));
+                            }
                         }
                         // Live progress bar, only while not yet complete
                         // and only when the server reported a real total
@@ -10003,16 +10091,18 @@ impl App {
                         egui::Stroke::new(border_width * inv_zoom, border_color),
                         egui::StrokeKind::Inside,
                     );
-                    let note_icon_pos = header_rect.left_center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(note_icon_pos) + egui::vec2(8.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            egui_phosphor::regular::NOTE_PENCIL,
-                            egui::FontId::proportional(12.0),
-                            egui::Color32::from_black_alpha(160),
-                        );
-                    }));
+                    if !self.graph_lod_simplified {
+                        let note_icon_pos = header_rect.left_center();
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(note_icon_pos) + egui::vec2(8.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                egui_phosphor::regular::NOTE_PENCIL,
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::from_black_alpha(160),
+                            );
+                        }));
+                    }
 
                     let mut note_text_lost_focus = false;
                     let mut switch_to_editing = false;
@@ -10058,26 +10148,37 @@ impl App {
                         // checker only allows alongside a *finished*
                         // borrow of `self.nodes`, not one still live inside
                         // the same closure.
-                        let text = self
-                            .nodes
-                            .get(&id)
-                            .and_then(|n| n.as_note())
-                            .map(|n| n.text.clone())
-                            .unwrap_or_default();
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .max_rect(text_rect)
-                                .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                            |ui| {
-                                ui.style_mut().visuals.override_text_color =
-                                    Some(egui::Color32::from_black_alpha(220));
-                                egui_commonmark::CommonMarkViewer::new().show(
-                                    ui,
-                                    &mut self.commonmark_cache,
-                                    &text,
-                                );
-                            },
-                        );
+                        // LOD: skip the markdown render (real parsing +
+                        // rich text layout, one of the pricier per-node
+                        // widgets in this whole view) once simplified --
+                        // see the tab loop's own doc comment. Never
+                        // applies to the `is_editing` branch above: a
+                        // note actively being typed into must never have
+                        // its live `TextEdit` yanked out from under the
+                        // user just because the rest of the graph got
+                        // busy.
+                        if !self.graph_lod_simplified {
+                            let text = self
+                                .nodes
+                                .get(&id)
+                                .and_then(|n| n.as_note())
+                                .map(|n| n.text.clone())
+                                .unwrap_or_default();
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .max_rect(text_rect)
+                                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                                |ui| {
+                                    ui.style_mut().visuals.override_text_color =
+                                        Some(egui::Color32::from_black_alpha(220));
+                                    egui_commonmark::CommonMarkViewer::new().show(
+                                        ui,
+                                        &mut self.commonmark_cache,
+                                        &text,
+                                    );
+                                },
+                            );
+                        }
                         let response = ui.interact(
                             rect,
                             egui::Id::new(("graph_note_node", id.as_str())),
@@ -10171,39 +10272,50 @@ impl App {
                     );
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
 
-                    match tex_id {
-                        Some(tex_id) => {
-                            ui.painter().image(
-                                tex_id,
-                                rect,
-                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        // Only reachable if the node somehow outlived its
-                        // own texture (freed but not removed) -- a broken-
-                        // image glyph is a more honest placeholder here
-                        // than the loading `Spinner` a tab/download
-                        // placeholder uses, since this picture isn't *about*
-                        // to arrive the way a first frame or fetch is.
-                        None => {
-                            ui.painter().rect_filled(
-                                rect,
-                                4.0 * inv_zoom,
-                                ui.visuals().extreme_bg_color,
-                            );
-                            let broken_icon_pos = rect.center();
-                            let broken_icon_color = ui.visuals().weak_text_color();
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(broken_icon_pos),
-                                    egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::IMAGE_BROKEN,
-                                    egui::FontId::proportional(24.0),
-                                    broken_icon_color,
+                    // LOD: the real texture blit (and the broken-image
+                    // glyph text) skipped once simplified -- see the tab
+                    // loop's own doc comment. Unlike a tab card, an image
+                    // node has no separate background fill of its own (the
+                    // picture *is* the fill), so the simplified state gets
+                    // a plain solid box instead of nothing, matching every
+                    // other kind's "background + border" simplified look.
+                    if !self.graph_lod_simplified {
+                        match tex_id {
+                            Some(tex_id) => {
+                                ui.painter().image(
+                                    tex_id,
+                                    rect,
+                                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                    egui::Color32::WHITE,
                                 );
-                            }));
+                            }
+                            // Only reachable if the node somehow outlived its
+                            // own texture (freed but not removed) -- a broken-
+                            // image glyph is a more honest placeholder here
+                            // than the loading `Spinner` a tab/download
+                            // placeholder uses, since this picture isn't *about*
+                            // to arrive the way a first frame or fetch is.
+                            None => {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    4.0 * inv_zoom,
+                                    ui.visuals().extreme_bg_color,
+                                );
+                                let broken_icon_pos = rect.center();
+                                let broken_icon_color = ui.visuals().weak_text_color();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(broken_icon_pos),
+                                        egui::Align2::CENTER_CENTER,
+                                        egui_phosphor::regular::IMAGE_BROKEN,
+                                        egui::FontId::proportional(24.0),
+                                        broken_icon_color,
+                                    );
+                                }));
+                            }
                         }
+                    } else {
+                        ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     }
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
@@ -10300,66 +10412,73 @@ impl App {
                     };
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
 
-                    match state {
-                        Some(Ok((Some(tex_id), page_count))) => {
-                            ui.painter().image(
-                                tex_id,
-                                rect,
-                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                            // Shown even for a one-page PDF -- a glanceable
-                            // "this is a PDF, not a plain image" cue on top
-                            // of the file-type distinction the icon in the
-                            // context menu/toolbar already gives.
-                            if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                                let page_count_pos = rect.right_bottom();
-                                let page_count_text =
-                                    format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
+                    // LOD: same "plain solid box instead of the real
+                    // content" simplification as the Image loop above --
+                    // see the tab loop's own doc comment.
+                    if !self.graph_lod_simplified {
+                        match state {
+                            Some(Ok((Some(tex_id), page_count))) => {
+                                ui.painter().image(
+                                    tex_id,
+                                    rect,
+                                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                    egui::Color32::WHITE,
+                                );
+                                // Shown even for a one-page PDF -- a glanceable
+                                // "this is a PDF, not a plain image" cue on top
+                                // of the file-type distinction the icon in the
+                                // context menu/toolbar already gives.
+                                if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                                    let page_count_pos = rect.right_bottom();
+                                    let page_count_text =
+                                        format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
+                                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                        overlay_painter.text(
+                                            project(page_count_pos) + egui::vec2(-4.0, -4.0),
+                                            egui::Align2::RIGHT_BOTTOM,
+                                            page_count_text,
+                                            egui::FontId::proportional(11.0),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }));
+                                }
+                            }
+                            // Reachable the same rare way an `Image` node's own
+                            // `None` case is -- the node outlived its texture.
+                            Some(Ok((None, _))) => {
+                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                let broken_icon_pos = rect.center();
+                                let broken_icon_color = ui.visuals().weak_text_color();
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                     overlay_painter.text(
-                                        project(page_count_pos) + egui::vec2(-4.0, -4.0),
-                                        egui::Align2::RIGHT_BOTTOM,
-                                        page_count_text,
-                                        egui::FontId::proportional(11.0),
-                                        egui::Color32::WHITE,
+                                        project(broken_icon_pos),
+                                        egui::Align2::CENTER_CENTER,
+                                        egui_phosphor::regular::IMAGE_BROKEN,
+                                        egui::FontId::proportional(24.0),
+                                        broken_icon_color,
                                     );
                                 }));
                             }
+                            Some(Err(_)) => {
+                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                let error_icon_pos = rect.center();
+                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                    overlay_painter.text(
+                                        project(error_icon_pos),
+                                        egui::Align2::CENTER_CENTER,
+                                        egui_phosphor::regular::FILE_X,
+                                        egui::FontId::proportional(24.0),
+                                        GROUP_OVERLOAD_COLOR,
+                                    );
+                                }));
+                            }
+                            None => {
+                                ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
+                                ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
+                            }
                         }
-                        // Reachable the same rare way an `Image` node's own
-                        // `None` case is -- the node outlived its texture.
-                        Some(Ok((None, _))) => {
-                            ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                            let broken_icon_pos = rect.center();
-                            let broken_icon_color = ui.visuals().weak_text_color();
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(broken_icon_pos),
-                                    egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::IMAGE_BROKEN,
-                                    egui::FontId::proportional(24.0),
-                                    broken_icon_color,
-                                );
-                            }));
-                        }
-                        Some(Err(_)) => {
-                            ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                            let error_icon_pos = rect.center();
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(error_icon_pos),
-                                    egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::FILE_X,
-                                    egui::FontId::proportional(24.0),
-                                    GROUP_OVERLOAD_COLOR,
-                                );
-                            }));
-                        }
-                        None => {
-                            ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                            ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
-                        }
+                    } else {
+                        ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
                     }
                     let (border_width, border_color) = if is_hovered {
                         (1.5, ui.visuals().text_color())
@@ -10442,7 +10561,7 @@ impl App {
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
 
                     ui.painter().rect_filled(rect, 4.0 * inv_zoom, ui.visuals().extreme_bg_color);
-                    if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    if !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
                         let json_center = rect.center();
                         let summary_color = ui.visuals().text_color();
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -10593,6 +10712,13 @@ impl App {
                             );
                         }
 
+                        // LOD: the whole member-thumbnail-grid/name/count
+                        // block below (up to 4 real texture blits plus
+                        // several text draws) skipped once simplified --
+                        // see the tab loop's own doc comment. The plain
+                        // background/border/glow above is a group's own
+                        // simplified appearance, same as every other kind.
+                        if !self.graph_lod_simplified {
                         if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
                             // labels entirely rather than truncating to a
@@ -10725,6 +10851,7 @@ impl App {
                                     );
                                 }));
                             }
+                        }
                         }
 
                         if is_hovered {
