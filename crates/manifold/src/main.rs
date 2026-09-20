@@ -855,34 +855,72 @@ fn apply_fonts(ctx: &egui::Context) {
 /// A binary search over char-boundary indices rather than a linear
 /// shrink-by-one-char loop, since `layout_no_wrap` (one text-shaping pass)
 /// is the expensive part and a title could in principle be long.
-fn truncate_to_width(ctx: &egui::Context, text: &str, font_id: &egui::FontId, max_width: f32) -> String {
+/// `truncate_to_width`'s cache key -- the exact text plus font size and
+/// available width as bit patterns (`f32` isn't `Hash`/`Eq`). Every call
+/// site in this app builds its `FontId` via `FontId::proportional`, so
+/// font family never needs to be part of the key.
+type TruncateCacheKey = (String, u32, u32);
+
+/// Cap on `App::truncate_cache`'s size -- past this it's cleared outright
+/// rather than evicted incrementally. No LRU bookkeeping for what should,
+/// in steady state, only ever hold a small multiple of "how many labeled
+/// cards are visible at once"; a full clear is cheap insurance against
+/// unbounded growth if that assumption is ever wrong (e.g. many distinct
+/// titles cycling through over a long session).
+const TRUNCATE_CACHE_CAP: usize = 2000;
+
+/// Same truncation behavior as before (binary search for the longest
+/// prefix, plus "…", that fits `max_width`), but memoized on `cache` --
+/// each binary-search step needs a real text-shaping call
+/// (`ctx.fonts_mut(...).layout_no_wrap`), and the overwhelming common
+/// case frame to frame is "this exact label, this exact width, again",
+/// since neither a card's title nor its on-screen width usually change
+/// between two consecutive frames. **Found on a general (not just
+/// large-graph) performance audit**: this ran unconditionally, every
+/// frame, for every visible labeled card, regardless of graph size.
+fn truncate_to_width(
+    cache: &mut HashMap<TruncateCacheKey, String>,
+    ctx: &egui::Context,
+    text: &str,
+    font_id: &egui::FontId,
+    max_width: f32,
+) -> String {
+    let key: TruncateCacheKey = (text.to_owned(), font_id.size.to_bits(), max_width.to_bits());
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
     let width_of = |s: &str| -> f32 {
         ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE))
             .size()
             .x
     };
-    if max_width <= 0.0 {
-        return String::new();
-    }
-    if width_of(text) <= max_width {
-        return text.to_owned();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
-        if width_of(&candidate) <= max_width {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if lo == 0 {
-        "…".to_owned()
+    let result = if max_width <= 0.0 {
+        String::new()
+    } else if width_of(text) <= max_width {
+        text.to_owned()
     } else {
-        chars[..lo].iter().collect::<String>() + "…"
+        let chars: Vec<char> = text.chars().collect();
+        let (mut lo, mut hi) = (0usize, chars.len());
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+            if width_of(&candidate) <= max_width {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if lo == 0 {
+            "…".to_owned()
+        } else {
+            chars[..lo].iter().collect::<String>() + "…"
+        }
+    };
+    if cache.len() >= TRUNCATE_CACHE_CAP {
+        cache.clear();
     }
+    cache.insert(key, result.clone());
+    result
 }
 
 fn engine_label(kind: EngineKind) -> &'static str {
@@ -1937,6 +1975,10 @@ struct App {
     /// COUNT` -- a deliberate hysteresis gap, not a single threshold, so
     /// a count sitting right at one boundary doesn't flicker every frame.
     graph_lod_simplified: bool,
+    /// See `truncate_to_width`'s own doc comment.
+    truncate_cache: HashMap<TruncateCacheKey, String>,
+    /// See `App::cached_favicon_origin`'s own doc comment.
+    favicon_origin_cache: HashMap<String, Option<String>>,
     /// `Some` while entering/leaving a group is easing the camera toward
     /// the new level's framing instead of having already snapped there --
     /// see `GraphCameraTween`'s own doc comment.
@@ -2271,6 +2313,8 @@ impl Default for App {
             pending_new_node: None,
             graph_scene_rect: default_graph_scene_rect(),
             graph_lod_simplified: false,
+            truncate_cache: HashMap::new(),
+            favicon_origin_cache: HashMap::new(),
             graph_camera_tween: None,
             graph_settled_key: None,
             headless: false,
@@ -3772,6 +3816,28 @@ impl App {
     /// (`graph_layout::step` again sees ids only, not node kinds).
     fn alloc_group_id(&mut self) -> String {
         next_id(&mut self.next_group_id, "grp")
+    }
+
+    /// Memoized `favicon_fetch::url_origin(url)` -- that function is a
+    /// couple of string scans plus a `format!` allocation, and both of
+    /// this app's per-frame callers (the Graph-view tab card, the Tab-
+    /// view toolbar's own identity chip) called it fresh every single
+    /// frame for a URL that's stable between navigations. **Found on a
+    /// general (not just large-graph) performance audit**, the same
+    /// category as `truncate_cache`: capped and cleared outright past
+    /// `TRUNCATE_CACHE_CAP` rather than evicted incrementally, for the
+    /// same "should stay small in steady state, insurance against
+    /// unbounded growth" reasoning.
+    fn cached_favicon_origin(&mut self, url: &str) -> Option<String> {
+        if let Some(cached) = self.favicon_origin_cache.get(url) {
+            return cached.clone();
+        }
+        let origin = favicon_fetch::url_origin(url);
+        if self.favicon_origin_cache.len() >= TRUNCATE_CACHE_CAP {
+            self.favicon_origin_cache.clear();
+        }
+        self.favicon_origin_cache.insert(url.to_owned(), origin.clone());
+        origin
     }
 
     /// Same reasoning as `alloc_group_id` -- a distinct `"note-"` prefix in
@@ -7846,8 +7912,11 @@ impl App {
                     // left edge" spot Chrome/Firefox use.
                     if node.loading {
                         ui.add(egui::Spinner::new().size(12.0));
-                    } else if let Some(tex_id) = favicon_fetch::url_origin(&node.url)
-                        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+                    } else if let Some(tex_id) = {
+                        let url = node.url.clone();
+                        self.cached_favicon_origin(&url)
+                    }
+                    .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
                     {
                         ui.add(egui::Image::new(egui::load::SizedTexture::new(
                             tex_id,
@@ -9196,7 +9265,34 @@ impl App {
                     let is_focused = self.focused.as_deref() == Some(id.as_str());
                     let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
                     let is_selected = self.selected_tabs.contains(&id);
-                    let tag_color = self.nodes.get(&id).and_then(|n| n.color);
+                    // One lookup instead of the six separate `self.nodes.
+                    // get(&id)` calls this card's render used to make for
+                    // its own data (color, title, url, engine kind, muted,
+                    // audio-playing, pinned) -- **found on a general
+                    // performance audit**: each was a fresh hash + lookup
+                    // for the same key, paid every frame for every tab
+                    // regardless of graph size. `title`/`url` are cloned
+                    // once here since they're needed past this point (the
+                    // label text, the favicon origin) and can't borrow
+                    // from `self.nodes` across the `&mut self` mutations
+                    // (drag, hover bookkeeping) later in this same
+                    // iteration.
+                    let Some((tag_color, title, url, engine_kind, node_muted, node_audio_playing, node_pinned)) =
+                        self.nodes.get(&id).and_then(|n| {
+                            let tab = n.as_tab()?;
+                            Some((
+                                n.color,
+                                tab.title.clone(),
+                                tab.url.clone(),
+                                tab.tab.kind,
+                                tab.muted,
+                                tab.audio_playing,
+                                tab.pinned,
+                            ))
+                        })
+                    else {
+                        continue;
+                    };
 
                     // Shared by the fill/border/glow eases below -- one
                     // hover transition, not three separately-timed ones.
@@ -9267,12 +9363,8 @@ impl App {
                             );
                         }
 
-                        if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
-                            let label = if node.title.is_empty() {
-                                node.url.as_str()
-                            } else {
-                                node.title.as_str()
-                            };
+                        {
+                            let label = if title.is_empty() { url.as_str() } else { title.as_str() };
                             // A flat scrim behind the title strip so it stays
                             // legible over a busy/light thumbnail — most real
                             // pages are light-background, and plain text on top
@@ -9295,7 +9387,7 @@ impl App {
                             ui.painter().circle_filled(
                                 egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
                                 4.0 * inv_zoom,
-                                engine_color(node.tab.kind),
+                                engine_color(engine_kind),
                             );
                             // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
                             // label entirely rather than truncating to a
@@ -9310,7 +9402,8 @@ impl App {
                                 // the fixed 16px left offset and a little breathing
                                 // room on the right.
                                 let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
-                                let label = truncate_to_width(ui.ctx(), label, &label_font, label_max_width);
+                                let label =
+                                    truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
                                 let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                     overlay_painter.text(
@@ -9324,10 +9417,7 @@ impl App {
                             }
                         }
                         if let Some(tex_id) = self
-                            .nodes
-                            .get(&id)
-                            .and_then(|n| n.as_tab())
-                            .and_then(|n| favicon_fetch::url_origin(&n.url))
+                            .cached_favicon_origin(&url)
                             .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
                         {
                             let favicon_rect = egui::Rect::from_min_size(
@@ -9354,9 +9444,6 @@ impl App {
                     // set, even after audio stops, so there's always a way
                     // to see and undo a mute from Graph view without first
                     // switching to Tab view.
-                    let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
-                    let node_audio_playing =
-                        self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.audio_playing);
                     let mut audio_clicked = false;
                     if node_audio_playing || node_muted {
                         let audio_rect = egui::Rect::from_center_size(
@@ -9460,7 +9547,6 @@ impl App {
                     // check further down excludes `pin_response.clicked()`
                     // so a pin click doesn't also focus the node into Tab
                     // view.
-                    let node_pinned = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.pinned);
                     let pin_rect =
                         egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
                     let pin_response = ui.interact(
@@ -9825,16 +9911,14 @@ impl App {
                     // borders below it) rather than threading a dim factor
                     // through every draw call above -- one extra scrim
                     // covers the whole card in one shot.
-                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) {
-                        if graph_filter_dims(&self.graph_filter, &[&node.title, &node.url]) {
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    6.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
-                            }));
-                        }
+                    if graph_filter_dims(&self.graph_filter, &[&title, &url]) {
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.rect_filled(
+                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                                6.0,
+                                egui::Color32::from_black_alpha(190),
+                            );
+                        }));
                     }
                 }
 
@@ -9879,8 +9963,16 @@ impl App {
                         egui::StrokeKind::Inside,
                     );
 
-                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_download()) {
-                        let filename = download_filename(&node.path);
+                    // One lookup instead of two (this block, plus the
+                    // filter-dim check below reusing `download_path`) --
+                    // see the tab loop's own doc comment on this pattern.
+                    let download_info = self
+                        .nodes
+                        .get(&id)
+                        .and_then(|n| n.as_download())
+                        .map(|n| (n.path.clone(), n.completed, n.total_bytes, n.bytes_received));
+                    if let Some((download_path, completed, total_bytes, bytes_received)) = &download_info {
+                        let filename = download_filename(download_path);
                         // `egui_phosphor::DOWNLOAD_SIMPLE` -- was a raw
                         // Unicode arrow-to-bar glyph (`\u{2913}`) that
                         // happened to render, despite this comment's own
@@ -9910,7 +10002,7 @@ impl App {
                                 let filename_font = egui::FontId::proportional(14.0);
                                 let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
                                 let filename =
-                                    truncate_to_width(ui.ctx(), filename, &filename_font, filename_max_width);
+                                    truncate_to_width(&mut self.truncate_cache, ui.ctx(), filename, &filename_font, filename_max_width);
                                 let filename_pos = rect.center_bottom();
                                 let filename_color = ui.visuals().text_color();
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -9939,10 +10031,10 @@ impl App {
                         // MARGIN` isn't: this is card-layout geometry
                         // already inside the zoom-scaled Scene transform,
                         // not chrome that needs a constant on-screen size.
-                        if !node.completed {
-                            if let Some(total) = node.total_bytes.filter(|t| *t > 0) {
+                        if !*completed {
+                            if let Some(total) = (*total_bytes).filter(|t| *t > 0) {
                                 let fraction =
-                                    (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);
+                                    (*bytes_received as f32 / total as f32).clamp(0.0, 1.0);
                                 let track_rect = egui::Rect::from_min_max(
                                     egui::pos2(rect.left() + 8.0, rect.bottom() - 26.0),
                                     egui::pos2(rect.right() - 8.0, rect.bottom() - 22.0),
@@ -10017,8 +10109,8 @@ impl App {
                         download_clicked = Some(id.clone());
                     }
 
-                    if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_download()) {
-                        if graph_filter_dims(&self.graph_filter, &[&node.path]) {
+                    if let Some((download_path, ..)) = &download_info {
+                        if graph_filter_dims(&self.graph_filter, &[download_path]) {
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                 overlay_painter.rect_filled(
                                     egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -10247,12 +10339,16 @@ impl App {
                 // ratio, capped at `IMAGE_NODE_MAX_SIZE`), not a fixed size
                 // the way every other kind's card is.
                 for id in images_at_level.clone() {
-                    let Some((node_pos, image_size, tex_id)) = self.nodes.get(&id).and_then(|n| {
+                    // `path` is carried through to the filter-dim check
+                    // near the end of this loop too, instead of that site
+                    // re-fetching it with a second `self.nodes.get(&id)`.
+                    let Some((node_pos, image_size, tex_id, image_path)) = self.nodes.get(&id).and_then(|n| {
                         let image = n.as_image()?;
                         Some((
                             n.pos,
                             image_node_card_size(image.width, image.height),
                             self.gpu.as_ref().and_then(|g| g.image_id(&id)),
+                            image.path.clone(),
                         ))
                     }) else {
                         continue;
@@ -10346,8 +10442,8 @@ impl App {
 
                     self.finish_draggable_node(&id, &response, is_hovered);
 
-                    if let Some(image) = self.nodes.get(&id).and_then(|n| n.as_image()) {
-                        if graph_filter_dims(&self.graph_filter, &[download_filename(&image.path)]) {
+                    {
+                        if graph_filter_dims(&self.graph_filter, &[download_filename(&image_path)]) {
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                 overlay_painter.rect_filled(
                                     egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -10373,7 +10469,11 @@ impl App {
                 // `Image` node's texture lives in, since a rendered PDF page
                 // is just another RGBA bitmap by the time it's on the GPU).
                 for id in pdfs_at_level.clone() {
-                    let Some((node_pos, size, state)) = self.nodes.get(&id).and_then(|n| {
+                    // `pdf_path` is carried through to the filter-dim
+                    // check near the end of this loop too, instead of
+                    // that site re-fetching it with a second `self.nodes.
+                    // get(&id)`.
+                    let Some((node_pos, size, state, pdf_path)) = self.nodes.get(&id).and_then(|n| {
                         let pdf = n.as_pdf()?;
                         let size = pdf_card_size(pdf);
                         let state = match &pdf.outcome {
@@ -10384,7 +10484,7 @@ impl App {
                                 outcome.page_count,
                             ))),
                         };
-                        Some((n.pos, size, state))
+                        Some((n.pos, size, state, pdf.path.clone()))
                     }) else {
                         continue;
                     };
@@ -10509,8 +10609,8 @@ impl App {
 
                     self.finish_draggable_node(&id, &response, is_hovered);
 
-                    if let Some(pdf) = self.nodes.get(&id).and_then(|n| n.as_pdf()) {
-                        if graph_filter_dims(&self.graph_filter, &[download_filename(&pdf.path)]) {
+                    {
+                        if graph_filter_dims(&self.graph_filter, &[download_filename(&pdf_path)]) {
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                 overlay_painter.rect_filled(
                                     egui::Rect::from_min_max(project(rect.min), project(rect.max)),
@@ -10799,8 +10899,13 @@ impl App {
                                     );
                                     let name_font = egui::FontId::proportional(13.0);
                                     let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                                    let name =
-                                        truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
+                                    let name = truncate_to_width(
+                                        &mut self.truncate_cache,
+                                        ui.ctx(),
+                                        &node.name,
+                                        &name_font,
+                                        name_max_width,
+                                    );
                                     let name_pos = title_strip.center();
                                     deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                         overlay_painter.text(
@@ -10821,8 +10926,13 @@ impl App {
                                 // doesn't read as empty.
                                 let name_font = egui::FontId::proportional(16.0);
                                 let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                                let name =
-                                    truncate_to_width(ui.ctx(), &node.name, &name_font, name_max_width);
+                                let name = truncate_to_width(
+                                    &mut self.truncate_cache,
+                                    ui.ctx(),
+                                    &node.name,
+                                    &name_font,
+                                    name_max_width,
+                                );
                                 let name_pos = rect.center_top();
                                 let name_color = ui.visuals().text_color();
                                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
