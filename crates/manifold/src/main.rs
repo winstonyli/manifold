@@ -855,11 +855,26 @@ fn apply_fonts(ctx: &egui::Context) {
 /// A binary search over char-boundary indices rather than a linear
 /// shrink-by-one-char loop, since `layout_no_wrap` (one text-shaping pass)
 /// is the expensive part and a title could in principle be long.
-/// `truncate_to_width`'s cache key -- the exact text plus font size and
-/// available width as bit patterns (`f32` isn't `Hash`/`Eq`). Every call
-/// site in this app builds its `FontId` via `FontId::proportional`, so
-/// font family never needs to be part of the key.
-type TruncateCacheKey = (String, u32, u32);
+/// `truncate_to_width`'s cache key -- the exact text and font size (as a
+/// bit pattern, since `f32` isn't `Hash`/`Eq`) plus available width
+/// *bucketed* to the nearest `TRUNCATE_WIDTH_BUCKET` pixels, not the
+/// exact width. Every call site in this app builds its `FontId` via
+/// `FontId::proportional`, so font family never needs to be part of the
+/// key. See `truncate_to_width`'s own doc comment for why bucketing (not
+/// the exact width) is the key.
+type TruncateCacheKey = (String, u32, i32);
+
+/// Width granularity `truncate_to_width` bucket its cache key to -- see
+/// that function's own doc comment. A truncation result only actually
+/// changes at the specific width where one more character's glyph would
+/// fit, so nearby widths overwhelmingly share the same correct answer;
+/// this just needs to be small enough that a bucket rarely straddles one
+/// of those boundaries. Flooring (not rounding) to this bucket size
+/// means the width actually used for the search is always <= the real
+/// available width, so the visible failure mode of a stale/coarse bucket
+/// is "very occasionally one character more truncated than strictly
+/// necessary," never overflow past the card's own edge.
+const TRUNCATE_WIDTH_BUCKET: f32 = 4.0;
 
 /// Cap on `App::truncate_cache`'s size -- past this it's cleared outright
 /// rather than evicted incrementally. No LRU bookkeeping for what should,
@@ -878,6 +893,14 @@ const TRUNCATE_CACHE_CAP: usize = 2000;
 /// between two consecutive frames. **Found on a general (not just
 /// large-graph) performance audit**: this ran unconditionally, every
 /// frame, for every visible labeled card, regardless of graph size.
+///
+/// **`max_width` is bucketed, not used exactly, for both the cache key
+/// and the search bound below.** Every call site derives it from
+/// `zoom_scale`, which changes continuously (as a raw float) on every
+/// frame during an active pan/zoom gesture -- keying on the exact width
+/// meant this cache hit approximately never while the user was actually
+/// zooming, the one time avoiding repeated font-shaping calls matters
+/// most. Found live, following up on the general audit above.
 fn truncate_to_width(
     cache: &mut HashMap<TruncateCacheKey, String>,
     ctx: &egui::Context,
@@ -885,7 +908,9 @@ fn truncate_to_width(
     font_id: &egui::FontId,
     max_width: f32,
 ) -> String {
-    let key: TruncateCacheKey = (text.to_owned(), font_id.size.to_bits(), max_width.to_bits());
+    let bucketed_width = (max_width / TRUNCATE_WIDTH_BUCKET).floor() * TRUNCATE_WIDTH_BUCKET;
+    let width_bucket = (max_width / TRUNCATE_WIDTH_BUCKET).floor() as i32;
+    let key: TruncateCacheKey = (text.to_owned(), font_id.size.to_bits(), width_bucket);
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
@@ -894,9 +919,9 @@ fn truncate_to_width(
             .size()
             .x
     };
-    let result = if max_width <= 0.0 {
+    let result = if bucketed_width <= 0.0 {
         String::new()
-    } else if width_of(text) <= max_width {
+    } else if width_of(text) <= bucketed_width {
         text.to_owned()
     } else {
         let chars: Vec<char> = text.chars().collect();
@@ -904,7 +929,7 @@ fn truncate_to_width(
         while lo < hi {
             let mid = (lo + hi + 1) / 2;
             let candidate: String = chars[..mid].iter().collect::<String>() + "…";
-            if width_of(&candidate) <= max_width {
+            if width_of(&candidate) <= bucketed_width {
                 lo = mid;
             } else {
                 hi = mid - 1;
