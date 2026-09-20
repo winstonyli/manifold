@@ -44,6 +44,41 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(tab_texture, tab_sampler, in.uv);
 }
+
+// GPU replacement for `downscale_rgba`'s own CPU box filter (see
+// `GpuState::render_thumbnail`'s doc comment for the full story). A plain
+// single-tap `textureSample` per output texel would alias badly at the
+// downscale ratios a full-resolution tab frame needs (commonly 4-8x per
+// axis) -- a true box filter has to average every source texel that maps
+// into one output texel, not just interpolate the 4 nearest ones. Emulated
+// here as a fixed 4x4 grid of *bilinear-filtered* taps spread across that
+// output texel's own footprint in source UV space: cheap (16 taps, a
+// compile-time-constant loop, no dynamic branching) and close enough to a
+// true box average for a thumbnail nobody examines pixel-by-pixel.
+// `box_size` is one output texel's width/height, in the *source* texture's
+// own [0,1] UV space -- since UV space is normalized identically for both
+// the render target and the sampled texture regardless of either's actual
+// pixel resolution, this is just `1.0 / thumbnail_size`, independent of
+// the source's own resolution.
+struct DownsampleParams {
+    box_size: vec2<f32>,
+};
+@group(0) @binding(2) var<uniform> downsample_params: DownsampleParams;
+
+const DOWNSAMPLE_TAPS: i32 = 4;
+
+@fragment
+fn fs_downsample(in: VertexOutput) -> @location(0) vec4<f32> {
+    var sum = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    for (var iy = 0; iy < DOWNSAMPLE_TAPS; iy = iy + 1) {
+        for (var ix = 0; ix < DOWNSAMPLE_TAPS; ix = ix + 1) {
+            let grid = (vec2<f32>(f32(ix), f32(iy)) + vec2<f32>(0.5, 0.5)) / f32(DOWNSAMPLE_TAPS);
+            let offset = (grid - vec2<f32>(0.5, 0.5)) * downsample_params.box_size;
+            sum = sum + textureSample(tab_texture, tab_sampler, in.uv + offset);
+        }
+    }
+    return sum / f32(DOWNSAMPLE_TAPS * DOWNSAMPLE_TAPS);
+}
 "#;
 
 /// Graph-view thumbnails never need to exceed roughly `GRAPH_NODE_SIZE`
@@ -51,6 +86,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 /// at the enlarged peek-preview size too, without paying full content
 /// resolution.
 const THUMBNAIL_MAX_SIZE: (u32, u32) = (256, 192);
+
+/// The non-sRGB counterpart of an sRGB texture format, for `render_
+/// thumbnail`'s own reinterpreting source view (see that function's doc
+/// comment for why). Identity for a format that's already non-sRGB --
+/// `upload_frame` only ever receives the two sRGB formats named here (see
+/// its own doc comment on `format`), but this stays total rather than
+/// panicking on anything else, since a texture *view*'s own format list
+/// happily includes a format equal to the texture's own.
+fn non_srgb_view_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    match format {
+        wgpu::TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8Unorm,
+        other => other,
+    }
+}
 
 /// One visible tab's frame as a GPU texture for the hand-rolled content
 /// pipeline. Keyed by tab id in `GpuState::tab_textures` -- split view needs
@@ -96,6 +146,10 @@ pub struct GpuState {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// See `render_thumbnail`'s own doc comment.
+    downsample_pipeline: wgpu::RenderPipeline,
+    downsample_bind_group_layout: wgpu::BindGroupLayout,
+    downsample_params_buffer: wgpu::Buffer,
     /// Keyed by tab id -- see `TabTexture`'s own doc comment for why this
     /// isn't a single slot. Bounded by however many tabs are currently
     /// visible (at most two, focused + split partner) rather than every tab
@@ -280,6 +334,87 @@ impl GpuState {
             cache: None,
         });
 
+        // GPU thumbnail downsample -- see `GpuState::render_thumbnail`'s own
+        // doc comment. A separate bind group layout/pipeline from the one
+        // above: a third binding (the box-size uniform) `fs_main` doesn't
+        // use, and a fixed `Rgba8Unorm` target format instead of the
+        // surface's own `config.format` (the thumbnail texture egui_wgpu
+        // registers must be exactly `Rgba8Unorm`, never sRGB -- see
+        // `ThumbTexture`'s own doc comment).
+        let downsample_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("thumbnail downsample bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let downsample_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("thumbnail downsample pipeline layout"),
+                bind_group_layouts: &[Some(&downsample_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("thumbnail downsample pipeline"),
+            layout: Some(&downsample_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_downsample"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // 16 bytes: `vec2<f32>` (8 bytes) padded up to WGSL's own uniform
+        // address-space alignment for a struct containing one -- written
+        // fresh via `queue.write_buffer` before every downsample draw
+        // (see `render_thumbnail`), so this only ever needs to exist once.
+        let downsample_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("thumbnail downsample params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let egui_renderer = egui_wgpu::Renderer::new(
             &device,
             config.format,
@@ -294,6 +429,9 @@ impl GpuState {
             pipeline,
             bind_group_layout,
             sampler,
+            downsample_pipeline,
+            downsample_bind_group_layout,
+            downsample_params_buffer,
             tab_textures: HashMap::new(),
             thumbnails: HashMap::new(),
             favicons: HashMap::new(),
@@ -312,85 +450,11 @@ impl GpuState {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// CEF's BGRA8 capture needs a channel swap to become the plain RGBA
-    /// `egui_wgpu::Renderer::register_native_texture` requires — Servo/
-    /// WebKit's RGBA8 needs none. `Unorm` vs `UnormSrgb` is a decode-curve
-    /// difference, not a channel-order one, so feeding sRGB-authored bytes
-    /// through as `Unorm` here just means graph-view thumbnails render
-    /// very slightly washed out compared to the live content pipeline —
-    /// an accepted, minor cosmetic gap for a small preview thumbnail, not
-    /// worth a full color-correct path in M5.
-    fn to_thumbnail_rgba(pixels: &[u8], format: wgpu::TextureFormat) -> Vec<u8> {
-        if format == wgpu::TextureFormat::Bgra8UnormSrgb {
-            let mut out = pixels.to_vec();
-            for px in out.chunks_exact_mut(4) {
-                px.swap(0, 2);
-            }
-            out
-        } else {
-            pixels.to_vec()
-        }
-    }
-
-    /// Box-downsamples an RGBA buffer to at most `max_size` on each axis
-    /// (never upscales — a tab smaller than the cap is left as-is), so a
-    /// background tab's graph-view thumbnail costs a few hundred KB of GPU
-    /// memory instead of a few MB at full content resolution. Only the
-    /// thumbnail texture goes through this — `upload_frame`'s hand-rolled
-    /// content-pipeline texture (Tab view) stays full resolution.
-    fn downscale_rgba(
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-        max_size: (u32, u32),
-    ) -> (Vec<u8>, u32, u32) {
-        let (max_w, max_h) = max_size;
-        if width <= max_w && height <= max_h {
-            return (pixels.to_vec(), width, height);
-        }
-        let scale = (max_w as f32 / width as f32).min(max_h as f32 / height as f32);
-        let out_w = ((width as f32 * scale).round() as u32).max(1);
-        let out_h = ((height as f32 * scale).round() as u32).max(1);
-
-        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
-        for oy in 0..out_h {
-            // Source row range this output row box-averages over — computed
-            // from output-row boundaries (not just a single sample point)
-            // so every source row contributes to some output row.
-            let src_y0 = (oy * height / out_h).min(height - 1);
-            let src_y1 = (((oy + 1) * height).div_ceil(out_h)).clamp(src_y0 + 1, height);
-            for ox in 0..out_w {
-                let src_x0 = (ox * width / out_w).min(width - 1);
-                let src_x1 = (((ox + 1) * width).div_ceil(out_w)).clamp(src_x0 + 1, width);
-
-                let mut sum = [0u32; 4];
-                let mut count = 0u32;
-                for sy in src_y0..src_y1 {
-                    for sx in src_x0..src_x1 {
-                        let idx = ((sy * width + sx) * 4) as usize;
-                        for c in 0..4 {
-                            sum[c] += pixels[idx + c] as u32;
-                        }
-                        count += 1;
-                    }
-                }
-                let dst_idx = ((oy * out_w + ox) * 4) as usize;
-                for c in 0..4 {
-                    out[dst_idx + c] = (sum[c] / count.max(1)) as u8;
-                }
-            }
-        }
-        (out, out_w, out_h)
-    }
-
     /// `pixels` must be exactly `width * height * 4` bytes in whatever pixel
     /// order `format` names — Servo's `read_to_image()` produces RGBA8
     /// (`Rgba8UnormSrgb`), CEF's OSR `on_paint` produces BGRA8
     /// (`Bgra8UnormSrgb`). Passing the wrong format silently swaps red/blue.
     ///
-    /// Updates two things: `tab_id`'s own hand-rolled-pipeline content
-    /// texture (see `TabTexture`'s doc comment) and its persistent
-    /// graph-view thumbnail (see `ThumbTexture`).
     /// Re-uploads a live tab frame plus its graph-view thumbnail.
     ///
     /// **Reuses last frame's GPU texture in place (`queue.write_texture`)
@@ -430,6 +494,12 @@ impl GpuState {
                 height,
             );
         } else {
+            // `view_formats` includes this format's own non-sRGB
+            // counterpart -- wgpu requires every format a texture will
+            // ever be *viewed* as (not just created as) to be declared up
+            // front here; `render_thumbnail` creates exactly such a
+            // reinterpreting view of this same texture every time it
+            // downsamples this tab's thumbnail.
             let texture = self.device.create_texture_with_data(
                 &self.queue,
                 &wgpu::TextureDescriptor {
@@ -444,7 +514,7 @@ impl GpuState {
                     dimension: wgpu::TextureDimension::D2,
                     format,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
+                    view_formats: &[non_srgb_view_format(format)],
                 },
                 wgpu::util::TextureDataOrder::LayerMajor,
                 pixels,
@@ -468,42 +538,26 @@ impl GpuState {
                 .insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group });
         }
 
-        let thumb_pixels = Self::to_thumbnail_rgba(pixels, format);
-        let (thumb_pixels, thumb_width, thumb_height) =
-            Self::downscale_rgba(&thumb_pixels, width, height, THUMBNAIL_MAX_SIZE);
-
+        let (thumb_width, thumb_height) = Self::thumbnail_target_size(width, height, THUMBNAIL_MAX_SIZE);
         let reuse_thumb = self
             .thumbnails
             .get(tab_id)
             .is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
-        if reuse_thumb {
-            Self::write_full_texture(
-                &self.queue,
-                &self.thumbnails[tab_id].texture,
-                &thumb_pixels,
-                thumb_width,
-                thumb_height,
-            );
-        } else {
-            let thumb_texture = self.device.create_texture_with_data(
-                &self.queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("tab thumbnail texture"),
-                    size: wgpu::Extent3d {
-                        width: thumb_width,
-                        height: thumb_height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
+        if !reuse_thumb {
+            let thumb_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("tab thumbnail texture"),
+                size: wgpu::Extent3d {
+                    width: thumb_width,
+                    height: thumb_height,
+                    depth_or_array_layers: 1,
                 },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &thumb_pixels,
-            );
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
             let thumb_view = thumb_texture.create_view(&wgpu::TextureViewDescriptor::default());
             let egui_id = if let Some(existing) = self.thumbnails.get(tab_id) {
                 self.egui_renderer.update_egui_texture_from_wgpu_texture(
@@ -525,6 +579,129 @@ impl GpuState {
                 ThumbTexture { texture: thumb_texture, width: thumb_width, height: thumb_height, egui_id },
             );
         }
+        // Unlike the main texture's own reuse branch above (which can skip
+        // straight to the next frame once written), the thumbnail's
+        // *content* still needs refreshing every call regardless of
+        // whether its texture object was just reused or just created --
+        // `reuse_thumb` only ever answered "does a same-size destination
+        // already exist," never "is it already showing this frame."
+        self.render_thumbnail(tab_id, format, thumb_width, thumb_height);
+    }
+
+    /// The aspect-preserving target size `render_thumbnail`'s destination
+    /// texture is created at -- pure arithmetic, split out from the old
+    /// CPU `downscale_rgba` (which combined this with the actual pixel
+    /// averaging) so `upload_frame` can decide whether a same-size
+    /// thumbnail texture already exists before doing any GPU work at all.
+    /// Never upscales — a tab smaller than the cap is left at its own size.
+    fn thumbnail_target_size(width: u32, height: u32, max_size: (u32, u32)) -> (u32, u32) {
+        let (max_w, max_h) = max_size;
+        if width <= max_w && height <= max_h {
+            return (width, height);
+        }
+        let scale = (max_w as f32 / width as f32).min(max_h as f32 / height as f32);
+        let out_w = ((width as f32 * scale).round() as u32).max(1);
+        let out_h = ((height as f32 * scale).round() as u32).max(1);
+        (out_w, out_h)
+    }
+
+    /// GPU-side replacement for the old CPU `to_thumbnail_rgba`/
+    /// `downscale_rgba` pair -- downsamples `tab_id`'s own already-uploaded
+    /// main frame texture directly into its thumbnail texture via a render
+    /// pass (`fs_downsample` in `SHADER`), instead of downloading pixels to
+    /// the CPU, box-filtering them there, and re-uploading the result.
+    /// Found on the same "app feels slow" investigation as the persistent-
+    /// texture fix above: with that fix landed, this pixel conversion/
+    /// downscale was the one remaining per-frame cost of any real size,
+    /// and it's exactly the kind of embarrassingly-parallel, per-pixel
+    /// work a GPU does far more cheaply than a CPU loop -- doubly so in a
+    /// debug build, where the CPU loop pays for zero compiler optimization
+    /// but the GPU's own fixed-function/shader-core work doesn't care what
+    /// profile the *driver* was compiled under.
+    ///
+    /// Two real correctness details this has to get right that a naive
+    /// "just sample the main texture" attempt wouldn't:
+    ///
+    /// - **sRGB.** The main texture is `Bgra8UnormSrgb`/`Rgba8UnormSrgb`
+    ///   (see `upload_frame`'s own doc comment on `format`), and sampling
+    ///   an sRGB texture auto-*linearizes* the color -- writing that
+    ///   straight into the thumbnail's plain (non-sRGB) `Rgba8Unorm`
+    ///   target would silently store linear-light bytes where gamma-
+    ///   encoded ones belong, visibly shifting brightness/contrast versus
+    ///   the real tab content. Sampled instead through a *reinterpreting*
+    ///   view in the non-sRGB counterpart format (`Bgra8Unorm`/
+    ///   `Rgba8Unorm`, via `non_srgb_view_format`) -- returns the raw
+    ///   stored bytes unconverted, exactly matching what the old CPU
+    ///   path's plain byte copy already did. Requires the main texture's
+    ///   own `view_formats` to declare that counterpart at creation time
+    ///   (see `upload_frame`'s texture creation above).
+    /// - **BGRA vs RGBA channel order.** *Not* handled here at all, on
+    ///   purpose -- unlike the CPU path's manual byte swap
+    ///   (`to_thumbnail_rgba`), `textureSample` already returns color in a
+    ///   consistent `(r,g,b,a)` order regardless of the bound texture's
+    ///   own declared channel layout; the GPU/driver handles that
+    ///   remapping as part of what a texture *format* means.
+    ///
+    /// Deliberately reproduces, not fixes, the old CPU path's own
+    /// previously-accepted cosmetic gap: bypassing sRGB decoding on the way
+    /// in (rather than decoding then re-encoding, a real color-correct
+    /// path) means the thumbnail still renders very slightly washed out
+    /// compared to the live content pipeline, exactly as the removed
+    /// `to_thumbnail_rgba`'s own doc comment already called out and
+    /// accepted -- this pass changes *where* that gap's bytes get produced
+    /// (GPU instead of CPU), not what they are.
+    fn render_thumbnail(&mut self, tab_id: &str, format: wgpu::TextureFormat, thumb_width: u32, thumb_height: u32) {
+        // One output texel's width/height in the *source* texture's own
+        // [0,1] UV space -- see `fs_downsample`'s own doc comment for why
+        // this needs no dependency on the source's actual resolution.
+        let mut params = [0u8; 16];
+        params[0..4].copy_from_slice(&(1.0f32 / thumb_width as f32).to_le_bytes());
+        params[4..8].copy_from_slice(&(1.0f32 / thumb_height as f32).to_le_bytes());
+        self.queue.write_buffer(&self.downsample_params_buffer, 0, &params);
+
+        let source_view = self.tab_textures[tab_id].texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(non_srgb_view_format(format)),
+            ..Default::default()
+        });
+        let dest_view = self.thumbnails[tab_id].texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("thumbnail downsample bind group"),
+            layout: &self.downsample_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.downsample_params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("thumbnail downsample encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("thumbnail downsample pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dest_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.downsample_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Uploads a full frame of tightly-packed `pixels` (no row padding --
