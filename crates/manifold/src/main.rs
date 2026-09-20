@@ -8216,19 +8216,99 @@ impl App {
                     // an overflow/app menu at the far end), rather than the
                     // stack of buttons that used to sit entirely to its
                     // left, pushing it almost to the row's far end.
-                    // `trailing_reserve` estimates the width still needed
-                    // for everything drawn *after* the address bar in this
-                    // same row (Bookmark, View-as-JSON, Split + Close Split,
-                    // Tab actions, Shortcuts help, Settings gear) so
-                    // `desired_width` doesn't claim the whole remaining row
-                    // and starve them -- same hand-estimated-reserve
-                    // tradeoff this toolbar already accepted for the gear
-                    // alone, sized generously for the worst case (Split
-                    // open + a JSON tab) rather than computed exactly, which
-                    // egui's immediate-mode layout has no cheap way to do
-                    // without a second pass.
-                    let trailing_reserve = 360.0;
-                    let text_width = (ui.available_width() - trailing_reserve).max(40.0);
+                    //
+                    // The trailing cluster (Bookmark, View-as-JSON, Split +
+                    // Close Split, Tab actions, Shortcuts help, Settings
+                    // gear) is drawn *first*, into its own right-to-left
+                    // child `Ui` anchored to this row's remaining space, so
+                    // its real consumed width can be measured -- not
+                    // guessed the way a former `trailing_reserve = 360.0`
+                    // constant was (sized "generously for the worst case,"
+                    // with nothing to catch a future addition silently
+                    // exceeding it). Added in reverse of their final visual
+                    // order since a right-to-left `Ui` places each new
+                    // widget immediately to the *left* of the previous one.
+                    let remaining_rect = ui.available_rect_before_wrap();
+                    let mut trailing_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(remaining_rect)
+                            .layout(egui::Layout::right_to_left(egui::Align::Min)),
+                    );
+                    let shortcuts_help_rect = self.build_help_settings_cluster(&mut trailing_ui);
+                    let tab_actions_response = trailing_ui.button("Tab actions");
+                    if tab_actions_response.clicked() {
+                        self.tab_actions_open = !self.tab_actions_open;
+                    }
+                    tab_actions_button_rect = Some(tab_actions_response.rect);
+                    if self.split_tab.is_some()
+                        && icon_button_eased(
+                            &mut trailing_ui,
+                            egui::Id::new("icon_btn_close_split"),
+                            egui_phosphor::light::X,
+                        )
+                        .on_hover_text("Close Split")
+                        .clicked()
+                    {
+                        close_split_requested = true;
+                    }
+                    // Engine-vs-engine compare view -- see `App::split_tab`'s
+                    // own doc comment. Picking an engine here (re-)opens a
+                    // split against the focused tab's current url; the
+                    // secondary pane is view-only in this first cut, so its
+                    // own toolbar/address-bar controls only ever apply to
+                    // the primary (left) pane.
+                    egui::ComboBox::from_id_salt("split_picker")
+                        .selected_text(if self.split_tab.is_some() { "Split ▾" } else { "Split" })
+                        .show_ui(&mut trailing_ui, |ui| {
+                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
+                                ui.horizontal(|ui| {
+                                    engine_dot(ui, kind, 8.0);
+                                    if ui.selectable_label(false, engine_label(kind)).clicked() {
+                                        split_requested = Some(kind);
+                                    }
+                                });
+                            }
+                        });
+                    if self
+                        .nodes
+                        .get(&focused_id)
+                        .and_then(|n| n.as_tab())
+                        .is_some_and(|n| n.json_body.is_some())
+                        && trailing_ui
+                            .button(egui_phosphor::light::BRACKETS_CURLY)
+                            .on_hover_text("View as JSON")
+                            .clicked()
+                    {
+                        self.json_viewer_node = Some(focused_id.clone());
+                    }
+                    // `selectable_label`, same reasoning as elsewhere in
+                    // this toolbar -- a pressed look for "already
+                    // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
+                    // a star glyph's tofu risk. Sits right after the address
+                    // bar, mirroring Chrome/Firefox's own star icon at the
+                    // address bar's right edge.
+                    let is_bookmarked = self
+                        .nodes
+                        .get(&focused_id)
+                        .and_then(|n| n.as_tab())
+                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
+                    if trailing_ui
+                        .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
+                        .on_hover_text("Bookmark")
+                        .clicked()
+                    {
+                        toggle_bookmark_requested = true;
+                    }
+                    let trailing_width = trailing_ui.min_rect().width();
+                    shortcuts_help_button_rect = Some(shortcuts_help_rect);
+
+                    // Now the address bar gets whatever's actually left,
+                    // not a guess -- drawn into the original `ui` (still
+                    // mid-way through its own left-to-right cursor, just
+                    // after the leading nav/identity cluster above),
+                    // sized to stop exactly where the trailing cluster's
+                    // real measured width begins.
+                    let text_width = (remaining_rect.width() - trailing_width).max(40.0);
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.address_bar_text)
                             .desired_width(text_width)
@@ -8248,77 +8328,8 @@ impl App {
                     }
                     self.address_bar_focused = response.has_focus();
                     address_bar_rect = Some(response.rect);
+                    ui.advance_cursor_after_rect(trailing_ui.min_rect());
 
-                    // `selectable_label`, same reasoning as elsewhere in
-                    // this toolbar -- a pressed look for "already
-                    // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
-                    // a star glyph's tofu risk. Sits right after the address
-                    // bar, mirroring Chrome/Firefox's own star icon at the
-                    // address bar's right edge.
-                    let is_bookmarked = self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-                    if ui
-                        .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
-                        .on_hover_text("Bookmark")
-                        .clicked()
-                    {
-                        toggle_bookmark_requested = true;
-                    }
-                    if self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| n.json_body.is_some())
-                        && ui
-                            .button(egui_phosphor::light::BRACKETS_CURLY)
-                            .on_hover_text("View as JSON")
-                            .clicked()
-                    {
-                        self.json_viewer_node = Some(focused_id.clone());
-                    }
-                    // Engine-vs-engine compare view -- see `App::split_tab`'s
-                    // own doc comment. Picking an engine here (re-)opens a
-                    // split against the focused tab's current url; the
-                    // secondary pane is view-only in this first cut, so its
-                    // own toolbar/address-bar controls only ever apply to
-                    // the primary (left) pane.
-                    egui::ComboBox::from_id_salt("split_picker")
-                        .selected_text(if self.split_tab.is_some() { "Split ▾" } else { "Split" })
-                        .show_ui(ui, |ui| {
-                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-                                ui.horizontal(|ui| {
-                                    engine_dot(ui, kind, 8.0);
-                                    if ui.selectable_label(false, engine_label(kind)).clicked() {
-                                        split_requested = Some(kind);
-                                    }
-                                });
-                            }
-                        });
-                    if self.split_tab.is_some()
-                        && icon_button_eased(ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::light::X)
-                            .on_hover_text("Close Split")
-                            .clicked()
-                    {
-                        close_split_requested = true;
-                    }
-                    // "Mute Others"/"Close Others"/"Pin All"/"Unpin All"
-                    // folded into one dropdown -- a later session pass
-                    // flagged the toolbar as cramped with all three as
-                    // always-visible buttons (confirmed live: text touching
-                    // the window edge even at 1300pt wide). Same anchored
-                    // Area/Frame popup pattern the Settings page's own
-                    // "Lists" section buttons use for Bookmarks/History/
-                    // Downloads.
-                    let tab_actions_response = ui.button("Tab actions");
-                    if tab_actions_response.clicked() {
-                        self.tab_actions_open = !self.tab_actions_open;
-                    }
-                    tab_actions_button_rect = Some(tab_actions_response.rect);
-
-                    shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                     if response.changed() {
                         self.open_tab_suggestions =
                             self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
@@ -8699,6 +8710,19 @@ impl App {
                 // menus/settings that airier spacing was chosen for.
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
                 ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                // Horizontally scrollable, not just a plain `horizontal_centered`
+                // -- this row's own content is genuinely variable (a
+                // breadcrumb of arbitrary depth, a selection-actions cluster,
+                // a spawn error, "Recently Closed" all able to appear at
+                // once) and past sessions have already hit real overflow at
+                // this toolbar's fixed height more than once (see the icon-
+                // only button migration and breadcrumb-name truncation
+                // above, both direct responses to that). Those fixes reduce
+                // how *often* it happens; this one makes it survivable when
+                // it still does -- content past the visible edge becomes
+                // reachable by scrolling instead of silently clipped or
+                // pushed past the window's own edge with no way back.
+                egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Empty at the true top level; one entry per ancestor
                     // group otherwise (root-most first, current group
@@ -8910,6 +8934,7 @@ impl App {
                         ui.colored_label(DANGER_COLOR, err);
                     }
                     shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
+                });
                 });
             });
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
