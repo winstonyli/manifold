@@ -195,5 +195,14 @@ correctness discipline (isolate what could break), not a time-cost one:
 - Touch/pinch (`SendPointerInput` + `PT_TOUCH`) — new capability, no existing
   `InputEvent` variant models it; separate follow-up once the core migration
   lands.
-- Whether native mousedown+click removes the need for `input.rs`'s explicit
-  `.focus()`-before-`.click()` fix — verify during implementation.
+- ~~Whether native mousedown+click removes the need for `input.rs`'s explicit
+  `.focus()`-before-`.click()` fix — verify during implementation.~~ **Settled
+  (Task 5 live verification):** yes, it does. A native `SendMouseInput`
+  `LEFT_BUTTON_DOWN`+`UP` on a plain `<input>` focuses it with no extra call
+  needed — confirmed live by clicking into a plain `<input>` on a real test
+  page and observing its `:focus` CSS outline appear, then sending `Char`
+  events that typed real text into the field (screenshot evidence:
+  `hello123` appeared in the input with a visible focus ring after nothing
+  but a native click). Task 4 already omitted the old JS approach's explicit
+  `.focus()` call when it rewrote mouse handling to `SendMouseInput`; this
+  confirms that omission was correct and no code change is needed.
