@@ -267,7 +267,7 @@ fn main() {
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(event) => {
-                    input::send_input(&webview, event, &pending_context_menu, &drag_state);
+                    input::send_input(&webview, &comp_controller, event, &pending_context_menu, &drag_state);
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct

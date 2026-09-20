@@ -38,31 +38,34 @@
 //! division of labor `ipc_protocol::InputEvent`'s own doc comment already
 //! describes.
 //!
-//! **Drag text-selection and nested scroll, later still: `Selection`/`Range`
-//! JS, not CDP.** A throwaway spike tried the other native lever available
-//! -- `ICoreWebView2CompositionController::SendMouseInput`/`SendPointerInput`
-//! -- and found it *doesn't* extend a text selection during a drag at all
-//! (confirmed live: fully `isTrusted:true` events, correct coordinates and
-//! button state throughout, `selection.rangeCount` shows an anchor was set
-//! on mousedown, but `.toString()` stays empty after the drag) -- a genuine
-//! WebView2/Chromium limitation in that hosting mode, not a mistake in the
-//! spike, and it would've meant redoing this crate's whole hosting+capture
-//! pipeline anyway (`SendMouseInput` only exists on the Composition-hosted
-//! controller, which `capture.rs`'s `Windows.Graphics.Capture` pipeline
-//! doesn't use). So this stays on the plain-JS path this whole module is
-//! already built around: `document.caretRangeFromPoint` + `Selection.
-//! collapse`/`.extend` reproduce a real drag-select using the same browser
-//! primitives a native drag would, and a short walk up from `elementFromPoint`
-//! to the first scrollable ancestor lets `Scroll` reach a nested scrollable
-//! div instead of only ever the page itself.
+//! **Mouse, later still (composition-hosting-migration Task 4): native
+//! `SendMouseInput`, not `Selection`/`Range` JS.** An earlier spike found
+//! `SendMouseInput` didn't extend a text selection during a drag under the
+//! old *windowed*-hosting controller, which is why `MouseDown`/`MouseMove`/
+//! `MouseUp`/`Scroll` moved to the JS path above at the time. Tasks 1-3 of
+//! that migration then moved hosting itself to
+//! `ICoreWebView2CompositionController` (for `Windows.Graphics.Capture`
+//! frame capture), which is the controller `SendMouseInput` was always
+//! meant for -- re-tried there, real button-down/up/move/wheel events drive
+//! Chromium's own click/drag/scroll handling (including drag-selection)
+//! directly, so mouse handling now sends those instead of running JS.
+//! Keyboard is unaffected: WebView2 has no `SendKeyInput` equivalent on any
+//! hosting mode, so `KeyDown`/`KeyUp`/`Char` stay exactly as described above.
 
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+};
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
 use windows::core::HSTRING;
+use windows::Win32::Foundation::POINT;
 
 use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 
@@ -74,29 +77,15 @@ pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 /// `ipc_protocol::InputEvent::MouseMove` carries no button state of its own
 /// (see its doc comment: that field exists only for a native-injection
 /// engine forwarding modifier keys), so this project's own engine-host has
-/// to remember "is the left button currently down" itself. `moved` is what
-/// tells `MouseUp` whether this was a real drag (skip the synthetic
-/// `.click()` -- a real browser doesn't fire a click after dragging a
-/// selection across a link either) or a plain stationary click (fire it, as
-/// before).
+/// to remember "is the left button currently down" itself, to know whether
+/// to include the left-button virtual key on a `SendMouseInput` move (so
+/// Chromium's own drag/selection handling sees the button as held).
 #[derive(Clone, Copy, Default)]
 pub struct Drag {
     active: bool,
-    moved: bool,
 }
 
 pub type DragState = Rc<Cell<Drag>>;
-
-/// Both the drag-anchor (`MouseDown`) and drag-extend (`MouseMove`) scripts
-/// skip form controls -- `document.caretRangeFromPoint` returns `null` or a
-/// range outside an `<input>`/`<textarea>`'s own internal text layout, so
-/// acting on it there would move the selection *away* from where the user
-/// clicked instead of focusing the field, breaking the click-to-focus path
-/// `Char`'s own doc comment already depends on (confirmed live against
-/// DuckDuckGo's search box).
-fn skip_form_controls_guard(x: f64, y: f64) -> String {
-    format!("var el=document.elementFromPoint({x},{y});if(el&&el.closest('input,textarea,select'))return;")
-}
 
 fn exec(webview: &ICoreWebView2, script: String) {
     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
@@ -121,72 +110,64 @@ fn parse_json_string_or_null(json: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Translates and dispatches one `ipc_protocol::InputEvent` as a small
-/// snippet of JavaScript run via `ExecuteScript`.
+/// Translates and dispatches one `ipc_protocol::InputEvent` -- mouse events
+/// via `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text
+/// events via CDP/`ExecuteScript` on `webview` (see this module's doc
+/// comment for why each picked its own mechanism).
 pub fn send_input(
     webview: &ICoreWebView2,
+    comp_controller: &ICoreWebView2CompositionController,
     event: InputEvent,
     pending_context_menu: &PendingContextMenu,
     drag_state: &DragState,
 ) {
     match event {
-        // `caretRangeFromPoint` + `Selection.collapse` reproduces a real
-        // mousedown's caret placement -- see this module's doc comment for
-        // why this is JS/`Selection` rather than a CDP mouse event.
-        InputEvent::MouseDown { x, y, button: MouseButton::Left, .. } => {
-            // TEMP diagnostic for the live offset bug -- prints the
-            // received CSS-pixel coordinate here, and separately what the
-            // page itself believes is at that point (tag/id and its own
-            // `getBoundingClientRect`), so a report can be compared against
-            // where the user actually clicked. Remove once resolved.
-            eprintln!("[input-diag] MouseDown received x={x} y={y}");
-            let diag_script = format!(
-                "(function(){{var e=document.elementFromPoint({x},{y});if(!e)return 'null element at point';var r=e.getBoundingClientRect();return e.tagName+'#'+e.id+' rect=('+r.left.toFixed(1)+','+r.top.toFixed(1)+','+r.width.toFixed(1)+'x'+r.height.toFixed(1)+') text='+JSON.stringify((e.textContent||'').slice(0,30));}})();"
-            );
-            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
-                eprintln!("[input-diag]   elementFromPoint({x},{y}) -> {result}");
-                Ok(())
-            }));
-            unsafe {
-                let _ = webview.ExecuteScript(&HSTRING::from(diag_script), &handler);
-            }
-            drag_state.set(Drag { active: true, moved: false });
-            exec(
-                webview,
-                format!(
-                    "(function(){{{guard}var r=document.caretRangeFromPoint({x},{y});if(r){{var s=window.getSelection();s.removeAllRanges();s.collapse(r.startContainer,r.startOffset);}}}})();",
-                    guard = skip_form_controls_guard(x, y),
+        InputEvent::MouseDown { x, y, button, .. } => {
+            let (kind, keys) = match button {
+                MouseButton::Left => (
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON,
                 ),
-            );
+                MouseButton::Right => (
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                ),
+                MouseButton::Middle => return,
+            };
+            if matches!(button, MouseButton::Left) {
+                drag_state.set(Drag { active: true });
+            }
+            unsafe {
+                let _ = comp_controller.SendMouseInput(kind, keys, 0, POINT { x: x as i32, y: y as i32 });
+            }
         }
-        // Right/middle mouse-down: no drag-selection to start (right-click's
-        // own handling is on `MouseUp` below; middle-click is unhandled).
-        InputEvent::MouseDown { .. } => {}
-        // Only round-trips a script while a left-button drag is actually in
-        // progress -- a plain hover move (the common case) stays free, same
-        // as before this drag-selection support existed.
         InputEvent::MouseMove { x, y, .. } => {
-            let mut drag = drag_state.get();
-            if drag.active {
-                drag.moved = true;
-                drag_state.set(drag);
-                exec(
-                    webview,
-                    format!(
-                        "(function(){{{guard}var r=document.caretRangeFromPoint({x},{y});if(r){{window.getSelection().extend(r.startContainer,r.startOffset);}}}})();",
-                        guard = skip_form_controls_guard(x, y),
-                    ),
+            let keys = if drag_state.get().active {
+                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON
+            } else {
+                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE
+            };
+            unsafe {
+                let _ = comp_controller.SendMouseInput(
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
+                    keys,
+                    0,
+                    POINT { x: x as i32, y: y as i32 },
                 );
             }
         }
-        // The actual click happens on mouse-up (matches the natural
-        // "press, release, click fires" order) -- `el.click()` is a real
-        // synthetic click the page's own listeners and default actions
-        // (link navigation, button submit, etc.) all respond to normally,
-        // unlike a synthetic `MouseEvent` dispatched by hand (those don't
-        // trigger default actions in Chromium, only listener callbacks).
+        // Right-click's href-detection JS is kept (it doesn't depend on how
+        // the click was delivered) but a real button-up is sent first.
         InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } => {
             drag_state.set(Drag::default());
+            unsafe {
+                let _ = comp_controller.SendMouseInput(
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                    0,
+                    POINT { x: x as i32, y: y as i32 },
+                );
+            }
             let script = format!(
                 "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             );
@@ -202,43 +183,31 @@ pub fn send_input(
                 let _ = webview.ExecuteScript(&HSTRING::from(script), &handler);
             }
         }
-        InputEvent::MouseUp { x, y, .. } => {
-            let moved = drag_state.get().moved;
+        InputEvent::MouseUp { x, y, button, .. } => {
             drag_state.set(Drag::default());
-            // A completed drag-selection isn't a click -- a real browser
-            // doesn't fire one after dragging a selection across a link
-            // either, and synthesizing one here would wrongly navigate/
-            // submit just because the drag happened to end over such an
-            // element.
-            if !moved {
-                // `.focus()` first, then `.click()` -- `.click()` alone
-                // never focuses a plain `<input>`: it dispatches with
-                // `isTrusted:false`, and Chromium's "untrusted events still
-                // get their default action" carve-out (why `.click()` still
-                // navigates links/submits forms below) doesn't extend to
-                // focus assignment. `.focus()` is a plain DOM method, not an
-                // event, so it isn't trust-gated at all, and it's a silent
-                // no-op on non-focusable elements -- safe to call
-                // unconditionally rather than special-casing form controls.
-                exec(
-                    webview,
-                    format!(
-                        "(function(){{var e=document.elementFromPoint({x},{y});if(e){{if(e.focus){{e.focus();}}e.click();}}}})();"
-                    ),
+            let kind = match button {
+                MouseButton::Left => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
+                MouseButton::Middle => return,
+                MouseButton::Right => unreachable!("handled above"),
+            };
+            unsafe {
+                let _ = comp_controller.SendMouseInput(
+                    kind,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                    0,
+                    POINT { x: x as i32, y: y as i32 },
                 );
             }
         }
-        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
-            // Walks up from the pointer's own element to the first
-            // scrollable ancestor (matches a real wheel event's target
-            // resolution) instead of always scrolling the page -- lets this
-            // reach a nested scrollable panel, not only the document.
-            exec(
-                webview,
-                format!(
-                    "(function(){{var el=document.elementFromPoint({x},{y});while(el&&el!==document.body&&el!==document.documentElement){{var cs=getComputedStyle(el);var sy=(cs.overflowY==='auto'||cs.overflowY==='scroll')&&el.scrollHeight>el.clientHeight;var sx=(cs.overflowX==='auto'||cs.overflowX==='scroll')&&el.scrollWidth>el.clientWidth;if(sy||sx){{el.scrollBy({delta_x},{delta_y});return;}}el=el.parentElement;}}window.scrollBy({delta_x},{delta_y});}})();"
-                ),
-            );
+        InputEvent::Scroll { x, y, delta_y, .. } => {
+            unsafe {
+                let _ = comp_controller.SendMouseInput(
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                    delta_y as i32 as u32,
+                    POINT { x: x as i32, y: y as i32 },
+                );
+            }
         }
         // See this module's own doc comment for why a CDP-injected key
         // event, unlike a hand-dispatched DOM `KeyboardEvent`, actually
