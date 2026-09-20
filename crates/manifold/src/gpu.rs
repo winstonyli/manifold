@@ -183,7 +183,17 @@ impl GpuState {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: surface_caps.present_modes[0],
+            // `Fifo` (vsync-locked) explicitly, not `surface_caps.
+            // present_modes[0]` -- that was an unexamined "whatever the
+            // backend happens to list first" default, and wgpu doesn't
+            // guarantee that ordering puts a throttled mode first. This
+            // app's winit loop runs `ControlFlow::Poll` (continuous
+            // redraw -- see `App`'s own doc comment on why), so an
+            // untethered `Immediate`/`Mailbox` surface would let that
+            // loop present fully uncapped, burning far more GPU/CPU than
+            // intended. `Fifo` is the one mode every backend is required
+            // to support, so this needs no fallback.
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
