@@ -595,7 +595,7 @@ fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// so it counts "visible" precisely the way culling already does, rather
 /// than a second, slightly different notion of visibility.
 fn count_visible_nodes(
-    nodes: &HashMap<String, GraphNode>,
+    nodes: &NodeMap,
     ids: &[String],
     size: egui::Vec2,
     viewport: egui::Rect,
@@ -1472,6 +1472,17 @@ struct DownloadPayload {
     completed: bool,
 }
 
+/// `App::nodes`'s own map type -- `std::collections::HashMap` (same type,
+/// same API, at every one of its call sites throughout this file) with
+/// `foldhash` plugged in as the hasher instead of the standard library's
+/// own SipHash default. SipHash's DoS-resistance guarantee is wasted here:
+/// every key is an app-generated id (`"tab-0"`, `"note-5"`, ...), never
+/// derived from untrusted input, and this map is looked up many times per
+/// frame across the Graph-view render loops. `foldhash` is already fully
+/// resolved in this workspace's own dependency tree (see `Cargo.toml`'s
+/// own comment on it) -- this is a hasher swap, not a new dependency.
+type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
+
 /// One node in the graph view -- fields every kind shares (position, graph
 /// membership) live here; `payload` holds whatever's specific to the
 /// node's actual kind. See `NodePayload`'s own doc comment for the
@@ -1746,7 +1757,7 @@ struct App {
     /// iteration/z-order for graph rendering and hit-testing, separate from
     /// this `HashMap`'s own unspecified iteration order (which would make
     /// node click/drag targeting flaky if used directly).
-    nodes: HashMap<String, GraphNode>,
+    nodes: NodeMap,
     node_order: Vec<String>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
@@ -2276,7 +2287,7 @@ impl Default for App {
             window: None,
             last_window_title: "manifold".to_string(),
             gpu: None,
-            nodes: HashMap::new(),
+            nodes: NodeMap::default(),
             node_order: Vec::new(),
             groups_collapsed: false,
             current_group: None,

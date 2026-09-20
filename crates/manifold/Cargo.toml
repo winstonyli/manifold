@@ -44,6 +44,22 @@ pdfium-render = "=0.8.37"
 # bundled runtimes require.
 pdfium-auto = "0.3"
 pollster = "1.0.1"
+# Hasher for `App::nodes` (a `HashMap<String, GraphNode>` keyed by an
+# app-generated, never untrusted-input-derived id, looked up many times
+# per frame across the Graph-view render loops) -- `std::collections::
+# HashMap`'s own default hasher (SipHash) is deliberately DoS-resistant
+# against adversarial keys, a guarantee this map has no use for and pays
+# for on every lookup regardless. Already fully resolved in this
+# workspace's own dependency tree (it's `hashbrown`'s own default-hasher
+# dependency, and this project already pulls in two `hashbrown` versions
+# transitively via `wgpu`/`naga`) -- adding it directly here is zero net
+# new dependency footprint, not a new crate. Used as a plain `BuildHasher`
+# for `std::collections::HashMap` directly (`foldhash::fast::RandomState`),
+# not via `hashbrown::HashMap` itself -- that keeps `self.nodes`'s actual
+# type identical to before (same `std::collections::HashMap`, just a
+# different third generic parameter), so every existing call site across
+# this file keeps compiling unchanged.
+foldhash = "0.2"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -4860,6 +4860,7 @@ dependencies = [
  "egui-winit",
  "egui_commonmark",
  "etcetera",
+ "foldhash 0.2.0",
  "image",
  "ipc-protocol",
  "pdfium-auto",
