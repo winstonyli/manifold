@@ -8040,14 +8040,24 @@ impl App {
     /// to define a more meaningful order), wrapping at both ends. A no-op
     /// with zero or one tab open.
     fn cycle_focused_tab(&mut self, forward: bool) {
-        if self.node_order.len() < 2 {
+        // `node_order` holds every graph node (tabs, notes, images, PDFs,
+        // JSON files), not just tabs -- filter to tabs first (same filter
+        // `quick_switcher_matches` applies) so this never lands on a
+        // non-tab node, which `focus_tab` -> `build_tab_ui` assumes can't
+        // happen (`as_tab().unwrap()`).
+        let tab_ids: Vec<&String> = self
+            .node_order
+            .iter()
+            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.as_tab()).is_some())
+            .collect();
+        if tab_ids.len() < 2 {
             return;
         }
         let current = self
             .focused
             .as_ref()
-            .and_then(|id| self.node_order.iter().position(|t| t == id));
-        let len = self.node_order.len() as isize;
+            .and_then(|id| tab_ids.iter().position(|t| *t == id));
+        let len = tab_ids.len() as isize;
         let next = match current {
             Some(i) => {
                 let delta = if forward { 1 } else { -1 };
@@ -8055,7 +8065,7 @@ impl App {
             }
             None => 0,
         };
-        let id = self.node_order[next].clone();
+        let id = tab_ids[next].clone();
         self.focus_tab(&id);
     }
 
