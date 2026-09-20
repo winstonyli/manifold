@@ -31,6 +31,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
     "Win32_System_WinRT",
@@ -42,7 +43,22 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Foundation",
+    "Foundation_Numerics",
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
+    # Only used by the throwaway `examples/composition_input_spike.rs` (see
+    # its own doc comment) -- the real engine-host stays on plain windowed
+    # hosting, see `capture.rs`'s doc comment on why that plan was dropped.
+    "UI_Composition",
+    "UI_Composition_Desktop",
+    "Win32_System_WinRT_Composition",
+    "System",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
 ] }
+# Real dependency now (`composition.rs`'s `Vector2` for visual sizing), not
+# example-only -- pinned to match the version `windows` 0.62.2 itself
+# depends on (see that crate's own `[dependencies.windows-numerics]`), same
+# reasoning as the `webview2-com` pin above.
+windows-numerics = { version = "0.3.1", default-features = false, features = ["std"] }

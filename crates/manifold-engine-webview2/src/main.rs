@@ -8,6 +8,7 @@
 
 mod audio;
 mod capture;
+mod composition;
 mod download;
 mod find;
 mod input;
@@ -43,6 +44,26 @@ const DEFAULT_HEIGHT: u32 = 768;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 fn main() {
+    // Must happen before any window exists (`create_hidden_window` below is
+    // the first one) -- `manifold`'s own main process is DPI-aware for free
+    // via `winit` (it calls this same API internally), but this process
+    // creates its host window with plain Win32 calls (`window.rs`), which
+    // gets *no* DPI awareness by default. An unaware process is DPI-
+    // *virtualized* by Windows: it's handed a logical/unscaled window size,
+    // and the OS bitmap-stretches its rendered output to the real physical
+    // size to compensate -- which is exactly blur, a size mismatch between
+    // what this process thinks its window is and what it actually occupies
+    // on screen (reported live as a "white bar"/content overflowing its
+    // borders), and coordinates that don't line up with `manifold`'s own
+    // now-DPI-aware idea of where the cursor is. Per-Monitor-V2 makes this
+    // process report and receive real physical-pixel values throughout,
+    // matching `manifold`'s own winit-provided awareness level.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
+
     // WebView2 is fundamentally a COM component -- unlike CEF/Servo (which
     // never touch raw COM from the Rust side), every `ICoreWebView2*` call
     // here needs an initialized apartment on this thread first, or every
@@ -139,6 +160,7 @@ fn main() {
     let find_state = find::register(&environment, &webview).ok();
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
+    let drag_state: input::DragState = Default::default();
     let pending_download = download::register(&webview).ok();
     let _ = scheme::register(&environment, &webview);
 
@@ -193,13 +215,25 @@ fn main() {
                         let _ = webview.GoForward();
                     }
                 },
-                HostToEngine::Resize { width, height, .. } => {
+                HostToEngine::Resize { width, height, dpi_scale } => {
+                    // TEMP diagnostic for the live black-bar bug -- remove
+                    // once resolved.
+                    eprintln!("[input-diag] Resize received width={width} height={height} dpi_scale={dpi_scale}");
                     window::resize(hwnd, width, height);
+                    unsafe {
+                        let mut client_rect = RECT::default();
+                        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect);
+                        eprintln!(
+                            "[input-diag]   GetClientRect after resize: {}x{}",
+                            client_rect.right - client_rect.left,
+                            client_rect.bottom - client_rect.top
+                        );
+                    }
                     resize_controller(&controller, width, height);
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(event) => {
-                    input::send_input(&webview, event, &pending_context_menu);
+                    input::send_input(&webview, event, &pending_context_menu, &drag_state);
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct
@@ -320,6 +354,9 @@ fn main() {
                     None => true,
                 };
                 if needs_new_buffer {
+                    // TEMP diagnostic for the live black-bar bug -- remove
+                    // once resolved.
+                    eprintln!("[input-diag] captured frame size changed to {width}x{height}");
                     // Drop the old mapping before recreating -- `create`
                     // truncates the same backing file by name, and Windows
                     // rejects resizing a file with a live mapped section
