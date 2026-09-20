@@ -8708,14 +8708,19 @@ impl App {
                     // comment on nesting and `group_breadcrumb`'s own.
                     let breadcrumb = self.group_breadcrumb();
                     if !breadcrumb.is_empty() {
-                        // "◀" goes up exactly one level (to the current
-                        // group's own parent, possibly another group, not
-                        // straight to the top) -- the breadcrumb trail
-                        // below takes the place of "+ New Group" would
-                        // otherwise fill in the empty space "+ New Tab"/
-                        // "Reset View" already occupy at the top level.
-                        let leave_group_response =
-                            ui.button("\u{25c0}").on_hover_text("Back one level");
+                        // Goes up exactly one level (to the current group's
+                        // own parent, possibly another group, not straight
+                        // to the top) -- the breadcrumb trail below takes
+                        // the place "+ New Group" would otherwise fill in
+                        // the empty space "+ New Tab"/"Reset View" already
+                        // occupy at the top level. `CARET_LEFT`, not a raw
+                        // "◀" glyph -- the Tab toolbar's identical back
+                        // chevron already migrated to `egui_phosphor` for
+                        // this exact font's tofu-box risk with symbol
+                        // glyphs; this one had been missed.
+                        let leave_group_response = ui
+                            .button(egui_phosphor::light::CARET_LEFT)
+                            .on_hover_text("Back one level");
                         if leave_group_response.clicked() {
                             leave_group_requested = true;
                         }
@@ -8792,7 +8797,10 @@ impl App {
                                 {
                                     group_entered = Some(id.clone());
                                 }
-                                ui.label("\u{203a}");
+                                // `CARET_RIGHT`, not a raw "›" glyph -- same
+                                // tofu-box reasoning as the back-one-level
+                                // button above.
+                                ui.label(egui_phosphor::light::CARET_RIGHT);
                             }
                         }
                     }
@@ -8863,6 +8871,15 @@ impl App {
                             .desired_width(120.0)
                             .hint_text("Filter..."),
                     );
+                    // Only shown once there's actually something to clear --
+                    // same `egui_phosphor::light::X` glyph every other close/
+                    // dismiss affordance in this app already uses, so this
+                    // reads as "clear" at a glance rather than a new symbol.
+                    if !self.graph_filter.is_empty()
+                        && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
+                    {
+                        self.graph_filter.clear();
+                    }
                     if !self.closed_tabs.is_empty() || !self.closed_groups.is_empty() || !self.closed_nodes.is_empty() {
                         let count = self.closed_tabs.len() + self.closed_groups.len() + self.closed_nodes.len();
                         let label = format!("Recently Closed ({count})");
