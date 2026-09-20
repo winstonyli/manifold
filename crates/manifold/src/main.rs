@@ -1122,6 +1122,193 @@ fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
         .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
 }
 
+/// Where each engine actually stands in this specific app, not a general
+/// verdict on the upstream project -- "Experimental" for Servo is about
+/// *this app's own* software-rendering-only integration and Servo's
+/// still-incomplete standards coverage, not a claim about Servo itself.
+/// Ordered `Tier::One` first for `engine_picker_order` below.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EngineTier {
+    Recommended,
+    Experimental,
+    Limited,
+}
+
+impl EngineTier {
+    fn label(self) -> &'static str {
+        match self {
+            EngineTier::Recommended => "Recommended",
+            EngineTier::Experimental => "Experimental",
+            EngineTier::Limited => "Limited support",
+        }
+    }
+
+    /// A muted, tier-coded badge color -- deliberately not reusing
+    /// `ACCENT`/`DANGER_COLOR` (both already mean something else
+    /// elsewhere: "focused" and "destructive") or any `engine_color`
+    /// (that axis is "which engine," this one is "how ready is it").
+    fn color(self) -> egui::Color32 {
+        match self {
+            EngineTier::Recommended => egui::Color32::from_rgb(150, 190, 90),
+            EngineTier::Experimental => egui::Color32::from_rgb(215, 162, 74),
+            EngineTier::Limited => egui::Color32::from_rgb(196, 87, 58),
+        }
+    }
+}
+
+fn engine_tier(kind: EngineKind) -> EngineTier {
+    match kind {
+        EngineKind::Cef | EngineKind::Webview2 => EngineTier::Recommended,
+        EngineKind::Servo => EngineTier::Experimental,
+        EngineKind::Webkit => EngineTier::Limited,
+    }
+}
+
+/// Short, specific claims only -- see `engine_cons` for the matching
+/// tradeoff each one of these doesn't mention.
+fn engine_pros(kind: EngineKind) -> &'static [&'static str] {
+    match kind {
+        EngineKind::Cef => &[
+            "Full Chromium/Blink compatibility -- broadest real-world site support of the four",
+            "Mature, widely embedded elsewhere -- not this app's own experiment",
+        ],
+        EngineKind::Webview2 => &[
+            "Also Blink-based -- same site compatibility as CEF",
+            "Uses the OS's own Edge runtime -- no separate browser binary for this app to ship or update",
+        ],
+        EngineKind::Servo => &[
+            "Modern, from-scratch Rust engine -- same language as this app itself",
+            "No legacy multi-decade codebase to work around, unlike the other three",
+        ],
+        EngineKind::Webkit => &[
+            "The only non-Blink, non-Servo engine here -- real engine diversity for cross-engine testing",
+            "Catches Safari/WebKit-specific site behavior the other three can't show you",
+        ],
+    }
+}
+
+/// Matching tradeoff for each `engine_pros` claim -- specific to how this
+/// app integrates each engine today, not a permanent verdict (Servo's own
+/// software-rendering limitation here, for instance, is this app's current
+/// `SoftwareRenderingContext` choice, not something inherent to Servo).
+fn engine_cons(kind: EngineKind) -> &'static [&'static str] {
+    match kind {
+        EngineKind::Cef => &["Heaviest process footprint of the four"],
+        EngineKind::Webview2 => &[
+            "Requires the WebView2 Runtime to be installed (usually already is, on Windows 10 1803+/11)",
+            "Tied to whatever Edge version is installed system-wide, not pinned by this app",
+        ],
+        EngineKind::Servo => &[
+            "Runs via software (CPU) rendering only in this app today -- slower than the other three",
+            "Younger engine -- some sites may render incorrectly or not at all yet",
+        ],
+        EngineKind::Webkit => &[
+            "No native Windows WebKit exists -- runs inside a WSL2 Ubuntu VM, relayed over TCP (no shared memory, higher latency)",
+            "Slowest to start (a cold WSL2 boot can take up to 45s); needs WSL2 + Ubuntu + several Linux packages preinstalled",
+        ],
+    }
+}
+
+/// Display order for the engine picker: best-supported first, so a first-
+/// time chooser sees the safe defaults before the tradeoffs.
+const ENGINE_PICKER_ORDER: [EngineKind; 4] =
+    [EngineKind::Cef, EngineKind::Webview2, EngineKind::Servo, EngineKind::Webkit];
+
+/// One engine's own card inside `build_engine_picker_popup` -- name, color
+/// dot, tier badge, then its pros/cons side by side. Returns whether this
+/// card was clicked this frame (the whole card is the hit target, not just
+/// a button within it, so picking an engine doesn't require precision-
+/// clicking a small label).
+fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected: bool) -> bool {
+    let frame_response = egui::Frame::default()
+        .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
+        .corner_radius(2u8)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                engine_dot(ui, kind, 10.0);
+                ui.label(egui::RichText::new(engine_label(kind)).strong());
+                if is_selected {
+                    ui.label(egui_phosphor::light::CHECK_CIRCLE);
+                }
+                let tier = engine_tier(kind);
+                ui.label(egui::RichText::new(tier.label()).small().color(tier.color()));
+            });
+            ui.add_space(4.0);
+            for pro in engine_pros(kind) {
+                ui.label(egui::RichText::new(format!("+ {pro}")).small());
+            }
+            for con in engine_cons(kind) {
+                ui.label(egui::RichText::new(format!("\u{2212} {con}")).small().color(TEXT_WEAK));
+            }
+        });
+    // Interacted on *after* the frame's content is laid out, using its own
+    // resulting rect -- interacting on `ui.max_rect()` before any content
+    // exists gives a hit region sized to whatever was allocated so far
+    // (near-zero at that point), not the card's real, final size. Found
+    // live: clicking squarely on a card's own visible pros/cons text did
+    // nothing, since only a sliver at the very top was ever actually
+    // clickable.
+    let response = ui
+        .interact(frame_response.response.rect, ui.id().with(("engine_card", kind as u8)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.clicked()
+}
+
+/// The shared engine-picker popup -- see `draw_engine_card`'s own doc
+/// comment for each card's content. Used by all three places this app lets
+/// you choose an engine (Settings' "Default starting engine," Settings'
+/// "Current Tab" swap, and the Tab toolbar's "Split" picker), replacing
+/// what used to be three separate plain `egui::ComboBox`es with no tier/
+/// tradeoff information at all. Returns the popup's own drawn rect (for
+/// the caller's `clicked_outside_popup` check) and whichever engine was
+/// clicked this frame, if any.
+fn build_engine_picker_popup(
+    ctx: &egui::Context,
+    id: &str,
+    anchor_rect: egui::Rect,
+    selected: Option<EngineKind>,
+    fade: f32,
+) -> (egui::Rect, Option<EngineKind>) {
+    let mut picked = None;
+    let area_rect = egui::Area::new(egui::Id::new(id))
+        .fixed_pos(anchor_rect.left_bottom())
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            egui::Frame::default()
+                .fill(TOOLBAR_FILL)
+                .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+                .corner_radius(2u8)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(340.0);
+                    // Same "cap height, let it scroll" shape the other
+                    // toolbar list popups (Bookmarks/History/Downloads)
+                    // already use -- four cards this rich run well past a
+                    // short window's own height otherwise, with the last
+                    // one (WebKit, usually) silently unreachable past the
+                    // window's bottom edge (confirmed live).
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for (i, kind) in ENGINE_PICKER_ORDER.into_iter().enumerate() {
+                            if i > 0 {
+                                ui.add_space(6.0);
+                            }
+                            if draw_engine_card(ui, kind, selected == Some(kind)) {
+                                picked = Some(kind);
+                            }
+                            if i > 0 {
+                                ui.add_space(2.0);
+                            }
+                        }
+                    });
+                });
+        })
+        .response
+        .rect;
+    (area_rect, picked)
+}
+
 /// Per-channel linear interpolation between two colors -- `egui`/`epaint`
 /// has no built-in `Color32::lerp`. Used to ease a card's border color
 /// between its resting and hovered tint instead of snapping instantly,
@@ -2403,6 +2590,15 @@ struct App {
     /// own visibility, see `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
     bookmarks_open: bool,
+    /// The three places this app lets you choose an engine (Settings'
+    /// "Default starting engine," Settings' "Current Tab" swap, and the
+    /// Tab toolbar's "Split" picker) each get their own open flag, same
+    /// "one bool per popup" shape as `bookmarks_open` -- see
+    /// `build_engine_picker_popup`'s own doc comment for the shared popup
+    /// itself.
+    default_engine_picker_open: bool,
+    current_engine_picker_open: bool,
+    split_engine_picker_open: bool,
     /// The bookmarks popup's own filter box text -- cleared each time the
     /// popup is opened, same "fresh state each open" reasoning
     /// `find_match_case` resetting on a new find session already has.
@@ -2591,6 +2787,9 @@ impl Default for App {
             settings_return_view: ViewMode::Tab,
             bookmarks,
             bookmarks_open: false,
+            default_engine_picker_open: false,
+            current_engine_picker_open: false,
+            split_engine_picker_open: false,
             bookmarks_filter: String::new(),
             renaming_bookmark_folder: None,
             pending_focus_bookmark_folder: false,
@@ -2778,7 +2977,6 @@ impl App {
         // whichever tab was focused right before Settings was opened, same
         // as the toolbar controls they replaced.
         let mut current_tab_id: Option<String> = None;
-        let mut swap_to: Option<EngineKind> = None;
         let mut mute_toggle = false;
         let mut screenshot_requested = false;
         let mut print_to_pdf_requested = false;
@@ -2787,6 +2985,8 @@ impl App {
         let mut bookmarks_button_rect: Option<egui::Rect> = None;
         let mut history_button_rect: Option<egui::Rect> = None;
         let mut downloads_button_rect: Option<egui::Rect> = None;
+        let mut default_engine_button_rect: Option<egui::Rect> = None;
+        let mut current_engine_button_rect: Option<egui::Rect> = None;
 
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.close_settings_page();
@@ -2837,17 +3037,14 @@ impl App {
 
                 ui.add_space(8.0);
                 ui.label("Default starting engine (new tabs)");
-                egui::ComboBox::from_id_salt("settings_starting_engine")
-                    .selected_text(engine_label(self.settings.default_starting_engine))
-                    .show_ui(ui, |ui| {
-                        for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-                            let selected = self.settings.default_starting_engine == kind;
-                            if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
-                                self.settings.default_starting_engine = kind;
-                                self.save_settings();
-                            }
-                        }
-                    });
+                let combo_text =
+                    egui::RichText::new(engine_label(self.settings.default_starting_engine))
+                        .color(engine_color(self.settings.default_starting_engine));
+                let default_engine_response = ui.button(combo_text);
+                if default_engine_response.clicked() {
+                    self.default_engine_picker_open = !self.default_engine_picker_open;
+                }
+                default_engine_button_rect = Some(default_engine_response.rect);
 
                 ui.add_space(8.0);
                 ui.label("Zoom (new tabs; also applies to the current tab now)");
@@ -2898,23 +3095,11 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label("Engine");
                             let combo_text = egui::RichText::new(engine_label(kind)).color(engine_color(kind));
-                            egui::ComboBox::from_id_salt("settings_engine_picker")
-                                .selected_text(combo_text)
-                                .show_ui(ui, |ui| {
-                                    for candidate in
-                                        [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2]
-                                    {
-                                        let selected = candidate == kind;
-                                        ui.horizontal(|ui| {
-                                            engine_dot(ui, candidate, 8.0);
-                                            if ui.selectable_label(selected, engine_label(candidate)).clicked()
-                                                && !selected
-                                            {
-                                                swap_to = Some(candidate);
-                                            }
-                                        });
-                                    }
-                                });
+                            let current_engine_response = ui.button(combo_text);
+                            if current_engine_response.clicked() {
+                                self.current_engine_picker_open = !self.current_engine_picker_open;
+                            }
+                            current_engine_button_rect = Some(current_engine_response.rect);
                         });
                         let node_muted =
                             self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
@@ -3126,11 +3311,6 @@ impl App {
                 self.close_settings_page();
             }
         }
-        if let Some(kind) = swap_to {
-            if let Some(id) = &current_tab_id {
-                self.start_swap_to(id, kind);
-            }
-        }
         if mute_toggle {
             if let Some(id) = &current_tab_id {
                 self.toggle_muted(id);
@@ -3176,6 +3356,59 @@ impl App {
         if downloads_fade > 0.0 {
             if let Some(rect) = downloads_button_rect {
                 self.build_downloads_popup(ui, rect, downloads_fade);
+            }
+        }
+        // Same fade pattern as the three list popups above, but drawing
+        // `build_engine_picker_popup` (tier/pros/cons cards) instead of a
+        // plain list -- see that function's own doc comment.
+        let default_engine_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("default_engine_popup_fade"), self.default_engine_picker_open);
+        if default_engine_fade > 0.0 {
+            if let Some(rect) = default_engine_button_rect {
+                let (area_rect, picked) = build_engine_picker_popup(
+                    ui.ctx(),
+                    "default_engine_popup",
+                    rect,
+                    Some(self.settings.default_starting_engine),
+                    default_engine_fade,
+                );
+                if let Some(kind) = picked {
+                    self.settings.default_starting_engine = kind;
+                    self.save_settings();
+                    self.default_engine_picker_open = false;
+                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
+                    self.default_engine_picker_open = false;
+                }
+            }
+        }
+        let current_engine_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("current_engine_popup_fade"), self.current_engine_picker_open);
+        if current_engine_fade > 0.0 {
+            if let Some(rect) = current_engine_button_rect {
+                let current_kind = current_tab_id
+                    .as_ref()
+                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|n| n.as_tab())
+                    .map(|t| t.tab.kind);
+                let (area_rect, picked) = build_engine_picker_popup(
+                    ui.ctx(),
+                    "current_engine_popup",
+                    rect,
+                    current_kind,
+                    current_engine_fade,
+                );
+                if let Some(kind) = picked {
+                    if let Some(id) = &current_tab_id {
+                        if Some(kind) != current_kind {
+                            self.start_swap_to(id, kind);
+                        }
+                    }
+                    self.current_engine_picker_open = false;
+                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
+                    self.current_engine_picker_open = false;
+                }
             }
         }
     }
@@ -8140,7 +8373,7 @@ impl App {
         let mut back_to_graph = false;
         let mut toggle_bookmark_requested = false;
         let mut tab_actions_button_rect: Option<egui::Rect> = None;
-        let mut split_requested: Option<EngineKind> = None;
+        let mut split_engine_button_rect: Option<egui::Rect> = None;
         let mut close_split_requested = false;
         let mut address_bar_rect: Option<egui::Rect> = None;
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
@@ -8314,18 +8547,12 @@ impl App {
                     // secondary pane is view-only in this first cut, so its
                     // own toolbar/address-bar controls only ever apply to
                     // the primary (left) pane.
-                    egui::ComboBox::from_id_salt("split_picker")
-                        .selected_text(if self.split_tab.is_some() { "Split ▾" } else { "Split" })
-                        .show_ui(&mut trailing_ui, |ui| {
-                            for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-                                ui.horizontal(|ui| {
-                                    engine_dot(ui, kind, 8.0);
-                                    if ui.selectable_label(false, engine_label(kind)).clicked() {
-                                        split_requested = Some(kind);
-                                    }
-                                });
-                            }
-                        });
+                    let split_engine_response =
+                        trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
+                    if split_engine_response.clicked() {
+                        self.split_engine_picker_open = !self.split_engine_picker_open;
+                    }
+                    split_engine_button_rect = Some(split_engine_response.rect);
                     if self
                         .nodes
                         .get(&focused_id)
@@ -8569,9 +8796,6 @@ impl App {
             let home_page = self.settings.home_page.clone();
             self.navigate_tab(&focused_id, home_page);
         }
-        if let Some(kind) = split_requested {
-            self.start_split(kind);
-        }
         if close_split_requested {
             self.close_split();
         }
@@ -8648,6 +8872,32 @@ impl App {
         if tab_actions_fade > 0.0 {
             if let Some(rect) = tab_actions_button_rect {
                 self.build_tab_actions_popup(ui, rect, &focused_id, tab_actions_fade);
+            }
+        }
+        // Same tier/pros/cons popup Settings' own two engine pickers use --
+        // see `build_engine_picker_popup`'s doc comment. Highlights the
+        // split's own current engine (if one is already open) rather than
+        // nothing, so re-opening this shows what's already showing.
+        let split_engine_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("split_engine_popup_fade"), self.split_engine_picker_open);
+        if split_engine_fade > 0.0 {
+            if let Some(rect) = split_engine_button_rect {
+                let split_kind =
+                    self.split_tab.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+                let (area_rect, picked) = build_engine_picker_popup(
+                    ui.ctx(),
+                    "split_engine_popup",
+                    rect,
+                    split_kind,
+                    split_engine_fade,
+                );
+                if let Some(kind) = picked {
+                    self.start_split(kind);
+                    self.split_engine_picker_open = false;
+                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
+                    self.split_engine_picker_open = false;
+                }
             }
         }
         if let Some(text) = navigate {
