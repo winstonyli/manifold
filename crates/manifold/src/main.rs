@@ -913,6 +913,42 @@ fn heading_text(text: impl Into<String>) -> egui::RichText {
         .color(TEXT_PRIMARY)
 }
 
+/// Every fixed-height toolbar-style row in this app (Tab view's own
+/// address-bar row, Graph view's own row, the Settings page's back-button
+/// row, and the tab-respawn placeholder) goes through this one function
+/// now, instead of each hand-rolling the same `Panel::top(id).exact_size
+/// (CHROME_HEIGHT_POINTS).frame(...)` shell separately. That duplication
+/// was never just repetition -- three of these four had already silently
+/// drifted out of sync with each other at least once: the Graph toolbar
+/// got a compact-spacing override during a later palette pass (`apply_
+/// style` bumped the app-wide default spacing airier, which this fixed
+/// row height was never resized for), but the Tab toolbar and the
+/// Settings page's own back-button row didn't get the same override --
+/// both later overflowed the fixed row height for it, found live on two
+/// separate occasions, each requiring its own investigation to notice.
+/// A single shared constructor makes that whole *class* of bug
+/// structurally impossible to reintroduce one toolbar at a time again:
+/// every future toolbar automatically gets the same compact spacing this
+/// row height needs, and the same horizontal-scroll overflow safety (see
+/// the Graph toolbar's own former comment on this, now here instead) --
+/// without a fresh author needing to already know why, or remembering to
+/// copy it from whichever toolbar they happened to look at first.
+///
+/// `content` still owns its own internal layout (`horizontal_centered`
+/// vs. `with_layout(.., Align::Min)`, etc.) -- callers differ there for
+/// reasons specific to each row (see the Tab toolbar's own `Align::Min`
+/// doc comment), so this only ever provides the shared *shell* around it.
+fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Panel::top(id)
+        .exact_size(CHROME_HEIGHT_POINTS)
+        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 3)))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
+        });
+}
+
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
 /// `resumed`'s own window setup) titlebar dark, independent of the current
 /// Windows theme setting. Without this, a system in light mode draws a
@@ -2756,27 +2792,20 @@ impl App {
             self.close_settings_page();
         }
 
-        egui::Panel::top("settings_toolbar")
-            .exact_size(CHROME_HEIGHT_POINTS)
-            .frame(
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    if icon_button_eased(
-                        ui,
-                        egui::Id::new("icon_btn_settings_back"),
-                        format!("{} Back", egui_phosphor::light::CARET_LEFT),
-                    )
-                    .clicked()
-                    {
-                        self.close_settings_page();
-                    }
-                    ui.label(heading_text("Settings"));
-                });
+        toolbar_panel("settings_toolbar", ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                if icon_button_eased(
+                    ui,
+                    egui::Id::new("icon_btn_settings_back"),
+                    format!("{} Back", egui_phosphor::light::CARET_LEFT),
+                )
+                .clicked()
+                {
+                    self.close_settings_page();
+                }
+                ui.label(heading_text("Settings"));
             });
+        });
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
@@ -8067,22 +8096,15 @@ impl App {
                 // enough chrome to still escape to Graph) instead of
                 // nothing until it reappears in `self.nodes`.
                 let mut back_to_graph = false;
-                egui::Panel::top("tab_strip_respawning")
-                    .exact_size(CHROME_HEIGHT_POINTS)
-                    .frame(
-                        egui::Frame::default()
-                            .fill(TOOLBAR_FILL)
-                            .inner_margin(egui::Margin::symmetric(10, 0)),
-                    )
-                    .show(ui, |ui| {
-                        ui.horizontal_centered(|ui| {
-                            if ui.button("Graph").clicked() {
-                                back_to_graph = true;
-                            }
-                            ui.add(egui::Spinner::new().size(12.0));
-                            ui.label("Reconnecting…");
-                        });
+                toolbar_panel("tab_strip_respawning", ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        if ui.button("Graph").clicked() {
+                            back_to_graph = true;
+                        }
+                        ui.add(egui::Spinner::new().size(12.0));
+                        ui.label("Reconnecting…");
                     });
+                });
                 if back_to_graph {
                     self.view_mode = ViewMode::Graph;
                     return;
@@ -8130,24 +8152,7 @@ impl App {
         // closure returns.
         let mut enter_pressed = false;
 
-        egui::Panel::top("toolbar")
-            .exact_size(CHROME_HEIGHT_POINTS)
-            .frame(
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
-            )
-            .show(ui, |ui| {
-                // Compact, not `apply_style`'s app-wide airy spacing --
-                // same reasoning as the Graph toolbar's own identical
-                // override: this row sits in a fixed `CHROME_HEIGHT_POINTS`
-                // (32pt), calibrated for the old compact `button_padding`.
-                // Missing this override here (while the Graph toolbar got
-                // it) was a real, live-confirmed bug -- the airy default's
-                // taller buttons no longer fit the fixed row height and
-                // visibly overflowed past it into the content area below.
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+        toolbar_panel("toolbar", ui, |ui| {
                 // Not `horizontal_centered` (`Align::Center`): measured live
                 // that `egui::ComboBox` paints itself ~4.5pt lower than a
                 // plain `Button`/`TextEdit` even when all three report the
@@ -8733,33 +8738,16 @@ impl App {
             self.graph_lod_simplified = true;
         }
 
-        egui::Panel::top("graph_toolbar")
-            .exact_size(GRAPH_TOOLBAR_HEIGHT_POINTS)
-            .frame(
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
-            )
-            .show(ui, |ui| {
-                // Compact, not `apply_style`'s app-wide airy spacing --
-                // this toolbar is already packed with icon buttons and
-                // genuinely screen-space-constrained, unlike the dialogs/
-                // menus/settings that airier spacing was chosen for.
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
-                // Horizontally scrollable, not just a plain `horizontal_centered`
-                // -- this row's own content is genuinely variable (a
-                // breadcrumb of arbitrary depth, a selection-actions cluster,
-                // a spawn error, "Recently Closed" all able to appear at
-                // once) and past sessions have already hit real overflow at
-                // this toolbar's fixed height more than once (see the icon-
-                // only button migration and breadcrumb-name truncation
-                // above, both direct responses to that). Those fixes reduce
-                // how *often* it happens; this one makes it survivable when
-                // it still does -- content past the visible edge becomes
-                // reachable by scrolling instead of silently clipped or
-                // pushed past the window's own edge with no way back.
-                egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+        // `toolbar_panel` already provides the compact spacing and the
+        // horizontal-scroll overflow safety this row specifically needed
+        // (a breadcrumb of arbitrary depth, a selection-actions cluster, a
+        // spawn error, and "Recently Closed" all able to appear at once
+        // had already hit real overflow at this fixed row height more than
+        // once -- see the icon-only button migration and breadcrumb-name
+        // truncation elsewhere in this file, both direct responses to
+        // that). Every other toolbar in this app gets the same safety net
+        // now too, not just this one.
+        toolbar_panel("graph_toolbar", ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Empty at the true top level; one entry per ancestor
                     // group otherwise (root-most first, current group
@@ -9021,7 +9009,6 @@ impl App {
                     // own doc comment for why these are two separate calls.
                     shortcuts_help_button_rect = Some(self.build_help_button(ui));
                     self.build_settings_button(ui);
-                });
                 });
             });
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
@@ -12741,6 +12728,7 @@ impl App {
             DebugCommand::HistoryFilterText(text) => self.history_filter = text,
             DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
+            DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
             DebugCommand::ExportSession(path) => {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));
             }

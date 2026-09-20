@@ -151,6 +151,12 @@ pub enum DebugCommand {
     GraphFilterText(String),
     /// `Ctrl+G` equivalent — see `App::toggle_view_mode_shortcut`.
     ToggleView,
+    /// Settings gear (Tab or Graph toolbar) — see `App::toggle_settings_page`.
+    /// Documented as a headless command (`App::open_settings_page`'s own
+    /// doc comment already claimed this) since before it actually existed
+    /// here -- added for real once that gap got in the way of testing the
+    /// Settings toolbar directly.
+    ToggleSettingsPage,
     /// "Export..." with an explicit path instead of a real file dialog —
     /// headless mode has no OS/human to answer one, so this bypasses it
     /// entirely and calls the same underlying save directly.
@@ -312,6 +318,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("HISTORYFILTERTEXT text", "Set the History popup's own filter box"),
     ("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box"),
     ("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view"),
+    ("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page"),
     ("EXPORTSESSION path", "Save the current session to `path`"),
     ("IMPORTSESSION path", "Load a session from `path`"),
     ("EXPORTBOOKMARKS path", "Save bookmarks to `path`"),
@@ -515,6 +522,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "HISTORYFILTERTEXT" => Some(DebugCommand::HistoryFilterText(rest.to_string())),
         "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
+        "TOGGLESETTINGSPAGE" => Some(DebugCommand::ToggleSettingsPage),
         "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
