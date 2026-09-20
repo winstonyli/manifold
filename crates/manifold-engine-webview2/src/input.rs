@@ -37,7 +37,26 @@
 //! `KeyDown`/`KeyUp` only need to cover the physical-key side now, the same
 //! division of labor `ipc_protocol::InputEvent`'s own doc comment already
 //! describes.
+//!
+//! **Drag text-selection and nested scroll, later still: `Selection`/`Range`
+//! JS, not CDP.** A throwaway spike tried the other native lever available
+//! -- `ICoreWebView2CompositionController::SendMouseInput`/`SendPointerInput`
+//! -- and found it *doesn't* extend a text selection during a drag at all
+//! (confirmed live: fully `isTrusted:true` events, correct coordinates and
+//! button state throughout, `selection.rangeCount` shows an anchor was set
+//! on mousedown, but `.toString()` stays empty after the drag) -- a genuine
+//! WebView2/Chromium limitation in that hosting mode, not a mistake in the
+//! spike, and it would've meant redoing this crate's whole hosting+capture
+//! pipeline anyway (`SendMouseInput` only exists on the Composition-hosted
+//! controller, which `capture.rs`'s `Windows.Graphics.Capture` pipeline
+//! doesn't use). So this stays on the plain-JS path this whole module is
+//! already built around: `document.caretRangeFromPoint` + `Selection.
+//! collapse`/`.extend` reproduce a real drag-select using the same browser
+//! primitives a native drag would, and a short walk up from `elementFromPoint`
+//! to the first scrollable ancestor lets `Scroll` reach a nested scrollable
+//! div instead of only ever the page itself.
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -50,6 +69,34 @@ use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 /// `(x, y, href)` for a right-click that landed on a link — see
 /// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment.
 pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
+
+/// Tracks a left-button drag across `MouseDown`/`MouseMove`/`MouseUp` --
+/// `ipc_protocol::InputEvent::MouseMove` carries no button state of its own
+/// (see its doc comment: that field exists only for a native-injection
+/// engine forwarding modifier keys), so this project's own engine-host has
+/// to remember "is the left button currently down" itself. `moved` is what
+/// tells `MouseUp` whether this was a real drag (skip the synthetic
+/// `.click()` -- a real browser doesn't fire a click after dragging a
+/// selection across a link either) or a plain stationary click (fire it, as
+/// before).
+#[derive(Clone, Copy, Default)]
+pub struct Drag {
+    active: bool,
+    moved: bool,
+}
+
+pub type DragState = Rc<Cell<Drag>>;
+
+/// Both the drag-anchor (`MouseDown`) and drag-extend (`MouseMove`) scripts
+/// skip form controls -- `document.caretRangeFromPoint` returns `null` or a
+/// range outside an `<input>`/`<textarea>`'s own internal text layout, so
+/// acting on it there would move the selection *away* from where the user
+/// clicked instead of focusing the field, breaking the click-to-focus path
+/// `Char`'s own doc comment already depends on (confirmed live against
+/// DuckDuckGo's search box).
+fn skip_form_controls_guard(x: f64, y: f64) -> String {
+    format!("var el=document.elementFromPoint({x},{y});if(el&&el.closest('input,textarea,select'))return;")
+}
 
 fn exec(webview: &ICoreWebView2, script: String) {
     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
@@ -80,13 +127,58 @@ pub fn send_input(
     webview: &ICoreWebView2,
     event: InputEvent,
     pending_context_menu: &PendingContextMenu,
+    drag_state: &DragState,
 ) {
     match event {
-        // Hover-only moves aren't worth a script round-trip for this
-        // project's actual use (links/buttons/forms, not hover-driven
-        // UI) -- skipped, matching the "click-only" scope of this round.
-        InputEvent::MouseMove { .. } => {}
+        // `caretRangeFromPoint` + `Selection.collapse` reproduces a real
+        // mousedown's caret placement -- see this module's doc comment for
+        // why this is JS/`Selection` rather than a CDP mouse event.
+        InputEvent::MouseDown { x, y, button: MouseButton::Left, .. } => {
+            // TEMP diagnostic for the live offset bug -- prints the
+            // received CSS-pixel coordinate here, and separately what the
+            // page itself believes is at that point (tag/id and its own
+            // `getBoundingClientRect`), so a report can be compared against
+            // where the user actually clicked. Remove once resolved.
+            eprintln!("[input-diag] MouseDown received x={x} y={y}");
+            let diag_script = format!(
+                "(function(){{var e=document.elementFromPoint({x},{y});if(!e)return 'null element at point';var r=e.getBoundingClientRect();return e.tagName+'#'+e.id+' rect=('+r.left.toFixed(1)+','+r.top.toFixed(1)+','+r.width.toFixed(1)+'x'+r.height.toFixed(1)+') text='+JSON.stringify((e.textContent||'').slice(0,30));}})();"
+            );
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
+                eprintln!("[input-diag]   elementFromPoint({x},{y}) -> {result}");
+                Ok(())
+            }));
+            unsafe {
+                let _ = webview.ExecuteScript(&HSTRING::from(diag_script), &handler);
+            }
+            drag_state.set(Drag { active: true, moved: false });
+            exec(
+                webview,
+                format!(
+                    "(function(){{{guard}var r=document.caretRangeFromPoint({x},{y});if(r){{var s=window.getSelection();s.removeAllRanges();s.collapse(r.startContainer,r.startOffset);}}}})();",
+                    guard = skip_form_controls_guard(x, y),
+                ),
+            );
+        }
+        // Right/middle mouse-down: no drag-selection to start (right-click's
+        // own handling is on `MouseUp` below; middle-click is unhandled).
         InputEvent::MouseDown { .. } => {}
+        // Only round-trips a script while a left-button drag is actually in
+        // progress -- a plain hover move (the common case) stays free, same
+        // as before this drag-selection support existed.
+        InputEvent::MouseMove { x, y, .. } => {
+            let mut drag = drag_state.get();
+            if drag.active {
+                drag.moved = true;
+                drag_state.set(drag);
+                exec(
+                    webview,
+                    format!(
+                        "(function(){{{guard}var r=document.caretRangeFromPoint({x},{y});if(r){{window.getSelection().extend(r.startContainer,r.startOffset);}}}})();",
+                        guard = skip_form_controls_guard(x, y),
+                    ),
+                );
+            }
+        }
         // The actual click happens on mouse-up (matches the natural
         // "press, release, click fires" order) -- `el.click()` is a real
         // synthetic click the page's own listeners and default actions
@@ -94,6 +186,7 @@ pub fn send_input(
         // unlike a synthetic `MouseEvent` dispatched by hand (those don't
         // trigger default actions in Chromium, only listener callbacks).
         InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } => {
+            drag_state.set(Drag::default());
             let script = format!(
                 "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             );
@@ -110,15 +203,42 @@ pub fn send_input(
             }
         }
         InputEvent::MouseUp { x, y, .. } => {
+            let moved = drag_state.get().moved;
+            drag_state.set(Drag::default());
+            // A completed drag-selection isn't a click -- a real browser
+            // doesn't fire one after dragging a selection across a link
+            // either, and synthesizing one here would wrongly navigate/
+            // submit just because the drag happened to end over such an
+            // element.
+            if !moved {
+                // `.focus()` first, then `.click()` -- `.click()` alone
+                // never focuses a plain `<input>`: it dispatches with
+                // `isTrusted:false`, and Chromium's "untrusted events still
+                // get their default action" carve-out (why `.click()` still
+                // navigates links/submits forms below) doesn't extend to
+                // focus assignment. `.focus()` is a plain DOM method, not an
+                // event, so it isn't trust-gated at all, and it's a silent
+                // no-op on non-focusable elements -- safe to call
+                // unconditionally rather than special-casing form controls.
+                exec(
+                    webview,
+                    format!(
+                        "(function(){{var e=document.elementFromPoint({x},{y});if(e){{if(e.focus){{e.focus();}}e.click();}}}})();"
+                    ),
+                );
+            }
+        }
+        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
+            // Walks up from the pointer's own element to the first
+            // scrollable ancestor (matches a real wheel event's target
+            // resolution) instead of always scrolling the page -- lets this
+            // reach a nested scrollable panel, not only the document.
             exec(
                 webview,
                 format!(
-                    "(function(){{var e=document.elementFromPoint({x},{y});if(e){{e.click();}}}})();"
+                    "(function(){{var el=document.elementFromPoint({x},{y});while(el&&el!==document.body&&el!==document.documentElement){{var cs=getComputedStyle(el);var sy=(cs.overflowY==='auto'||cs.overflowY==='scroll')&&el.scrollHeight>el.clientHeight;var sx=(cs.overflowX==='auto'||cs.overflowX==='scroll')&&el.scrollWidth>el.clientWidth;if(sy||sx){{el.scrollBy({delta_x},{delta_y});return;}}el=el.parentElement;}}window.scrollBy({delta_x},{delta_y});}})();"
                 ),
             );
-        }
-        InputEvent::Scroll { delta_x, delta_y, .. } => {
-            exec(webview, format!("window.scrollBy({delta_x},{delta_y});"));
         }
         // See this module's own doc comment for why a CDP-injected key
         // event, unlike a hand-dispatched DOM `KeyboardEvent`, actually
