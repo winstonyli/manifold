@@ -105,6 +105,47 @@ pub struct Session {
     pub next_json_id: u64,
 }
 
+/// Cheap, process-local "did this file's bytes change" check -- not a
+/// cryptographic or cross-run-stable hash, just `DefaultHasher` (SipHash)
+/// over the raw file contents, good enough to notice that some *other*
+/// process touched `session.json` since this one last read or wrote it.
+/// See `fingerprint`'s own doc comment for why this exists at all.
+fn content_fingerprint(contents: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    contents.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A fingerprint of the auto-restore `session.json` exactly as it sits on
+/// disk right now -- `None` if it doesn't exist or can't be read. `App`
+/// compares this against what it saw at last load/save, right before
+/// `save()` would otherwise overwrite the file, so a second process (or a
+/// second `manifold.exe` instance) that's touched this same file in the
+/// meantime is noticed instead of silently clobbered -- confirmed live:
+/// this project's own concurrent testing sessions did exactly that to each
+/// other, with zero warning, before this existed.
+pub fn fingerprint() -> Option<u64> {
+    let contents = std::fs::read_to_string(session_path()?).ok()?;
+    Some(content_fingerprint(&contents))
+}
+
+/// Where a save that lost a fingerprint race lands instead of overwriting
+/// the real `session.json` -- see `App::save_session`'s own doc comment.
+/// Unix-seconds-suffixed, the same collision-avoidance convention this
+/// project's own screenshot (`manifold-<unix-seconds>.png`) and crash-log
+/// (`manifold-crash-<unix-seconds>.log`) paths already use -- a fixed name
+/// would let a *second* conflict later in the same session silently
+/// overwrite the first one's still-unreviewed data, exactly the failure
+/// mode this whole mechanism exists to prevent.
+pub fn conflict_path() -> Option<PathBuf> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(session_dir()?.join(format!("session.conflict-{secs}.json")))
+}
+
 fn session_dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(appdata).join("manifold"))

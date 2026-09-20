@@ -2220,6 +2220,13 @@ struct App {
     /// `save_session`, not a timer) has some visible confirmation instead
     /// of being purely invisible. `None` until the first save this run.
     last_session_save: Option<std::time::Instant>,
+    /// `session::fingerprint()`/`settings::fingerprint()` as this process
+    /// last saw them (set at load, updated after every successful save) --
+    /// see `save_session`'s own doc comment for what they're for. `None`
+    /// until the corresponding file has actually been loaded or saved once
+    /// this run, which also means "skip the conflict check" the first time.
+    session_fingerprint: Option<u64>,
+    settings_fingerprint: Option<u64>,
 
     find_bar_open: bool,
     find_text: String,
@@ -2331,6 +2338,11 @@ impl Default for App {
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
         let settings = Settings::load();
+        // Re-reads the file `settings::fingerprint()` already just read for
+        // `load()` -- a second read of a file this small, once at startup,
+        // isn't worth threading a fingerprint out through `load()`'s own
+        // return type for.
+        let settings_fingerprint = settings::fingerprint();
         let bookmarks = bookmarks::load();
         // Before constructing anything that might make its own first real
         // HTTPS request (search suggestions, favicons) -- see `suggestions::
@@ -2429,6 +2441,8 @@ impl Default for App {
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
             last_session_save: None,
+            session_fingerprint: None,
+            settings_fingerprint,
             find_bar_open: false,
             find_text: String::new(),
             find_match_case: false,
@@ -2591,7 +2605,7 @@ impl App {
     /// the tab it's supposedly controlling can't diverge.
     fn set_focused_zoom(&mut self, factor: f64) {
         self.settings.zoom_factor = factor;
-        self.settings.save();
+        self.save_settings();
         if let Some(id) = self.focused.clone() {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                 node.zoom_factor = factor;
@@ -2675,7 +2689,7 @@ impl App {
                             let selected = self.settings.default_search_engine == engine;
                             if ui.selectable_label(selected, engine.label()).clicked() && !selected {
                                 self.settings.default_search_engine = engine;
-                                self.settings.save();
+                                self.save_settings();
                             }
                         }
                     });
@@ -2699,7 +2713,7 @@ impl App {
                             let selected = self.settings.default_starting_engine == kind;
                             if ui.selectable_label(selected, engine_label(kind)).clicked() && !selected {
                                 self.settings.default_starting_engine = kind;
-                                self.settings.save();
+                                self.save_settings();
                             }
                         }
                     });
@@ -2728,7 +2742,7 @@ impl App {
                     .add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY))
                     .lost_focus()
                 {
-                    self.settings.save();
+                    self.save_settings();
                 }
 
                 ui.add_space(10.0);
@@ -3230,11 +3244,63 @@ impl App {
     /// that shape actually changes (a tab spawns, closes, navigates, or
     /// focus/view changes), not once per frame; see `session::Session`'s
     /// own doc comment for what is/isn't portable across a restart.
-    /// Fire-and-forget, same as `Settings::save` — a failed write is
-    /// logged, never fatal.
+    ///
+    /// **Concurrency-safe, not just fire-and-forget**: before actually
+    /// overwriting `session.json`, checks whether its on-disk fingerprint
+    /// still matches what this process last loaded/saved -- if some *other*
+    /// process (another `manifold.exe` instance, or anything else sharing
+    /// this profile) has written to it in the meantime, this write is
+    /// redirected to `session::conflict_path()` instead of clobbering
+    /// theirs, and the user is told via a toast. Found live, the hard way:
+    /// two of this project's own concurrent development/testing sessions
+    /// silently overwrote each other's `session.json` with zero warning,
+    /// before this existed -- see the README's own entry on this fix for
+    /// the full incident. The first save of a run (`session_fingerprint`
+    /// still `None` -- nothing was ever loaded, or this is a fresh install)
+    /// always proceeds normally; there's nothing to conflict with yet.
     fn save_session(&mut self) {
-        self.build_session_snapshot().save();
+        let snapshot = self.build_session_snapshot();
+        let on_disk = session::fingerprint();
+        if self.session_fingerprint.is_some() && on_disk != self.session_fingerprint {
+            if let Some(path) = session::conflict_path() {
+                snapshot.save_to(&path);
+                eprintln!(
+                    "session: session.json changed on disk since last load/save -- wrote {} instead",
+                    path.display()
+                );
+                self.queue_toast(format!(
+                    "Session changed by another process -- your changes saved to {}",
+                    path.display()
+                ));
+            }
+            return;
+        }
+        snapshot.save();
+        self.session_fingerprint = session::fingerprint();
         self.last_session_save = Some(std::time::Instant::now());
+    }
+
+    /// Same concurrency-safety idea as `save_session`, for `settings.json` --
+    /// see that function's own doc comment for the full reasoning. Replaces
+    /// every direct `self.settings.save()` call site.
+    fn save_settings(&mut self) {
+        let on_disk = settings::fingerprint();
+        if self.settings_fingerprint.is_some() && on_disk != self.settings_fingerprint {
+            if let Some(path) = settings::conflict_path() {
+                self.settings.save_to(&path);
+                eprintln!(
+                    "settings: settings.json changed on disk since last load/save -- wrote {} instead",
+                    path.display()
+                );
+                self.queue_toast(format!(
+                    "Settings changed by another process -- your changes saved to {}",
+                    path.display()
+                ));
+            }
+            return;
+        }
+        self.settings.save();
+        self.settings_fingerprint = settings::fingerprint();
     }
 
     /// Shared body for the Note/Image/Pdf/Json cases of
@@ -3344,6 +3410,10 @@ impl App {
         {
             return false;
         }
+        // Re-reads the file `session::Session::load()` above already just
+        // read -- see `settings_fingerprint`'s own init in `App::default`
+        // for why this isn't worth threading out through `load()` itself.
+        self.session_fingerprint = session::fingerprint();
         self.apply_session(session);
         true
     }
@@ -11807,7 +11877,7 @@ impl ApplicationHandler<UserEvent> for App {
             } else {
                 self.spawn_first_launch_demo();
                 self.settings.has_shown_first_launch_demo = true;
-                self.settings.save();
+                self.save_settings();
             }
         }
     }
@@ -11844,14 +11914,14 @@ impl ApplicationHandler<UserEvent> for App {
                 if !self.headless && size.width > 0 && size.height > 0 {
                     self.settings.window_width = Some(size.width);
                     self.settings.window_height = Some(size.height);
-                    self.settings.save();
+                    self.save_settings();
                 }
             }
             WindowEvent::Moved(position) => {
                 if !self.headless {
                     self.settings.window_x = Some(position.x);
                     self.settings.window_y = Some(position.y);
-                    self.settings.save();
+                    self.save_settings();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

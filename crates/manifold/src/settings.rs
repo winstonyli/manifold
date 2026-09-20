@@ -118,6 +118,39 @@ fn settings_path() -> Option<PathBuf> {
     Some(PathBuf::from(appdata).join("manifold").join("settings.json"))
 }
 
+/// Cheap, process-local "did this file's bytes change" check -- see
+/// `session::content_fingerprint`'s own doc comment (this is the same
+/// idea, kept as its own small copy per that module's own doc comment
+/// rather than shared, since `session.rs`/`settings.rs` are otherwise
+/// already fully independent of each other).
+fn content_fingerprint(contents: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    contents.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A fingerprint of `settings.json` exactly as it sits on disk right now --
+/// see `session::fingerprint`'s own doc comment for the full reasoning;
+/// this is the identical mechanism applied to the other single-shared-file
+/// auto-save path.
+pub fn fingerprint() -> Option<u64> {
+    let contents = std::fs::read_to_string(settings_path()?).ok()?;
+    Some(content_fingerprint(&contents))
+}
+
+/// Where a save that lost a fingerprint race lands instead of overwriting
+/// the real `settings.json` -- see `session::conflict_path`'s own doc
+/// comment for why this is timestamped rather than a fixed name.
+pub fn conflict_path() -> Option<PathBuf> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(appdata).join("manifold").join(format!("settings.conflict-{secs}.json")))
+}
+
 impl Settings {
     /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all
     /// (unusual on Windows, but not worth panicking over) all just fall
@@ -137,6 +170,13 @@ impl Settings {
         let Some(path) = settings_path() else {
             return;
         };
+        self.save_to(&path);
+    }
+
+    /// Same write as `save`, just to an arbitrary path -- used by `App::
+    /// save_settings` to redirect a fingerprint-conflicted save to `settings::
+    /// conflict_path()` instead of overwriting the real `settings.json`.
+    pub fn save_to(&self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             if let Err(err) = std::fs::create_dir_all(dir) {
                 eprintln!("settings: failed to create {}: {err}", dir.display());
@@ -145,7 +185,7 @@ impl Settings {
         }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
+                if let Err(err) = std::fs::write(path, json) {
                     eprintln!("settings: failed to write {}: {err}", path.display());
                 }
             }
