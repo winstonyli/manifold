@@ -24,11 +24,15 @@ use std::time::Duration;
 
 use ipc_protocol::{transport, EngineToHost, HostToEngine, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2_8,
+    ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller,
+    ICoreWebView2Environment, ICoreWebView2Environment3, ICoreWebView2_8,
     COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
-use webview2_com::CreateCoreWebView2EnvironmentCompletedHandler;
-use windows::core::{BOOL, HSTRING};
+use webview2_com::{
+    CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+};
+use windows::core::{Interface, BOOL, HSTRING};
+use windows::UI::Composition::ContainerVisual;
 use windows::Win32::Foundation::RECT;
 
 use nav_state::new_shared_nav_state;
@@ -79,6 +83,34 @@ fn main() {
         );
     }
 
+    // DEVIATION from the brief: not called out in Task 3's brief text, but
+    // required for `composition::create_composition_target` (Task 1) to
+    // work at all in this real process -- confirmed live: without this,
+    // `ICompositorDesktopInterop::CreateDesktopWindowTarget` fails with
+    // `HRESULT(0x80070005)` ("Access is denied.") on every single launch,
+    // crashing the engine-host in a respawn loop. `examples/
+    // composition_capture_spike.rs` (Task 1's own verification vehicle)
+    // already does exactly this before creating its `Compositor` -- a plain
+    // Win32 desktop app (unlike a packaged UWP app) has no `DispatcherQueue`
+    // on its thread by default, and `Windows.UI.Composition`'s interop
+    // requires one to exist. `_dispatcher_queue_controller`'s only purpose
+    // is to stay alive for the whole process lifetime, same as `_job` below.
+    unsafe {
+        let _ = windows::Win32::System::WinRT::RoInitialize(
+            windows::Win32::System::WinRT::RO_INIT_SINGLETHREADED,
+        );
+    }
+    let _dispatcher_queue_controller = unsafe {
+        windows::Win32::System::WinRT::CreateDispatcherQueueController(
+            windows::Win32::System::WinRT::DispatcherQueueOptions {
+                dwSize: std::mem::size_of::<windows::Win32::System::WinRT::DispatcherQueueOptions>() as u32,
+                threadType: windows::Win32::System::WinRT::DQTYPE_THREAD_CURRENT,
+                apartmentType: windows::Win32::System::WinRT::DQTAT_COM_NONE,
+            },
+        )
+        .expect("create DispatcherQueueController for Composition hosting")
+    };
+
     // WebView2 spawns its own Chromium-like multi-process tree
     // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
     // direct children of this process in the Windows sense (they're
@@ -120,17 +152,25 @@ fn main() {
         }
     });
 
-    // Plain *windowed* WebView2 hosting against a real, off-screen host
-    // window -- see `window.rs`'s doc comment for why this ended up
-    // simpler than the originally-planned Composition/Visual hosting once
-    // `Windows.Graphics.Capture`'s actual constraints were discovered live.
+    // Composition hosting against a real, off-screen host window -- see
+    // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md
+    // for why this replaced the plain windowed hosting `window.rs`'s own
+    // doc comment used to describe here (that doc comment was itself
+    // written expecting this exact migration -- see `create_composition_controller`'s
+    // own doc comment).
     let hwnd = window::create_hidden_window().expect("create hidden host window");
+    let (_composition_target, root_visual) =
+        composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+            .expect("create composition target");
 
     let environment = create_environment().expect("create CoreWebView2Environment");
-    let (controller, webview) =
-        create_controller(environment.clone(), hwnd).expect("create CoreWebView2Controller");
+    let (comp_controller, controller, webview) =
+        create_composition_controller(environment.clone(), hwnd).expect("create CoreWebView2CompositionController");
+    unsafe {
+        let _ = comp_controller.SetRootVisualTarget(&root_visual);
+    }
 
-    resize_controller(&controller, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    resize_controller(&controller, &root_visual, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
     // Gives the webview logical focus programmatically -- no real OS window
     // activation (`SetForegroundWindow`) needed or wanted, this project's
@@ -170,7 +210,7 @@ fn main() {
             .expect("initial navigate");
     }
 
-    let mut capture = Capture::new(hwnd).expect("create capture pipeline");
+    let mut capture = Capture::new(&root_visual).expect("create capture pipeline");
     window::hide_from_taskbar(hwnd);
     let mut frame_buffer: Option<SharedFrameBuffer> = None;
     let mut frame_id: u64 = 0;
@@ -215,21 +255,9 @@ fn main() {
                         let _ = webview.GoForward();
                     }
                 },
-                HostToEngine::Resize { width, height, dpi_scale } => {
-                    // TEMP diagnostic for the live black-bar bug -- remove
-                    // once resolved.
-                    eprintln!("[input-diag] Resize received width={width} height={height} dpi_scale={dpi_scale}");
+                HostToEngine::Resize { width, height, .. } => {
                     window::resize(hwnd, width, height);
-                    unsafe {
-                        let mut client_rect = RECT::default();
-                        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect);
-                        eprintln!(
-                            "[input-diag]   GetClientRect after resize: {}x{}",
-                            client_rect.right - client_rect.left,
-                            client_rect.bottom - client_rect.top
-                        );
-                    }
-                    resize_controller(&controller, width, height);
+                    resize_controller(&controller, &root_visual, width, height);
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(event) => {
@@ -433,23 +461,24 @@ fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     Ok(webview2_com::wait_with_pump(rx)??)
 }
 
-/// Returns `(controller, webview)` -- `ICoreWebView2Controller` is used for
-/// bounds/visibility/zoom, `ICoreWebView2` (from `.CoreWebView2()`) for
-/// navigation/events. Plain windowed hosting for Phase 1 (see main()'s doc
-/// comment above `create_hidden_window` for why); Phase 2 swaps this for
-/// `CreateCoreWebView2CompositionController`/`ICoreWebView2CompositionController`
-/// once the real capture pipeline needs a composition visual tree.
-fn create_controller(
+/// Returns `(comp_controller, controller, webview)` -- `comp_controller`
+/// (`ICoreWebView2CompositionController`) is used for `SendMouseInput`/
+/// `SetRootVisualTarget`; `controller` (`ICoreWebView2Controller`) for
+/// bounds/visibility/zoom/focus exactly as before (the object
+/// `CreateCoreWebView2CompositionController` returns implements both
+/// interfaces -- confirmed live this session, not assumed); `webview`
+/// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
+fn create_composition_controller(
     environment: ICoreWebView2Environment,
     parent: windows::Win32::Foundation::HWND,
-) -> webview2_com::Result<(ICoreWebView2Controller, ICoreWebView2)> {
-    use webview2_com::CreateCoreWebView2ControllerCompletedHandler;
-
+) -> webview2_com::Result<(ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2)> {
+    let environment3: ICoreWebView2Environment3 =
+        environment.cast().map_err(webview2_com::Error::WindowsError)?;
     let (tx, rx) = mpsc::channel();
-    CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
+    CreateCoreWebView2CompositionControllerCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
-            environment
-                .CreateCoreWebView2Controller(parent, &handler)
+            environment3
+                .CreateCoreWebView2CompositionController(parent, &handler)
                 .map_err(webview2_com::Error::WindowsError)
         }),
         Box::new(move |error_code, controller| {
@@ -457,16 +486,18 @@ fn create_controller(
             tx.send(controller.ok_or_else(|| {
                 windows::core::Error::from(windows::Win32::Foundation::E_POINTER)
             }))
-            .expect("send controller over mpsc channel");
+            .expect("send composition controller over mpsc channel");
             Ok(())
         }),
     )?;
-    let controller = webview2_com::wait_with_pump(rx)??;
+    let comp_controller = webview2_com::wait_with_pump(rx)??;
+    let controller: ICoreWebView2Controller =
+        comp_controller.cast().map_err(webview2_com::Error::WindowsError)?;
     let webview = unsafe { controller.CoreWebView2() }?;
-    Ok((controller, webview))
+    Ok((comp_controller, controller, webview))
 }
 
-fn resize_controller(controller: &ICoreWebView2Controller, width: u32, height: u32) {
+fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &ContainerVisual, width: u32, height: u32) {
     let bounds = RECT {
         left: 0,
         top: 0,
@@ -476,4 +507,5 @@ fn resize_controller(controller: &ICoreWebView2Controller, width: u32, height: u
     unsafe {
         let _ = controller.SetBounds(bounds);
     }
+    composition::resize_root_visual(root_visual, width, height);
 }
