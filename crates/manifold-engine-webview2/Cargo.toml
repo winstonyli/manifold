@@ -47,9 +47,9 @@ windows = { version = "0.62", features = [
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
-    # Only used by the throwaway `examples/composition_input_spike.rs` (see
-    # its own doc comment) -- the real engine-host stays on plain windowed
-    # hosting, see `capture.rs`'s doc comment on why that plan was dropped.
+    # Real dependencies now (`composition.rs` visual-tree hosting) -- used by
+    # the engine-host to set up composition-based rendering instead of plain
+    # windowed hosting.
     "UI_Composition",
     "UI_Composition_Desktop",
     "Win32_System_WinRT_Composition",
