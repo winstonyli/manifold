@@ -1115,10 +1115,11 @@ fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
 /// pointer is actually over its not-yet-laid-out rect -- imperceptible at
 /// any real frame rate, same "acceptable one-frame lag" the zoom-%
 /// toolbar readout and the dot-grid background already accept elsewhere.
-/// Deliberately scoped to a handful of toolbar icon buttons (Reload/Home/
-/// Screenshot/Print-to-PDF/Settings/Keyboard-Shortcuts/Settings-page-Back)
-/// rather than every `ui.button` call in the app -- see README.md's own
-/// "Toolbar icon-button hover easing" paragraph for why a full sweep
+/// Deliberately scoped to every *icon-only* toolbar button (Reload/Home/
+/// Screenshot/Print-to-PDF/Settings/Keyboard-Shortcuts/Settings-page-Back/
+/// Close-Split/Import-Group/Ungroup-All/Collapse-Expand-Groups) rather than
+/// every `ui.button` call in the app -- see README.md's own "Toolbar
+/// icon-button hover easing" paragraph for why a full sweep
 /// wasn't attempted.
 fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
@@ -8634,6 +8635,7 @@ impl App {
         let mut rename_cancel = false;
 
         let mut reset_view = false;
+        let mut reset_zoom = false;
         let mut group_selected_requested = false;
         let mut close_selected_requested = false;
         let mut ungroup_all_requested = false;
@@ -8855,24 +8857,39 @@ impl App {
                     // level, not just the top -- see `GroupPayload`'s own
                     // doc comment on nesting; each already acts on
                     // `self.current_group`/`groups_at_current_level()`
+                    //
+                    // The rule this toolbar actually follows, for any
+                    // future addition: identity/entry-point actions that
+                    // define what this toolbar *is* ("+ New Tab", "Reset
+                    // View" -- also used as fixed coordinate anchors by
+                    // existing headless tests) stay full text; everything
+                    // else added later to relieve crowding goes icon-only
+                    // with a hover tooltip carrying the old label, per this
+                    // paragraph's own history.
                     // (its own level), never hardcoding the top level.
                     // Same "real file dialog blocks on OS/human input
                     // neither exists in headless mode" reasoning as every
                     // other Export/Import button -- `IMPORTGROUP <path>`
                     // calls the same underlying import directly instead.
                     if !self.headless
-                        && ui
-                            .button(egui_phosphor::light::UPLOAD_SIMPLE)
-                            .on_hover_text("Import Group...")
-                            .clicked()
+                        && icon_button_eased(
+                            ui,
+                            egui::Id::new("icon_btn_import_group"),
+                            egui_phosphor::light::UPLOAD_SIMPLE,
+                        )
+                        .on_hover_text("Import Group...")
+                        .clicked()
                     {
                         import_group_requested = true;
                     }
                     if !groups_at_level.is_empty()
-                        && ui
-                            .button(egui_phosphor::light::FOLDER_MINUS)
-                            .on_hover_text("Ungroup All")
-                            .clicked()
+                        && icon_button_eased(
+                            ui,
+                            egui::Id::new("icon_btn_ungroup_all"),
+                            egui_phosphor::light::FOLDER_MINUS,
+                        )
+                        .on_hover_text("Ungroup All")
+                        .clicked()
                     {
                         ungroup_all_requested = true;
                     }
@@ -8882,14 +8899,31 @@ impl App {
                         } else {
                             (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
                         };
-                        if ui.button(icon).on_hover_text(hover).clicked() {
+                        if icon_button_eased(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
                             self.groups_collapsed = !self.groups_collapsed;
                         }
                     }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
                     }
-                    ui.label(format!("{}%", self.graph_zoom_pct.round() as i32));
+                    // Click-to-reset (keeping the current pan, unlike
+                    // "Reset View"'s coarser fit-everything) -- a near-
+                    // universal convention in canvas/map apps for this exact
+                    // readout, previously just a plain unclickable label.
+                    if ui
+                        .add(
+                            egui::Label::new(format!("{}%", self.graph_zoom_pct.round() as i32))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("Reset zoom to 100%")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        reset_zoom = true;
+                    }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.graph_filter)
                             .desired_width(120.0)
@@ -8930,8 +8964,20 @@ impl App {
                             close_selected_requested = true;
                         }
                     }
-                    if let Some(err) = &self.tab_spawn_error {
-                        ui.colored_label(DANGER_COLOR, err);
+                    // Cloned rather than borrowed -- `self.tab_spawn_error =
+                    // None` below needs `&mut self`, which a live `&String`
+                    // borrow from `self.tab_spawn_error` would conflict
+                    // with; this only ever clones a short error string, and
+                    // only while one is actually being shown.
+                    if let Some(err) = self.tab_spawn_error.clone() {
+                        ui.colored_label(DANGER_COLOR, &err);
+                        // No dismiss before this -- an error already easy to
+                        // miss in a packed row (now scrollable, see the
+                        // `ScrollArea` above) had no way to clear itself
+                        // short of a new spawn attempt overwriting it.
+                        if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
+                            self.tab_spawn_error = None;
+                        }
                     }
                     shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
                 });
@@ -9088,6 +9134,16 @@ impl App {
         // content, not chrome, so they're meant to scale (and blur like
         // any other magnified image would, which is normal/expected).
         let scene_outer_rect = ui.available_rect_before_wrap();
+        if reset_zoom {
+            // Keeps the current pan (unlike "Reset View", which re-fits
+            // everything) -- `graph_world_to_screen_transform` derives
+            // `zoom_scale` as `screen_size / graph_scene_rect.size()`
+            // (`.min_elem()` of the two axis ratios), so matching the world
+            // rect's size to the screen's own size on both axes makes that
+            // ratio exactly 1.0, the definition of "100%" this readout uses.
+            let center = self.graph_scene_rect.center();
+            self.graph_scene_rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
+        }
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.graph_zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
