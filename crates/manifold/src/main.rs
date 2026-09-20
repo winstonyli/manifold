@@ -8220,19 +8220,35 @@ impl App {
                     // merged into this single bar): a small loading spinner
                     // or the fetched favicon, right before the address bar --
                     // the same "site identity chip at the address bar's own
-                    // left edge" spot Chrome/Firefox use.
+                    // left edge" spot Chrome/Firefox use. Explicitly centered
+                    // in its own row-height slot -- this row is `Align::Min`
+                    // (top-aligned, see the doc comment above on why), which
+                    // a bare 16x16 image or 12pt spinner dropped in directly
+                    // renders flush against the row's *top* edge instead of
+                    // centered like its taller icon-button neighbors,
+                    // visibly poking up and overlapping the address bar's
+                    // own top border (confirmed live, reported as "favicon
+                    // is unaligned").
+                    let identity_slot_height = ui.available_height();
                     if node.loading {
-                        ui.add(egui::Spinner::new().size(12.0));
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(16.0, identity_slot_height),
+                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            |ui| ui.add(egui::Spinner::new().size(12.0)),
+                        );
                     } else if let Some(tex_id) = {
                         let url = node.url.clone();
                         self.cached_favicon_origin(&url)
                     }
                     .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
                     {
-                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                            tex_id,
-                            FAVICON_SIZE,
-                        )));
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(FAVICON_SIZE.x, identity_slot_height),
+                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            |ui| {
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE)))
+                            },
+                        );
                     }
 
                     // Address bar moved up here (right after nav/identity,
