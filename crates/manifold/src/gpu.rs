@@ -53,12 +53,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 const THUMBNAIL_MAX_SIZE: (u32, u32) = (256, 192);
 
 /// One visible tab's frame as a GPU texture for the hand-rolled content
-/// pipeline. Recreated on every uploaded frame — no dirty-tracking, see
-/// `upload_frame`. Keyed by tab id in `GpuState::tab_textures` -- split view
-/// needs two of these live at once (the primary and secondary pane), so a
-/// single slot no longer suffices the way it did when only ever one tab
-/// could be `SetVisible(true)` at a time.
+/// pipeline. Keyed by tab id in `GpuState::tab_textures` -- split view needs
+/// two of these live at once (the primary and secondary pane), so a single
+/// slot no longer suffices the way it did when only ever one tab could be
+/// `SetVisible(true)` at a time. `texture`/`width`/`height`/`format` are
+/// kept (not just the `bind_group`) so `upload_frame` can tell whether a new
+/// frame's dimensions match this one closely enough to reuse it in place via
+/// `queue.write_texture` instead of allocating a brand new GPU texture --
+/// see that function's own doc comment.
 struct TabTexture {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
     bind_group: wgpu::BindGroup,
 }
 
@@ -70,8 +77,14 @@ struct TabTexture {
 /// hand-rolled content pipeline uses — so CEF's BGRA8 frames need a channel
 /// swap on the way in (see `to_thumbnail_rgba`). Persists across focus
 /// changes (unlike `TabTexture`) so a suspended tab's node keeps showing
-/// its last frame.
+/// its last frame. `texture`/`width`/`height` kept for the same "can this
+/// be reused in place via `queue.write_texture`" check `TabTexture` does --
+/// `egui_id` itself, once registered, never needs to change as long as the
+/// texture it's registered against is only *updated*, not replaced.
 struct ThumbTexture {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
     egui_id: egui::TextureId,
 }
 
@@ -378,6 +391,24 @@ impl GpuState {
     /// Updates two things: `tab_id`'s own hand-rolled-pipeline content
     /// texture (see `TabTexture`'s doc comment) and its persistent
     /// graph-view thumbnail (see `ThumbTexture`).
+    /// Re-uploads a live tab frame plus its graph-view thumbnail.
+    ///
+    /// **Reuses last frame's GPU texture in place (`queue.write_texture`)
+    /// whenever this frame's size/format match it, instead of allocating a
+    /// brand new `wgpu::Texture` (and, for the main frame, a new bind group)
+    /// every single call.** Found on a real, reported "the app just feels
+    /// slow" investigation: `device.create_texture_with_data` here was the
+    /// dominant per-frame cost by a wide margin (confirmed via temporary
+    /// timing instrumentation) -- allocating a fresh GPU resource from
+    /// scratch on *every* uploaded frame, for a live tab that's continuously
+    /// producing same-sized frames the overwhelming majority of the time
+    /// (a resize is the only thing that actually changes dimensions). Only
+    /// the main frame's own `bind_group` still needs recreating alongside a
+    /// genuinely new texture (it references the texture's view directly);
+    /// the thumbnail's `egui_id`, once registered, is instead just re-
+    /// pointed at a replacement texture via `update_egui_texture_from_wgpu_
+    /// texture` when a new one is unavoidable, so callers holding onto that
+    /// id never see it silently change.
     pub fn upload_frame(
         &mut self,
         tab_id: &str,
@@ -386,81 +417,144 @@ impl GpuState {
         height: u32,
         format: wgpu::TextureFormat,
     ) {
-        let texture = self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("tab frame texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
+        let reuse_main = self
+            .tab_textures
+            .get(tab_id)
+            .is_some_and(|t| t.width == width && t.height == height && t.format == format);
+        if reuse_main {
+            Self::write_full_texture(
+                &self.queue,
+                &self.tab_textures[tab_id].texture,
+                pixels,
+                width,
+                height,
+            );
+        } else {
+            let texture = self.device.create_texture_with_data(
+                &self.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("tab frame texture"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
                 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            pixels,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tab texture bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
-        self.tab_textures.insert(tab_id.to_string(), TabTexture { bind_group });
+                wgpu::util::TextureDataOrder::LayerMajor,
+                pixels,
+            );
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tab texture bind group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            self.tab_textures
+                .insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group });
+        }
 
         let thumb_pixels = Self::to_thumbnail_rgba(pixels, format);
         let (thumb_pixels, thumb_width, thumb_height) =
             Self::downscale_rgba(&thumb_pixels, width, height, THUMBNAIL_MAX_SIZE);
-        let thumb_texture = self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("tab thumbnail texture"),
-                size: wgpu::Extent3d {
-                    width: thumb_width,
-                    height: thumb_height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            &thumb_pixels,
-        );
-        let thumb_view = thumb_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Some(existing) = self.thumbnails.get(tab_id) {
-            self.egui_renderer.update_egui_texture_from_wgpu_texture(
-                &self.device,
-                &thumb_view,
-                wgpu::FilterMode::Linear,
-                existing.egui_id,
+
+        let reuse_thumb = self
+            .thumbnails
+            .get(tab_id)
+            .is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
+        if reuse_thumb {
+            Self::write_full_texture(
+                &self.queue,
+                &self.thumbnails[tab_id].texture,
+                &thumb_pixels,
+                thumb_width,
+                thumb_height,
             );
         } else {
-            let egui_id = self.egui_renderer.register_native_texture(
-                &self.device,
-                &thumb_view,
-                wgpu::FilterMode::Linear,
+            let thumb_texture = self.device.create_texture_with_data(
+                &self.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("tab thumbnail texture"),
+                    size: wgpu::Extent3d {
+                        width: thumb_width,
+                        height: thumb_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &thumb_pixels,
             );
-            self.thumbnails
-                .insert(tab_id.to_string(), ThumbTexture { egui_id });
+            let thumb_view = thumb_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let egui_id = if let Some(existing) = self.thumbnails.get(tab_id) {
+                self.egui_renderer.update_egui_texture_from_wgpu_texture(
+                    &self.device,
+                    &thumb_view,
+                    wgpu::FilterMode::Linear,
+                    existing.egui_id,
+                );
+                existing.egui_id
+            } else {
+                self.egui_renderer.register_native_texture(
+                    &self.device,
+                    &thumb_view,
+                    wgpu::FilterMode::Linear,
+                )
+            };
+            self.thumbnails.insert(
+                tab_id.to_string(),
+                ThumbTexture { texture: thumb_texture, width: thumb_width, height: thumb_height, egui_id },
+            );
         }
+    }
+
+    /// Uploads a full frame of tightly-packed `pixels` (no row padding --
+    /// the same assumption every caller of this already makes: shared-
+    /// memory frame buffers and inline IPC pixels are both exactly
+    /// `width * height * 4` bytes) into `texture` in place, for the
+    /// "dimensions unchanged since last time" fast path both blocks in
+    /// `upload_frame` share.
+    fn write_full_texture(
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
     }
 
     /// The `egui::TextureId` for a tab's cached thumbnail, if it has ever
@@ -541,7 +635,8 @@ impl GpuState {
             let egui_id =
                 self.egui_renderer
                     .register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-            self.favicons.insert(key.to_string(), ThumbTexture { egui_id });
+            self.favicons
+                .insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
             self.favicon_order.push_back(key.to_string());
             if self.favicon_order.len() > MAX_CACHED_FAVICONS {
                 if let Some(oldest) = self.favicon_order.pop_front() {
@@ -589,7 +684,8 @@ impl GpuState {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-        self.images.insert(key.to_string(), ThumbTexture { egui_id });
+        self.images
+            .insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
     }
 
     /// The `egui::TextureId` for an image node's picture, if it decoded
