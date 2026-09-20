@@ -1172,6 +1172,47 @@ struct GraphCameraTween {
     start: std::time::Instant,
 }
 
+/// A background pan drag released with enough speed keeps the camera
+/// gliding and decelerating instead of stopping dead the instant the
+/// mouse button lifts -- the same "flick to scroll" feel most pan/zoom
+/// canvases (Figma, Google Maps, Miro) already have. `initial_velocity`
+/// is world-space units/second, sampled from `App::pan_drag_history`'s
+/// own recent camera-center movement (not the raw pointer's own screen
+/// velocity) -- see that field's own doc comment for why. Recomputed
+/// fresh from `start`/`start_center`/`initial_velocity` every frame
+/// (never accumulated frame-to-frame), same "not derived from a value
+/// that can drift with frame-time variance" reasoning `GraphCameraTween`
+/// above already has: exponential decay (`v(t) = v0 * e^-kt`) has a
+/// closed-form displacement (the integral of `v(t)` from 0 to `t`), so
+/// each frame is one direct formula evaluation from elapsed time, not an
+/// integration loop.
+#[derive(Clone, Copy)]
+struct PanMomentum {
+    initial_velocity: egui::Vec2,
+    start: std::time::Instant,
+    start_center: egui::Pos2,
+}
+
+/// Exponential decay rate (`k` in `v(t) = v0 * e^-kt`, per second) for
+/// `PanMomentum` -- tuned for a glide that's clearly perceptible but
+/// settles well under a second, not a floaty drift.
+const PAN_MOMENTUM_DECAY: f32 = 3.5;
+/// Minimum release speed (world-space units/second, from `pan_drag_
+/// history`) for a released pan drag to start gliding at all -- below
+/// this, an ordinary slow drag-and-let-go just stops, matching what a
+/// user who wasn't trying to "flick" the canvas would expect.
+const PAN_MOMENTUM_MIN_SPEED: f32 = 500.0;
+/// Hard cap on how long a `PanMomentum` stays active, regardless of
+/// `PAN_MOMENTUM_DECAY` -- at that rate, decay is already below 1% of
+/// the initial speed well before this, so this is just a bound on the
+/// `Option` field's own lifetime, not a value that shapes the motion.
+const PAN_MOMENTUM_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(2000);
+/// How many recent camera-center samples `App::pan_drag_history` keeps
+/// while a background pan drag is held down -- spans roughly 100ms at a
+/// steady frame rate, matching the same window egui's own `PointerState::
+/// velocity()` uses internally for its analogous smoothing.
+const PAN_HISTORY_LEN: usize = 6;
+
 /// How long a "Saved <path>" toast stays on screen — see `App::save_toast`'s
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
@@ -2019,6 +2060,21 @@ struct App {
     /// the new level's framing instead of having already snapped there --
     /// see `GraphCameraTween`'s own doc comment.
     graph_camera_tween: Option<GraphCameraTween>,
+    /// `Some` while a released background-pan drag is still gliding --
+    /// see `PanMomentum`'s own doc comment.
+    pan_momentum: Option<PanMomentum>,
+    /// Recent `(when, camera-center)` samples, recorded only while a
+    /// background pan drag is actually being held down (not a node drag,
+    /// not a `GraphCameraTween` in progress, not this same momentum
+    /// re-applying itself) -- deliberately the *camera's* own tracked
+    /// world-space position, not the raw pointer's screen-space velocity,
+    /// since that's the value `PanMomentum` actually needs, in the units
+    /// it already needs it in, with no zoom-scale conversion or sign
+    /// reasoning to get right. Cleared the instant the drag isn't a plain
+    /// background pan for any reason, so a stale sample from an unrelated
+    /// earlier gesture can never leak into a later release's velocity
+    /// estimate.
+    pan_drag_history: std::collections::VecDeque<(std::time::Instant, egui::Pos2)>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
     /// last ran a settle burst for -- `build_graph_ui` compares this
     /// against the current level/count every frame and only re-settles
@@ -2352,6 +2408,8 @@ impl Default for App {
             truncate_cache: HashMap::new(),
             favicon_origin_cache: HashMap::new(),
             graph_camera_tween: None,
+            pan_momentum: None,
+            pan_drag_history: std::collections::VecDeque::new(),
             graph_settled_key: None,
             headless: false,
             pending_debug_escape: false,
@@ -9058,6 +9116,21 @@ impl App {
             if elapsed >= TRANSITION_DURATION {
                 self.graph_camera_tween = None;
             }
+        } else if let Some(momentum) = self.pan_momentum {
+            // Pan momentum -- see `PanMomentum`'s own doc comment.
+            // Mutually exclusive with the tween above (both would
+            // otherwise fight over `graph_scene_rect` the same frame).
+            let elapsed = momentum.start.elapsed();
+            let t = elapsed.as_secs_f32();
+            let decay = (-PAN_MOMENTUM_DECAY * t).exp();
+            let displacement =
+                momentum.initial_velocity * ((1.0 - decay) / PAN_MOMENTUM_DECAY);
+            let size = self.graph_scene_rect.size();
+            self.graph_scene_rect =
+                egui::Rect::from_center_size(momentum.start_center + displacement, size);
+            if elapsed >= PAN_MOMENTUM_MAX_DURATION {
+                self.pan_momentum = None;
+            }
         }
 
         // Minimap: a small fixed overview in the graph panel's bottom-right
@@ -11301,6 +11374,51 @@ impl App {
         }
         if scene_rect != scene_rect_before_pan_zoom {
             self.pending_new_node = None;
+        }
+
+        // Pan momentum bookkeeping -- see `PanMomentum`'s own doc
+        // comment. `actively_panning` requires the pointer to still be
+        // held down (ruling out a single-frame minimap-click jump, which
+        // never has "held down across multiple frames" to sample a
+        // velocity from), no node currently grabbed (a node drag moves
+        // the node, not the camera, so it'd contribute a bogus near-zero
+        // sample anyway, but this is the explicit, intended guard), and
+        // no `GraphCameraTween` in progress (that already owns
+        // `graph_scene_rect` this frame).
+        let pointer_down = ui.input(|i| i.pointer.primary_down());
+        let actively_panning =
+            pointer_down && self.dragging.is_none() && self.graph_camera_tween.is_none();
+        if actively_panning {
+            // A fresh grab of the background cancels any momentum still
+            // gliding from an earlier release -- "grab it to stop it".
+            self.pan_momentum = None;
+            self.pan_drag_history.push_back((std::time::Instant::now(), scene_rect.center()));
+            while self.pan_drag_history.len() > PAN_HISTORY_LEN {
+                self.pan_drag_history.pop_front();
+            }
+        } else {
+            if self.pan_momentum.is_none() && ui.input(|i| i.pointer.primary_released()) {
+                if let (Some(&(t0, p0)), Some(&(t1, p1))) =
+                    (self.pan_drag_history.front(), self.pan_drag_history.back())
+                {
+                    let dt = (t1 - t0).as_secs_f32();
+                    if dt > 0.01 {
+                        let velocity = (p1 - p0) / dt;
+                        if velocity.length() >= PAN_MOMENTUM_MIN_SPEED {
+                            self.pan_momentum = Some(PanMomentum {
+                                initial_velocity: velocity,
+                                start: std::time::Instant::now(),
+                                start_center: scene_rect.center(),
+                            });
+                        }
+                    }
+                }
+            }
+            // Not actively panning this frame for any reason (released,
+            // never pressed, grabbed a node, mid-tween) -- clear so a
+            // stale sample from an unrelated earlier gesture can never
+            // leak into a later release's velocity estimate.
+            self.pan_drag_history.clear();
         }
 
         // Minimap click-to-recenter: deliberately registered *after*
