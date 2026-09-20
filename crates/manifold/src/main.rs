@@ -8013,17 +8013,22 @@ impl App {
         }
     }
 
-    /// The trailing "Keyboard Shortcuts (F1)" / Settings-gear pair that sits
-    /// at the end of *both* Tab view's and Graph view's own toolbar --
-    /// identical in both (same icons, same click behavior) since either
-    /// view needs a way to reach shortcuts help and Settings regardless of
-    /// which one it is. Was two hand-copied blocks before this; now drawn
-    /// once here and called from both `build_tab_ui`/`build_graph_ui`.
-    /// Returns the help button's own rect, which each caller still needs
-    /// for its own `build_shortcuts_help(ui, shortcuts_help_button_rect)`
-    /// call further down (unaffected by this -- that popup itself isn't
-    /// duplicated, just the button that opens it).
-    fn build_help_settings_cluster(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+    /// The trailing "Keyboard Shortcuts (F1)" button that sits at the end of
+    /// *both* Tab view's and Graph view's own toolbar, right next to
+    /// `build_settings_button` -- identical in both (same icon, same click
+    /// behavior) since either view needs a way to reach shortcuts help
+    /// regardless of which one it is. Split from `build_settings_button`
+    /// (one shared `build_help_settings_cluster` before this) so each
+    /// toolbar can call the two in whichever order its own layout direction
+    /// needs to end up reading "Help, Settings" left to right either way --
+    /// a shared function drawing both in one fixed internal order silently
+    /// reversed that reading order the moment one caller placed it inside a
+    /// right-to-left layout instead of a left-to-right one (confirmed live:
+    /// exactly this regression, caught by screenshotting Tab view and Graph
+    /// view side by side and finding them disagree). Returns its own rect,
+    /// which each caller still needs for its own `build_shortcuts_help(ui,
+    /// shortcuts_help_button_rect)` call further down.
+    fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let help_response = icon_button_eased(
             ui,
             egui::Id::new("icon_btn_shortcuts_help"),
@@ -8033,13 +8038,19 @@ impl App {
         if help_response.clicked() {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
+        help_response.rect
+    }
+
+    /// The trailing Settings-gear button -- see `build_help_button`'s own
+    /// doc comment for why this is a separate function rather than the two
+    /// bundled together.
+    fn build_settings_button(&mut self, ui: &mut egui::Ui) {
         if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
             .on_hover_text("Settings")
             .clicked()
         {
             self.toggle_settings_page();
         }
-        help_response.rect
     }
 
     fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
@@ -8235,7 +8246,21 @@ impl App {
                             .max_rect(remaining_rect)
                             .layout(egui::Layout::right_to_left(egui::Align::Min)),
                     );
-                    let shortcuts_help_rect = self.build_help_settings_cluster(&mut trailing_ui);
+                    // Settings *then* Help, not the other way around -- this
+                    // `Ui` is right-to-left, so each widget lands to the
+                    // *left* of the previous one; drawing Settings first
+                    // (rightmost) and Help second is what ends up reading
+                    // "Help, Settings" left to right, matching the Graph
+                    // toolbar's own plain left-to-right call to the same two
+                    // functions below in their natural order. (Nesting a
+                    // left-to-right child `Ui` here to keep one fixed call
+                    // order was tried first and rejected -- it inherits this
+                    // `Ui`'s own not-yet-narrowed `available_rect_before_
+                    // wrap`, so an unconstrained left-to-right child anchors
+                    // at the *far left* of the whole remaining toolbar, not
+                    // the right edge, garbling the entire row.)
+                    self.build_settings_button(&mut trailing_ui);
+                    let shortcuts_help_rect = self.build_help_button(&mut trailing_ui);
                     let tab_actions_response = trailing_ui.button("Tab actions");
                     if tab_actions_response.clicked() {
                         self.tab_actions_open = !self.tab_actions_open;
@@ -8979,7 +9004,13 @@ impl App {
                             self.tab_spawn_error = None;
                         }
                     }
-                    shortcuts_help_button_rect = Some(self.build_help_settings_cluster(ui));
+                    // Left-to-right `ui` here (this whole toolbar, unlike
+                    // the Tab toolbar's own measured trailing cluster) --
+                    // Help then Settings in that order reads correctly as
+                    // written, no reversal needed. See `build_help_button`'s
+                    // own doc comment for why these are two separate calls.
+                    shortcuts_help_button_rect = Some(self.build_help_button(ui));
+                    self.build_settings_button(ui);
                 });
                 });
             });
