@@ -964,6 +964,30 @@ fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
     ui.button("Graph").clicked()
 }
 
+/// Everything the Tab toolbar's own content (see `render_tab_toolbar_
+/// content`) needs to report back to `build_tab_ui`, which applies these
+/// exactly where the equivalent bare `let mut` locals were applied
+/// before this struct existed -- this is a pure "package the same flags
+/// as a return value" move, not a behavior change. `navigate` is
+/// deliberately NOT a field here: today it's computed by `build_tab_ui`
+/// itself, after this content returns, from `enter_pressed` plus the
+/// suggestion list (`main.rs:8781-8786`) -- only `enter_pressed` needs
+/// to cross the function boundary.
+#[derive(Default)]
+struct ItemToolbarActions {
+    go_back: bool,
+    go_forward: bool,
+    reload_requested: bool,
+    home_requested: bool,
+    enter_pressed: bool,
+    toggle_bookmark_requested: bool,
+    close_split_requested: bool,
+    tab_actions_button_rect: Option<egui::Rect>,
+    split_engine_button_rect: Option<egui::Rect>,
+    address_bar_rect: Option<egui::Rect>,
+    shortcuts_help_button_rect: Option<egui::Rect>,
+}
+
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
 /// `resumed`'s own window setup) titlebar dark, independent of the current
 /// Windows theme setting. Without this, a system in light mode draws a
@@ -8479,6 +8503,258 @@ impl App {
         }
     }
 
+    fn render_item_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
+        let kind = match self.nodes.get(focused_id) {
+            Some(node) => item_node_kind(&node.payload),
+            None => return ItemToolbarActions::default(),
+        };
+        match kind {
+            ItemNodeKind::Tab => self.render_tab_toolbar_content(focused_id, ui),
+            ItemNodeKind::Download
+            | ItemNodeKind::Group
+            | ItemNodeKind::Note
+            | ItemNodeKind::Image
+            | ItemNodeKind::Pdf
+            | ItemNodeKind::Json => ItemToolbarActions::default(),
+        }
+    }
+
+    fn render_tab_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
+        let mut actions = ItemToolbarActions::default();
+        let node = self.nodes[focused_id].as_tab().unwrap();
+        // `◀`/`▶` were already a proven-safe Unicode gamble
+        // (confirmed live elsewhere in this app), not a real
+        // problem -- migrated to `egui_phosphor::CARET_LEFT`/
+        // `CARET_RIGHT` anyway once the icon font was already
+        // in place, for the same visual consistency the other
+        // icon migrations this session already have.
+        if ui
+            .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT))
+            .clicked()
+        {
+            actions.go_back = true;
+        }
+        if ui
+            .add_enabled(
+                node.can_go_forward,
+                egui::Button::new(egui_phosphor::light::CARET_RIGHT),
+            )
+            .clicked()
+        {
+            actions.go_forward = true;
+        }
+        // Was plain text ("Reload") to avoid a refresh-arrows
+        // glyph gamble in this app's own font -- now a real
+        // `egui_phosphor` icon instead, same reasoning as every
+        // other icon migrated once the icon font was already
+        // wired in.
+        if icon_button_eased(
+            ui,
+            egui::Id::new("icon_btn_reload"),
+            egui_phosphor::light::ARROW_CLOCKWISE,
+        )
+        .on_hover_text("Reload")
+        .clicked()
+        {
+            actions.reload_requested = true;
+        }
+        if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
+            .on_hover_text("Go to home page")
+            .clicked()
+        {
+            actions.home_requested = true;
+        }
+
+        // Tab identity (was a separate strip above the toolbar,
+        // merged into this single bar): a small loading spinner
+        // or the fetched favicon, right before the address bar --
+        // the same "site identity chip at the address bar's own
+        // left edge" spot Chrome/Firefox use. Explicitly centered
+        // in its own row-height slot -- this row is `Align::Min`
+        // (top-aligned, see the doc comment above on why), which
+        // a bare 16x16 image or 12pt spinner dropped in directly
+        // renders flush against the row's *top* edge instead of
+        // centered like its taller icon-button neighbors,
+        // visibly poking up and overlapping the address bar's
+        // own top border (confirmed live, reported as "favicon
+        // is unaligned").
+        let identity_slot_height = ui.available_height();
+        if node.loading {
+            ui.allocate_ui_with_layout(
+                egui::vec2(16.0, identity_slot_height),
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| ui.add(egui::Spinner::new().size(12.0)),
+            );
+        } else if let Some(tex_id) = {
+            let url = node.url.clone();
+            self.cached_favicon_origin(&url)
+        }
+        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+        {
+            ui.allocate_ui_with_layout(
+                egui::vec2(FAVICON_SIZE.x, identity_slot_height),
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE)))
+                },
+            );
+        }
+
+        // Address bar moved up here (right after nav/identity,
+        // before any per-tab action button) and given most of
+        // the row's width -- mirrors every mainstream browser's
+        // own layout (nav controls, then a wide address bar,
+        // then a handful of page-action icons to its right, then
+        // an overflow/app menu at the far end), rather than the
+        // stack of buttons that used to sit entirely to its
+        // left, pushing it almost to the row's far end.
+        //
+        // The trailing cluster (Bookmark, View-as-JSON, Split +
+        // Close Split, Tab actions, Shortcuts help, Settings
+        // gear) is drawn *first*, into its own right-to-left
+        // child `Ui` anchored to this row's remaining space, so
+        // its real consumed width can be measured -- not
+        // guessed the way a former `trailing_reserve = 360.0`
+        // constant was (sized "generously for the worst case,"
+        // with nothing to catch a future addition silently
+        // exceeding it). Added in reverse of their final visual
+        // order since a right-to-left `Ui` places each new
+        // widget immediately to the *left* of the previous one.
+        let remaining_rect = ui.available_rect_before_wrap();
+        let mut trailing_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(remaining_rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Min)),
+        );
+        // Settings *then* Help, not the other way around -- this
+        // `Ui` is right-to-left, so each widget lands to the
+        // *left* of the previous one; drawing Settings first
+        // (rightmost) and Help second is what ends up reading
+        // "Help, Settings" left to right, matching the Graph
+        // toolbar's own plain left-to-right call to the same two
+        // functions below in their natural order. (Nesting a
+        // left-to-right child `Ui` here to keep one fixed call
+        // order was tried first and rejected -- it inherits this
+        // `Ui`'s own not-yet-narrowed `available_rect_before_
+        // wrap`, so an unconstrained left-to-right child anchors
+        // at the *far left* of the whole remaining toolbar, not
+        // the right edge, garbling the entire row.)
+        self.build_settings_button(&mut trailing_ui);
+        let shortcuts_help_rect = self.build_help_button(&mut trailing_ui);
+        let tab_actions_response = trailing_ui.button("Tab actions");
+        if tab_actions_response.clicked() {
+            self.tab_actions_open = !self.tab_actions_open;
+        }
+        actions.tab_actions_button_rect = Some(tab_actions_response.rect);
+        if self.split_tab.is_some()
+            && icon_button_eased(
+                &mut trailing_ui,
+                egui::Id::new("icon_btn_close_split"),
+                egui_phosphor::light::X,
+            )
+            .on_hover_text("Close Split")
+            .clicked()
+        {
+            actions.close_split_requested = true;
+        }
+        // Engine-vs-engine compare view -- see `App::split_tab`'s
+        // own doc comment. Picking an engine here (re-)opens a
+        // split against the focused tab's current url; the
+        // secondary pane is view-only in this first cut, so its
+        // own toolbar/address-bar controls only ever apply to
+        // the primary (left) pane.
+        let split_engine_response =
+            trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
+        if split_engine_response.clicked() {
+            self.split_engine_picker_open = !self.split_engine_picker_open;
+        }
+        actions.split_engine_button_rect = Some(split_engine_response.rect);
+        if self
+            .nodes
+            .get(focused_id)
+            .and_then(|n| n.as_tab())
+            .is_some_and(|n| n.json_body.is_some())
+            && trailing_ui
+                .button(egui_phosphor::light::BRACKETS_CURLY)
+                .on_hover_text("View as JSON")
+                .clicked()
+        {
+            self.json_viewer_node = Some(focused_id.to_string());
+        }
+        // `selectable_label`, same reasoning as elsewhere in
+        // this toolbar -- a pressed look for "already
+        // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
+        // a star glyph's tofu risk. Sits right after the address
+        // bar, mirroring Chrome/Firefox's own star icon at the
+        // address bar's right edge.
+        let is_bookmarked = self
+            .nodes
+            .get(focused_id)
+            .and_then(|n| n.as_tab())
+            .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
+        if trailing_ui
+            .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
+            .on_hover_text("Bookmark")
+            .clicked()
+        {
+            actions.toggle_bookmark_requested = true;
+        }
+        let trailing_width = trailing_ui.min_rect().width();
+        actions.shortcuts_help_button_rect = Some(shortcuts_help_rect);
+
+        // Now the address bar gets whatever's actually left,
+        // not a guess -- drawn into the original `ui` (still
+        // mid-way through its own left-to-right cursor, just
+        // after the leading nav/identity cluster above),
+        // sized to stop exactly where the trailing cluster's
+        // real measured width begins.
+        let text_width = (remaining_rect.width() - trailing_width).max(40.0);
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.address_bar_text)
+                .desired_width(text_width)
+                // Match `style.spacing.button_padding` (set in
+                // `apply_style`) so the address bar renders the
+                // same height as the back/forward buttons next
+                // to it — `TextEdit`'s own default margin
+                // (`Margin::symmetric(4, 2)`) doesn't share that
+                // style value, so left unset the row's tallest
+                // item (the text field) stood out with visibly
+                // more height than its neighbors instead of a
+                // level toolbar.
+                .margin(egui::Margin::symmetric(8, 4)),
+        );
+        if std::mem::take(&mut self.pending_focus_address_bar) {
+            response.request_focus();
+        }
+        self.address_bar_focused = response.has_focus();
+        actions.address_bar_rect = Some(response.rect);
+        ui.advance_cursor_after_rect(trailing_ui.min_rect());
+
+        if response.changed() {
+            self.open_tab_suggestions =
+                self.compute_open_tab_suggestions(&self.address_bar_text, focused_id);
+            self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
+            // A changed query invalidates whatever row was
+            // highlighted for the *previous* suggestion list —
+            // keeping a stale index could silently highlight
+            // (and Enter-accept) an unrelated row.
+            self.dropdown_highlighted = None;
+        }
+        // `pending_debug_enter` (headless mode's `ENTER` command,
+        // see `debug_control`) doesn't gate on `lost_focus()`:
+        // headless "focus" is set directly by the `ADDRESSBAR`
+        // command, not via a real click-driven egui focus
+        // transfer, so `response.lost_focus()` would never fire
+        // for it.
+        if std::mem::take(&mut self.pending_debug_enter)
+            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+        {
+            actions.enter_pressed = true;
+        }
+
+        actions
+    }
+
     fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
         let Some(focused_id) = self.focused.clone() else {
             self.view_mode = ViewMode::Graph;
@@ -8566,239 +8842,21 @@ impl App {
                 // than compensating for a specific pixel offset that could
                 // silently drift if padding/fonts ever change.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                    if ui.button("Graph").clicked() {
+                    if render_return_to_graph(ui) {
                         back_to_graph = true;
                     }
-                    let node = self.nodes[&focused_id].as_tab().unwrap();
-                    // `◀`/`▶` were already a proven-safe Unicode gamble
-                    // (confirmed live elsewhere in this app), not a real
-                    // problem -- migrated to `egui_phosphor::CARET_LEFT`/
-                    // `CARET_RIGHT` anyway once the icon font was already
-                    // in place, for the same visual consistency the other
-                    // icon migrations this session already have.
-                    if ui
-                        .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT))
-                        .clicked()
-                    {
-                        go_back = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            node.can_go_forward,
-                            egui::Button::new(egui_phosphor::light::CARET_RIGHT),
-                        )
-                        .clicked()
-                    {
-                        go_forward = true;
-                    }
-                    // Was plain text ("Reload") to avoid a refresh-arrows
-                    // glyph gamble in this app's own font -- now a real
-                    // `egui_phosphor` icon instead, same reasoning as every
-                    // other icon migrated once the icon font was already
-                    // wired in.
-                    if icon_button_eased(
-                        ui,
-                        egui::Id::new("icon_btn_reload"),
-                        egui_phosphor::light::ARROW_CLOCKWISE,
-                    )
-                    .on_hover_text("Reload")
-                    .clicked()
-                    {
-                        reload_requested = true;
-                    }
-                    if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
-                        .on_hover_text("Go to home page")
-                        .clicked()
-                    {
-                        home_requested = true;
-                    }
-
-                    // Tab identity (was a separate strip above the toolbar,
-                    // merged into this single bar): a small loading spinner
-                    // or the fetched favicon, right before the address bar --
-                    // the same "site identity chip at the address bar's own
-                    // left edge" spot Chrome/Firefox use. Explicitly centered
-                    // in its own row-height slot -- this row is `Align::Min`
-                    // (top-aligned, see the doc comment above on why), which
-                    // a bare 16x16 image or 12pt spinner dropped in directly
-                    // renders flush against the row's *top* edge instead of
-                    // centered like its taller icon-button neighbors,
-                    // visibly poking up and overlapping the address bar's
-                    // own top border (confirmed live, reported as "favicon
-                    // is unaligned").
-                    let identity_slot_height = ui.available_height();
-                    if node.loading {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(16.0, identity_slot_height),
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| ui.add(egui::Spinner::new().size(12.0)),
-                        );
-                    } else if let Some(tex_id) = {
-                        let url = node.url.clone();
-                        self.cached_favicon_origin(&url)
-                    }
-                    .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
-                    {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(FAVICON_SIZE.x, identity_slot_height),
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE)))
-                            },
-                        );
-                    }
-
-                    // Address bar moved up here (right after nav/identity,
-                    // before any per-tab action button) and given most of
-                    // the row's width -- mirrors every mainstream browser's
-                    // own layout (nav controls, then a wide address bar,
-                    // then a handful of page-action icons to its right, then
-                    // an overflow/app menu at the far end), rather than the
-                    // stack of buttons that used to sit entirely to its
-                    // left, pushing it almost to the row's far end.
-                    //
-                    // The trailing cluster (Bookmark, View-as-JSON, Split +
-                    // Close Split, Tab actions, Shortcuts help, Settings
-                    // gear) is drawn *first*, into its own right-to-left
-                    // child `Ui` anchored to this row's remaining space, so
-                    // its real consumed width can be measured -- not
-                    // guessed the way a former `trailing_reserve = 360.0`
-                    // constant was (sized "generously for the worst case,"
-                    // with nothing to catch a future addition silently
-                    // exceeding it). Added in reverse of their final visual
-                    // order since a right-to-left `Ui` places each new
-                    // widget immediately to the *left* of the previous one.
-                    let remaining_rect = ui.available_rect_before_wrap();
-                    let mut trailing_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(remaining_rect)
-                            .layout(egui::Layout::right_to_left(egui::Align::Min)),
-                    );
-                    // Settings *then* Help, not the other way around -- this
-                    // `Ui` is right-to-left, so each widget lands to the
-                    // *left* of the previous one; drawing Settings first
-                    // (rightmost) and Help second is what ends up reading
-                    // "Help, Settings" left to right, matching the Graph
-                    // toolbar's own plain left-to-right call to the same two
-                    // functions below in their natural order. (Nesting a
-                    // left-to-right child `Ui` here to keep one fixed call
-                    // order was tried first and rejected -- it inherits this
-                    // `Ui`'s own not-yet-narrowed `available_rect_before_
-                    // wrap`, so an unconstrained left-to-right child anchors
-                    // at the *far left* of the whole remaining toolbar, not
-                    // the right edge, garbling the entire row.)
-                    self.build_settings_button(&mut trailing_ui);
-                    let shortcuts_help_rect = self.build_help_button(&mut trailing_ui);
-                    let tab_actions_response = trailing_ui.button("Tab actions");
-                    if tab_actions_response.clicked() {
-                        self.tab_actions_open = !self.tab_actions_open;
-                    }
-                    tab_actions_button_rect = Some(tab_actions_response.rect);
-                    if self.split_tab.is_some()
-                        && icon_button_eased(
-                            &mut trailing_ui,
-                            egui::Id::new("icon_btn_close_split"),
-                            egui_phosphor::light::X,
-                        )
-                        .on_hover_text("Close Split")
-                        .clicked()
-                    {
-                        close_split_requested = true;
-                    }
-                    // Engine-vs-engine compare view -- see `App::split_tab`'s
-                    // own doc comment. Picking an engine here (re-)opens a
-                    // split against the focused tab's current url; the
-                    // secondary pane is view-only in this first cut, so its
-                    // own toolbar/address-bar controls only ever apply to
-                    // the primary (left) pane.
-                    let split_engine_response =
-                        trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
-                    if split_engine_response.clicked() {
-                        self.split_engine_picker_open = !self.split_engine_picker_open;
-                    }
-                    split_engine_button_rect = Some(split_engine_response.rect);
-                    if self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| n.json_body.is_some())
-                        && trailing_ui
-                            .button(egui_phosphor::light::BRACKETS_CURLY)
-                            .on_hover_text("View as JSON")
-                            .clicked()
-                    {
-                        self.json_viewer_node = Some(focused_id.clone());
-                    }
-                    // `selectable_label`, same reasoning as elsewhere in
-                    // this toolbar -- a pressed look for "already
-                    // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
-                    // a star glyph's tofu risk. Sits right after the address
-                    // bar, mirroring Chrome/Firefox's own star icon at the
-                    // address bar's right edge.
-                    let is_bookmarked = self
-                        .nodes
-                        .get(&focused_id)
-                        .and_then(|n| n.as_tab())
-                        .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-                    if trailing_ui
-                        .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
-                        .on_hover_text("Bookmark")
-                        .clicked()
-                    {
-                        toggle_bookmark_requested = true;
-                    }
-                    let trailing_width = trailing_ui.min_rect().width();
-                    shortcuts_help_button_rect = Some(shortcuts_help_rect);
-
-                    // Now the address bar gets whatever's actually left,
-                    // not a guess -- drawn into the original `ui` (still
-                    // mid-way through its own left-to-right cursor, just
-                    // after the leading nav/identity cluster above),
-                    // sized to stop exactly where the trailing cluster's
-                    // real measured width begins.
-                    let text_width = (remaining_rect.width() - trailing_width).max(40.0);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.address_bar_text)
-                            .desired_width(text_width)
-                            // Match `style.spacing.button_padding` (set in
-                            // `apply_style`) so the address bar renders the
-                            // same height as the back/forward buttons next
-                            // to it — `TextEdit`'s own default margin
-                            // (`Margin::symmetric(4, 2)`) doesn't share that
-                            // style value, so left unset the row's tallest
-                            // item (the text field) stood out with visibly
-                            // more height than its neighbors instead of a
-                            // level toolbar.
-                            .margin(egui::Margin::symmetric(8, 4)),
-                    );
-                    if std::mem::take(&mut self.pending_focus_address_bar) {
-                        response.request_focus();
-                    }
-                    self.address_bar_focused = response.has_focus();
-                    address_bar_rect = Some(response.rect);
-                    ui.advance_cursor_after_rect(trailing_ui.min_rect());
-
-                    if response.changed() {
-                        self.open_tab_suggestions =
-                            self.compute_open_tab_suggestions(&self.address_bar_text, &focused_id);
-                        self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
-                        // A changed query invalidates whatever row was
-                        // highlighted for the *previous* suggestion list —
-                        // keeping a stale index could silently highlight
-                        // (and Enter-accept) an unrelated row.
-                        self.dropdown_highlighted = None;
-                    }
-                    // `pending_debug_enter` (headless mode's `ENTER` command,
-                    // see `debug_control`) doesn't gate on `lost_focus()`:
-                    // headless "focus" is set directly by the `ADDRESSBAR`
-                    // command, not via a real click-driven egui focus
-                    // transfer, so `response.lost_focus()` would never fire
-                    // for it.
-                    if std::mem::take(&mut self.pending_debug_enter)
-                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        enter_pressed = true;
-                    }
+                    let item_actions = self.render_item_toolbar_content(&focused_id, ui);
+                    go_back = item_actions.go_back;
+                    go_forward = item_actions.go_forward;
+                    reload_requested = item_actions.reload_requested;
+                    home_requested = item_actions.home_requested;
+                    enter_pressed = item_actions.enter_pressed;
+                    toggle_bookmark_requested = item_actions.toggle_bookmark_requested;
+                    close_split_requested = item_actions.close_split_requested;
+                    tab_actions_button_rect = item_actions.tab_actions_button_rect;
+                    split_engine_button_rect = item_actions.split_engine_button_rect;
+                    address_bar_rect = item_actions.address_bar_rect;
+                    shortcuts_help_button_rect = item_actions.shortcuts_help_button_rect;
                 });
             });
 
