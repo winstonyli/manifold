@@ -1362,6 +1362,67 @@ fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) 
     response
 }
 
+/// Same hover-eased feedback as `icon_button_eased`, but with no visible
+/// border ever (idle or hovered) and a transparent idle fill -- for icons
+/// already sitting inside a shared background chip (see `toolbar_chip`),
+/// where `icon_button_eased`'s own always-drawn box reads as a border
+/// nested inside the chip's own border. Deliberately still a real,
+/// fully-framed `egui::Button` (not `.frame(false)`, which shrinks the
+/// widget's own allocated size well below a normal button's and was
+/// found live to make a chip noticeably shorter than its "+ New Tab"/
+/// "Reset View" neighbors) -- keeping the frame but making it invisible
+/// at rest matches every sibling button's sizing exactly while still
+/// hiding the box until the icon is hovered, at which point a soft fill
+/// (no stroke) confirms the hit target.
+fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>) -> egui::Response {
+    let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
+    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
+    let fg = lerp_color32(
+        ui.visuals().widgets.inactive.fg_stroke.color,
+        ui.visuals().widgets.hovered.fg_stroke.color,
+        hover_t,
+    );
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(icon.into()).color(fg))
+            .fill(bg)
+            .stroke(egui::Stroke::NONE),
+    );
+    ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
+    response
+}
+
+/// Paints a raised chip background behind `content` -- e.g. a cluster of
+/// `chip_icon_button`s that should read as one grouped control instead of
+/// a flat row of buttons. Uses egui's "reserve then backfill" idiom
+/// (`Shape::Noop` now, `Painter::set` once the real size is known) since
+/// the chip's own size depends on content not yet laid out.
+///
+/// `content` MUST run directly against the `ui` it's given -- never
+/// inside its own nested `ui.horizontal`/`ui.new_child`. A nested Ui
+/// becomes an independently-sized layout block that the OUTER row then
+/// centers (or top-aligns) using its own possibly-smaller reported
+/// height, which is exactly what caused a confirmed-live ~5px vertical
+/// misalignment in the `toolbar-chip-wip` prototype: the outer row
+/// centered the nested block within its own taller row height, and no
+/// amount of forcing the nested block's *height* fixed it, because the
+/// bug was the block's *existence*, not its size. `content` must instead
+/// call the SAME `ui` for every widget (making them direct siblings of
+/// whatever sits before/after the chip in the row) and return the union
+/// of its own widgets' rects -- exact by construction, since each
+/// widget's own returned `Response::rect` is real.
+fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) -> egui::Rect {
+    let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
+    let (lead_rect, _) =
+        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let content_rect = content(ui);
+    let (trail_rect, _) =
+        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let rect = lead_rect.union(content_rect).union(trail_rect);
+    ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+    rect
+}
+
 /// The actual shapes `draw_card_glow` paints -- split out so a caller whose
 /// rect isn't known until *after* its content is laid out (the save toast:
 /// an `egui::Frame` that auto-sizes to its own label) can still put the
@@ -9203,40 +9264,48 @@ impl App {
                     // neither exists in headless mode" reasoning as every
                     // other Export/Import button -- `IMPORTGROUP <path>`
                     // calls the same underlying import directly instead.
-                    if !self.headless
-                        && icon_button_eased(
-                            ui,
-                            egui::Id::new("icon_btn_import_group"),
-                            egui_phosphor::light::UPLOAD_SIMPLE,
-                        )
-                        .on_hover_text("Import Group...")
-                        .clicked()
-                    {
-                        import_group_requested = true;
-                    }
-                    if !groups_at_level.is_empty()
-                        && icon_button_eased(
-                            ui,
-                            egui::Id::new("icon_btn_ungroup_all"),
-                            egui_phosphor::light::FOLDER_MINUS,
-                        )
-                        .on_hover_text("Ungroup All")
-                        .clicked()
-                    {
-                        ungroup_all_requested = true;
-                    }
-                    if !groups_at_level.is_empty() {
-                        let (icon, hover) = if self.groups_collapsed {
-                            (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
-                        } else {
-                            (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
-                        };
-                        if icon_button_eased(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            self.groups_collapsed = !self.groups_collapsed;
-                        }
+                    if !self.headless || !groups_at_level.is_empty() {
+                        toolbar_chip(ui, |ui| {
+                            let mut bounds: Option<egui::Rect> = None;
+                            let mut grow = |r: egui::Rect| {
+                                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+                            };
+                            if !self.headless {
+                                let response = chip_icon_button(
+                                    ui,
+                                    egui::Id::new("icon_btn_import_group"),
+                                    egui_phosphor::light::UPLOAD_SIMPLE,
+                                );
+                                grow(response.rect);
+                                if response.on_hover_text("Import Group...").clicked() {
+                                    import_group_requested = true;
+                                }
+                            }
+                            if !groups_at_level.is_empty() {
+                                let response = chip_icon_button(
+                                    ui,
+                                    egui::Id::new("icon_btn_ungroup_all"),
+                                    egui_phosphor::light::FOLDER_MINUS,
+                                );
+                                grow(response.rect);
+                                if response.on_hover_text("Ungroup All").clicked() {
+                                    ungroup_all_requested = true;
+                                }
+                            }
+                            if !groups_at_level.is_empty() {
+                                let (icon, hover) = if self.groups_collapsed {
+                                    (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
+                                } else {
+                                    (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
+                                };
+                                let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon);
+                                grow(response.rect);
+                                if response.on_hover_text(hover).clicked() {
+                                    self.groups_collapsed = !self.groups_collapsed;
+                                }
+                            }
+                            bounds.unwrap_or(ui.cursor())
+                        });
                     }
                     if ui.button("Reset View").clicked() {
                         reset_view = true;
