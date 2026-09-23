@@ -60,15 +60,36 @@ pub struct Settings {
     /// `send_zoom_to`), not stored converted here.
     pub zoom_factor: f64,
     pub home_page: String,
-    /// The OS window's own size/position last time it changed -- `None`
-    /// means no saved geometry yet (a fresh install, or a `settings.json`
-    /// from before this existed), falling back to winit's own default.
-    /// `#[serde(default)]` so an older file missing these fields still
-    /// loads instead of failing entirely (same fallback posture `Settings::
-    /// load` already has for the whole file). Not applied or updated in
-    /// headless mode, which already forces its own deliberate off-screen
-    /// position (see `resumed`'s own doc comment) -- saving that would
-    /// corrupt a real saved geometry the next normal launch would apply.
+    /// The OS window's own size last time it changed -- in DPI-independent
+    /// *logical points*, not physical pixels. Confirmed live why this
+    /// matters: saving physical pixels and restoring via `PhysicalSize`
+    /// caused the window to grow by exactly the monitor's scale factor on
+    /// every single launch on a multi-monitor setup with mixed DPI --
+    /// Windows' own Per-Monitor-V2 behavior rescales a window's *physical*
+    /// size to preserve its *logical* size when it lands on a
+    /// differently-scaled monitor than where that physical size was
+    /// captured, and since the (now-rescaled, bigger) size got saved right
+    /// back, it compounded by another factor on every restart (confirmed
+    /// live: 2744 -> 3430 physical width across two consecutive launches,
+    /// exactly `* 1.25`). Logical points are stable across monitors of any
+    /// DPI, which is the whole reason winit's `LogicalSize` type exists.
+    /// `None` means no saved geometry yet (a fresh install, or a
+    /// `settings.json` from before this existed), falling back to winit's
+    /// own default. `#[serde(default)]` so an older file missing these
+    /// fields still loads instead of failing entirely (same fallback
+    /// posture `Settings::load` already has for the whole file); an older
+    /// file whose values were saved as *physical* pixels before this fix
+    /// restores those numbers as if they were logical points, which on a
+    /// >100%-scaled monitor makes the window come back *larger* than it was
+    /// (e.g. 2744 saved physical pixels reopen as 2744 points = 3430
+    /// physical at 125%). That doesn't self-correct: the next save records
+    /// the new, inflated size in points, so the window simply stays at it
+    /// from then on, and the user has to resize it once by hand. It does
+    /// stop growing, which is the runaway this fix was actually for. Not
+    /// applied or updated in headless mode, which
+    /// already forces its own deliberate off-screen position (see
+    /// `resumed`'s own doc comment) -- saving that would corrupt a real
+    /// saved geometry the next normal launch would apply.
     #[serde(default)]
     pub window_width: Option<u32>,
     #[serde(default)]

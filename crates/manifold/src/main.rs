@@ -2282,6 +2282,22 @@ struct App {
     /// state, not per-note content), not a fresh cache per card per frame.
     commonmark_cache: egui_commonmark::CommonMarkCache,
     cursor_pos: (f64, f64),
+    /// The tab a left `InputEvent::MouseDown` was actually forwarded to and
+    /// which hasn't been sent the matching `MouseUp` yet — i.e. "a native
+    /// drag is in progress on this tab".
+    ///
+    /// `MouseDown` forwarding is gated on the cursor being below chrome and
+    /// in the primary pane; applying that same gate to `MouseUp` means a
+    /// press inside the page followed by a release over the app's own
+    /// toolbar never delivers a button-up to the page at all. That was
+    /// harmless while input was JS-driven, but mouse input is real native
+    /// injection now (`SendMouseInput` on WebView2, `SendMouseClickEvent`
+    /// on CEF), so Chromium itself never learns the button came up and
+    /// keeps extending a text selection under every later hover. Tracking
+    /// the in-progress drag here lets the release be forwarded to the same
+    /// tab unconditionally, wherever it lands — the `manifold`-side mirror
+    /// of the engine-side `DragState` each native-input engine-host keeps.
+    native_drag_tab: Option<String>,
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
     /// carries the modifier state at the time of that key, not just the
@@ -2730,6 +2746,7 @@ impl Default for App {
             next_json_id: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
+            native_drag_tab: None,
             key_modifiers: 0,
             egui_ctx,
             egui_state: None,
@@ -2807,6 +2824,22 @@ impl Default for App {
 }
 
 impl App {
+    /// winit's own DPI scale factor — physical pixels per logical point.
+    ///
+    /// **Not applied to outgoing `InputEvent::Mouse*`/`Scroll` coordinates.**
+    /// Those are sent in the engine's own *physical-pixel surface* space,
+    /// the exact same space as `HostToEngine::Resize`'s `width`/`height`
+    /// (see `ipc_protocol::InputEvent`'s doc comment) — every engine-host
+    /// renders a surface of precisely that pixel size, so a physical offset
+    /// into the on-screen content quad is already the right value to send,
+    /// with no conversion at all. Used instead for the two places that
+    /// genuinely need logical points: saving window geometry
+    /// (`Settings::window_width`) and placing egui UI at a coordinate an
+    /// engine reported back (`EngineToHost::ContextMenuLink`).
+    fn ppp(&self) -> f64 {
+        self.window.as_ref().map_or(1.0, |w| w.scale_factor())
+    }
+
     fn chrome_height_points(&self) -> f32 {
         match self.view_mode {
             ViewMode::Tab => CHROME_HEIGHT_POINTS,
@@ -12399,11 +12432,17 @@ impl ApplicationHandler<UserEvent> for App {
                 .with_skip_taskbar(true);
         } else {
             // Restore the window to where the user last left it -- see
-            // `Settings::window_width`'s own doc comment. `None` (no saved
-            // geometry yet) just leaves `attrs` untouched, falling back to
-            // winit's own default the same as before this existed.
+            // `Settings::window_width`'s own doc comment for why this is
+            // `LogicalSize`, not `PhysicalSize`: winit/Windows converts a
+            // logical size to whatever physical size is correct for the
+            // monitor the window actually lands on, rather than reapplying
+            // a stale physical pixel count that Per-Monitor-V2 would then
+            // rescale (and this app would then re-save, compounding it
+            // further on every launch). `None` (no saved geometry yet)
+            // just leaves `attrs` untouched, falling back to winit's own
+            // default the same as before this existed.
             if let (Some(width), Some(height)) = (self.settings.window_width, self.settings.window_height) {
-                attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+                attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(width as f64, height as f64));
             }
             if let (Some(x), Some(y)) = (self.settings.window_x, self.settings.window_y) {
                 attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
@@ -12448,6 +12487,34 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // Fires when the window moves to a monitor with a different
+            // scale factor (also on a live resolution/scaling change).
+            // Confirmed live this was a real gap, not just theoretical:
+            // instrumenting a live cross-monitor drag showed a transitional
+            // `send_resize_to` call computed with the size already updated
+            // for the new monitor but `window.scale_factor()` still
+            // reporting the *old* monitor's value -- a genuine race between
+            // winit's size and scale-factor updates that `Resized` alone
+            // doesn't protect against. This handler re-triggers the same
+            // tab-resize notification `Resized` does, so whichever event
+            // actually lands last with the fully-settled state (typically
+            // this one, since it specifically announces the scale change
+            // completed) corrects any bad intermediate value the other
+            // sent. `window.inner_size()` (not the stale pre-change size)
+            // is used for the GPU surface for the same reason.
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(gpu) = &mut self.gpu {
+                    if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
+                        gpu.resize(size.width, size.height);
+                    }
+                }
+                if let Some(id) = self.focused.clone() {
+                    self.send_resize_to(&id);
+                }
+                if let Some(id) = self.split_tab.clone() {
+                    self.send_resize_to(&id);
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size.width, size.height);
@@ -12461,9 +12528,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // Not saved in headless mode -- see `Settings::window_width`'s
                 // own doc comment for why that would corrupt a real saved
                 // geometry with the deliberate off-screen placeholder size.
+                // Converted to logical points here (dividing out `ppp`) --
+                // see that same doc comment for why saving raw physical
+                // pixels compounded into runaway window growth across
+                // launches on a mixed-DPI multi-monitor setup.
                 if !self.headless && size.width > 0 && size.height > 0 {
-                    self.settings.window_width = Some(size.width);
-                    self.settings.window_height = Some(size.height);
+                    let ppp = self.ppp();
+                    self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
+                    self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
                     self.save_settings();
                 }
             }
@@ -12508,25 +12580,36 @@ impl ApplicationHandler<UserEvent> for App {
                     && button != WinitMouseButton::Right
                     && button != WinitMouseButton::Middle;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
-                if in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane {
-                    if let Some(button) = translate_mouse_button(button) {
-                        if let Some(id) = self.focused.clone() {
-                            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                                let event = match state {
-                                    ElementState::Pressed => InputEvent::MouseDown {
-                                        x,
-                                        y: y - chrome_height,
-                                        button,
-                                        modifiers: self.key_modifiers,
-                                    },
-                                    ElementState::Released => InputEvent::MouseUp {
-                                        x,
-                                        y: y - chrome_height,
-                                        button,
-                                        modifiers: self.key_modifiers,
-                                    },
-                                };
-                                node.tab.send(&HostToEngine::Input(event));
+                let in_content = in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane;
+                if let Some(button) = translate_mouse_button(button) {
+                    // A release always goes to whichever tab is mid-drag,
+                    // even when it lands outside the content area -- see
+                    // `native_drag_tab`'s doc comment for the stuck-button
+                    // bug that gating it the same way as a press caused.
+                    let target = match state {
+                        ElementState::Pressed if in_content => self.focused.clone(),
+                        ElementState::Released => if matches!(button, MouseButton::Left) {
+                            self.native_drag_tab.take()
+                        } else {
+                            None
+                        }
+                        .or_else(|| in_content.then(|| self.focused.clone()).flatten()),
+                        ElementState::Pressed => None,
+                    };
+                    if let Some(id) = target {
+                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                            let (x, y) = (x, y - chrome_height);
+                            let event = match state {
+                                ElementState::Pressed => {
+                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers }
+                                }
+                                ElementState::Released => {
+                                    InputEvent::MouseUp { x, y, button, modifiers: self.key_modifiers }
+                                }
+                            };
+                            node.tab.send(&HostToEngine::Input(event));
+                            if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
+                                self.native_drag_tab = Some(id);
                             }
                         }
                     }
@@ -12539,6 +12622,12 @@ impl ApplicationHandler<UserEvent> for App {
                 if in_tab_view && !consumed_by_egui && y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                            // `LineDelta` is a fixed synthetic unit
+                            // (`* 20.0`), not a measurement of anything;
+                            // `PixelDelta` is already a real physical-pixel
+                            // amount, which is the space every engine's
+                            // surface (and so this event's `x`/`y`) is in --
+                            // neither needs converting.
                             let (dx, dy) = match delta {
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
                                     (x as f64 * 20.0, y as f64 * 20.0)
@@ -13205,6 +13294,9 @@ impl App {
         // same-url reload both leave this `false`; url actually changing is
         // the one thing worth persisting here).
         let mut nav_url_changed = false;
+        // Read up front: the loop below holds a mutable borrow of `self.nodes`
+        // throughout, so `self.ppp()` can't be called from inside it.
+        let ppp = self.ppp() as f32;
 
         for tab_id in &tab_ids {
             let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
@@ -13299,14 +13391,20 @@ impl App {
                         }
                     }
                     EngineToHost::ContextMenuLink { x, y, href } => {
-                        // Content-area coordinates -> window point space:
-                        // Tab view's content starts below the toolbar (see
+                        // Content-area coordinates -> window point space.
+                        // The engine echoes back the same physical-pixel
+                        // surface coordinates the right-click was sent in
+                        // (see `ipc_protocol::InputEvent`'s doc comment), so
+                        // this is the one place that has to divide out the
+                        // DPI scale: egui lays out in logical points. Then
+                        // shifted down past the toolbar, since Tab view's
+                        // content starts below it (see
                         // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                         // meaningful for the tab currently on screen.
                         if self.focused.as_deref() == Some(tab_id.as_str()) {
                             self.context_menu = Some(ContextMenuState {
-                                x: x as f32,
-                                y: y as f32 + CHROME_HEIGHT_POINTS,
+                                x: x as f32 / ppp,
+                                y: y as f32 / ppp + CHROME_HEIGHT_POINTS,
                                 href,
                             });
                         }
@@ -13676,6 +13774,23 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 }
 
 fn main() {
+    // Must happen before the event loop/window are created. Confirmed live
+    // that this process was *not* actually DPI-aware despite the assumption
+    // that `winit` sets this up automatically: `window.scale_factor()`
+    // (`self.ppp()`) reported `1.0` on a real 125%-scaled display -- the
+    // exact same DPI-virtualization symptom `manifold-engine-webview2`'s own
+    // `main()` had (see that module's doc comment on
+    // `SetProcessDpiAwarenessContext` for the full mechanism). Without this,
+    // the whole app runs on virtualized, bitmap-stretched coordinates:
+    // `content_size_px()` (and so every engine's rendered surface) comes out
+    // at the wrong real size, and the cursor positions winit reports don't
+    // line up with where the content actually is on screen.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
+
     crash_report::install();
     let headless = std::env::args().any(|arg| arg == "--headless");
     // Independent of `--headless` -- accepts the exact same stdin-driven

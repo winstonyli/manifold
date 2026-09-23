@@ -57,6 +57,28 @@ pub mod modifiers {
     pub const SUPER: u8 = 1 << 3;
 }
 
+/// Every `x`/`y` below (and `Scroll`'s `delta_x`/`delta_y`) is in **physical
+/// pixels of the engine's own rendered surface**, relative to its top-left
+/// corner — the exact same space as `HostToEngine::Resize`'s `width`/
+/// `height`. Not CSS pixels, and not DPI-independent logical points.
+///
+/// That is the one space that needs no per-engine translation: each
+/// engine-host renders a surface of precisely the pixel size `Resize` gave
+/// it (CEF pins `device_scale_factor` to 1.0, Servo/WebKit size their
+/// offscreen surface directly in those pixels), and `manifold` composites
+/// that surface 1:1 into its content quad, so a physical offset into the
+/// on-screen content is already the correct value to send. WebView2 is the
+/// one engine that keeps its own separate CSS space (it picks a
+/// `RasterizationScale` from the host monitor's DPI, so the page's CSS
+/// viewport is the surface divided by that) — `SendMouseInput` takes the
+/// raw surface coordinate regardless, and the one remaining script-based
+/// consumer there divides by `devicePixelRatio` itself.
+///
+/// Confirmed live on a 125%-scaled monitor: dividing these by the scale
+/// factor before sending (an earlier fix aimed at WebView2's
+/// `elementFromPoint` path, back when that drove clicks) made every native
+/// click land at 80% of the intended distance from the content's top-left
+/// corner.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum InputEvent {
     /// `modifiers` (see the `modifiers` module) are the modifier keys held

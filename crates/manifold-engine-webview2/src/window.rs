@@ -1,4 +1,12 @@
-//! A minimal Win32 window WebView2's windowed hosting can attach to.
+//! A minimal Win32 window to anchor WebView2's Composition visual tree to.
+//!
+//! Nothing renders into this window's own client area any more: WebView2 is
+//! hosted via `ICoreWebView2CompositionController` against a
+//! `Windows.UI.Composition` visual (`composition.rs`), and frames are
+//! captured from that visual (`capture.rs`). But Composition hosting still
+//! needs a real top-level `HWND` -- `CreateDesktopWindowTarget` takes one,
+//! and `CreateCoreWebView2CompositionController` takes one as its parent --
+//! which is all this window is for.
 //!
 //! Genuinely invisible windows (`WS_VISIBLE` never set) are a known trap on
 //! Windows for GPU-composited content -- `manifold`'s own headless mode
@@ -38,18 +46,20 @@ unsafe extern "system" fn wndproc(
 }
 
 /// Creates the host window: off-screen positioned (never overlaps the
-/// user's real desktop). Deliberately a plain `WS_OVERLAPPEDWINDOW`, not
-/// `WS_POPUP`/`WS_EX_TOOLWINDOW` -- confirmed live (`examples/
-/// capture_spike.rs`) that `Windows.Graphics.Capture`'s `CreateForWindow`
-/// rejects both with `E_INVALIDARG` ("Could not capture the given
-/// window"). **Also confirmed live (same error) that `CreateForWindow`
-/// rejects an *owned* window just as categorically** -- an attempt to hide
-/// this window from the taskbar by giving it an owner (any owner, not just
-/// a specially-crafted one) hit the identical `E_INVALIDARG` the moment
-/// `Capture::new` ran, crashing the engine-host in a respawn loop. So
-/// nothing about *this* window's own identity (style bits or ownership)
-/// can change before capture starts -- taskbar visibility has to be fixed
-/// up afterward instead, see `hide_from_taskbar`.
+/// user's real desktop), a plain `WS_OVERLAPPEDWINDOW`.
+///
+/// The style and ownership used to be load-bearing: capture went through
+/// `Windows.Graphics.Capture`'s `CreateForWindow`, which rejects
+/// `WS_POPUP`, `WS_EX_TOOLWINDOW`, and owned windows alike with
+/// `E_INVALIDARG` ("Could not capture the given window") -- all three
+/// confirmed live, the owned-window attempt crashing the engine-host in a
+/// respawn loop. Capture now reads the Composition visual
+/// (`CreateFromVisual`), which doesn't inspect the window at all, so those
+/// constraints no longer apply to anything. `WS_OVERLAPPEDWINDOW` is kept
+/// simply because it is what has been live-verified to work end to end;
+/// `hide_from_taskbar` still handles the taskbar entry it produces (see its
+/// own doc comment for why that mechanism was picked, and what changing it
+/// now would need re-verifying).
 pub fn create_hidden_window() -> Result<HWND> {
     unsafe {
         let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
@@ -92,8 +102,14 @@ pub fn create_hidden_window() -> Result<HWND> {
 /// show up in the taskbar"), not a window-style trick at all.
 ///
 /// Three window-style-based approaches were tried first and all made
-/// things *worse*, not better -- kept here so a future session doesn't
-/// retry them:
+/// things *worse*, not better. **All three failed against the old
+/// `CreateForWindow`-based capture, which no longer exists** (capture reads
+/// the Composition visual now, and doesn't look at the window), so none of
+/// these is known to be a problem any more -- but none has been re-tested
+/// either. Kept here so a future session that wants to simplify this away
+/// (e.g. `WS_EX_TOOLWINDOW` at creation time, which would make this whole
+/// function unnecessary) knows exactly what to re-verify rather than
+/// assuming it always failed for reasons that still hold:
 /// - `WS_EX_TOOLWINDOW`/`WS_POPUP` at window-creation time: `Windows.
 ///   Graphics.Capture`'s `CreateForWindow` rejects both outright with
 ///   `E_INVALIDARG` (this is *why* `create_hidden_window` uses plain
@@ -164,12 +180,13 @@ pub fn hide_from_taskbar(hwnd: HWND) {
     });
 }
 
-/// Resizes the actual host window's outer size to match the requested
-/// content size -- capture (`capture.rs`) grabs the whole window's client
-/// area, so the window itself must track `HostToEngine::Resize`, not just
-/// the WebView2 controller's own bounds within it (otherwise the captured
-/// frame would stay at the window's original fixed size regardless of what
-/// `SetBounds` was told).
+/// Resizes the host window to match the requested content size.
+///
+/// Capture no longer depends on this (it reads the Composition visual,
+/// which `composition::resize_root_visual` sizes directly), but WebView2
+/// still lays out against its parent window: leaving the window at its
+/// original fixed size while `SetBounds` grew past it is a mismatch with no
+/// upside, so the window tracks `HostToEngine::Resize` too.
 pub fn resize(hwnd: HWND, width: u32, height: u32) {
     unsafe {
         let _ = SetWindowPos(
@@ -185,8 +202,9 @@ pub fn resize(hwnd: HWND, width: u32, height: u32) {
 }
 
 /// Non-blocking drain of this thread's Win32 message queue -- WebView2's
-/// windowed hosting (and its own internal multi-process message routing)
-/// needs this pumped regularly; `PM_REMOVE` (not a blocking `GetMessageW`)
+/// own internal multi-process message routing (and the `DispatcherQueue`
+/// Composition hosting runs on, see `main`) needs this pumped regularly;
+/// `PM_REMOVE` (not a blocking `GetMessageW`)
 /// keeps this composing with the tick loop's own fixed-interval sleep
 /// rather than blocking the whole engine-host on window messages.
 pub fn pump_messages() {

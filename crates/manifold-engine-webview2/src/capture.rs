@@ -1,20 +1,11 @@
 //! Real frame capture via `Windows.Graphics.Capture`, replacing Phase 1's
-//! fixed placeholder buffer. Captures the same `HWND` `window.rs` creates
-//! for WebView2's windowed hosting directly -- see that module's doc
-//! comment on `create_hidden_window` for why it's a plain
-//! `WS_OVERLAPPEDWINDOW`, not the `WS_POPUP`/`WS_EX_TOOLWINDOW` originally
-//! planned (both rejected by `CreateForWindow` with `E_INVALIDARG`,
-//! confirmed live via `examples/capture_spike.rs` before this file was
-//! written, not guessed).
-//!
-//! No `DirectComposition`/`Compositor`/`Visual` involved at all -- the
-//! approved plan's original design (`IGraphicsCaptureItemInterop::
-//! CreateForVisual`) doesn't exist in this project's pinned windows-rs
-//! version (confirmed by reading the crate's own generated bindings:
-//! `IGraphicsCaptureItemInterop` only has `CreateForWindow`/
-//! `CreateForMonitor`). Capturing the real WebView2 host window directly
-//! turned out simpler than the planned Visual-capture pipeline, not just a
-//! fallback.
+//! fixed placeholder buffer. Captures the `ContainerVisual` `composition.rs`
+//! creates and WebView2's Composition controller renders into, via
+//! `GraphicsCaptureItem::CreateFromVisual` -- see that module's doc comment
+//! and the migration design doc
+//! (`docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md`)
+//! for why this replaced the earlier `CreateForWindow`-against-the-host-
+//! window approach.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +15,7 @@ use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::HWND;
+use windows::UI::Composition::ContainerVisual;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -35,14 +26,8 @@ use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
-use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
-
-use windows::Win32::Foundation::POINT;
 
 pub struct Capture {
-    hwnd: HWND,
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     frame_pool: Direct3D11CaptureFramePool,
@@ -54,45 +39,15 @@ pub struct Capture {
     staging: Option<(ID3D11Texture2D, u32, u32)>,
 }
 
-/// `Windows.Graphics.Capture`'s `CreateForWindow` captures the *whole*
-/// window including its non-client chrome (title bar, borders) -- even a
-/// `WS_OVERLAPPED` window with no `WS_CAPTION` still gets a minimal default
-/// title bar drawn (confirmed live via `examples/capture_spike.rs`: the
-/// captured PNG showed a visible title strip despite no caption style
-/// requested). `WS_POPUP`/`WS_EX_TOOLWINDOW`, which would suppress that
-/// chrome entirely, are exactly the styles `CreateForWindow` itself rejects
-/// (see `window.rs`'s doc comment) -- so rather than fight window styles
-/// further, this crops the captured frame down to just the client-area
-/// rectangle, computed fresh each call via `GetClientRect`/`ClientToScreen`
-/// (cheap Win32 calls) rather than cached, so it stays correct across any
-/// resize without needing its own invalidation logic.
-fn client_rect_in_window(hwnd: HWND) -> Option<(i32, i32, u32, u32)> {
-    let mut window_rect = Default::default();
-    unsafe { GetWindowRect(hwnd, &mut window_rect) }.ok()?;
-    let mut client_rect = Default::default();
-    unsafe { GetClientRect(hwnd, &mut client_rect) }.ok()?;
-    let mut top_left = POINT { x: 0, y: 0 };
-    if !unsafe { ClientToScreen(hwnd, &mut top_left) }.as_bool() {
-        return None;
-    }
-    let offset_x = top_left.x - window_rect.left;
-    let offset_y = top_left.y - window_rect.top;
-    let width = (client_rect.right - client_rect.left).max(0) as u32;
-    let height = (client_rect.bottom - client_rect.top).max(0) as u32;
-    Some((offset_x, offset_y, width, height))
-}
-
 impl Capture {
-    pub fn new(hwnd: HWND) -> Result<Self> {
+    pub fn new(visual: &ContainerVisual) -> Result<Self> {
         let (d3d_device, d3d_context) = create_d3d11_device()?;
         let dxgi_device: IDXGIDevice = d3d_device.cast()?;
         let winrt_device = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device)? };
         let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice =
             winrt_device.cast()?;
 
-        let interop: IGraphicsCaptureItemInterop =
-            windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd)? };
+        let item: GraphicsCaptureItem = GraphicsCaptureItem::CreateFromVisual(visual)?;
 
         let frame_pool = Direct3D11CaptureFramePool::Create(
             &winrt_device,
@@ -129,7 +84,6 @@ impl Capture {
         session.StartCapture()?;
 
         Ok(Self {
-            hwnd,
             d3d_device,
             d3d_context,
             frame_pool,
@@ -200,36 +154,22 @@ impl Capture {
                     .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                     .ok()?;
             }
-            // Crop to just the client area (see `client_rect_in_window`'s
-            // doc comment) -- falls back to the full captured frame if the
-            // window handle is somehow invalid by the time this runs
-            // (process shutting down mid-capture), rather than losing the
-            // frame entirely.
-            let (crop_x, crop_y, crop_w, crop_h) = client_rect_in_window(self.hwnd)
-                .filter(|(x, y, w, h)| {
-                    *w > 0
-                        && *h > 0
-                        && *x >= 0
-                        && *y >= 0
-                        && x + *w as i32 <= desc.Width as i32
-                        && y + *h as i32 <= desc.Height as i32
-                })
-                .unwrap_or((0, 0, desc.Width, desc.Height));
-
-            let mut pixels = vec![0u8; (crop_w * crop_h * 4) as usize];
+            // No cropping needed -- unlike `CreateForWindow` (which captured a
+            // whole window including non-client chrome, requiring the old
+            // `client_rect_in_window` crop), `CreateFromVisual` captures exactly
+            // the visual's own content, nothing else.
+            let mut pixels = vec![0u8; (desc.Width * desc.Height * 4) as usize];
             unsafe {
                 let src = mapped.pData as *const u8;
-                for row in 0..crop_h as usize {
-                    let src_row = src
-                        .add((row + crop_y as usize) * mapped.RowPitch as usize)
-                        .add(crop_x as usize * 4);
-                    let dst_row = pixels.as_mut_ptr().add(row * crop_w as usize * 4);
-                    std::ptr::copy_nonoverlapping(src_row, dst_row, crop_w as usize * 4);
+                for row in 0..desc.Height as usize {
+                    let src_row = src.add(row * mapped.RowPitch as usize);
+                    let dst_row = pixels.as_mut_ptr().add(row * desc.Width as usize * 4);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, desc.Width as usize * 4);
                 }
                 self.d3d_context.Unmap(staging, 0);
             }
 
-            Some((pixels, crop_w, crop_h))
+            Some((pixels, desc.Width, desc.Height))
         })();
         let _ = frame.Close();
         result
