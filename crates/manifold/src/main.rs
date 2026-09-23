@@ -965,11 +965,11 @@ fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
 }
 
 /// Everything the Tab toolbar's own content (see `render_tab_toolbar_
-/// content`) needs to report back to `build_item_ui`, which applies these
+/// content`) needs to report back to `build_tab_view_ui`, which applies these
 /// exactly where the equivalent bare `let mut` locals were applied
 /// before this struct existed -- this is a pure "package the same flags
 /// as a return value" move, not a behavior change. `navigate` is
-/// deliberately NOT a field here: today it's computed by `build_item_ui`
+/// deliberately NOT a field here: today it's computed by `build_tab_view_ui`
 /// itself, after this content returns, from `enter_pressed` plus the
 /// suggestion list -- only `enter_pressed` needs to cross the function
 /// boundary.
@@ -985,7 +985,16 @@ struct ItemToolbarActions {
     tab_actions_button_rect: Option<egui::Rect>,
     split_engine_button_rect: Option<egui::Rect>,
     address_bar_rect: Option<egui::Rect>,
+}
+
+/// What `render_item_toolbar` (the Item toolbar's shared frame) hands back:
+/// the frame's own two results plus whatever the per-kind content reported.
+struct ItemToolbarFrame {
+    /// Layer 2's "Graph" button was clicked.
+    back_to_graph: bool,
+    /// Layer 1's Help button -- the shortcuts-help popup anchors to it.
     shortcuts_help_button_rect: Option<egui::Rect>,
+    actions: ItemToolbarActions,
 }
 
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
@@ -2598,7 +2607,7 @@ struct App {
     /// Up/Down — `None` means no row is highlighted (Enter falls through
     /// to a plain navigate of the typed text). Reset whenever the
     /// suggestion list itself changes or the dropdown closes, so a stale
-    /// index can never point at an unrelated row — see `build_item_ui`'s
+    /// index can never point at an unrelated row — see `build_tab_view_ui`'s
     /// dropdown-handling comments for the full set of reset sites.
     dropdown_highlighted: Option<usize>,
 
@@ -2696,7 +2705,7 @@ struct App {
     /// for the full rationale and the text-command protocol.
     headless: bool,
     /// Set by a headless `ESCAPE`/`ENTER`/`ARROWDOWN`/`ARROWUP` command,
-    /// consumed (and reset) the next time `build_item_ui` checks the
+    /// consumed (and reset) the next time `build_tab_view_ui` checks the
     /// corresponding real-keypress condition — see the comments at each
     /// check site.
     pending_debug_escape: bool,
@@ -2732,7 +2741,7 @@ struct App {
     /// processed on; the very next frame, the real (never actually
     /// clicked) widget's honest `response.has_focus() == false` overwrites
     /// it right back. Without this pin, `editing_address` (see
-    /// `build_item_ui`) goes false again within ~1 frame for any URL-like
+    /// `build_tab_view_ui`) goes false again within ~1 frame for any URL-like
     /// input (nothing populates suggestions to keep it true the way a
     /// search query's does), and the very next frame's resync-to-tab-URL
     /// clobbers whatever `ADDRESSBAR` just set — confirmed live: a
@@ -2931,7 +2940,7 @@ struct App {
 
     /// The tab id `respawn_tab` was called for *while it was the focused
     /// tab* — i.e. an engine swap or crash recovery is currently respawning
-    /// the tab the user is looking at. `build_item_ui`'s existing "focused
+    /// the tab the user is looking at. `build_tab_view_ui`'s existing "focused
     /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
     /// net, from before spawning was async) would otherwise bounce the user
     /// to Graph view for the tab's *entire* respawn duration — imperceptible
@@ -4136,7 +4145,7 @@ impl App {
             // The focused tab hasn't actually spawned yet — this is the
             // exact same "still starting up" gap crash recovery has, so
             // reuse its own spinner-instead-of-snapping-to-Graph path
-            // (see `build_item_ui`) rather than inventing a second one.
+            // (see `build_tab_view_ui`) rather than inventing a second one.
             self.pending_respawn_focus = self.focused.clone();
         }
         for tab in session.tabs {
@@ -5679,7 +5688,7 @@ impl App {
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
-    /// polling (same mechanism `build_item_ui`'s own `Escape` check uses),
+    /// polling (same mechanism `build_tab_view_ui`'s own `Escape` check uses),
     /// so they fire regardless of which widget has focus and in either
     /// view. `consume_key` removes the matching key event from this
     /// frame's input first, so a page never sees e.g. `Ctrl+T` leak
@@ -7361,7 +7370,7 @@ impl App {
     /// `self.context_menu`'s position, if a menu is currently showing.
     /// Dismissed by clicking the item (and acting on it), a click anywhere
     /// outside the menu's own rect, or Escape (see the Escape-priority
-    /// chain in `build_item_ui`).
+    /// chain in `build_tab_view_ui`).
     fn build_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.context_menu.clone();
         let Some((menu, fade)) = fade_popup_state(
@@ -8337,8 +8346,8 @@ impl App {
         // `node_order` holds every graph node (tabs, notes, images, PDFs,
         // JSON files), not just tabs -- filter to tabs first (same filter
         // `quick_switcher_matches` applies) so this never lands on a
-        // non-tab node, which `focus_tab` -> `build_item_ui` assumes can't
-        // happen (`as_tab().unwrap()`).
+        // non-tab node, which `focus_tab` -> `render_tab_toolbar_content`
+        // assumes can't happen (`as_tab().unwrap()`).
         let tab_ids: Vec<&String> = self
             .node_order
             .iter()
@@ -8624,13 +8633,58 @@ impl App {
         help_rect
     }
 
-    fn render_item_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
-        let kind = match self.nodes.get(focused_id) {
+    /// The Item toolbar's shared frame -- the design spec's three layers,
+    /// outer to inner. Layer 2 ("Graph") sits at the leading edge. Layer 1
+    /// (the Universal chip) is drawn *first* into a right-to-left trailing
+    /// child `Ui` so it's always rightmost, for every kind. Layer 3 (the
+    /// focused kind's own content) then gets both the row `ui` for leading
+    /// widgets and `trailing_ui` for trailing ones; a kind that needs the
+    /// space in between (Tab's address bar) measures `trailing_ui` to size
+    /// it. The frame finally advances the row past the trailing cluster.
+    fn render_item_toolbar(&mut self, node_id: &str, ui: &mut egui::Ui) -> ItemToolbarFrame {
+        let mut back_to_graph = false;
+        let mut shortcuts_help_button_rect = None;
+        let mut actions = ItemToolbarActions::default();
+        toolbar_panel("toolbar", ui, |ui| {
+            // Not `horizontal_centered` (`Align::Center`): measured live
+            // that `egui::ComboBox` paints itself ~4.5pt lower than a
+            // plain `Button`/`TextEdit` even when all three report the
+            // exact same `response.rect.height()` (confirmed via
+            // temporary debug prints: 27.0 for all three, but the combo
+            // box's `rect.min.y` alone sat 4.5pt below the back button's)
+            // — an internal quirk of `ComboBox::show_ui` wrapping its
+            // content in its own nested `ui.horizontal(...)`, whose
+            // layout-pass size estimate apparently doesn't quite match
+            // what it actually paints. Since every item in this row is
+            // now confirmed the same real height (the address-bar-margin
+            // fix above made sure of that), top-aligning instead of
+            // center-aligning sidesteps the mismatch entirely rather
+            // than compensating for a specific pixel offset that could
+            // silently drift if padding/fonts ever change.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                if render_return_to_graph(ui) {
+                    back_to_graph = true;
+                }
+                let mut trailing_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(ui.available_rect_before_wrap())
+                        .layout(egui::Layout::right_to_left(egui::Align::Min)),
+                );
+                shortcuts_help_button_rect = Some(self.render_universal_chip(&mut trailing_ui));
+                actions = self.render_item_toolbar_content(node_id, ui, &mut trailing_ui);
+                ui.advance_cursor_after_rect(trailing_ui.min_rect());
+            });
+        });
+        ItemToolbarFrame { back_to_graph, shortcuts_help_button_rect, actions }
+    }
+
+    fn render_item_toolbar_content(&mut self, node_id: &str, ui: &mut egui::Ui, trailing_ui: &mut egui::Ui) -> ItemToolbarActions {
+        let kind = match self.nodes.get(node_id) {
             Some(node) => item_node_kind(&node.payload),
             None => return ItemToolbarActions::default(),
         };
         match kind {
-            ItemNodeKind::Tab => self.render_tab_toolbar_content(focused_id, ui),
+            ItemNodeKind::Tab => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
             ItemNodeKind::Download
             | ItemNodeKind::Group
             | ItemNodeKind::Note
@@ -8640,7 +8694,7 @@ impl App {
         }
     }
 
-    fn render_tab_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
+    fn render_tab_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui, trailing_ui: &mut egui::Ui) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let node = self.nodes[focused_id].as_tab().unwrap();
         toolbar_chip(ui, |ui| {
@@ -8729,41 +8783,16 @@ impl App {
         // left, pushing it almost to the row's far end.
         //
         // The trailing cluster (Bookmark, View-as-JSON, Split +
-        // Close Split, Tab actions, Shortcuts help, Settings
-        // gear) is drawn *first*, into its own right-to-left
-        // child `Ui` anchored to this row's remaining space, so
-        // its real consumed width can be measured -- not
+        // Close Split, Tab actions) is drawn *first*, into the frame's
+        // right-to-left `trailing_ui` (`render_item_toolbar`, which has
+        // already put the Universal chip at its far right), so its real
+        // consumed width can be measured -- not
         // guessed the way a former `trailing_reserve = 360.0`
         // constant was (sized "generously for the worst case,"
         // with nothing to catch a future addition silently
         // exceeding it). Added in reverse of their final visual
         // order since a right-to-left `Ui` places each new
         // widget immediately to the *left* of the previous one.
-        let remaining_rect = ui.available_rect_before_wrap();
-        let mut trailing_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(remaining_rect)
-                .layout(egui::Layout::right_to_left(egui::Align::Min)),
-        );
-        // `render_universal_chip` handles this `Ui`'s right-to-left
-        // direction itself, so it still reads "Help, Settings" here.
-        //
-        // NOTE: the Universal chip's real position is here, inside
-        // Tab's own per-kind content -- not up in `build_item_ui`
-        // alongside `render_return_to_graph`, even though the design
-        // spec's layer diagram lists it as layer 1 ("present in every
-        // toolbar") above layer 3's per-kind content. It has to be
-        // measured as part of `trailing_ui`'s own right-to-left layout
-        // for the address bar's width calculation to come out right.
-        // Consequence: a future `ItemNodeKind` arm that returns
-        // `ItemToolbarActions::default()` (see `render_item_toolbar_content`)
-        // gets `render_return_to_graph` but NOT this chip -- no Help/
-        // Settings at all for that kind. Fine while Tab is the only
-        // per-kind content that exists; a real per-kind toolbar for
-        // another kind will need to either render its own universal
-        // chip or have `build_item_ui`/its equivalent render one
-        // unconditionally before dispatching to per-kind content.
-        let shortcuts_help_rect = self.render_universal_chip(&mut trailing_ui);
         let tab_actions_response = trailing_ui.button("Tab actions");
         if tab_actions_response.clicked() {
             self.tab_actions_open = !self.tab_actions_open;
@@ -8771,7 +8800,7 @@ impl App {
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
             && icon_button_eased(
-                &mut trailing_ui,
+                trailing_ui,
                 egui::Id::new("icon_btn_close_split"),
                 egui_phosphor::light::X,
             )
@@ -8798,7 +8827,7 @@ impl App {
             .get(focused_id)
             .and_then(|n| n.as_tab())
             .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-        toolbar_chip(&mut trailing_ui, |ui| {
+        toolbar_chip(trailing_ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
@@ -8835,7 +8864,6 @@ impl App {
             bounds.unwrap_or(ui.cursor())
         });
         let trailing_width = trailing_ui.min_rect().width();
-        actions.shortcuts_help_button_rect = Some(shortcuts_help_rect);
 
         // Now the address bar gets whatever's actually left,
         // not a guess -- drawn into the original `ui` (still
@@ -8843,7 +8871,7 @@ impl App {
         // after the leading nav/identity cluster above),
         // sized to stop exactly where the trailing cluster's
         // real measured width begins.
-        let text_width = (remaining_rect.width() - trailing_width).max(40.0);
+        let text_width = (ui.available_rect_before_wrap().width() - trailing_width).max(40.0);
         let response = ui.add(
             egui::TextEdit::singleline(&mut self.address_bar_text)
                 .desired_width(text_width)
@@ -8863,7 +8891,6 @@ impl App {
         }
         self.address_bar_focused = response.has_focus();
         actions.address_bar_rect = Some(response.rect);
-        ui.advance_cursor_after_rect(trailing_ui.min_rect());
 
         if response.changed() {
             self.open_tab_suggestions =
@@ -8890,7 +8917,13 @@ impl App {
         actions
     }
 
+    /// `ViewMode::Item`: whichever node is maximized -- today always the
+    /// focused Tab.
     fn build_item_ui(&mut self, ui: &mut egui::Ui) {
+        self.build_tab_view_ui(ui);
+    }
+
+    fn build_tab_view_ui(&mut self, ui: &mut egui::Ui) {
         let Some(focused_id) = self.focused.clone() else {
             self.view_mode = ViewMode::Graph;
             return;
@@ -8937,74 +8970,41 @@ impl App {
             || !self.open_tab_suggestions.is_empty()
             || !self.search_suggestions.is_empty()
             || self.debug_address_bar_pin;
-        // This `.unwrap()` assumes `focused_id` is always a Tab node
-        // whenever this function runs -- true today (`focus_tab` is the
-        // only path into `ViewMode::Item` and always targets a Tab node,
-        // per the design spec's Non-goals). If that ever changes (a
-        // future kind entering a Tab-like maximized view through some
-        // other path), this line panics before `render_item_toolbar_content`
-        // ever gets a chance to dispatch to that kind's own (possibly
-        // empty) content -- guard this first.
+        // `focused` is tab-only (see `App::focused`), so this always finds
+        // a Tab; `if let` rather than `.unwrap()` so a future path that
+        // breaks that invariant degrades to a stale address bar, not a
+        // panic.
         if !editing_address {
-            self.address_bar_text = self.nodes[&focused_id].as_tab().unwrap().url.clone();
+            if let Some(tab) = self.nodes.get(&focused_id).and_then(|n| n.as_tab()) {
+                self.address_bar_text = tab.url.clone();
+            }
         }
-        let mut go_back = false;
-        let mut go_forward = false;
-        let mut reload_requested = false;
-        let mut home_requested = false;
         let mut navigate = None;
-        let mut back_to_graph = false;
-        let mut toggle_bookmark_requested = false;
-        let mut tab_actions_button_rect: Option<egui::Rect> = None;
-        let mut split_engine_button_rect: Option<egui::Rect> = None;
-        let mut close_split_requested = false;
-        let mut address_bar_rect: Option<egui::Rect> = None;
-        let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         // Whether Enter fired this frame (real keypress or headless `ENTER`)
         // — deferred here rather than acted on immediately inside the
         // toolbar closure below, since deciding what Enter *does* (accept
         // the highlighted dropdown row vs. plain-navigate) needs `combined`
         // (the suggestion list), which isn't computed until after this
         // closure returns.
-        let mut enter_pressed = false;
-
-        toolbar_panel("toolbar", ui, |ui| {
-                // Not `horizontal_centered` (`Align::Center`): measured live
-                // that `egui::ComboBox` paints itself ~4.5pt lower than a
-                // plain `Button`/`TextEdit` even when all three report the
-                // exact same `response.rect.height()` (confirmed via
-                // temporary debug prints: 27.0 for all three, but the combo
-                // box's `rect.min.y` alone sat 4.5pt below the back button's)
-                // — an internal quirk of `ComboBox::show_ui` wrapping its
-                // content in its own nested `ui.horizontal(...)`, whose
-                // layout-pass size estimate apparently doesn't quite match
-                // what it actually paints. Since every item in this row is
-                // now confirmed the same real height (the address-bar-margin
-                // fix above made sure of that), top-aligning instead of
-                // center-aligning sidesteps the mismatch entirely rather
-                // than compensating for a specific pixel offset that could
-                // silently drift if padding/fonts ever change.
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                    if render_return_to_graph(ui) {
-                        back_to_graph = true;
-                    }
-                    // Exhaustive (no `..`): a new `ItemToolbarActions`
-                    // field that isn't wired up here fails to compile.
-                    ItemToolbarActions {
-                        go_back,
-                        go_forward,
-                        reload_requested,
-                        home_requested,
-                        enter_pressed,
-                        toggle_bookmark_requested,
-                        close_split_requested,
-                        tab_actions_button_rect,
-                        split_engine_button_rect,
-                        address_bar_rect,
-                        shortcuts_help_button_rect,
-                    } = self.render_item_toolbar_content(&focused_id, ui);
-                });
-            });
+        // Exhaustive (no `..`): a new `ItemToolbarActions` field that isn't
+        // wired up here fails to compile.
+        let ItemToolbarFrame {
+            back_to_graph,
+            shortcuts_help_button_rect,
+            actions:
+                ItemToolbarActions {
+                    go_back,
+                    go_forward,
+                    reload_requested,
+                    home_requested,
+                    enter_pressed,
+                    toggle_bookmark_requested,
+                    close_split_requested,
+                    tab_actions_button_rect,
+                    split_engine_button_rect,
+                    address_bar_rect,
+                },
+        } = self.render_item_toolbar(&focused_id, ui);
 
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
 
@@ -13325,7 +13325,7 @@ impl App {
                 self.suggestion_fetcher.note_text_changed(&text);
                 self.address_bar_text = text;
             }
-            // Only `build_item_ui` ever consumes these four (`std::mem::take`,
+            // Only `build_tab_view_ui` ever consumes these four (`std::mem::take`,
             // same as a real key press), and it only runs while genuinely in
             // Tab view with no transition animating -- setting the flag
             // outside that window left it stuck `true` indefinitely (a real

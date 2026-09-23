@@ -32,7 +32,11 @@ system (Option A: segmented chips), so:
   are safe under this pass's own Non-goal (only Tab enters `ViewMode::Tab`
   today) and are commented at their call sites in `main.rs`, but a real
   per-kind toolbar for another kind needs to address both before it can
-  rely on the Universal chip or the address-bar-text sync path.
+  rely on the Universal chip or the address-bar-text sync path. Both were
+  resolved by the Image Item View pass
+  (`2026-09-23-image-item-view-design.md`): `render_item_toolbar` now
+  renders the Universal chip as a real layer-1 element before per-kind
+  dispatch, and the `.unwrap()` became an `if let`.
 
 ## Composition model
 
