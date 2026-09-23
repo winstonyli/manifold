@@ -971,8 +971,8 @@ fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
 /// as a return value" move, not a behavior change. `navigate` is
 /// deliberately NOT a field here: today it's computed by `build_tab_ui`
 /// itself, after this content returns, from `enter_pressed` plus the
-/// suggestion list (`main.rs:8781-8786`) -- only `enter_pressed` needs
-/// to cross the function boundary.
+/// suggestion list -- only `enter_pressed` needs to cross the function
+/// boundary.
 #[derive(Default)]
 struct ItemToolbarActions {
     go_back: bool,
@@ -1460,7 +1460,7 @@ fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<Str
 /// whatever sits before/after the chip in the row) and return the union
 /// of its own widgets' rects -- exact by construction, since each
 /// widget's own returned `Response::rect` is real.
-fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) -> egui::Rect {
+fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
     let (lead_rect, _) =
         ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
@@ -1475,7 +1475,28 @@ fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::
     if rect.is_finite() {
         ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
     }
-    rect
+}
+
+/// Calls `first` then `second` so that their widgets read first-then-second
+/// left to right in either layout direction. A right-to-left `ui` places
+/// each new widget to the *left* of the previous one, so there the calls
+/// are made in reverse. `cx` is threaded through rather than captured so
+/// both callbacks can take the same `&mut` state (e.g. `&mut App`).
+fn in_reading_order<C: ?Sized, A, B>(
+    ui: &mut egui::Ui,
+    cx: &mut C,
+    first: impl FnOnce(&mut C, &mut egui::Ui) -> A,
+    second: impl FnOnce(&mut C, &mut egui::Ui) -> B,
+) -> (A, B) {
+    if ui.layout().main_dir() == egui::Direction::RightToLeft {
+        let b = second(cx, ui);
+        let a = first(cx, ui);
+        (a, b)
+    } else {
+        let a = first(cx, ui);
+        let b = second(cx, ui);
+        (a, b)
+    }
 }
 
 /// The actual shapes `draw_card_glow` paints -- split out so a caller whose
@@ -1764,8 +1785,8 @@ impl NodePayload {
 /// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
 /// up front so its immutable borrow of `self.nodes` ends immediately,
 /// before a dispatcher needs `&mut self` to render that kind's toolbar
-/// content. Mirrors `close_node`'s existing `MemberKind` match
-/// (`main.rs:7375`) for exactly the same reason: matching directly on
+/// content. Mirrors `close_group_member`'s existing `MemberKind` match
+/// for exactly the same reason: matching directly on
 /// `&NodePayload` would keep that borrow alive for as long as the match
 /// arms run, which conflicts with the `&mut self` those arms need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1788,21 +1809,6 @@ fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
         NodePayload::Image(_) => ItemNodeKind::Image,
         NodePayload::Pdf(_) => ItemNodeKind::Pdf,
         NodePayload::Json(_) => ItemNodeKind::Json,
-    }
-}
-
-#[cfg(test)]
-mod item_node_kind_tests {
-    use super::*;
-
-    #[test]
-    fn maps_each_payload_variant_to_its_own_kind() {
-        assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
-        assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
-        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100 })), ItemNodeKind::Image);
-        assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
-        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None })), ItemNodeKind::Json);
     }
 }
 
@@ -8479,21 +8485,8 @@ impl App {
         }
     }
 
-    /// The trailing "Keyboard Shortcuts (F1)" button that sits at the end of
-    /// *both* Tab view's and Graph view's own toolbar, right next to
-    /// `build_settings_button` -- identical in both (same icon, same click
-    /// behavior) since either view needs a way to reach shortcuts help
-    /// regardless of which one it is. Split from `build_settings_button`
-    /// (one shared `build_help_settings_cluster` before this) so each
-    /// toolbar can call the two in whichever order its own layout direction
-    /// needs to end up reading "Help, Settings" left to right either way --
-    /// a shared function drawing both in one fixed internal order silently
-    /// reversed that reading order the moment one caller placed it inside a
-    /// right-to-left layout instead of a left-to-right one (confirmed live:
-    /// exactly this regression, caught by screenshotting Tab view and Graph
-    /// view side by side and finding them disagree). Returns its own rect,
-    /// which each caller still needs for its own `build_shortcuts_help(ui,
-    /// shortcuts_help_button_rect)` call further down.
+    /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
+    /// Returns its own rect, which the shortcuts-help popup anchors to.
     fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let help_response = chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
             .on_hover_text("Keyboard Shortcuts (F1)");
@@ -8503,9 +8496,7 @@ impl App {
         help_response.rect
     }
 
-    /// The trailing Settings-gear button -- see `build_help_button`'s own
-    /// doc comment for why this is a separate function rather than the two
-    /// bundled together.
+    /// The Settings-gear half of `render_universal_chip`.
     fn build_settings_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let response = chip_icon_button(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
             .on_hover_text("Settings");
@@ -8521,25 +8512,18 @@ impl App {
     /// specific button, not to the chip as a whole, so callers that need
     /// it (the Tab toolbar's `shortcuts_help_button_rect`) keep working
     /// unchanged.
+    ///
+    /// Reads "Help, Settings" left to right whether `ui` is a left-to-right
+    /// row (the Graph toolbar) or a right-to-left child (the Tab toolbar's
+    /// trailing cluster) -- see `in_reading_order`. Drawing both in one
+    /// fixed call order once silently reversed them in the right-to-left
+    /// caller (confirmed live: Tab and Graph view screenshotted side by side
+    /// disagreed).
     fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let mut help_rect = egui::Rect::NOTHING;
         toolbar_chip(ui, |ui| {
-            // Reads "Help, Settings" left to right regardless of whether
-            // `ui` is a left-to-right row (the Graph toolbar) or a
-            // right-to-left child (the Tab toolbar's trailing cluster) --
-            // matching this pair's own pre-existing doc comment on why
-            // call ORDER (not just which functions) mattered before this
-            // chip existed.
-            let rtl = ui.layout().main_dir() == egui::Direction::RightToLeft;
-            let (help, settings) = if rtl {
-                let settings = self.build_settings_button(ui);
-                let help = self.build_help_button(ui);
-                (help, settings)
-            } else {
-                let help = self.build_help_button(ui);
-                let settings = self.build_settings_button(ui);
-                (help, settings)
-            };
+            let (help, settings) =
+                in_reading_order(ui, self, Self::build_help_button, Self::build_settings_button);
             help_rect = help;
             help.union(settings)
         });
@@ -8565,17 +8549,17 @@ impl App {
     fn render_tab_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let node = self.nodes[focused_id].as_tab().unwrap();
-        // `◀`/`▶` were already a proven-safe Unicode gamble
-        // (confirmed live elsewhere in this app), not a real
-        // problem -- migrated to `egui_phosphor::CARET_LEFT`/
-        // `CARET_RIGHT` anyway once the icon font was already
-        // in place, for the same visual consistency the other
-        // icon migrations this session already have.
         toolbar_chip(ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             };
+            // `◀`/`▶` were already a proven-safe Unicode gamble
+            // (confirmed live elsewhere in this app), not a real
+            // problem -- migrated to `egui_phosphor::CARET_LEFT`/
+            // `CARET_RIGHT` anyway once the icon font was already
+            // in place, for the same visual consistency the other
+            // icon migrations this session already have.
             let back = chip_icon_button_enabled(ui, egui::Id::new("icon_btn_back"), egui_phosphor::light::CARET_LEFT, node.can_go_back);
             grow(back.rect);
             if back.clicked() {
@@ -8667,14 +8651,8 @@ impl App {
                 .max_rect(remaining_rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Min)),
         );
-        // `render_universal_chip` itself detects this `Ui`'s right-to-left
-        // direction and swaps its internal call order accordingly (see its
-        // own doc comment) so the chip still reads "Help, Settings" left to
-        // right here, matching the Graph toolbar's own plain left-to-right
-        // call to the same helper below -- the same reading-order
-        // requirement the former separate `build_settings_button`/
-        // `build_help_button` calls here handled by literally being called
-        // in reverse order, now handled inside the shared helper instead.
+        // `render_universal_chip` handles this `Ui`'s right-to-left
+        // direction itself, so it still reads "Help, Settings" here.
         //
         // NOTE: the Universal chip's real position is here, inside
         // Tab's own per-kind content -- not up in `build_tab_ui`
@@ -8916,18 +8894,21 @@ impl App {
                     if render_return_to_graph(ui) {
                         back_to_graph = true;
                     }
-                    let item_actions = self.render_item_toolbar_content(&focused_id, ui);
-                    go_back = item_actions.go_back;
-                    go_forward = item_actions.go_forward;
-                    reload_requested = item_actions.reload_requested;
-                    home_requested = item_actions.home_requested;
-                    enter_pressed = item_actions.enter_pressed;
-                    toggle_bookmark_requested = item_actions.toggle_bookmark_requested;
-                    close_split_requested = item_actions.close_split_requested;
-                    tab_actions_button_rect = item_actions.tab_actions_button_rect;
-                    split_engine_button_rect = item_actions.split_engine_button_rect;
-                    address_bar_rect = item_actions.address_bar_rect;
-                    shortcuts_help_button_rect = item_actions.shortcuts_help_button_rect;
+                    // Exhaustive (no `..`): a new `ItemToolbarActions`
+                    // field that isn't wired up here fails to compile.
+                    ItemToolbarActions {
+                        go_back,
+                        go_forward,
+                        reload_requested,
+                        home_requested,
+                        enter_pressed,
+                        toggle_bookmark_requested,
+                        close_split_requested,
+                        tab_actions_button_rect,
+                        split_engine_button_rect,
+                        address_bar_rect,
+                        shortcuts_help_button_rect,
+                    } = self.render_item_toolbar_content(&focused_id, ui);
                 });
             });
 
@@ -9439,6 +9420,7 @@ impl App {
                     // level, not just the top -- see `GroupPayload`'s own
                     // doc comment on nesting; each already acts on
                     // `self.current_group`/`groups_at_current_level()`
+                    // (its own level), never hardcoding the top level.
                     //
                     // The rule this toolbar actually follows, for any
                     // future addition: identity/entry-point actions that
@@ -9448,7 +9430,7 @@ impl App {
                     // else added later to relieve crowding goes icon-only
                     // with a hover tooltip carrying the old label, per this
                     // paragraph's own history.
-                    // (its own level), never hardcoding the top level.
+                    //
                     // Same "real file dialog blocks on OS/human input
                     // neither exists in headless mode" reasoning as every
                     // other Export/Import button -- `IMPORTGROUP <path>`
@@ -9464,9 +9446,10 @@ impl App {
                                     ui,
                                     egui::Id::new("icon_btn_import_group"),
                                     egui_phosphor::light::UPLOAD_SIMPLE,
-                                );
+                                )
+                                .on_hover_text("Import Group...");
                                 grow(response.rect);
-                                if response.on_hover_text("Import Group...").clicked() {
+                                if response.clicked() {
                                     import_group_requested = true;
                                 }
                             }
@@ -9475,9 +9458,10 @@ impl App {
                                     ui,
                                     egui::Id::new("icon_btn_ungroup_all"),
                                     egui_phosphor::light::FOLDER_MINUS,
-                                );
+                                )
+                                .on_hover_text("Ungroup All");
                                 grow(response.rect);
-                                if response.on_hover_text("Ungroup All").clicked() {
+                                if response.clicked() {
                                     ungroup_all_requested = true;
                                 }
                             }
@@ -9487,9 +9471,10 @@ impl App {
                                 } else {
                                     (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
                                 };
-                                let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon);
+                                let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
+                                    .on_hover_text(hover);
                                 grow(response.rect);
-                                if response.on_hover_text(hover).clicked() {
+                                if response.clicked() {
                                     self.groups_collapsed = !self.groups_collapsed;
                                 }
                             }
@@ -9569,11 +9554,6 @@ impl App {
                             self.tab_spawn_error = None;
                         }
                     }
-                    // Left-to-right `ui` here (this whole toolbar, unlike
-                    // the Tab toolbar's own measured trailing cluster) --
-                    // Help then Settings in that order reads correctly as
-                    // written, no reversal needed. See `build_help_button`'s
-                    // own doc comment for why these are two separate calls.
                     shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
                 });
             });
@@ -14078,4 +14058,36 @@ fn main() {
     }
 
     event_loop.run_app(&mut app).expect("run event loop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which a unit
+    // test can't construct. Its arm is covered by live Tab-view runs instead.
+    #[test]
+    fn maps_each_constructible_payload_variant_to_its_own_kind() {
+        assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
+        assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
+        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100 })), ItemNodeKind::Image);
+        assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
+        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None })), ItemNodeKind::Json);
+    }
+
+    #[test]
+    fn in_reading_order_reads_first_then_second_in_both_directions() {
+        for layout in [egui::Layout::left_to_right(egui::Align::Min), egui::Layout::right_to_left(egui::Align::Min)] {
+            egui::__run_test_ui(|ui| {
+                ui.with_layout(layout, |ui| {
+                    let slot = |_: &mut (), ui: &mut egui::Ui| {
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover()).0
+                    };
+                    let (first, second) = in_reading_order(ui, &mut (), slot, slot);
+                    assert!(first.min.x < second.min.x, "{layout:?}: first {first:?} not left of second {second:?}");
+                });
+            });
+        }
+    }
 }
