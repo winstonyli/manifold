@@ -8559,42 +8559,35 @@ impl App {
         // `CARET_RIGHT` anyway once the icon font was already
         // in place, for the same visual consistency the other
         // icon migrations this session already have.
-        if ui
-            .add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT))
-            .clicked()
-        {
-            actions.go_back = true;
-        }
-        if ui
-            .add_enabled(
-                node.can_go_forward,
-                egui::Button::new(egui_phosphor::light::CARET_RIGHT),
-            )
-            .clicked()
-        {
-            actions.go_forward = true;
-        }
-        // Was plain text ("Reload") to avoid a refresh-arrows
-        // glyph gamble in this app's own font -- now a real
-        // `egui_phosphor` icon instead, same reasoning as every
-        // other icon migrated once the icon font was already
-        // wired in.
-        if icon_button_eased(
-            ui,
-            egui::Id::new("icon_btn_reload"),
-            egui_phosphor::light::ARROW_CLOCKWISE,
-        )
-        .on_hover_text("Reload")
-        .clicked()
-        {
-            actions.reload_requested = true;
-        }
-        if icon_button_eased(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
-            .on_hover_text("Go to home page")
-            .clicked()
-        {
-            actions.home_requested = true;
-        }
+        toolbar_chip(ui, |ui| {
+            let mut bounds: Option<egui::Rect> = None;
+            let mut grow = |r: egui::Rect| {
+                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+            };
+            let back = ui.add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT));
+            grow(back.rect);
+            if back.clicked() {
+                actions.go_back = true;
+            }
+            let forward = ui.add_enabled(node.can_go_forward, egui::Button::new(egui_phosphor::light::CARET_RIGHT));
+            grow(forward.rect);
+            if forward.clicked() {
+                actions.go_forward = true;
+            }
+            let reload = chip_icon_button(ui, egui::Id::new("icon_btn_reload"), egui_phosphor::light::ARROW_CLOCKWISE)
+                .on_hover_text("Reload");
+            grow(reload.rect);
+            if reload.clicked() {
+                actions.reload_requested = true;
+            }
+            let home = chip_icon_button(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
+                .on_hover_text("Go to home page");
+            grow(home.rect);
+            if home.clicked() {
+                actions.home_requested = true;
+            }
+            bounds.unwrap_or(ui.cursor())
+        });
 
         // Tab identity (was a separate strip above the toolbar,
         // merged into this single bar): a small loading spinner
@@ -8694,36 +8687,34 @@ impl App {
             self.split_engine_picker_open = !self.split_engine_picker_open;
         }
         actions.split_engine_button_rect = Some(split_engine_response.rect);
-        if self
-            .nodes
-            .get(focused_id)
-            .and_then(|n| n.as_tab())
-            .is_some_and(|n| n.json_body.is_some())
-            && trailing_ui
-                .button(egui_phosphor::light::BRACKETS_CURLY)
-                .on_hover_text("View as JSON")
-                .clicked()
-        {
-            self.json_viewer_node = Some(focused_id.to_string());
-        }
-        // `selectable_label`, same reasoning as elsewhere in
-        // this toolbar -- a pressed look for "already
-        // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
-        // a star glyph's tofu risk. Sits right after the address
-        // bar, mirroring Chrome/Firefox's own star icon at the
-        // address bar's right edge.
+        let has_json = self.nodes.get(focused_id).and_then(|n| n.as_tab()).is_some_and(|n| n.json_body.is_some());
         let is_bookmarked = self
             .nodes
             .get(focused_id)
             .and_then(|n| n.as_tab())
             .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-        if trailing_ui
-            .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
-            .on_hover_text("Bookmark")
-            .clicked()
-        {
-            actions.toggle_bookmark_requested = true;
-        }
+        toolbar_chip(&mut trailing_ui, |ui| {
+            let mut bounds: Option<egui::Rect> = None;
+            let mut grow = |r: egui::Rect| {
+                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+            };
+            if has_json {
+                let response = chip_icon_button(ui, egui::Id::new("icon_btn_view_json"), egui_phosphor::light::BRACKETS_CURLY)
+                    .on_hover_text("View as JSON");
+                grow(response.rect);
+                if response.clicked() {
+                    self.json_viewer_node = Some(focused_id.to_string());
+                }
+            }
+            let bookmark = ui
+                .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
+                .on_hover_text("Bookmark");
+            grow(bookmark.rect);
+            if bookmark.clicked() {
+                actions.toggle_bookmark_requested = true;
+            }
+            bounds.unwrap_or(ui.cursor())
+        });
         let trailing_width = trailing_ui.min_rect().width();
         actions.shortcuts_help_button_rect = Some(shortcuts_help_rect);
 
