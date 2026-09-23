@@ -12038,11 +12038,12 @@ impl ApplicationHandler<UserEvent> for App {
                     // bug that gating it the same way as a press caused.
                     let target = match state {
                         ElementState::Pressed if in_content => self.focused.clone(),
-                        ElementState::Released => self
-                            .native_drag_tab
-                            .take()
-                            .filter(|_| matches!(button, MouseButton::Left))
-                            .or_else(|| in_content.then(|| self.focused.clone()).flatten()),
+                        ElementState::Released => if matches!(button, MouseButton::Left) {
+                            self.native_drag_tab.take()
+                        } else {
+                            None
+                        }
+                        .or_else(|| in_content.then(|| self.focused.clone()).flatten()),
                         ElementState::Pressed => None,
                     };
                     if let Some(id) = target {
