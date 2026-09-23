@@ -46,6 +46,30 @@ from a documented-but-unused hook into a real, exercised one:
   own meaning of "fit". So the zoom chip is a reusable layer-3 chip that
   kinds opt into, not a layer-1 universal control.
 
+## Plan-time corrections
+
+Found while writing the implementation plan; these supersede the
+sections below where they conflict.
+
+- **`focused` stays tab-only.** `App::focused` is documented and relied on
+  as tab-only across ~70 sites (new-tab parent, arrow-key graph
+  navigation, Ctrl+W/Ctrl+D/F5/F12 targets, input forwarding). The Image
+  view's subject is a new field, `viewed_image: Option<String>`; while it
+  is `Some`, `focused` keeps pointing at the last tab, exactly as it does
+  in Graph view, so tab shortcuts behave in Image view the way they do in
+  Graph view.
+- **Session** gains `viewed_image: Option<String>` (`#[serde(default)]`)
+  instead of widening `focused`'s validation.
+- **No Enter/`GRAPHOPEN` entry for images.** Graph keyboard selection
+  (`move_graph_focus`) is tab-only, so no Image can be keyboard-selected;
+  entry is by clicking the card.
+- **Escape stays per-kind.** Tab's Escape is layered (dismiss context
+  menu → find bar → suggestions → leave), so the frame doesn't own it;
+  Image view handles its own Escape (leave).
+- **Headless live runs must isolate `%APPDATA%`**: headless mode reads
+  and writes the real `session.json`/settings, so every verification run
+  sets `APPDATA` to a scratch directory.
+
 ## 1. Item view frame
 
 **Rename.** `ViewMode::Tab` → `ViewMode::Item`, `build_tab_ui` →
@@ -183,7 +207,8 @@ needed:
   than the body; centered when it fits.
 - `step_scene_rect(rect, factor, screen_size, min, max)`: preserves
   center, clamps to 0.15–3.0.
-- Session focus validation accepts Tab and Image ids.
+- (Session restore of `viewed_image` is verified live, step 4 below —
+  `apply_session` isn't a pure function.)
 - Existing `in_reading_order` test stays.
 
 **Live headless verification** (`debug_control`), with generated test
