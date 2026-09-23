@@ -8512,9 +8512,23 @@ impl App {
     fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let mut help_rect = egui::Rect::NOTHING;
         toolbar_chip(ui, |ui| {
-            let help = self.build_help_button(ui);
+            // Reads "Help, Settings" left to right regardless of whether
+            // `ui` is a left-to-right row (the Graph toolbar) or a
+            // right-to-left child (the Tab toolbar's trailing cluster) --
+            // matching this pair's own pre-existing doc comment on why
+            // call ORDER (not just which functions) mattered before this
+            // chip existed.
+            let rtl = ui.layout().main_dir() == egui::Direction::RightToLeft;
+            let (help, settings) = if rtl {
+                let settings = self.build_settings_button(ui);
+                let help = self.build_help_button(ui);
+                (help, settings)
+            } else {
+                let help = self.build_help_button(ui);
+                let settings = self.build_settings_button(ui);
+                (help, settings)
+            };
             help_rect = help;
-            let settings = self.build_settings_button(ui);
             help.union(settings)
         });
         help_rect
@@ -8643,17 +8657,14 @@ impl App {
                 .max_rect(remaining_rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Min)),
         );
-        // `render_universal_chip` always draws Help before Settings
-        // internally, regardless of the `Ui`'s own layout direction (see
-        // its own doc comment) -- in this right-to-left `Ui`, that means
-        // the chip reads "Settings, Help" left to right here, the mirror
-        // of the Graph toolbar's plain left-to-right call to the same
-        // helper below, which reads "Help, Settings" (confirmed live via
-        // screenshot). Unlike the former separate `build_settings_button`/
-        // `build_help_button` calls this replaced, `render_universal_chip`
-        // has no per-caller way to flip that internal order, so this
-        // toolbar's own right-to-left layout can no longer compensate for
-        // it the way it used to.
+        // `render_universal_chip` itself detects this `Ui`'s right-to-left
+        // direction and swaps its internal call order accordingly (see its
+        // own doc comment) so the chip still reads "Help, Settings" left to
+        // right here, matching the Graph toolbar's own plain left-to-right
+        // call to the same helper below -- the same reading-order
+        // requirement the former separate `build_settings_button`/
+        // `build_help_button` calls here handled by literally being called
+        // in reverse order, now handled inside the shared helper instead.
         let shortcuts_help_rect = self.render_universal_chip(&mut trailing_ui);
         let tab_actions_response = trailing_ui.button("Tab actions");
         if tab_actions_response.clicked() {
