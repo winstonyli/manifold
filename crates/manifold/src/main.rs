@@ -1477,6 +1477,97 @@ fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::
     }
 }
 
+/// Multiplicative step for one click of a zoom chip's −/+ (and, in Image
+/// view, one `Ctrl+=`/`Ctrl+-`) -- shared so Graph and Image zoom feel the
+/// same.
+const ZOOM_STEP: f32 = 1.25;
+
+/// What a click on `render_zoom_chip` asked for. The chip holds no zoom
+/// state of its own -- each caller applies this to whatever "zoom" means
+/// in its own view (Graph: the camera's `graph_scene_rect`; Image view:
+/// `ImageViewState`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZoomChipAction {
+    Out,
+    In,
+    Reset100,
+    Fit,
+}
+
+/// `rect` (a Graph camera's world-space `graph_scene_rect`) resized about
+/// its own center so the zoom scale `graph_world_to_screen_transform`
+/// derives from it (`screen / rect.size()`, min axis) is multiplied by
+/// `factor`, clamped to `min..=max`. The ratio is computed from the raw,
+/// unclamped scale so the result lands exactly on the clamped target.
+fn step_scene_rect(rect: egui::Rect, factor: f32, screen: egui::Vec2, min: f32, max: f32) -> egui::Rect {
+    let raw = (screen / rect.size()).min_elem();
+    let new_scale = (raw.clamp(min, max) * factor).clamp(min, max);
+    egui::Rect::from_center_size(rect.center(), rect.size() * (raw / new_scale))
+}
+
+/// −, a clickable `NN%` readout (back to 100%), +, and Fit, as one chip.
+/// Left-to-right rows only (both callers are): in a right-to-left `Ui`
+/// its buttons would come out reversed -- see `in_reading_order` for the
+/// pattern if a right-to-left caller ever needs it. The readout is a
+/// frameless `Button` rather than a `Label` so it has the same height as
+/// its icon-button neighbors (a `Label` sits high in the Item toolbar's
+/// top-aligned row), with a fixed minimum width so the chip doesn't
+/// jitter as the digit count changes.
+fn render_zoom_chip(
+    ui: &mut egui::Ui,
+    pct: f32,
+    can_zoom_out: bool,
+    can_zoom_in: bool,
+    fit_hover: &str,
+) -> Option<ZoomChipAction> {
+    debug_assert_eq!(
+        ui.layout().main_dir(),
+        egui::Direction::LeftToRight,
+        "render_zoom_chip lays out left to right only"
+    );
+    let mut action = None;
+    toolbar_chip(ui, |ui| {
+        let out = chip_icon_button_enabled(
+            ui,
+            egui::Id::new("icon_btn_zoom_out"),
+            egui_phosphor::light::MAGNIFYING_GLASS_MINUS,
+            can_zoom_out,
+        )
+        .on_hover_text("Zoom out");
+        if out.clicked() {
+            action = Some(ZoomChipAction::Out);
+        }
+        let readout = ui
+            .add(
+                egui::Button::new(format!("{}%", pct.round() as i32))
+                    .frame(false)
+                    .min_size(egui::vec2(44.0, 0.0)),
+            )
+            .on_hover_text("Reset zoom to 100%")
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if readout.clicked() {
+            action = Some(ZoomChipAction::Reset100);
+        }
+        let zoom_in = chip_icon_button_enabled(
+            ui,
+            egui::Id::new("icon_btn_zoom_in"),
+            egui_phosphor::light::MAGNIFYING_GLASS_PLUS,
+            can_zoom_in,
+        )
+        .on_hover_text("Zoom in");
+        if zoom_in.clicked() {
+            action = Some(ZoomChipAction::In);
+        }
+        let fit = chip_icon_button(ui, egui::Id::new("icon_btn_zoom_fit"), egui_phosphor::light::FRAME_CORNERS)
+            .on_hover_text(fit_hover);
+        if fit.clicked() {
+            action = Some(ZoomChipAction::Fit);
+        }
+        out.rect.union(readout.rect).union(zoom_in.rect).union(fit.rect)
+    });
+    action
+}
+
 /// Calls `first` then `second` so that their widgets read first-then-second
 /// left to right in either layout direction. A right-to-left `ui` places
 /// each new widget to the *left* of the previous one, so there the calls
@@ -9216,6 +9307,7 @@ impl App {
 
         let mut reset_view = false;
         let mut reset_zoom = false;
+        let mut graph_zoom_step: Option<f32> = None;
         let mut group_selected_requested = false;
         let mut close_selected_requested = false;
         let mut ungroup_all_requested = false;
@@ -9423,13 +9515,14 @@ impl App {
                     // (its own level), never hardcoding the top level.
                     //
                     // The rule this toolbar actually follows, for any
-                    // future addition: identity/entry-point actions that
-                    // define what this toolbar *is* ("+ New Tab", "Reset
-                    // View" -- also used as fixed coordinate anchors by
-                    // existing headless tests) stay full text; everything
-                    // else added later to relieve crowding goes icon-only
-                    // with a hover tooltip carrying the old label, per this
-                    // paragraph's own history.
+                    // future addition: the identity/entry-point action that
+                    // defines what this toolbar *is* ("+ New Tab") stays
+                    // full text; everything else added later to relieve
+                    // crowding goes icon-only with a hover tooltip carrying
+                    // the old label, per this paragraph's own history.
+                    // "Reset View" was the other text holdout until it
+                    // became the zoom chip's Fit button (hover text keeps
+                    // the name).
                     //
                     // Same "real file dialog blocks on OS/human input
                     // neither exists in headless mode" reasoning as every
@@ -9481,23 +9574,24 @@ impl App {
                             bounds.unwrap_or(ui.cursor())
                         });
                     }
-                    if ui.button("Reset View").clicked() {
-                        reset_view = true;
-                    }
-                    // Click-to-reset (keeping the current pan, unlike
-                    // "Reset View"'s coarser fit-everything) -- a near-
-                    // universal convention in canvas/map apps for this exact
-                    // readout, previously just a plain unclickable label.
-                    if ui
-                        .add(
-                            egui::Label::new(format!("{}%", self.graph_zoom_pct.round() as i32))
-                                .sense(egui::Sense::click()),
-                        )
-                        .on_hover_text("Reset zoom to 100%")
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        reset_zoom = true;
+                    // −/+/100%/Fit in one chip (`render_zoom_chip`, shared
+                    // with Image view). Fit is the old "Reset View"
+                    // (re-fit every node at this level); the `%` readout
+                    // keeps the current pan and only resets the scale.
+                    let zoom = self.graph_zoom_pct / 100.0;
+                    if let Some(action) = render_zoom_chip(
+                        ui,
+                        self.graph_zoom_pct,
+                        zoom > GRAPH_ZOOM_MIN + 1e-3,
+                        zoom < GRAPH_ZOOM_MAX - 1e-3,
+                        "Reset View (fit all)",
+                    ) {
+                        match action {
+                            ZoomChipAction::Fit => reset_view = true,
+                            ZoomChipAction::Reset100 => reset_zoom = true,
+                            ZoomChipAction::In => graph_zoom_step = Some(ZOOM_STEP),
+                            ZoomChipAction::Out => graph_zoom_step = Some(1.0 / ZOOM_STEP),
+                        }
                     }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.graph_filter)
@@ -9717,6 +9811,15 @@ impl App {
             // ratio exactly 1.0, the definition of "100%" this readout uses.
             let center = self.graph_scene_rect.center();
             self.graph_scene_rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
+        }
+        if let Some(factor) = graph_zoom_step {
+            self.graph_scene_rect = step_scene_rect(
+                self.graph_scene_rect,
+                factor,
+                scene_outer_rect.size(),
+                GRAPH_ZOOM_MIN,
+                GRAPH_ZOOM_MAX,
+            );
         }
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.graph_zoom_pct = zoom_scale * 100.0;
@@ -14089,5 +14192,27 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[test]
+    fn step_scene_rect_zooms_about_center_and_clamps() {
+        let screen = egui::vec2(1000.0, 800.0);
+        let scale_of = |r: egui::Rect| (screen / r.size()).min_elem();
+
+        let at_100 = egui::Rect::from_center_size(egui::pos2(50.0, 60.0), screen);
+        let zoomed_in = step_scene_rect(at_100, ZOOM_STEP, screen, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        assert_eq!(zoomed_in.center(), at_100.center());
+        assert!((scale_of(zoomed_in) - ZOOM_STEP).abs() < 1e-4);
+
+        let zoomed_out = step_scene_rect(at_100, 1.0 / ZOOM_STEP, screen, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        assert!((scale_of(zoomed_out) - 1.0 / ZOOM_STEP).abs() < 1e-4);
+
+        let near_max = egui::Rect::from_center_size(egui::pos2(0.0, 0.0), screen / 2.8);
+        let clamped = step_scene_rect(near_max, ZOOM_STEP, screen, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        assert!((scale_of(clamped) - GRAPH_ZOOM_MAX).abs() < 1e-3);
+
+        let near_min = egui::Rect::from_center_size(egui::pos2(0.0, 0.0), screen / 0.16);
+        let clamped = step_scene_rect(near_min, 1.0 / ZOOM_STEP, screen, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        assert!((scale_of(clamped) - GRAPH_ZOOM_MIN).abs() < 1e-3);
     }
 }
