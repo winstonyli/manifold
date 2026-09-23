@@ -96,10 +96,17 @@ Four touch points, all inside `manifold-engine-webview2`:
 `resize_controller` gains one line: `root_visual.SetSize(...)` alongside the
 existing `SetBounds` call, so the visual's own size tracks the controller's.
 
-**`MoveFocus` must now be called on every relevant input dispatch path** (mouse
-down, at minimum) — JS-driven input never needed real WebView2 focus tracking;
-native `SendMouseInput` does, per Microsoft's own guidance already confirmed
-this session.
+~~**`MoveFocus` must now be called on every relevant input dispatch path**
+(mouse down, at minimum) — JS-driven input never needed real WebView2 focus
+tracking; native `SendMouseInput` does, per Microsoft's own guidance already
+confirmed this session.~~ **Settled (Task 5 live verification): not needed.**
+The single existing startup `MoveFocus` call is sufficient — a native
+`SendMouseInput` `LEFT_BUTTON_DOWN`+`UP` on a plain `<input>` focused it with
+no per-dispatch `MoveFocus` anywhere (`:focus` outline appeared, and
+subsequent `Char` events typed real text into the field). Chromium's own
+input pipeline handles focus-on-click itself, exactly as it does for a real
+click in a real browser window; the startup call stays only to establish
+that the control has logical focus at all.
 
 ### 2. Capture (`capture.rs`)
 
@@ -195,6 +202,19 @@ correctness discipline (isolate what could break), not a time-cost one:
 - Touch/pinch (`SendPointerInput` + `PT_TOUCH`) — new capability, no existing
   `InputEvent` variant models it; separate follow-up once the core migration
   lands.
+- **Horizontal scroll on WebView2 (`InputEvent::Scroll`'s `delta_x`).** A real
+  regression against the pre-migration behavior, deliberately not fixed here:
+  the old JS path called `window.scrollBy(delta_x, delta_y)` and so used both
+  axes, while the migrated `SendMouseInput` path sends one
+  `COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL` event carrying `delta_y` only and
+  drops `delta_x` on the floor. The fix is a second `SendMouseInput` with
+  `COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL` when `delta_x` is nonzero
+  — small, but it needs its own live verification on real horizontally-
+  scrollable content (and a decision on sign convention, which differed
+  between the JS and wheel paths and was already a bug once on the vertical
+  axis), so it isn't being bolted on unverified at the end of this migration.
+  Only reachable from a horizontal-scroll-capable device (trackpad/tilt
+  wheel); a plain vertical wheel is unaffected.
 - ~~Whether native mousedown+click removes the need for `input.rs`'s explicit
   `.focus()`-before-`.click()` fix — verify during implementation.~~ **Settled
   (Task 5 live verification):** yes, it does. A native `SendMouseInput`

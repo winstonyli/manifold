@@ -79,9 +79,14 @@ pub struct Settings {
     /// fields still loads instead of failing entirely (same fallback
     /// posture `Settings::load` already has for the whole file); an older
     /// file whose values were saved as *physical* pixels before this fix
-    /// will restore once at the wrong (smaller, if the window was ever on a
-    /// >100%-scaled monitor) logical size, then self-correct on the very
-    /// next resize/save. Not applied or updated in headless mode, which
+    /// restores those numbers as if they were logical points, which on a
+    /// >100%-scaled monitor makes the window come back *larger* than it was
+    /// (e.g. 2744 saved physical pixels reopen as 2744 points = 3430
+    /// physical at 125%). That doesn't self-correct: the next save records
+    /// the new, inflated size in points, so the window simply stays at it
+    /// from then on, and the user has to resize it once by hand. It does
+    /// stop growing, which is the runaway this fix was actually for. Not
+    /// applied or updated in headless mode, which
     /// already forces its own deliberate off-screen position (see
     /// `resumed`'s own doc comment) -- saving that would corrupt a real
     /// saved geometry the next normal launch would apply.

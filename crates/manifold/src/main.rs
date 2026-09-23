@@ -1957,6 +1957,22 @@ struct App {
     /// state, not per-note content), not a fresh cache per card per frame.
     commonmark_cache: egui_commonmark::CommonMarkCache,
     cursor_pos: (f64, f64),
+    /// The tab a left `InputEvent::MouseDown` was actually forwarded to and
+    /// which hasn't been sent the matching `MouseUp` yet — i.e. "a native
+    /// drag is in progress on this tab".
+    ///
+    /// `MouseDown` forwarding is gated on the cursor being below chrome and
+    /// in the primary pane; applying that same gate to `MouseUp` means a
+    /// press inside the page followed by a release over the app's own
+    /// toolbar never delivers a button-up to the page at all. That was
+    /// harmless while input was JS-driven, but mouse input is real native
+    /// injection now (`SendMouseInput` on WebView2, `SendMouseClickEvent`
+    /// on CEF), so Chromium itself never learns the button came up and
+    /// keeps extending a text selection under every later hover. Tracking
+    /// the in-progress drag here lets the release be forwarded to the same
+    /// tab unconditionally, wherever it lands — the `manifold`-side mirror
+    /// of the engine-side `DragState` each native-input engine-host keeps.
+    native_drag_tab: Option<String>,
     /// Bitflags (see `ipc_protocol::modifiers`), tracked from winit's
     /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
     /// carries the modifier state at the time of that key, not just the
@@ -2396,6 +2412,7 @@ impl Default for App {
             next_json_id: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
+            native_drag_tab: None,
             key_modifiers: 0,
             egui_ctx,
             egui_state: None,
@@ -2470,16 +2487,18 @@ impl Default for App {
 }
 
 impl App {
-    /// winit's own DPI scale factor — `WindowEvent::CursorMoved`/`MouseWheel`
-    /// report positions in *physical* pixels (raw display dots), unaffected
-    /// by DPI scaling, while a page's own coordinate space (`elementFromPoint`,
-    /// `getBoundingClientRect`, CSS `left`/`top`) is in *CSS* pixels -- at
-    /// 125% scaling one CSS pixel spans 1.25 physical pixels. Every
-    /// `InputEvent::Mouse*`/`Scroll` sent to an engine-host must be divided
-    /// by this before being sent, or clicks/drags land at the wrong spot on
-    /// any display that isn't at exactly 100% scaling (100% is where
-    /// physical and CSS pixels happen to coincide, which is why this was
-    /// easy to miss on a 100%-scaled dev machine).
+    /// winit's own DPI scale factor — physical pixels per logical point.
+    ///
+    /// **Not applied to outgoing `InputEvent::Mouse*`/`Scroll` coordinates.**
+    /// Those are sent in the engine's own *physical-pixel surface* space,
+    /// the exact same space as `HostToEngine::Resize`'s `width`/`height`
+    /// (see `ipc_protocol::InputEvent`'s doc comment) — every engine-host
+    /// renders a surface of precisely that pixel size, so a physical offset
+    /// into the on-screen content quad is already the right value to send,
+    /// with no conversion at all. Used instead for the two places that
+    /// genuinely need logical points: saving window geometry
+    /// (`Settings::window_width`) and placing egui UI at a coordinate an
+    /// engine reported back (`EngineToHost::ContextMenuLink`).
     fn ppp(&self) -> f64 {
         self.window.as_ref().map_or(1.0, |w| w.scale_factor())
     }
@@ -2567,12 +2586,6 @@ impl App {
     fn send_resize_to(&mut self, tab_id: &str) {
         let (width, height) = self.content_size_px();
         let dpi_scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
-        // TEMP diagnostic for the live black-bar bug -- remove once resolved.
-        eprintln!(
-            "[input-diag] send_resize_to({tab_id}) content_size_px=({width},{height}) dpi_scale={dpi_scale} window.inner_size={:?} chrome_height_px={}",
-            self.window.as_ref().map(|w| w.inner_size()),
-            self.chrome_height_px(),
-        );
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToEngine::Resize {
                 width,
@@ -11887,26 +11900,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        // TEMP diagnostic for the live multi-monitor DPI offset bug --
-        // compares `window.scale_factor()` (what the mouse-coordinate code
-        // actually uses) against the monitor winit itself thinks the window
-        // is on, to tell apart "window really is on the 100% monitor" from
-        // "window is on the 125% one but scale_factor() is stale/wrong".
-        // Remove once resolved.
-        eprintln!(
-            "[input-diag] window.scale_factor()={} window.outer_position()={:?} current_monitor={:?}",
-            window.scale_factor(),
-            window.outer_position(),
-            window.current_monitor().map(|m| (m.name(), m.position(), m.scale_factor())),
-        );
-        for (i, m) in window.available_monitors().enumerate() {
-            eprintln!(
-                "[input-diag]   monitor[{i}] name={:?} position={:?} scale_factor={}",
-                m.name(),
-                m.position(),
-                m.scale_factor()
-            );
-        }
         self.gpu = Some(GpuState::new(window.clone()));
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -12006,14 +11999,13 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
                 let chrome_height = self.chrome_height_px() as f64;
-                let ppp = self.ppp();
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| position.x < divider);
                 if in_tab_view && !consumed_by_egui && position.y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             node.tab.send(&HostToEngine::Input(InputEvent::MouseMove {
-                                x: position.x / ppp,
-                                y: (position.y - chrome_height) / ppp,
+                                x: position.x,
+                                y: position.y - chrome_height,
                                 modifiers: self.key_modifiers,
                             }));
                         }
@@ -12022,7 +12014,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
-                let ppp = self.ppp();
                 let (x, y) = self.cursor_pos;
                 // `egui_winit` reports the right button as "consumed"
                 // unconditionally (confirmed live via temporary logging:
@@ -12039,29 +12030,35 @@ impl ApplicationHandler<UserEvent> for App {
                     && button != WinitMouseButton::Right
                     && button != WinitMouseButton::Middle;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
-                if in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane {
-                    if let Some(button) = translate_mouse_button(button) {
-                        if let Some(id) = self.focused.clone() {
-                            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                                let (x, y) = (x / ppp, (y - chrome_height) / ppp);
-                                // TEMP diagnostic for the live offset bug --
-                                // remove once resolved.
-                                if state == ElementState::Pressed {
-                                    eprintln!(
-                                        "[input-diag] MouseInput physical=({raw_x},{raw_y}) ppp={ppp} chrome_height_px={chrome_height} -> sending css=({x},{y})",
-                                        raw_x = self.cursor_pos.0,
-                                        raw_y = self.cursor_pos.1,
-                                    );
+                let in_content = in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane;
+                if let Some(button) = translate_mouse_button(button) {
+                    // A release always goes to whichever tab is mid-drag,
+                    // even when it lands outside the content area -- see
+                    // `native_drag_tab`'s doc comment for the stuck-button
+                    // bug that gating it the same way as a press caused.
+                    let target = match state {
+                        ElementState::Pressed if in_content => self.focused.clone(),
+                        ElementState::Released => self
+                            .native_drag_tab
+                            .take()
+                            .filter(|_| matches!(button, MouseButton::Left))
+                            .or_else(|| in_content.then(|| self.focused.clone()).flatten()),
+                        ElementState::Pressed => None,
+                    };
+                    if let Some(id) = target {
+                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                            let (x, y) = (x, y - chrome_height);
+                            let event = match state {
+                                ElementState::Pressed => {
+                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers }
                                 }
-                                let event = match state {
-                                    ElementState::Pressed => {
-                                        InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers }
-                                    }
-                                    ElementState::Released => {
-                                        InputEvent::MouseUp { x, y, button, modifiers: self.key_modifiers }
-                                    }
-                                };
-                                node.tab.send(&HostToEngine::Input(event));
+                                ElementState::Released => {
+                                    InputEvent::MouseUp { x, y, button, modifiers: self.key_modifiers }
+                                }
+                            };
+                            node.tab.send(&HostToEngine::Input(event));
+                            if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
+                                self.native_drag_tab = Some(id);
                             }
                         }
                     }
@@ -12069,26 +12066,26 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
-                let ppp = self.ppp();
                 let (x, y) = self.cursor_pos;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
                 if in_tab_view && !consumed_by_egui && y >= chrome_height && in_primary_pane {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            // `LineDelta` is already a fixed synthetic unit
-                            // (`* 20.0`), not a physical-pixel measurement --
-                            // only `PixelDelta` (a real physical-pixel amount,
-                            // e.g. from a precision trackpad) needs the same
-                            // physical-to-CSS-pixel conversion as position.
+                            // `LineDelta` is a fixed synthetic unit
+                            // (`* 20.0`), not a measurement of anything;
+                            // `PixelDelta` is already a real physical-pixel
+                            // amount, which is the space every engine's
+                            // surface (and so this event's `x`/`y`) is in --
+                            // neither needs converting.
                             let (dx, dy) = match delta {
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
                                     (x as f64 * 20.0, y as f64 * 20.0)
                                 }
-                                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x / ppp, p.y / ppp),
+                                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
                             };
                             node.tab.send(&HostToEngine::Input(InputEvent::Scroll {
-                                x: x / ppp,
-                                y: (y - chrome_height) / ppp,
+                                x,
+                                y: y - chrome_height,
                                 delta_x: dx,
                                 delta_y: dy,
                                 modifiers: self.key_modifiers,
@@ -12745,6 +12742,9 @@ impl App {
         // same-url reload both leave this `false`; url actually changing is
         // the one thing worth persisting here).
         let mut nav_url_changed = false;
+        // Read up front: the loop below holds a mutable borrow of `self.nodes`
+        // throughout, so `self.ppp()` can't be called from inside it.
+        let ppp = self.ppp() as f32;
 
         for tab_id in &tab_ids {
             let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
@@ -12839,14 +12839,20 @@ impl App {
                         }
                     }
                     EngineToHost::ContextMenuLink { x, y, href } => {
-                        // Content-area coordinates -> window point space:
-                        // Tab view's content starts below the toolbar (see
+                        // Content-area coordinates -> window point space.
+                        // The engine echoes back the same physical-pixel
+                        // surface coordinates the right-click was sent in
+                        // (see `ipc_protocol::InputEvent`'s doc comment), so
+                        // this is the one place that has to divide out the
+                        // DPI scale: egui lays out in logical points. Then
+                        // shifted down past the toolbar, since Tab view's
+                        // content starts below it (see
                         // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                         // meaningful for the tab currently on screen.
                         if self.focused.as_deref() == Some(tab_id.as_str()) {
                             self.context_menu = Some(ContextMenuState {
-                                x: x as f32,
-                                y: y as f32 + CHROME_HEIGHT_POINTS,
+                                x: x as f32 / ppp,
+                                y: y as f32 / ppp + CHROME_HEIGHT_POINTS,
                                 href,
                             });
                         }
@@ -13217,34 +13223,20 @@ fn translate_key_code(key: PhysicalKey) -> Option<KeyCode> {
 
 fn main() {
     // Must happen before the event loop/window are created. Confirmed live
-    // (via temporary `[input-diag]` logging) that this process was *not*
-    // actually DPI-aware despite the assumption that `winit` sets this up
-    // automatically: `window.scale_factor()` (`self.ppp()`) reported `1.0`
-    // on a real 125%-scaled display -- the exact same DPI-virtualization
-    // symptom `manifold-engine-webview2`'s own `main()` had (see that
-    // module's doc comment on `SetProcessDpiAwarenessContext` for the full
-    // mechanism). Without this, `ppp()` returning a virtualized `1.0`
-    // silently turned every `/ ppp` conversion in the mouse-event handlers
-    // below into a no-op, so raw physical-pixel coordinates were still
-    // being sent as if they were CSS pixels -- explaining why the input
-    // offset persisted even after the engine-host's own DPI fix landed.
+    // that this process was *not* actually DPI-aware despite the assumption
+    // that `winit` sets this up automatically: `window.scale_factor()`
+    // (`self.ppp()`) reported `1.0` on a real 125%-scaled display -- the
+    // exact same DPI-virtualization symptom `manifold-engine-webview2`'s own
+    // `main()` had (see that module's doc comment on
+    // `SetProcessDpiAwarenessContext` for the full mechanism). Without this,
+    // the whole app runs on virtualized, bitmap-stretched coordinates:
+    // `content_size_px()` (and so every engine's rendered surface) comes out
+    // at the wrong real size, and the cursor positions winit reports don't
+    // line up with where the content actually is on screen.
     unsafe {
-        // TEMP diagnostic -- the previous attempt at this fix didn't change
-        // the reported `ppp`, so this checks whether the call is actually
-        // succeeding (e.g. it fails if an embedded manifest already
-        // declares a DPI awareness level -- Windows treats a manifest-
-        // declared level as fixed and rejects a runtime change to it)
-        // rather than assuming it silently worked. Remove once resolved.
-        let result = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
-        eprintln!("[input-diag] SetProcessDpiAwarenessContext result = {result:?}");
-        let current = windows::Win32::UI::HiDpi::GetThreadDpiAwarenessContext();
-        let is_pmv2 = windows::Win32::UI::HiDpi::AreDpiAwarenessContextsEqual(
-            current,
-            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-        );
-        eprintln!("[input-diag] current thread DPI context is PER_MONITOR_AWARE_V2 = {}", is_pmv2.as_bool());
     }
 
     crash_report::install();

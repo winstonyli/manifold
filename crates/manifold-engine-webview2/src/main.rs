@@ -93,8 +93,9 @@ fn main() {
     // `ICompositorDesktopInterop::CreateDesktopWindowTarget` fails with
     // `HRESULT(0x80070005)` ("Access is denied.") on every single launch,
     // crashing the engine-host in a respawn loop. `examples/
-    // composition_capture_spike.rs` (Task 1's own verification vehicle)
-    // already does exactly this before creating its `Compositor` -- a plain
+    // composition_capture_spike.rs` (Task 1's own verification vehicle,
+    // since deleted by Task 6 along with the other throwaway spikes)
+    // already did exactly this before creating its `Compositor` -- a plain
     // Win32 desktop app (unlike a packaged UWP app) has no `DispatcherQueue`
     // on its thread by default, and `Windows.UI.Composition`'s interop
     // requires one to exist. `_dispatcher_queue_controller`'s only purpose
@@ -196,10 +197,16 @@ fn main() {
     // still appears right where expected) -- so Chromium's native menu is
     // pure downside: a second, wrongly-positioned menu with no corresponding
     // custom-menu upside.
+    //
+    // Hard-failed rather than `let _ =`'d, same reasoning as
+    // `SetRootVisualTarget` above: a one-time startup call whose silent
+    // failure resurrects a real, already-diagnosed bug for the whole
+    // process lifetime.
     unsafe {
-        let _ = webview
+        webview
             .Settings()
-            .and_then(|settings| settings.SetAreDefaultContextMenusEnabled(false));
+            .and_then(|settings| settings.SetAreDefaultContextMenusEnabled(false))
+            .expect("disable WebView2's own native context menu");
     }
 
     // Gives the webview logical focus programmatically -- no real OS window
@@ -207,10 +214,16 @@ fn main() {
     // off-screen host window deliberately never becomes the real foreground
     // window. Tried (unsuccessfully on its own) as a fix for raw WM_*
     // message injection in an earlier round -- see input.rs's doc comment
-    // for the full history; kept here as cheap, harmless insurance since
-    // some WebView2 behaviors genuinely do depend on logical focus state,
-    // even though the actual input fix (input.rs's ExecuteScript approach)
-    // doesn't need it.
+    // for the full history.
+    //
+    // **Once at startup is enough**, despite the migration spec's original
+    // expectation that native `SendMouseInput` would need this on every
+    // mouse-down: confirmed live in Task 5 that a native click focuses a
+    // plain `<input>` on its own (`:focus` outline appeared, and subsequent
+    // `Char` events typed into it), with no per-dispatch `MoveFocus`
+    // anywhere. Kept here because some WebView2 behaviors genuinely do
+    // depend on the control having logical focus at all, which this
+    // establishes once for the process lifetime.
     unsafe {
         let _ = controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
@@ -415,7 +428,7 @@ fn main() {
                     // Logged permanently -- a frame-size change is rare
                     // enough post-migration that seeing it in the log is
                     // useful signal, not noise.
-                    eprintln!("[input-diag] captured frame size changed to {width}x{height}");
+                    eprintln!("[capture] captured frame size changed to {width}x{height}");
                     // Drop the old mapping before recreating -- `create`
                     // truncates the same backing file by name, and Windows
                     // rejects resizing a file with a live mapped section

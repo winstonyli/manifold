@@ -1,5 +1,11 @@
-//! Input dispatch for WebView2 -- working, via `ICoreWebView2::
-//! ExecuteScript` (round 4; see project memory for the full history).
+//! Input dispatch for WebView2: **mouse via native
+//! `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text via
+//! `ICoreWebView2`'s CDP/`ExecuteScript`** (WebView2 has no native
+//! keyboard-injection API on any hosting mode). The rest of this comment is
+//! the history of how that split was arrived at over several rounds -- it
+//! matters, because three of those rounds concluded the native path was
+//! impossible, and the reason they were wrong is specific and easy to
+//! re-lose.
 //!
 //! Three earlier rounds tried to simulate input at the OS/engine level:
 //! raw `WM_*` messages to `Chrome_RenderWidgetHostHWND` (round 1, and round
@@ -9,10 +15,12 @@
 //! (round 2) broke frame capture without fixing input either, and was
 //! reverted. A web search on how other projects automate WebView2 without
 //! a real focused window turned up the answer this project had been
-//! missing: **don't simulate input at all** -- drive the interaction via
-//! JavaScript run directly in the page. This sidesteps the entire OS/
-//! Composition input pipeline (and its apparent focus/message-injection
-//! requirements) completely.
+//! missing at the time: **don't simulate input at all** -- drive the
+//! interaction via JavaScript run directly in the page. This sidesteps the
+//! entire OS/Composition input pipeline (and its apparent focus/
+//! message-injection requirements) completely. (Superseded for mouse
+//! events by the Task 4 migration described at the bottom of this comment;
+//! still how text entry works.)
 //!
 //! **Verified live**: a dispatched `MouseUp` visibly changed real Wikipedia
 //! page content (a fundraising banner expanded) -- unambiguous proof the
@@ -61,7 +69,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
     COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON,
-    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
 };
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
 use windows::core::HSTRING;
@@ -73,19 +81,14 @@ use ipc_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 /// `ipc_protocol::EngineToHost::ContextMenuLink`'s doc comment.
 pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
-/// Tracks a left-button drag across `MouseDown`/`MouseMove`/`MouseUp` --
-/// `ipc_protocol::InputEvent::MouseMove` carries no button state of its own
-/// (see its doc comment: that field exists only for a native-injection
-/// engine forwarding modifier keys), so this project's own engine-host has
-/// to remember "is the left button currently down" itself, to know whether
-/// to include the left-button virtual key on a `SendMouseInput` move (so
+/// Is the left button currently down? Tracked across `MouseDown`/
+/// `MouseMove`/`MouseUp` because `ipc_protocol::InputEvent::MouseMove`
+/// carries no button state of its own (see its doc comment: that field
+/// exists only for a native-injection engine forwarding modifier keys), so
+/// this project's own engine-host has to remember it, to know whether to
+/// include the left-button virtual key on a `SendMouseInput` move (so
 /// Chromium's own drag/selection handling sees the button as held).
-#[derive(Clone, Copy, Default)]
-pub struct Drag {
-    active: bool,
-}
-
-pub type DragState = Rc<Cell<Drag>>;
+pub type DragState = Rc<Cell<bool>>;
 
 fn exec(webview: &ICoreWebView2, script: String) {
     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
@@ -130,19 +133,19 @@ pub fn send_input(
                 ),
                 MouseButton::Right => (
                     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
                 ),
                 MouseButton::Middle => return,
             };
             if matches!(button, MouseButton::Left) {
-                drag_state.set(Drag { active: true });
+                drag_state.set(true);
             }
             unsafe {
                 let _ = comp_controller.SendMouseInput(kind, keys, 0, POINT { x: x as i32, y: y as i32 });
             }
         }
         InputEvent::MouseMove { x, y, .. } => {
-            let keys = if drag_state.get().active {
+            let keys = if drag_state.get() {
                 COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON
             } else {
                 COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE
@@ -159,7 +162,7 @@ pub fn send_input(
         // Right-click's href-detection JS is kept (it doesn't depend on how
         // the click was delivered) but a real button-up is sent first.
         InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } => {
-            drag_state.set(Drag::default());
+            drag_state.set(false);
             unsafe {
                 let _ = comp_controller.SendMouseInput(
                     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
@@ -168,8 +171,15 @@ pub fn send_input(
                     POINT { x: x as i32, y: y as i32 },
                 );
             }
+            // `elementFromPoint` is the one consumer left here that works in
+            // CSS pixels, not the physical-surface pixels `InputEvent`
+            // carries (see its doc comment) -- WebView2 sizes the page's CSS
+            // viewport as bounds/`RasterizationScale`, and exposes exactly
+            // that divisor as `devicePixelRatio`, so the page converts its
+            // own coordinate rather than this process plumbing the scale
+            // through from `Resize`.
             let script = format!(
-                "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
+                "(function(){{var r=window.devicePixelRatio||1;var e=document.elementFromPoint({x}/r,{y}/r);var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             );
             let pending = pending_context_menu.clone();
             let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
@@ -184,7 +194,7 @@ pub fn send_input(
             }
         }
         InputEvent::MouseUp { x, y, button, .. } => {
-            drag_state.set(Drag::default());
+            drag_state.set(false);
             let kind = match button {
                 MouseButton::Left => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
                 MouseButton::Middle => return,
