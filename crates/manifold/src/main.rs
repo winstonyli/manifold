@@ -949,6 +949,21 @@ fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut 
         });
 }
 
+/// The "back to Graph" control every non-Graph item view shares (today,
+/// only Tab view; see the design spec's "item-view shared chip" layer).
+/// Deliberately not chip-wrapped, unlike the icon clusters elsewhere in
+/// this file -- it sits immediately before those clusters in the Tab
+/// toolbar's own row, and merging two different composition layers (this
+/// shared control and Tab's own per-kind nav icons) into one visual chip
+/// would require either layer to know about the other's rendering, which
+/// the composition model deliberately keeps separate. A plain button
+/// here reads as a clearly distinct action from the icon cluster next to
+/// it, which is an acceptable, honest reading of the approved mockup
+/// rather than a literal pixel reproduction of it.
+fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
+    ui.button("Graph").clicked()
+}
+
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
 /// `resumed`'s own window setup) titlebar dark, independent of the current
 /// Windows theme setting. Without this, a system in light mode draws a
@@ -8480,7 +8495,7 @@ impl App {
                 let mut back_to_graph = false;
                 toolbar_panel("tab_strip_respawning", ui, |ui| {
                     ui.horizontal_centered(|ui| {
-                        if ui.button("Graph").clicked() {
+                        if render_return_to_graph(ui) {
                             back_to_graph = true;
                         }
                         ui.add(egui::Spinner::new().size(12.0));
