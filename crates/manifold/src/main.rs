@@ -1706,6 +1706,50 @@ impl NodePayload {
     }
 }
 
+/// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
+/// up front so its immutable borrow of `self.nodes` ends immediately,
+/// before a dispatcher needs `&mut self` to render that kind's toolbar
+/// content. Mirrors `close_node`'s existing `MemberKind` match
+/// (`main.rs:7375`) for exactly the same reason: matching directly on
+/// `&NodePayload` would keep that borrow alive for as long as the match
+/// arms run, which conflicts with the `&mut self` those arms need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemNodeKind {
+    Tab,
+    Download,
+    Group,
+    Note,
+    Image,
+    Pdf,
+    Json,
+}
+
+fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
+    match payload {
+        NodePayload::Tab(_) => ItemNodeKind::Tab,
+        NodePayload::Download(_) => ItemNodeKind::Download,
+        NodePayload::Group(_) => ItemNodeKind::Group,
+        NodePayload::Note(_) => ItemNodeKind::Note,
+        NodePayload::Image(_) => ItemNodeKind::Image,
+        NodePayload::Pdf(_) => ItemNodeKind::Pdf,
+        NodePayload::Json(_) => ItemNodeKind::Json,
+    }
+}
+
+#[cfg(test)]
+mod item_node_kind_tests {
+    use super::*;
+
+    #[test]
+    fn maps_each_payload_variant_to_its_own_kind() {
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
+        assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
+        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100 })), ItemNodeKind::Image);
+        assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
+        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None })), ItemNodeKind::Json);
+    }
+}
+
 /// A sticky note's own data -- free-form user-typed text, no engine process
 /// or IPC of any kind behind it (unlike every other node kind so far). The
 /// first new kind added on top of the unified `GraphNode`/`NodePayload`
