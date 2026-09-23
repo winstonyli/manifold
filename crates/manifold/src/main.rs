@@ -1742,6 +1742,7 @@ mod item_node_kind_tests {
 
     #[test]
     fn maps_each_payload_variant_to_its_own_kind() {
+        assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
         assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
         assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
         assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100 })), ItemNodeKind::Image);
