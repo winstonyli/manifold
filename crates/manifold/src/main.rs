@@ -1577,6 +1577,104 @@ fn render_zoom_chip(
     action
 }
 
+const IMAGE_ZOOM_MIN: f32 = 0.1;
+const IMAGE_ZOOM_MAX: f32 = 16.0;
+/// Image view mouse-wheel sensitivity: zoom factor per point of vertical
+/// scroll, applied as `exp(delta * rate)` so equal scroll amounts in and
+/// out cancel exactly.
+const IMAGE_WHEEL_ZOOM_RATE: f32 = 0.002;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ImageZoom {
+    /// Contain within the body, never above 100% (`image_fit_scale`).
+    Fit,
+    Scale(f32),
+}
+
+/// Image view's zoom/pan. `pan` is the image center's offset from the
+/// body center, in points; ignored while `zoom` is `Fit`. Reset to the
+/// default (Fit) every time an Image enters Item view; not persisted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ImageViewState {
+    zoom: ImageZoom,
+    pan: egui::Vec2,
+}
+
+impl Default for ImageViewState {
+    fn default() -> Self {
+        Self { zoom: ImageZoom::Fit, pan: egui::Vec2::ZERO }
+    }
+}
+
+impl ImageViewState {
+    /// The concrete `(scale, pan)` to draw with for an `image`-sized
+    /// picture in a `body`-sized area -- Fit resolved, pan re-clamped (the
+    /// window may have been resized since it was stored).
+    fn effective(&self, image: egui::Vec2, body: egui::Vec2) -> (f32, egui::Vec2) {
+        match self.zoom {
+            ImageZoom::Fit => (image_fit_scale(image, body), egui::Vec2::ZERO),
+            ImageZoom::Scale(scale) => (scale, clamp_image_pan(self.pan, image * scale, body)),
+        }
+    }
+}
+
+/// An Image's pixel size as a `Vec2` (at least 1×1).
+fn image_pixel_size(image: &ImagePayload) -> egui::Vec2 {
+    egui::vec2(image.width.max(1) as f32, image.height.max(1) as f32)
+}
+
+/// Contain `image` within `body`, never above 1.0 -- same "scale down,
+/// never up" rule `image_node_card_size` uses, so a small image isn't
+/// blurred by magnification it didn't ask for.
+fn image_fit_scale(image: egui::Vec2, body: egui::Vec2) -> f32 {
+    if image.x <= 0.0 || image.y <= 0.0 {
+        return 1.0;
+    }
+    (body.x / image.x).min(body.y / image.y).clamp(IMAGE_ZOOM_MIN, 1.0)
+}
+
+fn image_display_rect(body: egui::Rect, image: egui::Vec2, scale: f32, pan: egui::Vec2) -> egui::Rect {
+    egui::Rect::from_center_size(body.center() + pan, image * scale)
+}
+
+/// Per axis: when the scaled image is larger than the body, no gap may
+/// open past its edges; when it fits, it stays centered on that axis.
+fn clamp_image_pan(pan: egui::Vec2, scaled: egui::Vec2, body: egui::Vec2) -> egui::Vec2 {
+    let axis = |pan: f32, scaled: f32, body: f32| {
+        let slack = (scaled - body) / 2.0;
+        if slack <= 0.0 { 0.0 } else { pan.clamp(-slack, slack) }
+    };
+    egui::vec2(axis(pan.x, scaled.x, body.x), axis(pan.y, scaled.y, body.y))
+}
+
+/// Zooms by `factor` (clamped to `IMAGE_ZOOM_MIN..=IMAGE_ZOOM_MAX`) so the
+/// image point under `anchor` (relative to the body center) stays put.
+fn zoom_about(scale: f32, pan: egui::Vec2, factor: f32, anchor: egui::Vec2) -> (f32, egui::Vec2) {
+    let new_scale = (scale * factor).clamp(IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+    let ratio = new_scale / scale;
+    (new_scale, anchor - (anchor - pan) * ratio)
+}
+
+/// Applies a zoom-chip click (or its keyboard equivalent) to Image view's
+/// state. −/+ zoom about the body center.
+fn image_view_after_action(
+    state: ImageViewState,
+    action: ZoomChipAction,
+    image: egui::Vec2,
+    body: egui::Vec2,
+) -> ImageViewState {
+    match action {
+        ZoomChipAction::Fit => ImageViewState::default(),
+        ZoomChipAction::Reset100 => ImageViewState { zoom: ImageZoom::Scale(1.0), pan: egui::Vec2::ZERO },
+        ZoomChipAction::In | ZoomChipAction::Out => {
+            let factor = if action == ZoomChipAction::In { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+            let (scale, pan) = state.effective(image, body);
+            let (scale, pan) = zoom_about(scale, pan, factor, egui::Vec2::ZERO);
+            ImageViewState { zoom: ImageZoom::Scale(scale), pan: clamp_image_pan(pan, image * scale, body) }
+        }
+    }
+}
+
 /// Calls `first` then `second` so that their widgets read first-then-second
 /// left to right in either layout direction. A right-to-left `ui` places
 /// each new widget to the *left* of the previous one, so there the calls
@@ -2528,6 +2626,13 @@ struct App {
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
     focused: Option<String>,
+    /// The Image node `ViewMode::Item` is showing, if any. `None` means
+    /// Item view (if active) shows `focused`, a Tab. Kept separate from
+    /// `focused` because `focused` is tab-only by contract -- see the
+    /// Image Item View spec's "Plan-time corrections".
+    viewed_image: Option<String>,
+    /// Zoom/pan for `viewed_image` -- see `ImageViewState`.
+    image_view: ImageViewState,
     /// The secondary pane's tab id while a split (engine-vs-engine compare
     /// view) is showing, alongside `focused` in the primary pane -- `None`
     /// for ordinary single-pane Tab view. Set once the tab `start_split`
@@ -3005,6 +3110,8 @@ impl Default for App {
             graph_zoom_pct: 100.0,
             pending_focus_quick_switcher: false,
             focused: None,
+            viewed_image: None,
+            image_view: ImageViewState::default(),
             split_tab: None,
             view_mode: ViewMode::Item,
             next_tab_id: 0,
@@ -3115,6 +3222,36 @@ impl App {
             ViewMode::Item => CHROME_HEIGHT_POINTS,
             ViewMode::Graph | ViewMode::Settings => GRAPH_TOOLBAR_HEIGHT_POINTS,
         }
+    }
+
+    /// Item view showing a Tab -- the case every engine-facing path (input
+    /// forwarding, content panes, address bar, find bar) cares about.
+    fn showing_tab_view(&self) -> bool {
+        self.view_mode == ViewMode::Item && self.viewed_image.is_none()
+    }
+
+    fn showing_image_view(&self) -> bool {
+        self.view_mode == ViewMode::Item && self.viewed_image.is_some()
+    }
+
+    fn screen_size_points(&self) -> egui::Vec2 {
+        let screen = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let ppp = self.ppp() as f32;
+        egui::vec2(screen.width as f32 / ppp, screen.height as f32 / ppp)
+    }
+
+    /// Item view's content area (points, screen space): everything below
+    /// the toolbar.
+    fn item_body_rect(&self) -> egui::Rect {
+        let screen = self.screen_size_points();
+        egui::Rect::from_min_max(
+            egui::pos2(0.0, CHROME_HEIGHT_POINTS),
+            egui::pos2(screen.x, screen.y.max(CHROME_HEIGHT_POINTS)),
+        )
     }
 
     /// Keeps the OS window title in sync with the focused tab's own title
@@ -5308,6 +5445,24 @@ impl App {
         id
     }
 
+    /// Stops the focused tab rendering (and drops its find bar, context
+    /// menu, and split) -- what switching the maximized node away from it
+    /// needs, whether to another tab (`focus_tab`) or an Image
+    /// (`focus_item`). `focused` itself is left alone.
+    fn hide_focused_tab(&mut self) {
+        self.close_find_bar();
+        self.context_menu = None;
+        self.close_split();
+        if let Some(old_id) = self.focused.clone() {
+            if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
+                old.tab.set_visible(false);
+            }
+            if let Some(gpu) = &mut self.gpu {
+                gpu.free_tab_texture(&old_id);
+            }
+        }
+    }
+
     /// Peek-click commits focus: the tab losing focus (if any, and if
     /// different) is told to stop rendering, the newly focused one is told
     /// to start, and the view switches to Tab. At most one tab is ever the
@@ -5318,17 +5473,7 @@ impl App {
     /// paired with the specific tab it was opened against.
     fn focus_tab(&mut self, id: &str) {
         if self.focused.as_deref() != Some(id) {
-            self.close_find_bar();
-            self.context_menu = None;
-            self.close_split();
-            if let Some(old_id) = self.focused.clone() {
-                if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
-                    old.tab.set_visible(false);
-                }
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.free_tab_texture(&old_id);
-                }
-            }
+            self.hide_focused_tab();
         }
         if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
@@ -5337,9 +5482,29 @@ impl App {
             }
         }
         self.focused = Some(id.to_string());
+        self.viewed_image = None;
         self.view_mode = ViewMode::Item;
         self.send_resize_to(id);
         self.save_session();
+    }
+
+    /// Maximizes `id` into Item view, whatever its kind -- a Tab goes
+    /// through `focus_tab`; an Image becomes `viewed_image` (the last tab
+    /// stays `focused`, hidden, exactly as in Graph view). Kinds with no
+    /// Item view are a no-op (and a debug-build assertion).
+    fn focus_item(&mut self, id: &str) {
+        match self.nodes.get(id).map(|n| item_node_kind(&n.payload)) {
+            Some(ItemNodeKind::Tab) => self.focus_tab(id),
+            Some(ItemNodeKind::Image) => {
+                self.hide_focused_tab();
+                self.viewed_image = Some(id.to_string());
+                self.image_view = ImageViewState::default();
+                self.view_mode = ViewMode::Item;
+                self.save_session();
+            }
+            Some(kind) => debug_assert!(false, "focus_item: {kind:?} nodes have no Item view"),
+            None => {}
+        }
     }
 
     /// Opens (or replaces) split view: the Tab-view toolbar's "Split"
@@ -5391,6 +5556,11 @@ impl App {
     /// animation finishes (`finish_transition_if_done`).
     fn leave_to_graph(&mut self) {
         self.context_menu = None;
+        if self.viewed_image.take().is_some() {
+            self.view_mode = ViewMode::Graph;
+            self.save_session();
+            return;
+        }
         match self.focused.clone() {
             Some(id) => {
                 self.transition = Some(Transition {
@@ -6342,22 +6512,38 @@ impl App {
         }
     }
 
-    /// `Ctrl+=`/`Ctrl++` / headless `ZOOMIN` — same step/cap the settings
-    /// popup's own "+" button uses.
+    /// `Ctrl+=`/`Ctrl++` / headless `ZOOMIN` — zooms the maximized Image
+    /// while one is showing (see the Image item view spec's "Entry"
+    /// section); otherwise the same step/cap the settings popup's own "+"
+    /// button uses for the focused Tab's page zoom.
     fn zoom_in_shortcut(&mut self) {
-        self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
+        if self.showing_image_view() {
+            self.apply_image_zoom_action(ZoomChipAction::In);
+        } else {
+            self.set_focused_zoom((self.focused_zoom_factor() + 0.1).min(2.0));
+        }
     }
 
-    /// `Ctrl+-` / headless `ZOOMOUT` — same step/floor the settings popup's
-    /// own "−" button uses.
+    /// `Ctrl+-` / headless `ZOOMOUT` — same Image-view/Tab-view split as
+    /// `zoom_in_shortcut`; the Tab branch matches the settings popup's own
+    /// "−" button.
     fn zoom_out_shortcut(&mut self) {
-        self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
+        if self.showing_image_view() {
+            self.apply_image_zoom_action(ZoomChipAction::Out);
+        } else {
+            self.set_focused_zoom((self.focused_zoom_factor() - 0.1).max(0.5));
+        }
     }
 
-    /// `Ctrl+0` / headless `ZOOMRESET` — same as the settings popup's own
+    /// `Ctrl+0` / headless `ZOOMRESET` — same Image-view/Tab-view split as
+    /// `zoom_in_shortcut`; the Tab branch matches the settings popup's own
     /// "Reset" button.
     fn zoom_reset_shortcut(&mut self) {
-        self.set_focused_zoom(1.0);
+        if self.showing_image_view() {
+            self.apply_image_zoom_action(ZoomChipAction::Reset100);
+        } else {
+            self.set_focused_zoom(1.0);
+        }
     }
 
     /// `F12` / headless `OPENDEVTOOLS` — opens the focused tab's engine's
@@ -6916,7 +7102,7 @@ impl App {
     /// via `response.request_focus()` — see `pending_focus_address_bar`'s
     /// own doc comment.
     fn focus_address_bar_shortcut(&mut self) {
-        if matches!(self.view_mode, ViewMode::Item) {
+        if self.showing_tab_view() {
             self.pending_focus_address_bar = true;
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
@@ -6937,7 +7123,7 @@ impl App {
     /// as `Ctrl+L`. Opening with existing text immediately re-searches for
     /// it (matches a real browser's find bar remembering the last term).
     fn open_find_bar_shortcut(&mut self) {
-        if !matches!(self.view_mode, ViewMode::Item) {
+        if !self.showing_tab_view() {
             return;
         }
         self.find_bar_open = true;
@@ -8685,12 +8871,165 @@ impl App {
         };
         match kind {
             ItemNodeKind::Tab => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
-            ItemNodeKind::Download
-            | ItemNodeKind::Group
-            | ItemNodeKind::Note
-            | ItemNodeKind::Image
-            | ItemNodeKind::Pdf
-            | ItemNodeKind::Json => ItemToolbarActions::default(),
+            ItemNodeKind::Image => self.render_image_toolbar_content(node_id, ui, trailing_ui),
+            ItemNodeKind::Download | ItemNodeKind::Group | ItemNodeKind::Note | ItemNodeKind::Pdf | ItemNodeKind::Json => {
+                ItemToolbarActions::default()
+            }
+        }
+    }
+
+    /// Image view's layer-3 toolbar content: identity (filename · pixel
+    /// size, full path on hover) and the zoom chip on the leading side;
+    /// Open Containing Folder + Copy Path in the trailing cluster.
+    fn render_image_toolbar_content(
+        &mut self,
+        image_id: &str,
+        ui: &mut egui::Ui,
+        trailing_ui: &mut egui::Ui,
+    ) -> ItemToolbarActions {
+        let Some((path, image)) = self
+            .nodes
+            .get(image_id)
+            .and_then(|n| n.as_image())
+            .map(|i| (i.path.clone(), image_pixel_size(i)))
+        else {
+            return ItemToolbarActions::default();
+        };
+
+        // (reveal, copy) clicked
+        let mut clicked = (false, false);
+        toolbar_chip(trailing_ui, |ui| {
+            let (reveal, copy) = in_reading_order(
+                ui,
+                &mut clicked,
+                |clicked, ui| {
+                    let response = chip_icon_button(ui, egui::Id::new("icon_btn_image_reveal"), egui_phosphor::light::FOLDER_OPEN)
+                        .on_hover_text("Open Containing Folder");
+                    clicked.0 = response.clicked();
+                    response.rect
+                },
+                |clicked, ui| {
+                    let response = chip_icon_button(ui, egui::Id::new("icon_btn_image_copy_path"), egui_phosphor::light::COPY)
+                        .on_hover_text("Copy Path");
+                    clicked.1 = response.clicked();
+                    response.rect
+                },
+            );
+            reveal.union(copy)
+        });
+
+        // Vertically centered in the row (which is top-aligned -- see
+        // `render_item_toolbar`), the same problem the Tab toolbar's
+        // favicon slot solves; width capped so a long filename truncates
+        // instead of pushing the zoom chip off the row.
+        let identity = format!("{} · {}×{}", download_filename(&path), image.x as u32, image.y as u32);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width().min(360.0), ui.available_height()),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| ui.add(egui::Label::new(identity).truncate()).on_hover_text(&path),
+        );
+
+        let (scale, _) = self.image_view.effective(image, self.item_body_rect().size());
+        if let Some(action) = render_zoom_chip(
+            ui,
+            scale * 100.0,
+            scale > IMAGE_ZOOM_MIN + 1e-3,
+            scale < IMAGE_ZOOM_MAX - 1e-3,
+            "Fit to window",
+        ) {
+            self.apply_image_zoom_action(action);
+        }
+
+        if clicked.0 {
+            self.reveal_image(image_id);
+        }
+        if clicked.1 {
+            ui.ctx().copy_text(path);
+        }
+        ItemToolbarActions::default()
+    }
+
+    /// Zoom-chip click or its keyboard equivalent, applied to the Image
+    /// currently in Item view. A no-op outside Image view.
+    fn apply_image_zoom_action(&mut self, action: ZoomChipAction) {
+        let Some(image) = self
+            .viewed_image
+            .as_ref()
+            .and_then(|id| self.nodes.get(id))
+            .and_then(|n| n.as_image())
+            .map(image_pixel_size)
+        else {
+            return;
+        };
+        self.image_view = image_view_after_action(self.image_view, action, image, self.item_body_rect().size());
+    }
+
+    /// Image view: the shared Item toolbar plus the image itself, zoomable
+    /// (wheel/pinch about the cursor) and pannable (drag) -- see
+    /// `ImageViewState`. Leaves to Graph if the image node is gone.
+    fn build_image_view_ui(&mut self, ui: &mut egui::Ui, image_id: &str) {
+        let Some(image) = self.nodes.get(image_id).and_then(|n| n.as_image()).map(image_pixel_size) else {
+            self.viewed_image = None;
+            self.view_mode = ViewMode::Graph;
+            self.save_session();
+            return;
+        };
+        let frame = self.render_item_toolbar(image_id, ui);
+        self.build_shortcuts_help(ui, frame.shortcuts_help_button_rect);
+        self.build_save_toast(ui);
+
+        let body = self.item_body_rect();
+        let response = ui.interact(body, egui::Id::new("image_view_body"), egui::Sense::drag());
+        let (mut scale, mut pan) = self.image_view.effective(image, body.size());
+        let mut changed = false;
+        if response.hovered() {
+            let factor = ui.input(|i| i.zoom_delta() * (i.smooth_scroll_delta.y * IMAGE_WHEEL_ZOOM_RATE).exp());
+            if factor != 1.0 {
+                let anchor = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .map_or(egui::Vec2::ZERO, |p| p - body.center());
+                (scale, pan) = zoom_about(scale, pan, factor, anchor);
+                changed = true;
+            }
+        }
+        if response.dragged() {
+            pan += response.drag_delta();
+            changed = true;
+        }
+        if changed {
+            pan = clamp_image_pan(pan, image * scale, body.size());
+            self.image_view = ImageViewState { zoom: ImageZoom::Scale(scale), pan };
+        }
+
+        let painter = ui.painter_at(body);
+        painter.rect_filled(body, 0.0, BG);
+        let rect = image_display_rect(body, image, scale, pan);
+        match self.gpu.as_ref().and_then(|g| g.image_id(image_id)) {
+            Some(tex_id) => {
+                painter.image(
+                    tex_id,
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            // Same placeholder the graph card uses for a missing texture.
+            None => {
+                painter.text(
+                    body.center(),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::light::IMAGE_BROKEN,
+                    egui::FontId::proportional(48.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+        }
+
+        let escape_pressed = (ui.input(|i| i.key_pressed(egui::Key::Escape))
+            || std::mem::take(&mut self.pending_debug_escape))
+            && self.quick_switcher.is_none();
+        if frame.back_to_graph || escape_pressed {
+            self.leave_to_graph();
         }
     }
 
@@ -8917,10 +9256,13 @@ impl App {
         actions
     }
 
-    /// `ViewMode::Item`: whichever node is maximized -- today always the
-    /// focused Tab.
+    /// `ViewMode::Item`: whichever node is maximized -- `viewed_image` if
+    /// set, else the focused Tab.
     fn build_item_ui(&mut self, ui: &mut egui::Ui) {
-        self.build_tab_view_ui(ui);
+        match self.viewed_image.clone() {
+            Some(image_id) => self.build_image_view_ui(ui, &image_id),
+            None => self.build_tab_view_ui(ui),
+        }
     }
 
     fn build_tab_view_ui(&mut self, ui: &mut egui::Ui) {
@@ -9297,6 +9639,7 @@ impl App {
         let mut pending_new_group_at: Option<egui::Vec2> = None;
         let mut pending_new_file_at: Option<egui::Vec2> = None;
         let mut image_close_requested: Option<String> = None;
+        let mut image_clicked: Option<String> = None;
         let mut pdf_close_requested: Option<String> = None;
         let mut json_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
@@ -11542,6 +11885,14 @@ impl App {
 
                     self.finish_draggable_node(&id, &response, is_hovered);
 
+                    // Click (not drag -- egui doesn't report `clicked()` for
+                    // a drag) maximizes the image into Item view, the same
+                    // gesture a Tab card uses. Skipped if the close button
+                    // above already consumed this frame's click.
+                    if response.clicked() && image_close_requested.as_deref() != Some(id.as_str()) {
+                        image_clicked = Some(id.clone());
+                    }
+
                     {
                         if graph_filter_dims(&self.graph_filter, &[download_filename(&image_path)]) {
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -12461,6 +12812,12 @@ impl App {
                 self.start_transition_to_item(&id);
             }
         }
+        if let Some(id) = image_clicked {
+            if self.nodes.contains_key(&id) {
+                self.selected_tabs.clear();
+                self.focus_item(&id);
+            }
+        }
         if let Some(id) = download_close_requested {
             self.remove_node(&id);
         }
@@ -12826,7 +13183,7 @@ impl ApplicationHandler<UserEvent> for App {
             (Some(state), Some(window)) => state.on_window_event(window.as_ref(), &event).consumed,
             _ => false,
         };
-        let in_tab_view = matches!(self.view_mode, ViewMode::Item);
+        let in_tab_view = self.showing_tab_view();
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -13101,8 +13458,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // otherwise, none in Graph view.
                 let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
                 let content_panes_pts: Vec<(egui::Rect, String)> = if let Some(transition) = &self.transition {
-                    vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
-                } else if self.view_mode == ViewMode::Item {
+                    // Only a Tab has a GPU pane; an Image's transition is
+                    // painted through egui instead (see `build_ui`).
+                    if self.nodes.get(&transition.node_id).is_some_and(|n| n.as_tab().is_some()) {
+                        vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
+                    } else {
+                        vec![]
+                    }
+                } else if self.showing_tab_view() {
                     let screen = self
                         .window
                         .as_ref()
@@ -13335,16 +13698,16 @@ impl App {
             // common "make sure we're in Graph view" test-setup step) stayed
             // pending and fired the moment ANY later command opened a tab,
             // silently bouncing straight back out to Graph.
-            DebugCommand::Enter if self.view_mode == ViewMode::Item && self.transition.is_none() => {
+            DebugCommand::Enter if self.showing_tab_view() && self.transition.is_none() => {
                 self.pending_debug_enter = true;
             }
             DebugCommand::Escape if self.view_mode == ViewMode::Item && self.transition.is_none() => {
                 self.pending_debug_escape = true;
             }
-            DebugCommand::ArrowDown if self.view_mode == ViewMode::Item && self.transition.is_none() => {
+            DebugCommand::ArrowDown if self.showing_tab_view() && self.transition.is_none() => {
                 self.pending_debug_arrow_down = true;
             }
-            DebugCommand::ArrowUp if self.view_mode == ViewMode::Item && self.transition.is_none() => {
+            DebugCommand::ArrowUp if self.showing_tab_view() && self.transition.is_none() => {
                 self.pending_debug_arrow_up = true;
             }
             DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {}
@@ -14217,5 +14580,49 @@ mod tests {
         let near_min = egui::Rect::from_center_size(egui::pos2(0.0, 0.0), screen / 0.16);
         let clamped = step_scene_rect(near_min, 1.0 / ZOOM_STEP, screen, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
         assert!((scale_of(clamped) - GRAPH_ZOOM_MIN).abs() < 1e-3);
+    }
+
+    #[test]
+    fn image_fit_scale_contains_and_never_upscales() {
+        let body = egui::vec2(1000.0, 800.0);
+        assert_eq!(image_fit_scale(egui::vec2(2000.0, 1000.0), body), 0.5);
+        assert_eq!(image_fit_scale(egui::vec2(1000.0, 4000.0), body), 0.2);
+        assert_eq!(image_fit_scale(egui::vec2(64.0, 64.0), body), 1.0);
+    }
+
+    #[test]
+    fn zoom_about_keeps_the_anchor_point_fixed() {
+        let (scale, pan) = (0.5, egui::vec2(30.0, -20.0));
+        let anchor = egui::vec2(100.0, 50.0);
+        let (new_scale, new_pan) = zoom_about(scale, pan, 2.0, anchor);
+        assert_eq!(new_scale, 1.0);
+        let before = (anchor - pan) / scale;
+        let after = (anchor - new_pan) / new_scale;
+        assert!((before - after).length() < 1e-4, "{before:?} vs {after:?}");
+    }
+
+    #[test]
+    fn zoom_about_clamps_scale() {
+        assert_eq!(zoom_about(15.0, egui::Vec2::ZERO, 2.0, egui::Vec2::ZERO).0, IMAGE_ZOOM_MAX);
+        assert_eq!(zoom_about(0.11, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, IMAGE_ZOOM_MIN);
+    }
+
+    #[test]
+    fn clamp_image_pan_limits_each_axis_independently() {
+        let body = egui::vec2(1000.0, 800.0);
+        let scaled = egui::vec2(2000.0, 500.0); // wider than the body, shorter than it
+        assert_eq!(clamp_image_pan(egui::vec2(900.0, 40.0), scaled, body), egui::vec2(500.0, 0.0));
+        assert_eq!(clamp_image_pan(egui::vec2(-120.0, 0.0), scaled, body), egui::vec2(-120.0, 0.0));
+    }
+
+    #[test]
+    fn image_view_after_action_steps_from_fit_and_resets() {
+        let image = egui::vec2(2000.0, 1000.0);
+        let body = egui::vec2(1000.0, 800.0);
+        let zoomed = image_view_after_action(ImageViewState::default(), ZoomChipAction::In, image, body);
+        assert_eq!(zoomed.zoom, ImageZoom::Scale(0.5 * ZOOM_STEP));
+        let actual = image_view_after_action(zoomed, ZoomChipAction::Reset100, image, body);
+        assert_eq!(actual, ImageViewState { zoom: ImageZoom::Scale(1.0), pan: egui::Vec2::ZERO });
+        assert_eq!(image_view_after_action(zoomed, ZoomChipAction::Fit, image, body), ImageViewState::default());
     }
 }
