@@ -1401,6 +1401,15 @@ fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) 
     response
 }
 
+fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>) -> egui::Response {
+    chip_icon_button_enabled(ui, id, icon, true)
+}
+
+/// Same as `chip_icon_button`, but for icons that need a disabled state
+/// inside a chip (e.g. nav back/forward, dimmed when there's no history) --
+/// `chip_icon_button` alone can't express `ui.add_enabled`'s disabled
+/// styling since it always calls `ui.add`.
+///
 /// Same hover-eased feedback as `icon_button_eased`, but with no visible
 /// border ever (idle or hovered) and a transparent idle fill -- for icons
 /// already sitting inside a shared background chip (see `toolbar_chip`),
@@ -1413,7 +1422,7 @@ fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) 
 /// at rest matches every sibling button's sizing exactly while still
 /// hiding the box until the icon is hovered, at which point a soft fill
 /// (no stroke) confirms the hit target.
-fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>) -> egui::Response {
+fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>, enabled: bool) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
     let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
     let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
@@ -1422,7 +1431,8 @@ fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>) ->
         ui.visuals().widgets.hovered.fg_stroke.color,
         hover_t,
     );
-    let response = ui.add(
+    let response = ui.add_enabled(
+        enabled,
         egui::Button::new(egui::RichText::new(icon.into()).color(fg))
             .fill(bg)
             .stroke(egui::Stroke::NONE),
@@ -1458,7 +1468,13 @@ fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::
     let (trail_rect, _) =
         ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
     let rect = lead_rect.union(content_rect).union(trail_rect);
-    ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+    // Content that renders nothing can leave `ui.cursor()`'s fallback
+    // infinite in one axis (`.max.x` for left-to-right layouts, `.min.x`
+    // for right-to-left) -- skip painting rather than filling an
+    // unbounded rect.
+    if rect.is_finite() {
+        ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+    }
     rect
 }
 
@@ -8479,12 +8495,8 @@ impl App {
     /// which each caller still needs for its own `build_shortcuts_help(ui,
     /// shortcuts_help_button_rect)` call further down.
     fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
-        let help_response = icon_button_eased(
-            ui,
-            egui::Id::new("icon_btn_shortcuts_help"),
-            egui_phosphor::light::QUESTION,
-        )
-        .on_hover_text("Keyboard Shortcuts (F1)");
+        let help_response = chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
+            .on_hover_text("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
@@ -8495,7 +8507,7 @@ impl App {
     /// doc comment for why this is a separate function rather than the two
     /// bundled together.
     fn build_settings_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
-        let response = icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
+        let response = chip_icon_button(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
             .on_hover_text("Settings");
         if response.clicked() {
             self.toggle_settings_page();
@@ -8564,16 +8576,21 @@ impl App {
             let mut grow = |r: egui::Rect| {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             };
-            let back = ui.add_enabled(node.can_go_back, egui::Button::new(egui_phosphor::light::CARET_LEFT));
+            let back = chip_icon_button_enabled(ui, egui::Id::new("icon_btn_back"), egui_phosphor::light::CARET_LEFT, node.can_go_back);
             grow(back.rect);
             if back.clicked() {
                 actions.go_back = true;
             }
-            let forward = ui.add_enabled(node.can_go_forward, egui::Button::new(egui_phosphor::light::CARET_RIGHT));
+            let forward = chip_icon_button_enabled(ui, egui::Id::new("icon_btn_forward"), egui_phosphor::light::CARET_RIGHT, node.can_go_forward);
             grow(forward.rect);
             if forward.clicked() {
                 actions.go_forward = true;
             }
+            // Was plain text ("Reload") to avoid a refresh-arrows
+            // glyph gamble in this app's own font -- now a real
+            // `egui_phosphor` icon instead, same reasoning as every
+            // other icon migrated once the icon font was already
+            // wired in.
             let reload = chip_icon_button(ui, egui::Id::new("icon_btn_reload"), egui_phosphor::light::ARROW_CLOCKWISE)
                 .on_hover_text("Reload");
             grow(reload.rect);
@@ -8658,6 +8675,22 @@ impl App {
         // requirement the former separate `build_settings_button`/
         // `build_help_button` calls here handled by literally being called
         // in reverse order, now handled inside the shared helper instead.
+        //
+        // NOTE: the Universal chip's real position is here, inside
+        // Tab's own per-kind content -- not up in `build_tab_ui`
+        // alongside `render_return_to_graph`, even though the design
+        // spec's layer diagram lists it as layer 1 ("present in every
+        // toolbar") above layer 3's per-kind content. It has to be
+        // measured as part of `trailing_ui`'s own right-to-left layout
+        // for the address bar's width calculation to come out right.
+        // Consequence: a future `ItemNodeKind` arm that returns
+        // `ItemToolbarActions::default()` (see `render_item_toolbar_content`)
+        // gets `render_return_to_graph` but NOT this chip -- no Help/
+        // Settings at all for that kind. Fine while Tab is the only
+        // per-kind content that exists; a real per-kind toolbar for
+        // another kind will need to either render its own universal
+        // chip or have `build_tab_ui`/its equivalent render one
+        // unconditionally before dispatching to per-kind content.
         let shortcuts_help_rect = self.render_universal_chip(&mut trailing_ui);
         let tab_actions_response = trailing_ui.button("Tab actions");
         if tab_actions_response.clicked() {
@@ -8706,6 +8739,20 @@ impl App {
                     self.json_viewer_node = Some(focused_id.to_string());
                 }
             }
+            // `selectable_label`, same reasoning as elsewhere in
+            // this toolbar -- a pressed look for "already
+            // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
+            // a star glyph's tofu risk. Sits right after the address
+            // bar, mirroring Chrome/Firefox's own star icon at the
+            // address bar's right edge. Deliberately still
+            // `selectable_label` here rather than `chip_icon_button`
+            // (unlike its sibling `chip_icon_button` above for the
+            // JSON-viewer icon): no filled/bold bookmark glyph exists
+            // in `egui_phosphor::light` to express the pressed state
+            // another way, and losing the bookmarked-state affordance
+            // entirely is worse than this one icon's border/height not
+            // quite matching its `chip_icon_button` neighbor in the
+            // same chip.
             let bookmark = ui
                 .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
                 .on_hover_text("Bookmark");
@@ -8818,6 +8865,14 @@ impl App {
             || !self.open_tab_suggestions.is_empty()
             || !self.search_suggestions.is_empty()
             || self.debug_address_bar_pin;
+        // This `.unwrap()` assumes `focused_id` is always a Tab node
+        // whenever this function runs -- true today (`focus_tab` is the
+        // only path into `ViewMode::Tab` and always targets a Tab node,
+        // per the design spec's Non-goals). If that ever changes (a
+        // future kind entering a Tab-like maximized view through some
+        // other path), this line panics before `render_item_toolbar_content`
+        // ever gets a chance to dispatch to that kind's own (possibly
+        // empty) content -- guard this first.
         if !editing_address {
             self.address_bar_text = self.nodes[&focused_id].as_tab().unwrap().url.clone();
         }

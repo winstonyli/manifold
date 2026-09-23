@@ -23,6 +23,16 @@ system (Option A: segmented chips), so:
 - Renaming `ViewMode::Tab` or otherwise generalizing the view-mode enum.
   Unnecessary churn for a Graph+Tab-only pass — the toolbar composition
   layer, not the enum name, is where the architecture lives.
+- Making the Universal chip and the Tab-only `.unwrap()` in `build_tab_ui`
+  robust to a future non-Tab kind entering a maximized view. In the
+  current implementation `render_universal_chip` is called from inside
+  Tab's own per-kind content (`render_tab_toolbar_content`), not
+  unconditionally before per-kind dispatch, and `build_tab_ui` unwraps
+  the focused node as a Tab payload before that dispatch even runs. Both
+  are safe under this pass's own Non-goal (only Tab enters `ViewMode::Tab`
+  today) and are commented at their call sites in `main.rs`, but a real
+  per-kind toolbar for another kind needs to address both before it can
+  rely on the Universal chip or the address-bar-text sync path.
 
 ## Composition model
 
