@@ -93,6 +93,8 @@ pub struct Session {
     #[serde(default)]
     pub jsons: Vec<SessionJson>,
     pub focused: Option<String>,
+    /// `true` = `ViewMode::Item` (named before that variant was renamed
+    /// from `Tab`; kept so existing `session.json` files still load).
     pub view_mode_tab: bool,
     pub next_tab_id: u64,
     #[serde(default)]

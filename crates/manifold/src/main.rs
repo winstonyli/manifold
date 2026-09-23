@@ -965,11 +965,11 @@ fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
 }
 
 /// Everything the Tab toolbar's own content (see `render_tab_toolbar_
-/// content`) needs to report back to `build_tab_ui`, which applies these
+/// content`) needs to report back to `build_item_ui`, which applies these
 /// exactly where the equivalent bare `let mut` locals were applied
 /// before this struct existed -- this is a pure "package the same flags
 /// as a return value" move, not a behavior change. `navigate` is
-/// deliberately NOT a field here: today it's computed by `build_tab_ui`
+/// deliberately NOT a field here: today it's computed by `build_item_ui`
 /// itself, after this content returns, from `enter_pressed` plus the
 /// suggestion list -- only `enter_pressed` needs to cross the function
 /// boundary.
@@ -1669,7 +1669,11 @@ fn draw_graph_edge(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, st
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Graph,
-    Tab,
+    /// One node shown full-screen ("maximized"): a Tab's live page, or --
+    /// while `App::viewed_image` is `Some` -- an Image. Was `Tab` before a
+    /// second kind could enter it; `session::Session::view_mode_tab` keeps
+    /// the old name on disk.
+    Item,
     /// The gear-icon Settings page -- a real `ViewMode`, not a popup
     /// overlaid on Tab/Graph, since the popup's fixed 200pt width
     /// overflowed on a small window once the saved-sessions list grew (no
@@ -1681,22 +1685,21 @@ enum ViewMode {
 /// Which way a shrink/expand transition (see `App::transition`) is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransitionKind {
-    /// Tab view's full-screen content quad shrinks down into `tab_id`'s
+    /// Item view's full-screen content quad shrinks down into `node_id`'s
     /// graph-node thumbnail spot.
     ToGraph,
-    /// `tab_id`'s graph-node thumbnail spot grows to fill the screen as
-    /// Tab view's own content quad.
-    ToTab,
+    /// `node_id`'s graph-node spot grows to fill the screen as Item view's content.
+    ToItem,
 }
 
-/// An in-progress shrink/expand animation between Tab view and Graph view
-/// for one specific tab. While this is `Some`, `build_ui` renders Graph
+/// An in-progress shrink/expand animation between Item view and Graph view
+/// for one specific node. While this is `Some`, `build_ui` renders Graph
 /// view's node layout as the backdrop (for *either* direction — it's the
-/// one screen both endpoints have a coherent position in) with `tab_id`'s
+/// one screen both endpoints have a coherent position in) with `node_id`'s
 /// live content quad drawn on top at an interpolated rect, rather than
 /// switching `view_mode` instantly. See `App::content_rect_for_frame`.
 struct Transition {
-    tab_id: String,
+    node_id: String,
     kind: TransitionKind,
     start: std::time::Instant,
 }
@@ -2185,7 +2188,7 @@ impl GraphNode {
 /// itself belongs to that, double-clicked, drills into its own subgraph of
 /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
 /// place of that level's -- the same "swap which set of nodes this view
-/// renders" idea `ViewMode::Tab`/`Graph` already is, just recursively, and
+/// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
 /// reusing that same flat `graph_layout::step` simulation rather than a
 /// second nested one running inside the group's own node.
 ///
@@ -2595,7 +2598,7 @@ struct App {
     /// Up/Down — `None` means no row is highlighted (Enter falls through
     /// to a plain navigate of the typed text). Reset whenever the
     /// suggestion list itself changes or the dropdown closes, so a stale
-    /// index can never point at an unrelated row — see `build_tab_ui`'s
+    /// index can never point at an unrelated row — see `build_item_ui`'s
     /// dropdown-handling comments for the full set of reset sites.
     dropdown_highlighted: Option<usize>,
 
@@ -2693,7 +2696,7 @@ struct App {
     /// for the full rationale and the text-command protocol.
     headless: bool,
     /// Set by a headless `ESCAPE`/`ENTER`/`ARROWDOWN`/`ARROWUP` command,
-    /// consumed (and reset) the next time `build_tab_ui` checks the
+    /// consumed (and reset) the next time `build_item_ui` checks the
     /// corresponding real-keypress condition — see the comments at each
     /// check site.
     pending_debug_escape: bool,
@@ -2702,7 +2705,7 @@ struct App {
     pending_debug_arrow_up: bool,
     /// Set by `Ctrl+L`/headless `FOCUSADDRESS` (see
     /// `App::focus_address_bar_shortcut`), consumed the next time
-    /// `build_tab_ui` builds the address bar's `TextEdit` — unlike the
+    /// `build_item_ui` builds the address bar's `TextEdit` — unlike the
     /// `pending_debug_*` flags above, this drives a *real* `request_focus()`
     /// call on the real widget (this is the one shortcut where a real user
     /// genuinely wants real, persistent egui focus, not just the app-state
@@ -2715,7 +2718,7 @@ struct App {
     /// immediately in that case could drop the pending command/screenshot
     /// before any frame ever consumed it (`event_loop.exit()` gives no
     /// guarantee a `RedrawRequested` runs first). Deferring one frame lets
-    /// `build_tab_ui`/etc. consume the pending flag, or lets `RedrawRequested`
+    /// `build_item_ui`/etc. consume the pending flag, or lets `RedrawRequested`
     /// actually capture and save the pending screenshot, normally;
     /// `RedrawRequested`'s handler checks this and exits right after.
     quit_after_next_redraw: bool,
@@ -2729,7 +2732,7 @@ struct App {
     /// processed on; the very next frame, the real (never actually
     /// clicked) widget's honest `response.has_focus() == false` overwrites
     /// it right back. Without this pin, `editing_address` (see
-    /// `build_tab_ui`) goes false again within ~1 frame for any URL-like
+    /// `build_item_ui`) goes false again within ~1 frame for any URL-like
     /// input (nothing populates suggestions to keep it true the way a
     /// search query's does), and the very next frame's resync-to-tab-URL
     /// clobbers whatever `ADDRESSBAR` just set — confirmed live: a
@@ -2835,7 +2838,7 @@ struct App {
     find_match_case: bool,
     find_result: Option<(u32, u32)>,
     /// Set by `Ctrl+F`/headless `OPENFINDBAR`, consumed the next time
-    /// `build_tab_ui` builds the find bar's `TextEdit` — same "needs a
+    /// `build_item_ui` builds the find bar's `TextEdit` — same "needs a
     /// frame to exist as a widget to focus" reason as
     /// `pending_focus_address_bar`.
     pending_focus_find_bar: bool,
@@ -2928,7 +2931,7 @@ struct App {
 
     /// The tab id `respawn_tab` was called for *while it was the focused
     /// tab* — i.e. an engine swap or crash recovery is currently respawning
-    /// the tab the user is looking at. `build_tab_ui`'s existing "focused
+    /// the tab the user is looking at. `build_item_ui`'s existing "focused
     /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
     /// net, from before spawning was async) would otherwise bounce the user
     /// to Graph view for the tab's *entire* respawn duration — imperceptible
@@ -2994,7 +2997,7 @@ impl Default for App {
             pending_focus_quick_switcher: false,
             focused: None,
             split_tab: None,
-            view_mode: ViewMode::Tab,
+            view_mode: ViewMode::Item,
             next_tab_id: 0,
             next_download_id: 0,
             next_group_id: 0,
@@ -3059,7 +3062,7 @@ impl Default for App {
             pending_focus_find_bar: false,
             tab_spawn_error: None,
             settings,
-            settings_return_view: ViewMode::Tab,
+            settings_return_view: ViewMode::Item,
             bookmarks,
             bookmarks_open: false,
             default_engine_picker_open: false,
@@ -3100,7 +3103,7 @@ impl App {
 
     fn chrome_height_points(&self) -> f32 {
         match self.view_mode {
-            ViewMode::Tab => CHROME_HEIGHT_POINTS,
+            ViewMode::Item => CHROME_HEIGHT_POINTS,
             ViewMode::Graph | ViewMode::Settings => GRAPH_TOOLBAR_HEIGHT_POINTS,
         }
     }
@@ -4041,7 +4044,7 @@ impl App {
             pdfs,
             jsons,
             focused: self.focused.clone(),
-            view_mode_tab: matches!(self.view_mode, ViewMode::Tab),
+            view_mode_tab: matches!(self.view_mode, ViewMode::Item),
             next_tab_id: self.next_tab_id,
             next_note_id: self.next_note_id,
             next_image_id: self.next_image_id,
@@ -4128,12 +4131,12 @@ impl App {
         self.focused = valid_focus
             .cloned()
             .or_else(|| session.tabs.first().map(|t| t.id.clone()));
-        self.view_mode = if session.view_mode_tab { ViewMode::Tab } else { ViewMode::Graph };
-        if matches!(self.view_mode, ViewMode::Tab) {
+        self.view_mode = if session.view_mode_tab { ViewMode::Item } else { ViewMode::Graph };
+        if matches!(self.view_mode, ViewMode::Item) {
             // The focused tab hasn't actually spawned yet — this is the
             // exact same "still starting up" gap crash recovery has, so
             // reuse its own spinner-instead-of-snapping-to-Graph path
-            // (see `build_tab_ui`) rather than inventing a second one.
+            // (see `build_item_ui`) rather than inventing a second one.
             self.pending_respawn_focus = self.focused.clone();
         }
         for tab in session.tabs {
@@ -5119,7 +5122,7 @@ impl App {
     fn open_focused_graph_node(&mut self) {
         if let Some(id) = self.focused.clone() {
             if self.nodes.get(&id).is_some_and(|n| n.group == self.current_group) {
-                self.start_transition_to_tab(&id);
+                self.start_transition_to_item(&id);
             }
         }
     }
@@ -5325,7 +5328,7 @@ impl App {
             }
         }
         self.focused = Some(id.to_string());
-        self.view_mode = ViewMode::Tab;
+        self.view_mode = ViewMode::Item;
         self.send_resize_to(id);
         self.save_session();
     }
@@ -5382,7 +5385,7 @@ impl App {
         match self.focused.clone() {
             Some(id) => {
                 self.transition = Some(Transition {
-                    tab_id: id,
+                    node_id: id,
                     kind: TransitionKind::ToGraph,
                     start: std::time::Instant::now(),
                 });
@@ -5414,7 +5417,7 @@ impl App {
     /// node's still-animating tab out from under it. Found live: clicking a
     /// tab node multiple times in quick succession visibly glitched the
     /// expand animation instead of queuing or ignoring the extra clicks.
-    fn start_transition_to_tab(&mut self, id: &str) {
+    fn start_transition_to_item(&mut self, id: &str) {
         if self.transition.is_some() {
             return;
         }
@@ -5425,8 +5428,8 @@ impl App {
         // `finish_transition_if_done` is what actually matters once the
         // animation completes.
         self.transition = Some(Transition {
-            tab_id: id.to_string(),
-            kind: TransitionKind::ToTab,
+            node_id: id.to_string(),
+            kind: TransitionKind::ToItem,
             start: std::time::Instant::now(),
         });
     }
@@ -5444,18 +5447,18 @@ impl App {
         if transition.start.elapsed() < TRANSITION_DURATION {
             return;
         }
-        let tab_id = transition.tab_id.clone();
+        let node_id = transition.node_id.clone();
         let kind = transition.kind;
         self.transition = None;
         match kind {
             TransitionKind::ToGraph => {
                 self.view_mode = ViewMode::Graph;
-                if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
+                if let Some(node) = self.nodes.get_mut(&node_id).and_then(|n| n.as_tab_mut()) {
                     node.tab.set_visible(false);
                 }
             }
-            TransitionKind::ToTab => {
-                self.view_mode = ViewMode::Tab;
+            TransitionKind::ToItem => {
+                self.view_mode = ViewMode::Item;
             }
         }
         self.save_session();
@@ -5502,7 +5505,7 @@ impl App {
 
         let node_rect = self
             .nodes
-            .get(&transition.tab_id)
+            .get(&transition.node_id)
             .map(|node| {
                 let scene_outer_rect = egui::Rect::from_min_size(
                     egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
@@ -5527,7 +5530,7 @@ impl App {
 
         let (from, to) = match transition.kind {
             TransitionKind::ToGraph => (full_content_rect, node_rect),
-            TransitionKind::ToTab => (node_rect, full_content_rect),
+            TransitionKind::ToItem => (node_rect, full_content_rect),
         };
         let t = (transition.start.elapsed().as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
         // Smoothstep: eases in and out, rather than the constant-velocity
@@ -5676,7 +5679,7 @@ impl App {
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
-    /// polling (same mechanism `build_tab_ui`'s own `Escape` check uses),
+    /// polling (same mechanism `build_item_ui`'s own `Escape` check uses),
     /// so they fire regardless of which widget has focus and in either
     /// view. `consume_key` removes the matching key event from this
     /// frame's input first, so a page never sees e.g. `Ctrl+T` leak
@@ -6284,7 +6287,7 @@ impl App {
     /// reliable on-screen node to animate from.
     fn toggle_view_mode_shortcut(&mut self) {
         match self.view_mode {
-            ViewMode::Tab => self.leave_to_graph(),
+            ViewMode::Item => self.leave_to_graph(),
             ViewMode::Settings => self.close_settings_page(),
             ViewMode::Graph => {
                 let Some(id) = self.focused.clone() else { return };
@@ -6899,16 +6902,16 @@ impl App {
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
-    /// `TextEdit` doesn't exist as a widget until `build_tab_ui` builds it,
+    /// `TextEdit` doesn't exist as a widget until `build_item_ui` builds it,
     /// so actually moving real egui focus onto it needs to happen there,
     /// via `response.request_focus()` — see `pending_focus_address_bar`'s
     /// own doc comment.
     fn focus_address_bar_shortcut(&mut self) {
-        if matches!(self.view_mode, ViewMode::Tab) {
+        if matches!(self.view_mode, ViewMode::Item) {
             self.pending_focus_address_bar = true;
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
-            // already painted before `build_tab_ui` gets to call it) — a
+            // already painted before `build_item_ui` gets to call it) — a
             // real keypress always gets a following frame for free, but
             // this command can otherwise land with nothing further
             // scheduled to redraw (Tab view, unlike Graph view's physics,
@@ -6925,7 +6928,7 @@ impl App {
     /// as `Ctrl+L`. Opening with existing text immediately re-searches for
     /// it (matches a real browser's find bar remembering the last term).
     fn open_find_bar_shortcut(&mut self) {
-        if !matches!(self.view_mode, ViewMode::Tab) {
+        if !matches!(self.view_mode, ViewMode::Item) {
             return;
         }
         self.find_bar_open = true;
@@ -7161,7 +7164,7 @@ impl App {
     /// `Ctrl+K`'s tab quick-switcher: a centered search box plus a
     /// scrollable list of matches (see `quick_switcher_matches`), arrow
     /// keys move the selection, Enter jumps to it, Escape closes. Called
-    /// from `build_ui` itself rather than `build_tab_ui`/`build_graph_ui`
+    /// from `build_ui` itself rather than `build_item_ui`/`build_graph_ui`
     /// so it works the same from either view.
     fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
         let current = self.quick_switcher.clone();
@@ -7358,7 +7361,7 @@ impl App {
     /// `self.context_menu`'s position, if a menu is currently showing.
     /// Dismissed by clicking the item (and acting on it), a click anywhere
     /// outside the menu's own rect, or Escape (see the Escape-priority
-    /// chain in `build_tab_ui`).
+    /// chain in `build_item_ui`).
     fn build_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.context_menu.clone();
         let Some((menu, fade)) = fade_popup_state(
@@ -8334,7 +8337,7 @@ impl App {
         // `node_order` holds every graph node (tabs, notes, images, PDFs,
         // JSON files), not just tabs -- filter to tabs first (same filter
         // `quick_switcher_matches` applies) so this never lands on a
-        // non-tab node, which `focus_tab` -> `build_tab_ui` assumes can't
+        // non-tab node, which `focus_tab` -> `build_item_ui` assumes can't
         // happen (`as_tab().unwrap()`).
         let tab_ids: Vec<&String> = self
             .node_order
@@ -8373,7 +8376,7 @@ impl App {
             return;
         }
         match self.view_mode {
-            ViewMode::Tab => self.build_tab_ui(ui),
+            ViewMode::Item => self.build_item_ui(ui),
             ViewMode::Graph => self.build_graph_ui(ui),
             ViewMode::Settings => self.build_settings_page(ui),
         }
@@ -8746,7 +8749,7 @@ impl App {
         // direction itself, so it still reads "Help, Settings" here.
         //
         // NOTE: the Universal chip's real position is here, inside
-        // Tab's own per-kind content -- not up in `build_tab_ui`
+        // Tab's own per-kind content -- not up in `build_item_ui`
         // alongside `render_return_to_graph`, even though the design
         // spec's layer diagram lists it as layer 1 ("present in every
         // toolbar") above layer 3's per-kind content. It has to be
@@ -8758,7 +8761,7 @@ impl App {
         // Settings at all for that kind. Fine while Tab is the only
         // per-kind content that exists; a real per-kind toolbar for
         // another kind will need to either render its own universal
-        // chip or have `build_tab_ui`/its equivalent render one
+        // chip or have `build_item_ui`/its equivalent render one
         // unconditionally before dispatching to per-kind content.
         let shortcuts_help_rect = self.render_universal_chip(&mut trailing_ui);
         let tab_actions_response = trailing_ui.button("Tab actions");
@@ -8887,7 +8890,7 @@ impl App {
         actions
     }
 
-    fn build_tab_ui(&mut self, ui: &mut egui::Ui) {
+    fn build_item_ui(&mut self, ui: &mut egui::Ui) {
         let Some(focused_id) = self.focused.clone() else {
             self.view_mode = ViewMode::Graph;
             return;
@@ -8936,7 +8939,7 @@ impl App {
             || self.debug_address_bar_pin;
         // This `.unwrap()` assumes `focused_id` is always a Tab node
         // whenever this function runs -- true today (`focus_tab` is the
-        // only path into `ViewMode::Tab` and always targets a Tab node,
+        // only path into `ViewMode::Item` and always targets a Tab node,
         // per the design spec's Non-goals). If that ever changes (a
         // future kind entering a Tab-like maximized view through some
         // other path), this line panics before `render_item_toolbar_content`
@@ -12455,7 +12458,7 @@ impl App {
         if let Some(id) = clicked_focus {
             if self.nodes.contains_key(&id) {
                 self.selected_tabs.clear();
-                self.start_transition_to_tab(&id);
+                self.start_transition_to_item(&id);
             }
         }
         if let Some(id) = download_close_requested {
@@ -12823,7 +12826,7 @@ impl ApplicationHandler<UserEvent> for App {
             (Some(state), Some(window)) => state.on_window_event(window.as_ref(), &event).consumed,
             _ => false,
         };
-        let in_tab_view = matches!(self.view_mode, ViewMode::Tab);
+        let in_tab_view = matches!(self.view_mode, ViewMode::Item);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -13098,8 +13101,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // otherwise, none in Graph view.
                 let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
                 let content_panes_pts: Vec<(egui::Rect, String)> = if let Some(transition) = &self.transition {
-                    vec![(self.transition_content_rect_points(transition), transition.tab_id.clone())]
-                } else if self.view_mode == ViewMode::Tab {
+                    vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
+                } else if self.view_mode == ViewMode::Item {
                     let screen = self
                         .window
                         .as_ref()
@@ -13307,7 +13310,7 @@ impl App {
             }
             DebugCommand::AddressBar(text) => {
                 // Mirrors the real `TextEdit`'s `response.changed()` arm
-                // (see `build_tab_ui`) — setting `address_bar_focused`
+                // (see `build_item_ui`) — setting `address_bar_focused`
                 // directly stands in for a real click-driven egui focus
                 // transfer, which headless mode has no way to synthesize.
                 // `debug_address_bar_pin` (see its own doc comment) is what
@@ -13322,7 +13325,7 @@ impl App {
                 self.suggestion_fetcher.note_text_changed(&text);
                 self.address_bar_text = text;
             }
-            // Only `build_tab_ui` ever consumes these four (`std::mem::take`,
+            // Only `build_item_ui` ever consumes these four (`std::mem::take`,
             // same as a real key press), and it only runs while genuinely in
             // Tab view with no transition animating -- setting the flag
             // outside that window left it stuck `true` indefinitely (a real
@@ -13332,16 +13335,16 @@ impl App {
             // common "make sure we're in Graph view" test-setup step) stayed
             // pending and fired the moment ANY later command opened a tab,
             // silently bouncing straight back out to Graph.
-            DebugCommand::Enter if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+            DebugCommand::Enter if self.view_mode == ViewMode::Item && self.transition.is_none() => {
                 self.pending_debug_enter = true;
             }
-            DebugCommand::Escape if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+            DebugCommand::Escape if self.view_mode == ViewMode::Item && self.transition.is_none() => {
                 self.pending_debug_escape = true;
             }
-            DebugCommand::ArrowDown if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+            DebugCommand::ArrowDown if self.view_mode == ViewMode::Item && self.transition.is_none() => {
                 self.pending_debug_arrow_down = true;
             }
-            DebugCommand::ArrowUp if self.view_mode == ViewMode::Tab && self.transition.is_none() => {
+            DebugCommand::ArrowUp if self.view_mode == ViewMode::Item && self.transition.is_none() => {
                 self.pending_debug_arrow_up = true;
             }
             DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {}
