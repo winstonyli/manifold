@@ -8494,13 +8494,30 @@ impl App {
     /// The trailing Settings-gear button -- see `build_help_button`'s own
     /// doc comment for why this is a separate function rather than the two
     /// bundled together.
-    fn build_settings_button(&mut self, ui: &mut egui::Ui) {
-        if icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
-            .on_hover_text("Settings")
-            .clicked()
-        {
+    fn build_settings_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let response = icon_button_eased(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
+            .on_hover_text("Settings");
+        if response.clicked() {
             self.toggle_settings_page();
         }
+        response.rect
+    }
+
+    /// Help + Settings, present in every toolbar (see the design spec's
+    /// "universal chip" layer). Returns the same rect `build_help_button`
+    /// already returns -- the shortcuts-help popup anchors to that
+    /// specific button, not to the chip as a whole, so callers that need
+    /// it (the Tab toolbar's `shortcuts_help_button_rect`) keep working
+    /// unchanged.
+    fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let mut help_rect = egui::Rect::NOTHING;
+        toolbar_chip(ui, |ui| {
+            let help = self.build_help_button(ui);
+            help_rect = help;
+            let settings = self.build_settings_button(ui);
+            help.union(settings)
+        });
+        help_rect
     }
 
     fn render_item_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui) -> ItemToolbarActions {
@@ -8626,21 +8643,18 @@ impl App {
                 .max_rect(remaining_rect)
                 .layout(egui::Layout::right_to_left(egui::Align::Min)),
         );
-        // Settings *then* Help, not the other way around -- this
-        // `Ui` is right-to-left, so each widget lands to the
-        // *left* of the previous one; drawing Settings first
-        // (rightmost) and Help second is what ends up reading
-        // "Help, Settings" left to right, matching the Graph
-        // toolbar's own plain left-to-right call to the same two
-        // functions below in their natural order. (Nesting a
-        // left-to-right child `Ui` here to keep one fixed call
-        // order was tried first and rejected -- it inherits this
-        // `Ui`'s own not-yet-narrowed `available_rect_before_
-        // wrap`, so an unconstrained left-to-right child anchors
-        // at the *far left* of the whole remaining toolbar, not
-        // the right edge, garbling the entire row.)
-        self.build_settings_button(&mut trailing_ui);
-        let shortcuts_help_rect = self.build_help_button(&mut trailing_ui);
+        // `render_universal_chip` always draws Help before Settings
+        // internally, regardless of the `Ui`'s own layout direction (see
+        // its own doc comment) -- in this right-to-left `Ui`, that means
+        // the chip reads "Settings, Help" left to right here, the mirror
+        // of the Graph toolbar's plain left-to-right call to the same
+        // helper below, which reads "Help, Settings" (confirmed live via
+        // screenshot). Unlike the former separate `build_settings_button`/
+        // `build_help_button` calls this replaced, `render_universal_chip`
+        // has no per-caller way to flip that internal order, so this
+        // toolbar's own right-to-left layout can no longer compensate for
+        // it the way it used to.
+        let shortcuts_help_rect = self.render_universal_chip(&mut trailing_ui);
         let tab_actions_response = trailing_ui.button("Tab actions");
         if tab_actions_response.clicked() {
             self.tab_actions_open = !self.tab_actions_open;
@@ -9503,8 +9517,7 @@ impl App {
                     // Help then Settings in that order reads correctly as
                     // written, no reversal needed. See `build_help_button`'s
                     // own doc comment for why these are two separate calls.
-                    shortcuts_help_button_rect = Some(self.build_help_button(ui));
-                    self.build_settings_button(ui);
+                    shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
                 });
             });
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
