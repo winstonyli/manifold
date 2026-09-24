@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Smoke test for manifold's --headless mode (see README.md's "Headless
 # mode" section for the stdin text-command protocol this drives). Not a
-# full test framework, and not content-level assertions — there is no
-# state-query debug command yet, only screenshots — so this catches
-# crashes/total breakage (process exits non-zero, a screenshot never gets
-# produced or comes back suspiciously small) rather than verifying exact
-# pixels. Exercises the address-bar autocomplete flow end to end: launch
-# (into Graph view), click the root node to enter Tab view, type a query,
-# screenshot the suggestion dropdown, click a suggestion, screenshot the
-# result; arrow-key highlight + Enter-accept; Escape dismissing the
-# dropdown without leaving Tab view; quit.
+# full test framework and not pixel comparison: it checks each screenshot
+# was produced and isn't suspiciously small, and asserts on app state
+# (view mode, the focused tab's URL) read back through EXPORTSESSION, so
+# it catches wrong behavior as well as crashes. Exercises the address-bar
+# autocomplete flow end to end: launch (into Graph view), click the root
+# node to enter Tab view, type a query, screenshot the suggestion dropdown,
+# click a suggestion, screenshot the result; arrow-key highlight +
+# Enter-accept; Escape dismissing the dropdown without leaving Tab view;
+# quit.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
 # focuses another tab). That needs a second tab, which needs clicking a
@@ -32,7 +32,7 @@ if [ ! -x "$exe" ]; then
 fi
 
 mkdir -p "$out_dir"
-rm -f "$out_dir"/*.png
+rm -f "$out_dir"/*.png "$out_dir"/*.json
 
 # `SCREENSHOT`'s path travels over stdin, not argv — MSYS/Git-Bash's
 # automatic POSIX-to-Windows path translation for a spawned native exe
@@ -62,12 +62,11 @@ failed() {
     fail=1
 }
 
-check_screenshot() {
-    local path="$1" label="$2" min_bytes="${3:-2000}"
-    # The app saves a SCREENSHOT on its next drawn frame, which can take
-    # seconds when the GPU is busy; wait up to the 30 s the app itself
-    # gives one, then for the size to stop changing (a save in progress).
-    local waited=0 prev=-1 now
+# The app saves a SCREENSHOT on its next drawn frame, which can take
+# seconds when the GPU is busy; wait up to the 30 s the app itself gives
+# one, then for the size to stop changing (a save in progress).
+wait_for_file() {
+    local path="$1" waited=0 prev=-1 now
     while [ ! -f "$path" ] && [ "$waited" -lt 150 ]; do
         sleep 0.2
         waited=$((waited + 1))
@@ -76,6 +75,11 @@ check_screenshot() {
         prev=$now
         sleep 0.2
     done
+}
+
+check_screenshot() {
+    local path="$1" label="$2" min_bytes="${3:-2000}"
+    wait_for_file "$path"
     if [ ! -f "$path" ]; then
         failed "$label: screenshot not created ($path)"
         return
@@ -86,6 +90,30 @@ check_screenshot() {
         failed "$label: screenshot suspiciously small ($size bytes)"
     else
         pass "$label: screenshot looks reasonable ($size bytes)"
+    fi
+}
+
+# EXPORTSESSION writes the live session (tabs and their URLs, the focused
+# tab, `view_mode_tab`), which makes it the protocol's state query. `expr`
+# is a Python expression over `d` (the session), `url` (the focused tab's
+# URL) and `q` (that URL's `q=` search query, or "").
+check_state() {
+    local name="$1" label="$2" expr="$3" path="$out_dir/$1.json" result
+    send "EXPORTSESSION $out_dir_win\\$name.json"
+    wait_for_file "$path"
+    if result=$(python - "$path" "$expr" <<'EOF'
+import json, sys
+from urllib.parse import parse_qs, urlparse
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+url = next((t["url"] for t in d["tabs"] if t["id"] == d["focused"]), "")
+q = parse_qs(urlparse(url).query).get("q", [""])[0]
+print(url)
+sys.exit(0 if eval(sys.argv[2]) else 1)
+EOF
+    ); then
+        pass "$label ($result)"
+    else
+        failed "$label: \`$expr\` is false (focused tab: ${result:-none})"
     fi
 }
 
@@ -122,6 +150,7 @@ sleep 1
 # is on screen; the 220ms shrink/expand transition needs a moment to land.
 send "CLICK 407 332"
 sleep 1
+check_state tab_view "clicking the root node enters Tab view" 'd["view_mode_tab"]'
 
 send "ADDRESSBAR weather"
 sleep 3 # debounce (~200ms) + real DuckDuckGo suggestion fetch over the network
@@ -134,15 +163,24 @@ check_screenshot "$out_dir/dropdown.png" "autocomplete dropdown"
 # layout constants (CHROME_HEIGHT_POINTS in main.rs) ever change. (Already
 # had to move this twice — most recently when Tab view's separate tab-strip
 # and toolbar bars were merged into one, shrinking chrome height 58->32.)
+# The SCREENSHOT above also matters here: it makes the app draw the
+# dropdown, and a CLICK sent before any frame has drawn it hits nothing.
 send "CLICK 283 42"
 sleep 3 # navigation + first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
 sleep 1
 check_screenshot "$out_dir/after_click.png" "post-click navigation"
+# Usually the first row is the typed text itself, but DuckDuckGo's order
+# varies (see the arrow-key check below), so only the prefix is certain.
+check_state after_click "clicking the first suggestion searches it" 'q.startswith("weather")'
 
-# Arrow-key highlight + Enter-accept: two ARROWDOWNs should land on the
-# 3rd suggestion row, and ENTER should navigate to *that* row's query, not
-# the literally-typed text — no coordinates involved, fully deterministic.
+# Arrow-key highlight + Enter-accept: two ARROWDOWNs land on the 2nd
+# suggestion row (the first press highlights row 1), and ENTER searches
+# that row's query — no coordinates involved. The state check can't tell
+# that row from the typed text: DuckDuckGo's order varies between runs,
+# and sometimes the typed text itself is the 2nd row. So it only checks
+# that Enter searched one of the suggestions; which row shows in the
+# screenshot.
 send "ADDRESSBAR sourdough bread"
 sleep 3
 send "ARROWDOWN"
@@ -154,12 +192,11 @@ sleep 3
 send "SCREENSHOT $out_dir_win\\arrow_nav.png"
 sleep 1
 check_screenshot "$out_dir/arrow_nav.png" "arrow-key navigation"
+check_state arrow_nav "Enter searches a suggestion" 'q.startswith("sourdough bread")'
 
 # Escape dismisses the dropdown without leaving Tab view (as opposed to a
 # second Escape / one with no dropdown showing, which leaves to Graph
-# view) — just confirms no crash and a reasonable frame, same limitation
-# as every other check here (no state-query command to assert the
-# dropdown is actually gone, or that view_mode is still Tab).
+# view). Whether the dropdown itself is gone only shows in the screenshot.
 send "ADDRESSBAR pancake recipe"
 sleep 3
 send "ESCAPE"
@@ -167,6 +204,7 @@ sleep 1
 send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
 sleep 1
 check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
+check_state escape_dismiss "Escape stays in Tab view and navigates nowhere"     'd["view_mode_tab"] and q != "pancake recipe" and "sourdough" in q'
 
 send "QUIT"
 if wait "$browser_pid"; then
