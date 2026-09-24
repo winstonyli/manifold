@@ -213,9 +213,33 @@ Found while writing the implementation plan; these supersede the sections below 
   `WAITTABS`, `sleep 8`, `EXPORTSESSION`. Before the fix, 1 of 2 runs
   crash-looped (5 restarts). After it, 4 of 4 runs came out clean: exactly the
   imported tabs, no crash lines, and no engine processes left afterwards.
-- A restored/imported tab with `"url": "about:blank"` never appears, with
-  nothing logged and no `tab_spawn_error` shown; the same session with
-  `manifold://welcome` works. Unknown whether the spawn fails silently or
-  never finishes.
+- **Fixed:** "a restored/imported tab with `"url": "about:blank"` never
+  appears" was never about `about:blank`. The seeded `session.json` left out
+  `next_tab_id`, which had no `#[serde(default)]`, so it failed to parse.
+  `Session::load_from` dropped the error (`.ok()`), and startup fell back to
+  the first-launch demo. The demo's tabs are `manifold://welcome`, so a
+  failed welcome seed looked like it had worked. The same seed with
+  `next_tab_id` restores four `about:blank` tabs; so does a seed without it
+  now. Also, the recipe's settings seed (`{"has_shown_first_launch_demo":
+  true}` alone) doesn't parse either (`Settings` has required fields). It
+  only worked because a restored session never reads the flag. Changes:
+  - `next_tab_id` defaults like the other counters, and `apply_session`
+    raises every id counter past the ids it restores (`bump_past_id`). A
+    file with `next_note_id` etc. missing or too low used to hand the next
+    new node an id already in use.
+  - `Session::load_from`/`load_named` return the error, and every caller
+    (startup, Open Session, the Import dialog, `IMPORTSESSION`) toasts it.
+  - At startup an unreadable `session.json` is renamed to
+    `session.unreadable-<secs>.json` before the fresh start. Before, the
+    first save overwrote it: the fingerprint guard only covers a file this
+    run loaded.
+  - The toast is drawn in every view from `build_ui`. It was only drawn in
+    Tab and Image view, so toasts queued in Graph view (crash/respawn
+    notices included) were never seen.
+  Checked headless: the recipe seed without `next_tab_id` restores
+  `tab-10..13`, and a new tab gets `tab-14`. A truncated `session.json`
+  toasts, is moved aside intact, and the demo loads. Still open:
+  `Settings::load` and `bookmarks::load_from` have the same silent fallback
+  followed by an overwrite on the first save.
 - **Done:** a node menu's fade-out used to redraw from the node's *current* state, so it changed while it faded: after "Remove from Group" the row vanished and the menu shrank, and Pin turned into Unpin. Now `build_node_menu` reads a `NodeMenuView` each open frame, `node_menu_cache` freezes it for the fade-out, and a menu whose action removed its node (Delete, Close, Dissolve) fades too instead of vanishing. A fading menu is also click-through (`Area::interactable(false)`), so the rest of a double-click can't run an item twice. The four toolbar list popups (`build_list_popup_frame`) got the same click-through. Checked headless with the fade temporarily slowed to 3 s: the fading menu kept its "Remove from Group" row after the download had left the group, and a second click on it went through to the tab card behind. egui builds its hit test from the previous frame's layers, so the first fading frame can still take a click.
 - **Done:** every other fading popup with clickable content is click-through while fading too: the quick switcher, the Tab-view link menu, tab actions, and the three engine pickers (`build_engine_picker_popup`). Peek preview only paints. Still open: the toolbar list popups redraw live content during the fade (after a Recently Closed reopen, the list loses that row mid-fade). The fade lasts ~83 ms, so this is cosmetic.

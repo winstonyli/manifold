@@ -3,9 +3,9 @@
 //! view is active are saved to disk on every change that matters and
 //! reloaded at startup — `App::restore_session` replays it instead of
 //! always spawning a single fresh root tab, so quitting and relaunching
-//! picks up roughly where it left off. Like `settings.rs`'s own file, a
-//! missing or corrupt one just falls back to the old single-root-tab
-//! behavior rather than failing to start.
+//! picks up roughly where it left off. A missing file falls back to a
+//! fresh start. An unreadable one does too, but is first moved aside (see
+//! `Session::load`) so the next save can't overwrite it.
 //!
 //! Only the graph's *shape* is portable across a restart — page state
 //! (cookies, localStorage, IndexedDB, scroll position) is not, the same
@@ -101,6 +101,10 @@ pub struct Session {
     /// still load.
     #[serde(default)]
     pub viewed_image: Option<String>,
+    /// `#[serde(default)]` like the other counters: `App::apply_session`
+    /// raises every counter past the ids it restores, so a missing one can't
+    /// hand out an id that's already taken.
+    #[serde(default)]
     pub next_tab_id: u64,
     #[serde(default)]
     pub next_note_id: u64,
@@ -177,11 +181,30 @@ fn named_session_path(name: &str) -> Option<PathBuf> {
 }
 
 impl Session {
-    /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all
-    /// just return `None` — the caller falls back to spawning a single
-    /// fresh root tab, same posture as `Settings::load`'s own fallback.
-    pub fn load() -> Option<Self> {
-        Self::load_from(&session_path()?)
+    /// `Ok(None)` for no `%APPDATA%` or no `session.json`: the caller starts
+    /// fresh. A file that exists but can't be read or parsed is renamed to
+    /// `session.unreadable-<unix-seconds>.json` and comes back as `Err` with
+    /// a message saying so. Left in place, the first save after the fresh
+    /// start would overwrite it: `App::save_session`'s fingerprint check
+    /// only guards a file this run has loaded.
+    pub fn load() -> Result<Option<Self>, String> {
+        let Some(path) = session_path() else { return Ok(None) };
+        if !path.exists() {
+            return Ok(None);
+        }
+        let err = match Self::load_from(&path) {
+            Ok(session) => return Ok(Some(session)),
+            Err(err) => err,
+        };
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let aside = path.with_file_name(format!("session.unreadable-{secs}.json"));
+        match std::fs::rename(&path, &aside) {
+            Ok(()) => Err(format!("{err} -- moved it to {}", aside.display())),
+            Err(rename_err) => Err(format!("{err} (and couldn't move it aside: {rename_err})")),
+        }
     }
 
     pub fn save(&self) {
@@ -191,11 +214,14 @@ impl Session {
         self.save_to(&path);
     }
 
-    /// Same read as `load`, just from an arbitrary path — the named-session
-    /// "Open Session" list reads back whatever `save_as` wrote.
-    pub fn load_from(path: &Path) -> Option<Self> {
-        let contents = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&contents).ok()
+    /// Reads a session file from an arbitrary path — the named-session
+    /// "Open Session" list reads back whatever `save_as` wrote. The error
+    /// names the file and says what's wrong with it, ready for a toast.
+    pub fn load_from(path: &Path) -> Result<Self, String> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|err| format!("Couldn't read {}: {err}", path.display()))?;
+        serde_json::from_str(&contents)
+            .map_err(|err| format!("Couldn't load session {}: {err}", path.display()))
     }
 
     /// Same write as `save`, just to an arbitrary path.
@@ -226,8 +252,9 @@ impl Session {
     }
 
     /// Loads a previously named-saved session back, by name.
-    pub fn load_named(name: &str) -> Option<Self> {
-        Self::load_from(&named_session_path(name)?)
+    pub fn load_named(name: &str) -> Result<Self, String> {
+        let path = named_session_path(name).ok_or("No %APPDATA% to load sessions from")?;
+        Self::load_from(&path)
     }
 
     /// Every saved name in `sessions/`, alphabetical — the "Open Session"
@@ -249,5 +276,17 @@ impl Session {
         if let Some(path) = named_session_path(name) {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_without_counters_loads() {
+        let json = r#"{"tabs":[{"id":"tab-10","parent":null,"url":"about:blank","engine":"webview2","pos_x":0,"pos_y":0}],"focused":null,"view_mode_tab":false}"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.next_tab_id, 0);
     }
 }

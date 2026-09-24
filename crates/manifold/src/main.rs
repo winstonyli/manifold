@@ -414,6 +414,15 @@ fn next_id(counter: &mut u64, prefix: &str) -> String {
     id
 }
 
+/// Raises `counter` past `id` when `id` is one `next_id(counter, prefix)`
+/// could produce, so it's never handed out again.
+fn bump_past_id(counter: &mut u64, id: &str, prefix: &str) {
+    let n = id.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-'));
+    if let Some(n) = n.and_then(|n| n.parse::<u64>().ok()) {
+        *counter = (*counter).max(n.saturating_add(1));
+    }
+}
+
 /// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
 /// content closure and actually painted only after it returns -- see
 /// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
@@ -3932,9 +3941,12 @@ impl App {
             if let Some(path) =
                 rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file()
             {
-                if let Some(session) = session::Session::load_from(&path) {
-                    self.pending_import = Some(session);
-                    self.close_settings_page();
+                match session::Session::load_from(&path) {
+                    Ok(session) => {
+                        self.pending_import = Some(session);
+                        self.close_settings_page();
+                    }
+                    Err(err) => self.queue_toast(err),
                 }
             }
         }
@@ -4415,7 +4427,8 @@ impl App {
 
     /// Startup: replays a saved `session::Session` instead of spawning one
     /// fresh root tab — returns `false` (having done nothing) if there's no
-    /// session file, it's corrupt, or it has zero tabs, so the caller can
+    /// session file, it's corrupt (moved aside with a toast -- see
+    /// `Session::load`), or it has zero tabs, so the caller can
     /// fall back to `spawn_root_tab`, same "never let a bad/missing file
     /// stop the browser from starting" posture `Settings::load` already
     /// takes. All of a session's tabs are spawned concurrently (like
@@ -4426,8 +4439,14 @@ impl App {
     /// reason to serialize the spawns, only a briefly-less-tidy transient
     /// layout.
     fn restore_session(&mut self) -> bool {
-        let Some(session) = session::Session::load() else {
-            return false;
+        let session = match session::Session::load() {
+            Ok(Some(session)) => session,
+            Ok(None) => return false,
+            Err(err) => {
+                eprintln!("session: {err}");
+                self.queue_toast(err);
+                return false;
+            }
         };
         if session.tabs.is_empty()
             && session.notes.is_empty()
@@ -4458,6 +4477,23 @@ impl App {
         self.next_image_id = session.next_image_id;
         self.next_pdf_id = session.next_pdf_id;
         self.next_json_id = session.next_json_id;
+        // A file with a counter missing (they all default to 0) or behind
+        // its own ids would otherwise let the next new node reuse an id.
+        for tab in &session.tabs {
+            bump_past_id(&mut self.next_tab_id, &tab.id, "tab");
+        }
+        for note in &session.notes {
+            bump_past_id(&mut self.next_note_id, &note.id, "note");
+        }
+        for image in &session.images {
+            bump_past_id(&mut self.next_image_id, &image.id, "img");
+        }
+        for pdf in &session.pdfs {
+            bump_past_id(&mut self.next_pdf_id, &pdf.id, "pdf");
+        }
+        for json in &session.jsons {
+            bump_past_id(&mut self.next_json_id, &json.id, "json");
+        }
         for note in session.notes {
             self.nodes.insert(
                 note.id.clone(),
@@ -4532,8 +4568,10 @@ impl App {
     /// file is empty/corrupt, so a bad load can't wipe a perfectly good
     /// running session.
     fn load_named_session(&mut self, name: &str) {
-        let Some(session) = session::Session::load_named(name) else { return };
-        self.replace_running_session(session);
+        match session::Session::load_named(name) {
+            Ok(session) => self.replace_running_session(session),
+            Err(err) => self.queue_toast(err),
+        }
     }
 
     /// Tears down every currently-open tab/download/group -- each tab's own
@@ -8930,6 +8968,9 @@ impl App {
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
         self.handle_global_shortcuts(ui);
+        // Every view, so a toast queued in Graph view (a crash/respawn
+        // notice, an unreadable session file) is seen where it happened.
+        self.build_save_toast(ui);
         // A `Transition` (either direction) always renders Graph view's
         // node layout as the backdrop — it's the one screen both a
         // shrinking-away Tab view and an expanding-toward Tab view have a
@@ -9385,7 +9426,6 @@ impl App {
         };
         let frame = self.render_item_toolbar(image_id, ui);
         self.build_shortcuts_help(ui, frame.shortcuts_help_button_rect);
-        self.build_save_toast(ui);
 
         let body = self.item_body_rect();
         let response = ui.interact(body, egui::Id::new("image_view_body"), egui::Sense::drag());
@@ -9773,7 +9813,6 @@ impl App {
         }
 
         self.build_context_menu(ui);
-        self.build_save_toast(ui);
 
         if let Some(results) = self.suggestion_fetcher.tick() {
             self.search_suggestions = results;
@@ -13264,8 +13303,12 @@ impl App {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));
             }
             DebugCommand::ImportSession(path) => {
-                if let Some(session) = session::Session::load_from(std::path::Path::new(&path)) {
-                    self.pending_import = Some(session);
+                match session::Session::load_from(std::path::Path::new(&path)) {
+                    Ok(session) => self.pending_import = Some(session),
+                    Err(err) => {
+                        eprintln!("session: {err}");
+                        self.queue_toast(err);
+                    }
                 }
             }
             DebugCommand::ConfirmImport => {
@@ -14207,5 +14250,17 @@ mod tests {
         assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1 })), "cat.png");
         assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), "paper.pdf");
         assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None })), "x.json");
+    }
+    #[test]
+    fn bump_past_id_clears_restored_ids() {
+        let mut counter = 0;
+        bump_past_id(&mut counter, "tab-10", "tab");
+        bump_past_id(&mut counter, "tab-3", "tab");
+        assert_eq!(counter, 11);
+        bump_past_id(&mut counter, "note-50", "tab");
+        bump_past_id(&mut counter, "tabby-50", "tab");
+        bump_past_id(&mut counter, "tab-x", "tab");
+        assert_eq!(counter, 11);
+        assert_eq!(next_id(&mut counter, "tab"), "tab-11");
     }
 }

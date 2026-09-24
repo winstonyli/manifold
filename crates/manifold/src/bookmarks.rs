@@ -25,7 +25,7 @@ fn bookmarks_path() -> Option<PathBuf> {
 }
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
-/// return an empty list — same fallback posture as `Session::load`.
+/// return an empty list — same fallback posture as `Settings::load`.
 pub fn load() -> Vec<Bookmark> {
     let Some(path) = bookmarks_path() else { return Vec::new() };
     load_from(&path).unwrap_or_default()
