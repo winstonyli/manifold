@@ -36,11 +36,10 @@ use crate::UserEvent;
 /// `MOUSEDOWN`/`MOUSEUP` pair spaced by a `sleep` -- egui drops a press
 /// held past its max click duration (~0.8 s) as a long press, not a click.
 /// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
-/// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
-/// before a `SCREENSHOT` meant to show it, and before a `MOUSEDOWN` on a
-/// card (without it, a right-click there opens the canvas menu; untested
-/// since pointer commands got a frame before them too, which may make one
-/// enough). Each command renders its own frame in headless mode, and a
+/// One `MOUSEMOVE` is enough for a `SCREENSHOT` to show hover (checked
+/// headless on a tab card: ✕ and peek preview both up), and a right-click
+/// needs none, since the graph finds the card under the press itself
+/// rather than going by hover. Each command renders its own frame in headless mode, and a
 /// pointer command also one before it, so it's hit-tested against the
 /// current state (see `UserEvent::Debug`'s handler); mouse commands need
 /// no `sleep` between them. Animations (menu fades, group drill-in) still take real
