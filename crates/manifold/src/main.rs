@@ -258,7 +258,7 @@ struct NodeMenuConfig {
 /// does. That scaffolding now lives here once (via `build_list_popup_frame`,
 /// with `pos` itself standing in for an anchor rect of zero size, so
 /// `.left_bottom()` still lands exactly on `pos`); the caller still owns
-/// every kind-specific effect (`reveal_image`/`as_pdf().path`/
+/// every kind-specific effect (`reveal_node`/`as_pdf().path`/
 /// `gpu.free_image`/etc.), applied from the single `NodeMenuAction` this
 /// returns rather than duplicated per-button bools. A free function, like
 /// `build_list_popup_frame` itself -- callers still need `&mut self` free
@@ -446,7 +446,7 @@ fn draw_new_node_menu_row(
 /// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
 /// are no longer parameters here at all. Returns whether it was clicked
 /// this frame -- the caller still decides what that means for its own kind
-/// (which `*_close_requested` to set).
+/// (`node_close_requested` for every kind that uses it).
 fn draw_node_close_button(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -2022,10 +2022,10 @@ impl NodePayload {
 /// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
 /// up front so its immutable borrow of `self.nodes` ends immediately,
 /// before a dispatcher needs `&mut self` to render that kind's toolbar
-/// content. Mirrors `close_group_member`'s existing `MemberKind` match
-/// for exactly the same reason: matching directly on
-/// `&NodePayload` would keep that borrow alive for as long as the match
-/// arms run, which conflicts with the `&mut self` those arms need.
+/// content. Mirrors `close_node`'s own match for exactly the same reason:
+/// matching directly on `&NodePayload` would keep that borrow alive for as
+/// long as the match arms run, which conflicts with the `&mut self` those
+/// arms need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ItemNodeKind {
     Tab,
@@ -2391,7 +2391,7 @@ const MAX_CLOSED_GROUPS: usize = 5;
 
 /// A Note/Image/Pdf/Json node's content, captured just before it's
 /// destroyed -- either via its own "Delete" context-menu action, or via
-/// `close_group_member` when its containing group is closed. Unlike a tab
+/// `close_node` when its containing group is closed. Unlike a tab
 /// or group, deleting one of these four kinds previously had no undo path
 /// at all, a real risk specifically for Notes (user-typed content,
 /// permanently gone on a single misclick, unlike a tab/group's own
@@ -2403,6 +2403,26 @@ enum ClosedNode {
     Image(String),
     Pdf(String),
     Json(String),
+}
+
+/// Which `ClosedNode` (if any) closing a node with this payload should add
+/// to "Recently Closed" -- the one rule behind every single-node close
+/// (`App::close_node`: hover ✕, context-menu Delete, closing a group's
+/// members). `None` for a Tab (it has its own `closed_tabs` stack via
+/// `close_tab`), a Group (`close_group` snapshots it into
+/// `closed_groups`), a Download (no "closed" state), and a synthetic
+/// "Expand as Graph" JSON leaf -- recording that as a `ClosedNode::Json`
+/// would let "undo" re-add the *whole source file* as a fresh top-level
+/// card, not the leaf that was actually closed. Only a genuine top-level
+/// JSON node's own path is real undo-worthy state.
+fn closed_node_for(payload: &NodePayload) -> Option<ClosedNode> {
+    match payload {
+        NodePayload::Note(note) => Some(ClosedNode::Note(note.text.clone())),
+        NodePayload::Image(image) => Some(ClosedNode::Image(image.path.clone())),
+        NodePayload::Pdf(pdf) => Some(ClosedNode::Pdf(pdf.path.clone())),
+        NodePayload::Json(json) => json.key.is_none().then(|| ClosedNode::Json(json.path.clone())),
+        NodePayload::Tab(_) | NodePayload::Group(_) | NodePayload::Download(_) => None,
+    }
 }
 
 /// Same reasoning as `MAX_CLOSED_TABS`.
@@ -2934,8 +2954,8 @@ struct App {
     /// oldest dropped first. Not reachable from `Ctrl+Shift+T` (that
     /// shortcut only ever looks at `closed_tabs`) -- only the dropdown.
     closed_groups: Vec<group_export::GroupExport>,
-    /// Note/Image/Pdf/Json nodes deleted via their own context menu's
-    /// "Delete", or via `close_group_member` when a containing group is
+    /// Note/Image/Pdf/Json nodes deleted via `close_node` -- hover ✕,
+    /// their own context menu's "Delete", or a containing group being
     /// closed -- see `ClosedNode`'s own doc comment for why this exists.
     /// Listed in the same "Recently Closed" dropdown as `closed_tabs`/
     /// `closed_groups`, in their own section. Capped at `MAX_CLOSED_NODES`,
@@ -4810,8 +4830,7 @@ impl App {
     /// `\\wsl.localhost\<distro>\...` UNC form both Explorer and a pasted
     /// clipboard path understand, using the same "Ubuntu" distro name
     /// `process_manager` already hardcodes for spawning the WebKit
-    /// engine-host. Shared by `reveal_download` and the download context
-    /// menu's "Copy Path".
+    /// engine-host. Used by `node_file_path`.
     fn windows_path_for_download(&self, id: &str) -> Option<String> {
         let download = self.nodes.get(id)?.as_download()?;
         Some(if let Some(posix) = download.path.strip_prefix('/') {
@@ -4822,43 +4841,35 @@ impl App {
     }
 
     /// Opens `path`'s containing folder with the file itself pre-selected --
-    /// the shared mechanism behind every `reveal_*` method below, previously
-    /// hand-copied four times differing only in how each kind's own `path`
-    /// gets read.
+    /// the mechanism behind `reveal_node`.
     fn reveal_in_explorer(path: &str) {
         let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
     }
 
-    /// Graph node click on a download: opens the containing folder with
-    /// the file pre-selected, same "just show the obvious thing, no custom
-    /// UI" posture as the download itself (see `EngineToHost::
-    /// DownloadCompleted`'s doc comment).
-    fn reveal_download(&self, id: &str) {
-        if let Some(path) = self.windows_path_for_download(id) {
-            Self::reveal_in_explorer(&path);
+    /// The real file behind a Download/Image/Pdf/Json node, in the form
+    /// Explorer and a pasted clipboard path understand -- what both
+    /// "Open Containing Folder" (`reveal_node`) and "Copy Path" use. A
+    /// download's path may be a WSL-side POSIX path (WebKit downloads), so
+    /// it goes through `windows_path_for_download`; an image/PDF/JSON path
+    /// always came from a real Windows file picker, so it's used as-is.
+    /// `None` for kinds with no backing file (Tab, Group, Note).
+    fn node_file_path(&self, id: &str) -> Option<String> {
+        match &self.nodes.get(id)?.payload {
+            NodePayload::Download(_) => self.windows_path_for_download(id),
+            NodePayload::Image(image) => Some(image.path.clone()),
+            NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
+            NodePayload::Json(json) => Some(json.path.clone()),
+            NodePayload::Tab(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
         }
     }
 
-    /// Same idea as `reveal_download`, for an image node -- no WSL path
-    /// translation needed here, since an image's `path` always came from a
-    /// real Windows file picker (`add_image_node`), never a WebKit-side
-    /// download.
-    fn reveal_image(&self, id: &str) {
-        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
-            Self::reveal_in_explorer(&path);
-        }
-    }
-
-    /// Same idea as `reveal_image`, for a PDF node.
-    fn reveal_pdf(&self, id: &str) {
-        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
-            Self::reveal_in_explorer(&path);
-        }
-    }
-
-    /// Same idea as `reveal_pdf`, for a JSON node.
-    fn reveal_json(&self, id: &str) {
-        if let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+    /// Opens a node's file's containing folder with the file pre-selected
+    /// (a plain click on a download card does this too -- same "just show
+    /// the obvious thing, no custom UI" posture as the download itself, see
+    /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
+    /// with no file.
+    fn reveal_node(&self, id: &str) {
+        if let Some(path) = self.node_file_path(id) {
             Self::reveal_in_explorer(&path);
         }
     }
@@ -6976,8 +6987,8 @@ impl App {
     /// `self.downloads` (the same data the graph view's own download
     /// nodes/context menu show, see `App::download_context_menu`), most-
     /// recently-downloaded first, click a filename to open its containing
-    /// folder (same as `reveal_download`), "x" to remove it from the list
-    /// (same as `remove_node`). Exists so a completed download can
+    /// folder (same as `reveal_node`), "x" to remove it from the list
+    /// (same as `close_node_and_save`). Exists so a completed download can
     /// be found without first switching to Graph view.
     fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
@@ -7049,11 +7060,11 @@ impl App {
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
         if let Some(id) = reveal_id {
-            self.reveal_download(&id);
+            self.reveal_node(&id);
             close = true;
         }
         if let Some(id) = remove_id {
-            self.remove_node(&id);
+            self.close_node_and_save(&id);
         }
         if clicked_outside {
             close = true;
@@ -7854,13 +7865,13 @@ impl App {
         }
     }
 
-    /// Closes every member of a group via `close_group_member` (a tab
+    /// Closes every member of a group via `close_node` (a tab
     /// through the normal `close_tab` path -- teardown, reparenting,
     /// thumbnail cleanup all still apply, same as `close_all_except`/
     /// `close_selected`; a nested subgroup recurses into this same
     /// function; a Note/Image/Pdf/Json/Download member is destroyed too,
     /// via the same cleanup its own "Delete" context-menu action already
-    /// applies -- see `close_group_member`'s own doc comment for why this
+    /// applies -- see `close_node`'s own doc comment for why this
     /// exists), then dissolves the now-empty group itself. Snapshots
     /// the group into `closed_groups` *before* touching anything, via the
     /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
@@ -7875,7 +7886,7 @@ impl App {
     /// alongside the group-level snapshot, which would otherwise let a user
     /// reopen the same tabs twice (once via the group, once via the plain
     /// tab list) and end up with duplicates.
-    /// `closed_nodes` (Note/Image/Pdf/Json members, via `close_group_member`)
+    /// `closed_nodes` (Note/Image/Pdf/Json members, via `close_node`)
     /// needs no equivalent truncation -- `export_group`'s own snapshot only
     /// ever captures tab members, never those four kinds, so there's no
     /// analogous group-level copy for an individual `ClosedNode` entry to
@@ -7897,81 +7908,61 @@ impl App {
             .map(|(tid, _)| tid.clone())
             .collect();
         for tid in member_ids {
-            self.close_group_member(&tid);
+            self.close_node(&tid);
         }
         self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
     }
 
-    /// Destroys one member of a group being closed, applying the same
-    /// per-kind cleanup its own "Delete"/"Close" action already would: a
-    /// nested subgroup recurses (`close_group`), a tab goes through
-    /// `close_tab` (feeding "Recently Closed" tabs), and a Note/Image/Pdf/
-    /// Json member captures a `ClosedNode` (feeding "Recently Closed"
-    /// nodes) before `remove_node`, freeing a GPU texture first for an
-    /// Image/Pdf. Without this, `close_tab`'s own no-op-on-non-tab guard
-    /// left every non-tab, non-group member merely reparented to the
-    /// closed group's own parent by `dissolve_group` below, never actually
-    /// destroyed -- a real gap confirmed while building "Expand as Graph"
-    /// (see that feature's own design doc), whose whole output is
-    /// `JsonPayload` leaves nested inside Groups.
-    fn close_group_member(&mut self, id: &str) {
-        enum MemberKind {
-            Group,
-            Tab,
-            Note(String),
-            Image(String),
-            Pdf(String),
-            Json(Option<String>),
-            Download,
-        }
-        let Some(kind) = self.nodes.get(id).map(|node| match &node.payload {
-            NodePayload::Group(_) => MemberKind::Group,
-            NodePayload::Tab(_) => MemberKind::Tab,
-            NodePayload::Note(note) => MemberKind::Note(note.text.clone()),
-            NodePayload::Image(image) => MemberKind::Image(image.path.clone()),
-            NodePayload::Pdf(pdf) => MemberKind::Pdf(pdf.path.clone()),
-            NodePayload::Json(json) => MemberKind::Json(json.key.is_none().then(|| json.path.clone())),
-            NodePayload::Download(_) => MemberKind::Download,
-        }) else {
+    /// Closes one node, applying its kind's full cleanup: a Group recurses
+    /// (`close_group`), a Tab goes through `close_tab` (feeding "Recently
+    /// Closed" tabs), and a Download/Note/Image/Pdf/Json records whatever
+    /// `closed_node_for` says (feeding "Recently Closed" nodes), frees its
+    /// GPU texture if it's an Image/Pdf, clears `json_viewer_node` if it
+    /// was showing this node, then `remove_node`s it. The single path
+    /// behind a card's hover ✕, its context-menu Delete/"Remove from
+    /// List", the Downloads popup's Remove, and `close_group`'s per-member
+    /// loop -- which is why it doesn't save: `close_group` saves once for
+    /// the whole group, and the UI paths go through `close_node_and_save`.
+    /// (Before this was shared, `close_tab`'s own no-op-on-non-tab guard
+    /// left every non-tab, non-group member of a closed group merely
+    /// reparented by `dissolve_group`, never actually destroyed -- a gap
+    /// confirmed while building "Expand as Graph", whose whole output is
+    /// `JsonPayload` leaves nested inside Groups.)
+    fn close_node(&mut self, id: &str) {
+        let Some((kind, closed)) =
+            self.nodes.get(id).map(|node| (item_node_kind(&node.payload), closed_node_for(&node.payload)))
+        else {
             return;
         };
         match kind {
-            MemberKind::Group => self.close_group(id),
-            MemberKind::Tab => self.close_tab(id),
-            MemberKind::Note(text) => {
-                self.record_closed_node(ClosedNode::Note(text));
-                self.remove_node(id);
-            }
-            MemberKind::Image(path) => {
-                self.record_closed_node(ClosedNode::Image(path));
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.free_image(id);
+            ItemNodeKind::Group => self.close_group(id),
+            ItemNodeKind::Tab => self.close_tab(id),
+            ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
+                if let Some(closed) = closed {
+                    self.record_closed_node(closed);
                 }
-                self.remove_node(id);
-            }
-            MemberKind::Pdf(path) => {
-                self.record_closed_node(ClosedNode::Pdf(path));
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.free_image(id);
-                }
-                self.remove_node(id);
-            }
-            MemberKind::Json(path) => {
-                // `None` for a synthetic "Expand as Graph" leaf -- recording
-                // it as a `ClosedNode::Json` would let "undo" re-add the
-                // *whole source file* as a fresh top-level card, not the
-                // leaf that was actually closed. Only a genuine top-level
-                // JSON node's own path is real undo-worthy state.
-                if let Some(path) = path {
-                    self.record_closed_node(ClosedNode::Json(path));
+                if matches!(kind, ItemNodeKind::Image | ItemNodeKind::Pdf) {
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.free_image(id);
+                    }
                 }
                 if self.json_viewer_node.as_deref() == Some(id) {
                     self.json_viewer_node = None;
                 }
                 self.remove_node(id);
             }
-            MemberKind::Download => self.remove_node(id),
+        }
+    }
+
+    /// `close_node` for a single user action (hover ✕, context-menu
+    /// Delete, Downloads popup Remove), then persists the session -- except
+    /// for a Download, which isn't part of the saved session at all.
+    fn close_node_and_save(&mut self, id: &str) {
+        let persisted = self.nodes.get(id).is_some_and(|node| node.as_download().is_none());
+        self.close_node(id);
+        if persisted {
+            self.save_session();
         }
     }
 
@@ -8061,9 +8052,9 @@ impl App {
     }
 
     /// Right-click menu for a download's card -- Open Containing Folder
-    /// (same effect as a plain click, see `reveal_download`), Copy Path,
+    /// (same effect as a plain click, see `reveal_node`), Copy Path,
     /// Remove from List (same effect as the card's own close "x", see
-    /// `remove_node`). See `build_node_context_menu`'s own doc comment for
+    /// `close_node_and_save`). See `build_node_context_menu`'s own doc comment for
     /// the shared shell this (and every other node kind's context menu)
     /// now draws through. No `has_group` gate here -- pre-existing, not
     /// something this dedup pass introduced or fixed: this menu never
@@ -8100,13 +8091,13 @@ impl App {
         );
 
         match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_download(&id),
+            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
             Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.windows_path_for_download(&id) {
+                if let Some(path) = self.node_file_path(&id) {
                     ui.ctx().copy_text(path);
                 }
             }
-            Some(NodeMenuAction::Delete) => self.remove_node(&id),
+            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
             _ => {}
         }
         if action.is_some() || clicked_outside {
@@ -8160,13 +8151,7 @@ impl App {
                     node.group = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => {
-                if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
-                    self.record_closed_node(ClosedNode::Note(text));
-                }
-                self.remove_node(&id);
-                self.save_session();
-            }
+            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
             _ => {}
         }
         if action.is_some() || clicked_outside {
@@ -8209,9 +8194,9 @@ impl App {
         );
 
         match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_image(&id),
+            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
             Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
+                if let Some(path) = self.node_file_path(&id) {
                     ui.ctx().copy_text(path);
                 }
             }
@@ -8220,16 +8205,7 @@ impl App {
                     node.group = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_image()).map(|i| i.path.clone()) {
-                    self.record_closed_node(ClosedNode::Image(path));
-                }
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.free_image(&id);
-                }
-                self.remove_node(&id);
-                self.save_session();
-            }
+            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
             _ => {}
         }
         if action.is_some() || clicked_outside {
@@ -8271,9 +8247,9 @@ impl App {
         );
 
         match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_pdf(&id),
+            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
             Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
+                if let Some(path) = self.node_file_path(&id) {
                     ui.ctx().copy_text(path);
                 }
             }
@@ -8282,16 +8258,7 @@ impl App {
                     node.group = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) {
-                    self.record_closed_node(ClosedNode::Pdf(path));
-                }
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.free_image(&id);
-                }
-                self.remove_node(&id);
-                self.save_session();
-            }
+            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
             _ => {}
         }
         if action.is_some() || clicked_outside {
@@ -8336,13 +8303,13 @@ impl App {
         );
 
         match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_json(&id),
+            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
             Some(NodeMenuAction::ExpandAsGraph) => {
                 self.expand_json_as_graph(&id);
                 self.save_session();
             }
             Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                if let Some(path) = self.node_file_path(&id) {
                     ui.ctx().copy_text(path);
                 }
             }
@@ -8351,22 +8318,7 @@ impl App {
                     node.group = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => {
-                if let Some(path) = self
-                    .nodes
-                    .get(&id)
-                    .and_then(|n| n.as_json())
-                    .filter(|json| json.key.is_none())
-                    .map(|json| json.path.clone())
-                {
-                    self.record_closed_node(ClosedNode::Json(path));
-                }
-                if self.json_viewer_node.as_deref() == Some(id.as_str()) {
-                    self.json_viewer_node = None;
-                }
-                self.remove_node(&id);
-                self.save_session();
-            }
+            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
             _ => {}
         }
         if action.is_some() || clicked_outside {
@@ -9068,7 +9020,7 @@ impl App {
         }
 
         if clicked.0 {
-            self.reveal_image(image_id);
+            self.reveal_node(image_id);
         }
         if clicked.1 {
             ui.ctx().copy_text(path);
@@ -9760,13 +9712,16 @@ impl App {
         let mut new_tab_parent: Option<Option<String>> = None;
         let mut clicked_focus: Option<String> = None;
         let mut close_requested: Option<String> = None;
-        let mut download_close_requested: Option<String> = None;
+        // Set by a Download/Note/Image/Pdf/Json card's hover ✕ -- all five
+        // close through the same `close_node_and_save` path their context
+        // menu's Delete uses. A tab's ✕ keeps `close_requested` (above) and
+        // a group's ✕ keeps `group_close_requested` (it dissolves, not closes).
+        let mut node_close_requested: Option<String> = None;
         let mut download_clicked: Option<String> = None;
         let mut pin_toggle_requested: Option<String> = None;
         let mut remove_from_group_requested: Option<String> = None;
         let mut tab_color_cycle_requested: Option<String> = None;
         let mut mute_toggle_requested: Option<String> = None;
-        let mut note_close_requested: Option<String> = None;
         // Set by `pending_new_node`'s own card -- unlike `new_tab_parent`
         // above (the toolbar's own jittered-position spawn), each of these
         // carries the exact world position that was right-clicked.
@@ -9774,10 +9729,7 @@ impl App {
         let mut pending_new_note_at: Option<egui::Vec2> = None;
         let mut pending_new_group_at: Option<egui::Vec2> = None;
         let mut pending_new_file_at: Option<egui::Vec2> = None;
-        let mut image_close_requested: Option<String> = None;
         let mut image_clicked: Option<String> = None;
-        let mut pdf_close_requested: Option<String> = None;
-        let mut json_close_requested: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
@@ -11667,7 +11619,7 @@ impl App {
                             );
                         }));
                         if close_response.clicked() {
-                            download_close_requested = Some(id.clone());
+                            node_close_requested = Some(id.clone());
                         }
                     }
 
@@ -11890,7 +11842,7 @@ impl App {
                             egui::Color32::from_black_alpha(200),
                         )
                     {
-                        note_close_requested = Some(id.clone());
+                        node_close_requested = Some(id.clone());
                     }
 
                     self.finish_draggable_node(&id, &response, is_hovered);
@@ -12016,7 +11968,7 @@ impl App {
                             ui.visuals().text_color(),
                         )
                     {
-                        image_close_requested = Some(id.clone());
+                        node_close_requested = Some(id.clone());
                     }
 
                     self.finish_draggable_node(&id, &response, is_hovered);
@@ -12025,7 +11977,7 @@ impl App {
                     // a drag) maximizes the image into Item view, the same
                     // gesture a Tab card uses. Skipped if the close button
                     // above already consumed this frame's click.
-                    if response.clicked() && image_close_requested.as_deref() != Some(id.as_str()) {
+                    if response.clicked() && node_close_requested.as_deref() != Some(id.as_str()) {
                         image_clicked = Some(id.clone());
                     }
 
@@ -12191,7 +12143,7 @@ impl App {
                             ui.visuals().text_color(),
                         )
                     {
-                        pdf_close_requested = Some(id.clone());
+                        node_close_requested = Some(id.clone());
                     }
 
                     self.finish_draggable_node(&id, &response, is_hovered);
@@ -12292,7 +12244,7 @@ impl App {
                             ui.visuals().text_color(),
                         )
                     {
-                        json_close_requested = Some(id.clone());
+                        node_close_requested = Some(id.clone());
                     }
 
                     if response.double_clicked() {
@@ -12954,11 +12906,11 @@ impl App {
                 self.start_transition_to_item(&id);
             }
         }
-        if let Some(id) = download_close_requested {
-            self.remove_node(&id);
+        if let Some(id) = node_close_requested {
+            self.close_node_and_save(&id);
         }
         if let Some(id) = download_clicked {
-            self.reveal_download(&id);
+            self.reveal_node(&id);
         }
         if let Some(id) = pin_toggle_requested {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
@@ -12985,10 +12937,6 @@ impl App {
         if let Some(id) = mute_toggle_requested {
             self.toggle_muted(&id);
         }
-        if let Some(id) = note_close_requested {
-            self.remove_node(&id);
-            self.save_session();
-        }
         // The empty-canvas card's own four actions -- each spawns at the
         // exact position that was right-clicked, unlike the toolbar
         // buttons above (always jittered around world center). New Tab is
@@ -13014,26 +12962,6 @@ impl App {
         }
         if pending_new_file_at.is_some() {
             self.add_file_node(pending_new_file_at);
-        }
-        // Image and PDF cards' close buttons share this exact handling (an
-        // image and a PDF are both freed from the GPU the same way) --
-        // `image_close_requested`/`pdf_close_requested` can't both be Some
-        // in the same frame (each is only ever set by its own card's close
-        // button, one click at a time), so `.or()` just picks whichever
-        // fired.
-        if let Some(id) = image_close_requested.or(pdf_close_requested) {
-            if let Some(gpu) = &mut self.gpu {
-                gpu.free_image(&id);
-            }
-            self.remove_node(&id);
-            self.save_session();
-        }
-        if let Some(id) = json_close_requested {
-            if self.json_viewer_node.as_deref() == Some(id.as_str()) {
-                self.json_viewer_node = None;
-            }
-            self.remove_node(&id);
-            self.save_session();
         }
         if group_selected_requested && !self.selected_tabs.is_empty() {
             let id = self.alloc_group_id();
@@ -14774,5 +14702,48 @@ mod tests {
         let actual = image_view_after_action(zoomed, ZoomChipAction::Reset100, image, body);
         assert_eq!(actual, ImageViewState { zoom: ImageZoom::Scale(1.0), pan: egui::Vec2::ZERO });
         assert_eq!(image_view_after_action(zoomed, ZoomChipAction::Fit, image, body), ImageViewState::default());
+    }
+
+    // `Tab` is left out for the same reason as the test above: `TabPayload`
+    // can't be constructed in a unit test. Its arm returns `None` by the
+    // match's exhaustiveness, and `close_node` routes tabs to `close_tab`
+    // (which keeps its own Recently Closed stack) before this is consulted.
+    #[test]
+    fn closed_node_for_records_only_undo_worthy_payloads() {
+        assert!(matches!(
+            closed_node_for(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
+            Some(ClosedNode::Note(text)) if text == "n"
+        ));
+        assert!(matches!(
+            closed_node_for(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 1, height: 1 })),
+            Some(ClosedNode::Image(path)) if path == "img.png"
+        ));
+        assert!(matches!(
+            closed_node_for(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
+            Some(ClosedNode::Pdf(path)) if path == "doc.pdf"
+        ));
+        assert!(matches!(
+            closed_node_for(&NodePayload::Json(JsonPayload {
+                path: "data.json".into(),
+                value: serde_json::Value::Null,
+                key: None,
+            })),
+            Some(ClosedNode::Json(path)) if path == "data.json"
+        ));
+        // A synthetic "Expand as Graph" leaf: never recorded.
+        assert!(closed_node_for(&NodePayload::Json(JsonPayload {
+            path: "data.json".into(),
+            value: serde_json::Value::Null,
+            key: Some("k".into()),
+        }))
+        .is_none());
+        assert!(closed_node_for(&NodePayload::Group(GroupPayload { name: "g".into() })).is_none());
+        assert!(closed_node_for(&NodePayload::Download(DownloadPayload {
+            path: "file.bin".into(),
+            bytes_received: 0,
+            total_bytes: None,
+            completed: true,
+        }))
+        .is_none());
     }
 }
