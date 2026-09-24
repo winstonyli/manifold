@@ -2399,6 +2399,18 @@ enum ItemNodeKind {
     Json,
 }
 
+/// Every kind, in the order Graph view draws their cards: a later kind
+/// draws, and takes the pointer, on top of an earlier one.
+const GRAPH_DRAW_ORDER: [ItemNodeKind; 7] = [
+    ItemNodeKind::Tab,
+    ItemNodeKind::Download,
+    ItemNodeKind::Note,
+    ItemNodeKind::Image,
+    ItemNodeKind::Pdf,
+    ItemNodeKind::Json,
+    ItemNodeKind::Group,
+];
+
 fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
     match payload {
         NodePayload::Tab(_) => ItemNodeKind::Tab,
@@ -6014,13 +6026,7 @@ impl App {
     fn current_level_settle_key(&self) -> (Option<String>, usize) {
         (
             self.current_group.clone(),
-            self.nodes_at_current_level(ItemNodeKind::Tab).len()
-                + self.nodes_at_current_level(ItemNodeKind::Download).len()
-                + self.nodes_at_current_level(ItemNodeKind::Note).len()
-                + self.nodes_at_current_level(ItemNodeKind::Image).len()
-                + self.nodes_at_current_level(ItemNodeKind::Pdf).len()
-                + self.nodes_at_current_level(ItemNodeKind::Json).len()
-                + self.nodes_at_current_level(ItemNodeKind::Group).len(),
+            GRAPH_DRAW_ORDER.iter().map(|&kind| self.nodes_at_current_level(kind).len()).sum(),
         )
     }
 
@@ -10232,13 +10238,9 @@ impl App {
         // function (drag-and-drop-into-group checks, the right-click
         // hit-test chain) that don't run every idle frame, so caching them
         // here would have added surface area without the same payoff.
-        let tabs_at_level = self.nodes_at_current_level(ItemNodeKind::Tab);
-        let downloads_at_level = self.nodes_at_current_level(ItemNodeKind::Download);
-        let notes_at_level = self.nodes_at_current_level(ItemNodeKind::Note);
-        let images_at_level = self.nodes_at_current_level(ItemNodeKind::Image);
-        let pdfs_at_level = self.nodes_at_current_level(ItemNodeKind::Pdf);
-        let jsons_at_level = self.nodes_at_current_level(ItemNodeKind::Json);
-        let groups_at_level = self.nodes_at_current_level(ItemNodeKind::Group);
+        let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
+        let [tabs_at_level, downloads_at_level, notes_at_level, images_at_level, pdfs_at_level, jsons_at_level, groups_at_level] =
+            &at_level;
 
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
@@ -10246,16 +10248,8 @@ impl App {
         // why. Uses this frame's not-yet-updated `graph_scene_rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
-        let lod_visible_count: usize = [
-            &tabs_at_level,
-            &downloads_at_level,
-            &notes_at_level,
-            &images_at_level,
-            &pdfs_at_level,
-            &jsons_at_level,
-            &groups_at_level,
-        ]
-        .into_iter()
+        let lod_visible_count: usize = at_level
+        .iter()
         .map(|ids| count_visible_nodes(&self.nodes, ids, self.graph_scene_rect))
         .sum();
         if self.graph_lod_simplified {
@@ -10594,13 +10588,7 @@ impl App {
             // redoing all seven scans a second time.
             let current_key = (
                 self.current_group.clone(),
-                tabs_at_level.len()
-                    + downloads_at_level.len()
-                    + notes_at_level.len()
-                    + images_at_level.len()
-                    + pdfs_at_level.len()
-                    + jsons_at_level.len()
-                    + groups_at_level.len(),
+                at_level.iter().map(Vec::len).sum(),
             );
             if self.graph_settled_key.as_ref() != Some(&current_key) {
                 self.settle_current_level();
@@ -10759,20 +10747,9 @@ impl App {
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
                 // Reverse draw order, so the card on top takes the
                 // right-click, the same card a left-click there would
-                // reach: Group is drawn last, then Json, Pdf, Image, Note,
-                // Download, and Tab first. Within one kind, later in
-                // `node_order` draws later, hence `.rev()`.
-                let hit = [
-                    ItemNodeKind::Group,
-                    ItemNodeKind::Json,
-                    ItemNodeKind::Pdf,
-                    ItemNodeKind::Image,
-                    ItemNodeKind::Note,
-                    ItemNodeKind::Download,
-                    ItemNodeKind::Tab,
-                ]
-                .into_iter()
-                .find_map(|kind| {
+                // reach. Within one kind, later in `node_order` draws
+                // later, hence the second `.rev()`.
+                let hit = GRAPH_DRAW_ORDER.into_iter().rev().find_map(|kind| {
                     self.nodes_at_current_level(kind)
                         .into_iter()
                         .rev()
@@ -10884,17 +10861,7 @@ impl App {
             minimap_size,
         );
         let world_bounds = self.bounds_for_level(
-            [
-                &tabs_at_level,
-                &downloads_at_level,
-                &notes_at_level,
-                &images_at_level,
-                &pdfs_at_level,
-                &jsons_at_level,
-                &groups_at_level,
-            ]
-            .into_iter()
-            .flatten(),
+            at_level.iter().flatten(),
         );
         let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
@@ -10902,46 +10869,18 @@ impl App {
             minimap_rect.center() + (p - world_bounds.center()) * minimap_scale
         };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
-        for id in tabs_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, ui.visuals().text_color());
-            }
-        }
-        for id in downloads_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, ui.visuals().weak_text_color());
-            }
-        }
-        for id in notes_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, NOTE_CARD_COLOR);
-            }
-        }
-        for id in images_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, ACCENT);
-            }
-        }
-        for id in pdfs_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, ACCENT);
-            }
-        }
-        for id in jsons_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 2.0, ACCENT);
-            }
-        }
-        for id in groups_at_level.clone() {
-            if let Some(node) = self.nodes.get(&id) {
-                let p = world_to_minimap(egui::Pos2::new(node.pos.x, node.pos.y));
-                overlay_painter.circle_filled(p, 3.0, ACCENT);
+        for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(&at_level) {
+            let (radius, color) = match kind {
+                ItemNodeKind::Tab => (2.0, ui.visuals().text_color()),
+                ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
+                ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
+                ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
+                ItemNodeKind::Group => (3.0, ACCENT),
+            };
+            for id in ids {
+                if let Some(node) = self.nodes.get(id) {
+                    overlay_painter.circle_filled(world_to_minimap(node.pos.to_pos2()), radius, color);
+                }
             }
         }
         let viewport_rect = egui::Rect::from_two_pos(
@@ -11754,11 +11693,11 @@ impl App {
                 // draws, and takes the pointer, on top of an earlier one.
                 // Each kind's own click action is applied here.
                 for (kind, ids) in [
-                    (ItemNodeKind::Download, &downloads_at_level),
-                    (ItemNodeKind::Note, &notes_at_level),
-                    (ItemNodeKind::Image, &images_at_level),
-                    (ItemNodeKind::Pdf, &pdfs_at_level),
-                    (ItemNodeKind::Json, &jsons_at_level),
+                    (ItemNodeKind::Download, downloads_at_level),
+                    (ItemNodeKind::Note, notes_at_level),
+                    (ItemNodeKind::Image, images_at_level),
+                    (ItemNodeKind::Pdf, pdfs_at_level),
+                    (ItemNodeKind::Json, jsons_at_level),
                 ] {
                     for id in ids.iter() {
                         // Read before the frame: a Note's `TextEdit` can lose
