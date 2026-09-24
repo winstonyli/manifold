@@ -96,6 +96,11 @@ pub struct Session {
     /// `true` = `ViewMode::Item` (named before that variant was renamed
     /// from `Tab`; kept so existing `session.json` files still load).
     pub view_mode_tab: bool,
+    /// The Image node Item view was showing (`App::viewed_image`), if any
+    /// -- `focused` stays tab-only. `#[serde(default)]` so older files
+    /// still load.
+    #[serde(default)]
+    pub viewed_image: Option<String>,
     pub next_tab_id: u64,
     #[serde(default)]
     pub next_note_id: u64,

@@ -288,6 +288,8 @@ The whole tab graph (which tabs, their url/engine/graph position, who opened who
 
 Each engine-host writes its own log to `%TEMP%\manifold-<tab_id>.log`.
 
+**Image view**: clicking an image card maximizes it into Item view (the same animated expand/shrink a tab card uses; Escape or the "Graph" button returns). The toolbar is the shared Item toolbar frame -- "Graph" at the left, the Help/Settings chip at the right -- with the image's own content between: its filename and pixel size, a zoom chip (−, percentage, +, Fit; the same chip the Graph toolbar uses), and Open Containing Folder / Copy Path. The image opens at Fit (contained, never above 100%); the mouse wheel zooms about the cursor (10%–1600%), dragging pans (never past the image's edges), and `Ctrl+=`/`Ctrl+-`/`Ctrl+0` zoom it. A maximized image is restored on relaunch (at Fit). Tab-only shortcuts (Ctrl+W, F5, …) keep acting on the last focused tab, as they do from Graph view.
+
 ## Headless mode (automated testing)
 
 ```bash
@@ -301,7 +303,7 @@ Commands:
 - `SCROLL <x> <y> <delta_x> <delta_y>`
 - `ADDRESSBAR <text>` — sets the address bar's text and focus state directly and recomputes suggestions (headless has no way to synthesize a real click-driven egui focus transfer, since `winit::event::KeyEvent` has no public constructor outside the winit crate — see `debug_control`'s doc comment).
 - `ENTER` — navigates using the address bar's current text.
-- `ESCAPE` — dismisses the suggestion dropdown, or leaves Tab view for Graph view if none is showing.
+- `ESCAPE` — dismisses the suggestion dropdown, or leaves Item view (a maximized tab or image) for Graph view if none is showing.
 - `ARROWDOWN` / `ARROWUP` — moves the address-bar dropdown's highlighted row (wrapping at both ends); a following `ENTER` accepts it.
 - `TYPE <text>` — sends each character to the focused tab's page (not the address bar).
 - `KEYPAGE <name>` — sends a KeyDown+KeyUp of the named key (`Enter`, `Backspace`, `ArrowLeft`, a single letter/digit, etc.) to the focused tab's page.

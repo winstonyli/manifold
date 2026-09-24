@@ -3280,15 +3280,25 @@ impl App {
     /// (early in a fresh navigation), and to the plain app name if nothing
     /// is focused at all (no tabs open, or a tab that's since vanished).
     /// Called once a frame; only actually calls `Window::set_title` when
-    /// the computed title changed from `last_window_title`.
+    /// the computed title changed from `last_window_title`. In Image view,
+    /// the image's filename instead.
     fn update_window_title(&mut self) {
         let Some(window) = &self.window else { return };
-        let title = self
-            .focused
+        let image_title = self
+            .viewed_image
             .as_ref()
+            .filter(|_| self.view_mode == ViewMode::Item)
             .and_then(|id| self.nodes.get(id))
-            .and_then(|n| n.as_tab())
-            .map(|n| if n.title.is_empty() { n.url.as_str() } else { n.title.as_str() })
+            .and_then(|n| n.as_image())
+            .map(|i| download_filename(&i.path).to_owned());
+        let title = image_title
+            .or_else(|| {
+                self.focused
+                    .as_ref()
+                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|n| n.as_tab())
+                    .map(|n| if n.title.is_empty() { n.url.clone() } else { n.title.clone() })
+            })
             .filter(|t| !t.is_empty())
             .map(|t| format!("{t} — manifold"))
             .unwrap_or_else(|| "manifold".to_string());
@@ -4206,6 +4216,7 @@ impl App {
             jsons,
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Item),
+            viewed_image: self.viewed_image.clone(),
             next_tab_id: self.next_tab_id,
             next_note_id: self.next_note_id,
             next_image_id: self.next_image_id,
@@ -4293,7 +4304,13 @@ impl App {
             .cloned()
             .or_else(|| session.tabs.first().map(|t| t.id.clone()));
         self.view_mode = if session.view_mode_tab { ViewMode::Item } else { ViewMode::Graph };
-        if matches!(self.view_mode, ViewMode::Item) {
+        // Images were inserted above, so a still-valid id is already a node.
+        self.viewed_image = session
+            .viewed_image
+            .clone()
+            .filter(|_| self.view_mode == ViewMode::Item)
+            .filter(|id| self.nodes.get(id).and_then(|n| n.as_image()).is_some());
+        if self.showing_tab_view() {
             // The focused tab hasn't actually spawned yet — this is the
             // exact same "still starting up" gap crash recovery has, so
             // reuse its own spinner-instead-of-snapping-to-Graph path
