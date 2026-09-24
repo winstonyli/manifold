@@ -5,8 +5,8 @@
 # was produced and isn't suspiciously small, and asserts on app state
 # (view mode, the focused tab's URL) read back through EXPORTSESSION, so
 # it catches wrong behavior as well as crashes. Exercises the address-bar
-# autocomplete flow end to end: launch (into Graph view), click the root
-# node to enter Tab view, type a query, screenshot the suggestion dropdown,
+# autocomplete flow end to end: launch (into Graph view), open the root
+# node into Tab view, type a query, screenshot the suggestion dropdown,
 # click a suggestion, screenshot the result; arrow-key highlight +
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
 # quit.
@@ -141,16 +141,14 @@ sleep 4 # startup: root tab spawn + first Servo frame
 send "RESIZE 816 639"
 sleep 1
 
-# The app now launches straight into Graph view (M5-polish-era change) —
-# with only the root tab and no edges, physics has nothing to do but pull
-# it toward the world origin, which maps to the window's screen center at
-# this pinned size (measured: ~(407, 332) at 816x639 during manual
-# verification of the shrink/expand transition). Click it to enter Tab
-# view before the address-bar flow below, which assumes Tab view's chrome
-# is on screen; the 220ms shrink/expand transition needs a moment to land.
-send "CLICK 407 332"
+# The app launches into Graph view with the root tab focused; GRAPHOPEN
+# opens it into Tab view, which the address-bar flow below needs. Not a
+# CLICK at the node's expected spot: that missed about 2 runs in 5 in a
+# probe on a busy GPU (cause unconfirmed; likely the click being
+# hit-tested against a frame drawn before the RESIZE).
+send "GRAPHOPEN"
 sleep 1
-check_state tab_view "clicking the root node enters Tab view" 'd["view_mode_tab"]'
+check_state tab_view "GRAPHOPEN enters Tab view" 'd["view_mode_tab"]'
 
 send "ADDRESSBAR weather"
 sleep 3 # debounce (~200ms) + real DuckDuckGo suggestion fetch over the network
