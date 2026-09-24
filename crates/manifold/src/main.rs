@@ -655,25 +655,52 @@ fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
     }
 }
 
+/// Any node's own card size, every kind -- the one source the card
+/// frame (`App::draw_graph_card`), `bounds_for_level`, the LOD visible
+/// count and the right-click hit test all read, so none of them can
+/// disagree about how big a given card is (they used to each carry
+/// their own per-kind copy, and the LOD count approximated Image/Pdf).
+fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
+    match payload {
+        NodePayload::Tab(_) => GRAPH_NODE_SIZE,
+        NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
+        NodePayload::Note(_) => NOTE_NODE_SIZE,
+        NodePayload::Image(image) => image_node_card_size(image.width, image.height),
+        NodePayload::Pdf(pdf) => pdf_card_size(pdf),
+        NodePayload::Json(_) => JSON_NODE_SIZE,
+        NodePayload::Group(_) => GROUP_NODE_SIZE,
+    }
+}
+
+/// `node`'s card in world space: `node_card_size` centered on its position.
+fn node_card_rect(node: &GraphNode) -> egui::Rect {
+    egui::Rect::from_center_size(egui::Pos2::new(node.pos.x, node.pos.y), node_card_size(&node.payload))
+}
+
+/// What the Graph filter box matches a Download/Note/Image/Pdf/Json card
+/// against: a download's full path, a note's text, a file node's
+/// filename. Tab and Group cards match their own fields (title + URL,
+/// name) in their own loops and never call this; they get `""`.
+fn card_filter_text(payload: &NodePayload) -> &str {
+    match payload {
+        NodePayload::Download(download) => &download.path,
+        NodePayload::Note(note) => &note.text,
+        NodePayload::Image(image) => download_filename(&image.path),
+        NodePayload::Pdf(pdf) => download_filename(&pdf.path),
+        NodePayload::Json(json) => download_filename(&json.path),
+        NodePayload::Tab(_) | NodePayload::Group(_) => "",
+    }
+}
+
 /// How many of `ids` (one kind's own node-id list at the current level)
-/// have a `size`-sized card intersecting `viewport` -- the exact same
-/// per-node rect the render loops below build for their own cull check.
+/// have a card (`node_card_rect`) intersecting `viewport` -- the exact
+/// same per-node rect the render loops build for their own cull check.
 /// Shared by `build_graph_ui`'s LOD pre-pass (see `LOD_SIMPLIFY_COUNT`)
 /// so it counts "visible" precisely the way culling already does, rather
 /// than a second, slightly different notion of visibility.
-fn count_visible_nodes(
-    nodes: &NodeMap,
-    ids: &[String],
-    size: egui::Vec2,
-    viewport: egui::Rect,
-) -> usize {
+fn count_visible_nodes(nodes: &NodeMap, ids: &[String], viewport: egui::Rect) -> usize {
     ids.iter()
-        .filter(|id| {
-            nodes.get(id.as_str()).is_some_and(|n| {
-                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), size)
-                    .intersects(viewport)
-            })
-        })
+        .filter(|id| nodes.get(id.as_str()).is_some_and(|n| node_card_rect(n).intersects(viewport)))
         .count()
 }
 
@@ -5080,80 +5107,23 @@ impl App {
     /// bounding box has no sensible center/size to frame.
     fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
         self.bounds_for_level(
-            &self.nodes_at_current_level(ItemNodeKind::Tab),
-            &self.nodes_at_current_level(ItemNodeKind::Download),
-            &self.nodes_at_current_level(ItemNodeKind::Note),
-            &self.nodes_at_current_level(ItemNodeKind::Image),
-            &self.nodes_at_current_level(ItemNodeKind::Pdf),
-            &self.nodes_at_current_level(ItemNodeKind::Json),
-            &self.nodes_at_current_level(ItemNodeKind::Group),
+            self.node_order
+                .iter()
+                .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group)),
         )
     }
 
     /// Same computation `fit_all_nodes_scene_rect` needs, but taking
-    /// already-known id lists for a level instead of recomputing them --
-    /// lets the minimap (drawn every frame, well after `build_graph_ui`'s
-    /// own per-frame `*_at_level` locals are already in hand) reuse this
-    /// without redoing all seven level scans a second time per frame.
-    #[allow(clippy::too_many_arguments)]
-    fn bounds_for_level(
-        &self,
-        tabs: &[String],
-        downloads: &[String],
-        notes: &[String],
-        images: &[String],
-        pdfs: &[String],
-        jsons: &[String],
-        groups: &[String],
-    ) -> egui::Rect {
+    /// already-known ids for a level instead of recomputing them -- lets
+    /// the minimap (drawn every frame, well after `build_graph_ui`'s own
+    /// per-frame `*_at_level` locals are already in hand) reuse this
+    /// without redoing the level scans a second time per frame.
+    fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
         const MARGIN: f32 = 60.0;
-        let mut bounds = egui::Rect::NOTHING;
-        for id in tabs {
-            if let Some(node) = self.nodes.get(id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
-            }
-        }
-        for id in downloads {
-            if let Some(node) = self.nodes.get(id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, DOWNLOAD_NODE_SIZE));
-            }
-        }
-        for id in notes {
-            if let Some(node) = self.nodes.get(id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, NOTE_NODE_SIZE));
-            }
-        }
-        for id in images {
-            if let Some(node) = self.nodes.get(id).and_then(|n| Some((n, n.as_image()?))) {
-                let (n, image) = node;
-                let center = egui::Pos2::new(n.pos.x, n.pos.y);
-                let size = image_node_card_size(image.width, image.height);
-                bounds = bounds.union(egui::Rect::from_center_size(center, size));
-            }
-        }
-        for id in pdfs {
-            if let Some(node) = self.nodes.get(id).and_then(|n| Some((n, n.as_pdf()?))) {
-                let (n, pdf) = node;
-                let center = egui::Pos2::new(n.pos.x, n.pos.y);
-                let size = pdf_card_size(pdf);
-                bounds = bounds.union(egui::Rect::from_center_size(center, size));
-            }
-        }
-        for id in jsons {
-            if let Some(node) = self.nodes.get(id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, JSON_NODE_SIZE));
-            }
-        }
-        for id in groups {
-            if let Some(node) = self.nodes.get(id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, GROUP_NODE_SIZE));
-            }
-        }
+        let bounds = ids
+            .into_iter()
+            .filter_map(|id| self.nodes.get(id))
+            .fold(egui::Rect::NOTHING, |bounds, node| bounds.union(node_card_rect(node)));
         if !bounds.is_finite() {
             return default_graph_scene_rect();
         }
@@ -9496,21 +9466,23 @@ impl App {
         let groups_at_level = self.nodes_at_current_level(ItemNodeKind::Group);
 
         // Level-of-detail: count how many nodes at this level actually
-        // intersect the viewport (approximating a variable-size Image/Pdf
-        // card's footprint with its own typical/max size -- this only
-        // feeds a threshold decision, not real culling, so that's close
-        // enough), then flip `graph_lod_simplified` with a hysteresis gap
-        // -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for why. Uses
-        // this frame's not-yet-updated `graph_scene_rect`, the same one-
-        // frame-stale viewport the render loops' own cull check already
-        // accepts.
-        let lod_visible_count = count_visible_nodes(&self.nodes, &tabs_at_level, GRAPH_NODE_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &downloads_at_level, DOWNLOAD_NODE_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &notes_at_level, NOTE_NODE_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &images_at_level, IMAGE_NODE_MAX_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &pdfs_at_level, PDF_PENDING_NODE_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &jsons_at_level, JSON_NODE_SIZE, self.graph_scene_rect)
-            + count_visible_nodes(&self.nodes, &groups_at_level, GROUP_NODE_SIZE, self.graph_scene_rect);
+        // intersect the viewport, then flip `graph_lod_simplified` with a
+        // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
+        // why. Uses this frame's not-yet-updated `graph_scene_rect`, the
+        // same one-frame-stale viewport the render loops' own cull check
+        // already accepts.
+        let lod_visible_count: usize = [
+            &tabs_at_level,
+            &downloads_at_level,
+            &notes_at_level,
+            &images_at_level,
+            &pdfs_at_level,
+            &jsons_at_level,
+            &groups_at_level,
+        ]
+        .into_iter()
+        .map(|ids| count_visible_nodes(&self.nodes, ids, self.graph_scene_rect))
+        .sum();
         if self.graph_lod_simplified {
             if lod_visible_count < LOD_RESTORE_COUNT {
                 self.graph_lod_simplified = false;
@@ -10005,100 +9977,35 @@ impl App {
             // other popup here already follows.
             self.pending_new_node = None;
             if let Some(pos) = pointer_pos.filter(|p| scene_outer_rect.contains(*p)) {
-                // A press landing on a group's own card opens its context
-                // menu instead of starting a marquee -- groups aren't
-                // marquee-selectable (only tabs are, see
-                // `nearest_tab_in_direction`'s own doc comment on why
-                // `self.focused` stays tab-only), so a right-click there
+                // A right-press landing on any card opens that card's
+                // context menu instead of starting a marquee -- groups
+                // specifically aren't marquee-selectable (only tabs are,
+                // see `nearest_tab_in_direction`'s own doc comment on why
+                // `self.focused` stays tab-only), so a right-click on one
                 // would otherwise just compute an empty selection.
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
-                let hit_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
-                    self.nodes.get(gid).is_some_and(|g| {
-                        egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
-                            .contains(world_pos)
-                    })
+                // Reverse draw order, so the card on top takes the
+                // right-click, the same card a left-click there would
+                // reach: Group is drawn last, then Json, Pdf, Image, Note,
+                // Download, and Tab first. Within one kind, later in
+                // `node_order` draws later, hence `.rev()`.
+                let hit = [
+                    ItemNodeKind::Group,
+                    ItemNodeKind::Json,
+                    ItemNodeKind::Pdf,
+                    ItemNodeKind::Image,
+                    ItemNodeKind::Note,
+                    ItemNodeKind::Download,
+                    ItemNodeKind::Tab,
+                ]
+                .into_iter()
+                .find_map(|kind| {
+                    self.nodes_at_current_level(kind)
+                        .into_iter()
+                        .rev()
+                        .find(|id| self.nodes.get(id).is_some_and(|n| node_card_rect(n).contains(world_pos)))
                 });
-                let hit_download = hit_group.is_none()
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Download).into_iter().find(|did| {
-                            self.nodes.get(did).is_some_and(|d| {
-                                egui::Rect::from_center_size(egui::Pos2::new(d.pos.x, d.pos.y), DOWNLOAD_NODE_SIZE)
-                                    .contains(world_pos)
-                            })
-                        })
-                    })
-                    .flatten();
-                let hit_note = (hit_group.is_none() && hit_download.is_none())
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Note).into_iter().find(|nid| {
-                            self.nodes.get(nid).is_some_and(|n| {
-                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), NOTE_NODE_SIZE)
-                                    .contains(world_pos)
-                            })
-                        })
-                    })
-                    .flatten();
-                let hit_image = (hit_group.is_none() && hit_download.is_none() && hit_note.is_none())
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Image).into_iter().find(|iid| {
-                            self.nodes.get(iid).is_some_and(|n| {
-                                n.as_image().is_some_and(|image| {
-                                    let size = image_node_card_size(image.width, image.height);
-                                    egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), size)
-                                        .contains(world_pos)
-                                })
-                            })
-                        })
-                    })
-                    .flatten();
-                let hit_pdf = (hit_group.is_none()
-                    && hit_download.is_none()
-                    && hit_note.is_none()
-                    && hit_image.is_none())
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Pdf).into_iter().find(|pid| {
-                            self.nodes.get(pid).is_some_and(|n| {
-                                n.as_pdf().is_some_and(|pdf| {
-                                    let size = pdf_card_size(pdf);
-                                    egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), size)
-                                        .contains(world_pos)
-                                })
-                            })
-                        })
-                    })
-                    .flatten();
-                let hit_json = (hit_group.is_none()
-                    && hit_download.is_none()
-                    && hit_note.is_none()
-                    && hit_image.is_none()
-                    && hit_pdf.is_none())
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Json).into_iter().find(|jid| {
-                            self.nodes.get(jid).is_some_and(|n| {
-                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), JSON_NODE_SIZE)
-                                    .contains(world_pos)
-                            })
-                        })
-                    })
-                    .flatten();
-                let hit_tab = (hit_group.is_none()
-                    && hit_download.is_none()
-                    && hit_note.is_none()
-                    && hit_image.is_none()
-                    && hit_pdf.is_none()
-                    && hit_json.is_none())
-                    .then(|| {
-                        self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|tid| {
-                            self.nodes.get(tid).is_some_and(|n| {
-                                egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), GRAPH_NODE_SIZE)
-                                    .contains(world_pos)
-                            })
-                        })
-                    })
-                    .flatten();
-                if let Some(id) =
-                    hit_group.or(hit_download).or(hit_note).or(hit_image).or(hit_pdf).or(hit_json).or(hit_tab)
-                {
+                if let Some(id) = hit {
                     self.node_menu = Some((id, pos));
                     self.rect_select_start = None;
                 } else {
@@ -10204,13 +10111,17 @@ impl App {
             minimap_size,
         );
         let world_bounds = self.bounds_for_level(
-            &tabs_at_level,
-            &downloads_at_level,
-            &notes_at_level,
-            &images_at_level,
-            &pdfs_at_level,
-            &jsons_at_level,
-            &groups_at_level,
+            [
+                &tabs_at_level,
+                &downloads_at_level,
+                &notes_at_level,
+                &images_at_level,
+                &pdfs_at_level,
+                &jsons_at_level,
+                &groups_at_level,
+            ]
+            .into_iter()
+            .flatten(),
         );
         let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
@@ -14371,5 +14282,42 @@ mod tests {
             assert_eq!(node_menu_config(ItemNodeKind::Group, has_group), None);
             assert_eq!(node_menu_config(ItemNodeKind::Tab, has_group), None);
         }
+    }
+
+    #[test]
+    fn node_card_size_matches_each_kinds_card() {
+        let download = NodePayload::Download(DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: false });
+        assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
+        assert_eq!(node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
+        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into() })), GROUP_NODE_SIZE);
+        let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None });
+        assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
+
+        // Image: a small picture keeps its own size; an oversized one is
+        // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
+        let image = |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height });
+        assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
+        let big = node_card_size(&image(100_000, 50_000));
+        assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
+        assert!((big.x / big.y - 2.0).abs() < 1e-3);
+
+        // Pdf: pending and failed use the fixed pending box; rendered uses
+        // the page's own size through the same image fitting.
+        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
+        assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
+        assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
+        assert_eq!(node_card_size(&pdf(Some(Ok(PdfOutcome { width: 40, height: 20, page_count: 3 })))), egui::vec2(40.0, 20.0));
+        assert_eq!(node_card_size(&pdf(Some(Ok(PdfOutcome { width: 100_000, height: 50_000, page_count: 1 })))), big);
+    }
+
+    #[test]
+    fn card_filter_text_matches_each_kinds_filter_input() {
+        let download = NodePayload::Download(DownloadPayload { path: "C:/dl/f.bin".into(), bytes_received: 0, total_bytes: None, completed: true });
+        // Download filters on its full path; the file kinds on the filename only.
+        assert_eq!(card_filter_text(&download), "C:/dl/f.bin");
+        assert_eq!(card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false })), "buy milk");
+        assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1 })), "cat.png");
+        assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), "paper.pdf");
+        assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None })), "x.json");
     }
 }
