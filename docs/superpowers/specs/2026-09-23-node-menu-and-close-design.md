@@ -188,3 +188,4 @@ Found while writing the implementation plan; these supersede the sections below 
   `ItemNodeKind::Group`'s own render branch, not to the shared card frame
   (`paint_card_body`/`card_style`/`draw_node_close_button` are never touched
   by that branch and were unaffected either way).
+- A node menu's fade-out re-renders the menu body from the node's *current* state, so it can change while it fades: after "Remove from Group", the fading menu drops its "Remove from Group" row and shrinks. On screen the fade lasts a few frames. It was plainly visible headless, where frames are sparse (`rf-removed.png` in the `WAITTABS` work). A fix could fade out the cached last-drawn config instead (pre-existing).

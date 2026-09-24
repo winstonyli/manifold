@@ -37,20 +37,18 @@ use crate::UserEvent;
 /// held past its max click duration (~0.8 s) as a long press, not a click.
 /// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
 /// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
-/// before a `SCREENSHOT` meant to show it. The stdin reader posts one event
-/// per line with no pacing between them, so unpaced mouse commands (a
-/// `MOUSEDOWN`/`MOUSEMOVE`/`MOUSEUP` sequence, or back-to-back `CLICK`s) can
-/// all land in the same egui frame and no drag or click registers at all --
-/// put a `sleep` of roughly 0.15-0.5 s between mouse commands. A `CLICK`
-/// may only be processed when the *next* event arrives, so `MOUSEMOVE`
-/// near the same spot before moving the pointer away, or the click lands
-/// wherever it moved to. Open a right-click menu with a spaced
-/// `MOUSEDOWN`/`MOUSEUP ... right`, not `CLICK ... right`: a menu's first
-/// frame is egui's sizing pass, which may place it away from the
-/// pointer, and a release in that same frame counts as a click outside
-/// it, which closes it. First-launch demo tabs spawn asynchronously and can
-/// take 30 s or more headless; until the focused tab has spawned, commands
-/// that need it (e.g. `ADDDOWNLOAD`) do nothing.
+/// before a `SCREENSHOT` meant to show it, and before a `MOUSEDOWN` on a
+/// card (without it, a right-click there opens the canvas menu). Each
+/// command renders its own frame in headless mode (see
+/// `UserEvent::Debug`'s handler), so mouse commands need no `sleep`
+/// between them; animations (menu fades, group drill-in) still take real
+/// time. Open a right-click menu with `MOUSEDOWN`/`MOUSEUP ... right`, not
+/// `CLICK ... right`: a menu's first frame is egui's sizing pass, which may
+/// place it away from the pointer, and a release in that same frame counts
+/// as a click outside it, which closes it. First-launch demo tabs spawn
+/// asynchronously and can take 30 s or more headless; `WAITTABS` waits for
+/// them, since until the focused tab has spawned, commands that need it
+/// (e.g. `ADDDOWNLOAD`) do nothing.
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },
@@ -279,6 +277,16 @@ pub enum DebugCommand {
     /// aid, not a way to simulate real first-launch persistence. See
     /// `App::spawn_first_launch_demo`.
     TriggerFirstLaunchDemo,
+    /// `WAITTABS [secs]` -- blocks the stdin reader (so later lines wait
+    /// too) until no tab spawn is in flight, or `secs` (default 60) pass.
+    /// Headless tab spawns are async and can take 30 s or more (the
+    /// first-launch demo's included), so this replaces guessing a `sleep`.
+    /// Handled by `spawn_stdin_reader` itself, which sends
+    /// `NotifyWhenTabsSpawned`; never reaches the app.
+    WaitTabs(std::time::Duration),
+    /// Internal, sent only by `spawn_stdin_reader` for `WAITTABS`: the app
+    /// sends `()` on this once `App::tab_spawns_in_flight` is zero.
+    NotifyWhenTabsSpawned(std::sync::mpsc::Sender<()>),
     /// `HELP` (or `?`) -- prints `COMMAND_HELP` to stderr. See that table's
     /// own doc comment for why this exists and its one maintenance cost.
     Help,
@@ -366,6 +374,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ADDPDF path", "Add a PDF node from `path`"),
     ("ADDJSON path", "Add a JSON node from `path`"),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
+    ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
@@ -571,6 +580,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDDOWNLOAD" => Some(DebugCommand::AddDownload(rest.to_string())).filter(|_| !rest.is_empty()),
+        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(
+            if rest.is_empty() { 60.0 } else { rest.parse().ok().filter(|s: &f64| *s >= 0.0)? },
+        ))),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
@@ -607,6 +619,15 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         for line in stdin.lock().lines() {
             let Ok(line) = line else { break };
             match parse_line(&line) {
+                Some(DebugCommand::WaitTabs(timeout)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    if proxy.send_event(UserEvent::Debug(DebugCommand::NotifyWhenTabsSpawned(tx))).is_err() {
+                        break;
+                    }
+                    if rx.recv_timeout(timeout).is_err() {
+                        eprintln!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing");
+                    }
+                }
                 Some(cmd) => {
                     if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
                         break;

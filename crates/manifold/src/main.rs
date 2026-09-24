@@ -2807,6 +2807,12 @@ struct App {
     view_mode: ViewMode,
     next_tab_id: u64,
     next_download_id: u64,
+    /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
+    /// hasn't been handled yet. Read by the headless `WAITTABS` command,
+    /// whose waiting senders sit in `tabs_spawned_waiters` until this
+    /// reaches zero.
+    tab_spawns_in_flight: usize,
+    tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     next_group_id: u64,
     next_note_id: u64,
     next_image_id: u64,
@@ -3264,6 +3270,8 @@ impl Default for App {
             view_mode: ViewMode::Item,
             next_tab_id: 0,
             next_download_id: 0,
+            tab_spawns_in_flight: 0,
+            tabs_spawned_waiters: Vec::new(),
             next_group_id: 0,
             next_note_id: 0,
             next_image_id: 0,
@@ -4689,6 +4697,7 @@ impl App {
             .event_proxy
             .clone()
             .expect("event_proxy set in main before any tab spawn");
+        self.tab_spawns_in_flight += 1;
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(kind, &id, &url);
             let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome {
@@ -4716,6 +4725,12 @@ impl App {
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome { id, parent, group, pinned, color, zoom_factor, url, pos, vel, purpose, result } =
             outcome;
+        self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
+        if self.tab_spawns_in_flight == 0 {
+            for waiter in self.tabs_spawned_waiters.drain(..) {
+                let _ = waiter.send(());
+            }
+        }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
@@ -12537,7 +12552,19 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Debug(cmd) => self.handle_debug_command(event_loop, cmd),
+            UserEvent::Debug(cmd) => {
+                self.handle_debug_command(event_loop, cmd);
+                // The off-screen headless window gets `RedrawRequested`
+                // (WM_PAINT) only sporadically -- measured ~40 frames in
+                // 20 s, up to a second apart -- so several commands could
+                // land in one frame: a `MOUSEDOWN` and the `MOUSEMOVE`s after
+                // it were hit-tested at the pointer's final position, turning
+                // a card drag into a background pan. Rendering a frame right
+                // here gives every command its own frame.
+                if self.headless {
+                    self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
+                }
+            }
             UserEvent::TabSpawned(outcome) => self.handle_tab_spawn_result(outcome),
         }
     }
@@ -13230,6 +13257,15 @@ impl App {
             DebugCommand::AddJson(path) => {
                 if self.insert_json_node(path) {
                     self.save_session();
+                }
+            }
+            // Only ever intercepted by the stdin reader itself.
+            DebugCommand::WaitTabs(_) => {}
+            DebugCommand::NotifyWhenTabsSpawned(waiter) => {
+                if self.tab_spawns_in_flight == 0 {
+                    let _ = waiter.send(());
+                } else {
+                    self.tabs_spawned_waiters.push(waiter);
                 }
             }
             DebugCommand::AddDownload(path) => {
