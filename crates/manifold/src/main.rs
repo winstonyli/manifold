@@ -1584,6 +1584,14 @@ const IMAGE_ZOOM_MAX: f32 = 16.0;
 /// out cancel exactly.
 const IMAGE_WHEEL_ZOOM_RATE: f32 = 0.002;
 
+/// `render_zoom_chip`'s own on-screen width in the Image toolbar row,
+/// including the gap `render_image_toolbar_content`'s identity label
+/// leaves before it -- measured live (cursor-position delta across the
+/// `render_zoom_chip` call, 1300×800 window) since the chip is drawn
+/// after the label in the same row and so isn't known yet when the label
+/// picks its own max width.
+const IMAGE_ZOOM_CHIP_RESERVED_WIDTH: f32 = 171.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ImageZoom {
     /// Contain within the body, never above 100% (`image_fit_scale`).
@@ -1631,6 +1639,18 @@ fn image_fit_scale(image: egui::Vec2, body: egui::Vec2) -> f32 {
         return 1.0;
     }
     (body.x / image.x).min(body.y / image.y).clamp(IMAGE_ZOOM_MIN, 1.0)
+}
+
+/// Whether a just-(re)spawned tab's engine view should be shown, used by
+/// `handle_tab_spawn_result`. The focused tab stays hidden while Image view
+/// is up front of it (relaunching straight into Image view, or a crash
+/// respawn of the tab hidden behind an open image) -- `focused` keeps
+/// pointing at it per the Item-view design (see the design doc's Plan-time
+/// corrections on `App::focused`), but nothing should render or receive
+/// input for it until the image is closed. A split's secondary pane is
+/// always visible regardless, same as before this fn existed.
+fn spawned_tab_visible(is_focused: bool, is_split: bool, image_view_showing: bool) -> bool {
+    (is_focused && !image_view_showing) || is_split
 }
 
 fn image_display_rect(body: egui::Rect, image: egui::Vec2, scale: f32, pan: egui::Vec2) -> egui::Rect {
@@ -1804,7 +1824,8 @@ enum TransitionKind {
 /// view's node layout as the backdrop (for *either* direction — it's the
 /// one screen both endpoints have a coherent position in) with `node_id`'s
 /// live content quad drawn on top at an interpolated rect, rather than
-/// switching `view_mode` instantly. See `App::content_rect_for_frame`.
+/// switching `view_mode` instantly. See `App::transition_content_rect_points`
+/// (Tab) and `App::image_transition_frame` (Image).
 struct Transition {
     node_id: String,
     kind: TransitionKind,
@@ -2834,7 +2855,7 @@ struct App {
     pending_debug_arrow_up: bool,
     /// Set by `Ctrl+L`/headless `FOCUSADDRESS` (see
     /// `App::focus_address_bar_shortcut`), consumed the next time
-    /// `build_item_ui` builds the address bar's `TextEdit` — unlike the
+    /// `build_tab_view_ui` builds the address bar's `TextEdit` — unlike the
     /// `pending_debug_*` flags above, this drives a *real* `request_focus()`
     /// call on the real widget (this is the one shortcut where a real user
     /// genuinely wants real, persistent egui focus, not just the app-state
@@ -2847,7 +2868,7 @@ struct App {
     /// immediately in that case could drop the pending command/screenshot
     /// before any frame ever consumed it (`event_loop.exit()` gives no
     /// guarantee a `RedrawRequested` runs first). Deferring one frame lets
-    /// `build_item_ui`/etc. consume the pending flag, or lets `RedrawRequested`
+    /// `build_tab_view_ui`/etc. consume the pending flag, or lets `RedrawRequested`
     /// actually capture and save the pending screenshot, normally;
     /// `RedrawRequested`'s handler checks this and exits right after.
     quit_after_next_redraw: bool,
@@ -2967,7 +2988,7 @@ struct App {
     find_match_case: bool,
     find_result: Option<(u32, u32)>,
     /// Set by `Ctrl+F`/headless `OPENFINDBAR`, consumed the next time
-    /// `build_item_ui` builds the find bar's `TextEdit` — same "needs a
+    /// `build_tab_view_ui` builds the find bar's `TextEdit` — same "needs a
     /// frame to exist as a widget to focus" reason as
     /// `pending_focus_address_bar`.
     pending_focus_find_bar: bool,
@@ -4216,7 +4237,14 @@ impl App {
             jsons,
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Item),
-            viewed_image: self.viewed_image.clone(),
+            // `viewed_image` stays `Some` while Settings is open on top of
+            // Image view (`open_settings_page` only swaps `view_mode`, so
+            // it can restore it via `settings_return_view`) -- the
+            // invariant is `viewed_image` is `Some` only while
+            // `view_mode == Item` (see the design doc's Plan-time
+            // corrections), so a snapshot taken from Settings must not
+            // write a `viewed_image` alongside `view_mode_tab: false`.
+            viewed_image: self.viewed_image.clone().filter(|_| self.view_mode == ViewMode::Item),
             next_tab_id: self.next_tab_id,
             next_note_id: self.next_note_id,
             next_image_id: self.next_image_id,
@@ -4310,6 +4338,10 @@ impl App {
             .clone()
             .filter(|_| self.view_mode == ViewMode::Item)
             .filter(|id| self.nodes.get(id).and_then(|n| n.as_image()).is_some());
+        // Reset zoom/pan rather than carrying over whatever the previous
+        // image (or this same session's own stale on-disk value) left
+        // behind -- a loaded session's `viewed_image` always opens at Fit.
+        self.image_view = ImageViewState::default();
         if self.showing_tab_view() {
             // The focused tab hasn't actually spawned yet — this is the
             // exact same "still starting up" gap crash recovery has, so
@@ -4600,7 +4632,11 @@ impl App {
                 // which arrives as an ordinary `Respawn`, not `Split` --
                 // see `SpawnPurpose::Split`'s own doc comment.
                 let is_split = matches!(purpose, SpawnPurpose::Split) || self.split_tab.as_deref() == Some(id.as_str());
-                let visible = is_focused || is_split;
+                // The focused tab stays hidden while Image view is showing
+                // in front of it -- e.g. relaunching straight into Image
+                // view, or a crash respawn of the tab Image view is
+                // currently covering (see `spawned_tab_visible`'s doc).
+                let visible = spawned_tab_visible(is_focused, is_split, self.showing_image_view());
                 tab.set_visible(visible);
                 self.nodes.insert(
                     id.clone(),
@@ -4664,7 +4700,12 @@ impl App {
                             if !self.address_bar_focused && !self.debug_address_bar_pin {
                                 self.address_bar_text = url;
                             }
-                            self.send_resize_to(&id);
+                            // Resizing only matters for what's actually
+                            // shown -- skip it while Image view hides this
+                            // tab, same as `visible` above.
+                            if visible {
+                                self.send_resize_to(&id);
+                            }
                         } else if is_split {
                             self.send_resize_to(&id);
                         }
@@ -4673,7 +4714,9 @@ impl App {
                         self.send_zoom_to(&id);
                         if is_focused {
                             self.address_bar_text = url;
-                            self.send_resize_to(&id);
+                            if visible {
+                                self.send_resize_to(&id);
+                            }
                         }
                     }
                 }
@@ -5631,7 +5674,7 @@ impl App {
             return;
         }
         self.focus_item(id);
-        // `focus_item` already set `view_mode = Tab`, but `build_ui` renders
+        // `focus_item` already set `view_mode = Item`, but `build_ui` renders
         // Graph view as the backdrop for as long as `self.transition` is
         // `Some` regardless of `view_mode` (see its own doc comment) —
         // `finish_transition_if_done` is what actually matters once the
@@ -6558,9 +6601,9 @@ impl App {
     }
 
     /// `Ctrl+=`/`Ctrl++` / headless `ZOOMIN` — zooms the maximized Image
-    /// while one is showing (see the Image item view spec's "Entry"
-    /// section); otherwise the same step/cap the settings popup's own "+"
-    /// button uses for the focused Tab's page zoom.
+    /// while one is showing (see the Image item view spec's "2. Image
+    /// view" section); otherwise the same step/cap the settings popup's
+    /// own "+" button uses for the focused Tab's page zoom.
     fn zoom_in_shortcut(&mut self) {
         if self.showing_image_view() {
             self.apply_image_zoom_action(ZoomChipAction::In);
@@ -7142,8 +7185,8 @@ impl App {
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Sets a pending flag
     /// rather than `address_bar_focused` directly: the address bar's
-    /// `TextEdit` doesn't exist as a widget until `build_item_ui` builds it,
-    /// so actually moving real egui focus onto it needs to happen there,
+    /// `TextEdit` doesn't exist as a widget until `build_tab_view_ui` builds
+    /// it, so actually moving real egui focus onto it needs to happen there,
     /// via `response.request_focus()` — see `pending_focus_address_bar`'s
     /// own doc comment.
     fn focus_address_bar_shortcut(&mut self) {
@@ -7151,7 +7194,7 @@ impl App {
             self.pending_focus_address_bar = true;
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
-            // already painted before `build_item_ui` gets to call it) — a
+            // already painted before `build_tab_view_ui` gets to call it) — a
             // real keypress always gets a following frame for free, but
             // this command can otherwise land with nothing further
             // scheduled to redraw (Tab view, unlike Graph view's physics,
@@ -8616,8 +8659,24 @@ impl App {
             // A Tab's transition quad is a GPU pane (`content_panes_pts`);
             // an Image's is painted here, above the graph backdrop.
             if let Some((tex_id, rect)) = self.transition.as_ref().and_then(|t| self.image_transition_frame(t)) {
+                // Clipped to the area below the toolbar `build_graph_ui`
+                // (the backdrop, drawn just above) just painted -- at the
+                // ToGraph end's t≈0, `rect` starts at the zoomed-in Image
+                // view's own rect, which can reach above
+                // `CHROME_HEIGHT_POINTS` into the toolbar row; this is a
+                // plain `Order::Foreground` layer with no clip of its own,
+                // so without this it painted over the toolbar for a frame.
+                // Same height as both the Graph and Item toolbars
+                // (`GRAPH_TOOLBAR_HEIGHT_POINTS == CHROME_HEIGHT_POINTS`),
+                // so this is correct at either end of the animation.
+                let screen = self.screen_size_points();
+                let clip_rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, CHROME_HEIGHT_POINTS),
+                    egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
+                );
                 ui.ctx()
                     .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("image_transition")))
+                    .with_clip_rect(clip_rect)
                     .image(
                         tex_id,
                         rect,
@@ -8853,14 +8912,15 @@ impl App {
     }
 
     /// Help + Settings, present in every toolbar (see the design spec's
-    /// "universal chip" layer). Returns the same rect `build_help_button`
-    /// already returns -- the shortcuts-help popup anchors to that
-    /// specific button, not to the chip as a whole, so callers that need
-    /// it (the Tab toolbar's `shortcuts_help_button_rect`) keep working
-    /// unchanged.
+    /// "universal chip" layer -- layer 1, drawn frame-level by
+    /// `render_item_toolbar` for every Item-view kind, not just Tab).
+    /// Returns the same rect `build_help_button` already returns -- the
+    /// shortcuts-help popup anchors to that specific button, not to the
+    /// chip as a whole, so callers that need it (`ItemToolbarFrame`'s own
+    /// `shortcuts_help_button_rect`) keep working unchanged.
     ///
     /// Reads "Help, Settings" left to right whether `ui` is a left-to-right
-    /// row (the Graph toolbar) or a right-to-left child (the Tab toolbar's
+    /// row (the Graph toolbar) or a right-to-left child (the Item toolbar's
     /// trailing cluster) -- see `in_reading_order`. Drawing both in one
     /// fixed call order once silently reversed them in the right-to-left
     /// caller (confirmed live: Tab and Graph view screenshotted side by side
@@ -8978,10 +9038,20 @@ impl App {
         // Vertically centered in the row (which is top-aligned -- see
         // `render_item_toolbar`), the same problem the Tab toolbar's
         // favicon slot solves; width capped so a long filename truncates
-        // instead of pushing the zoom chip off the row.
+        // instead of running under the trailing cluster (Reveal/Copy/Help/
+        // Settings, already in `trailing_ui` by this point -- see
+        // `render_item_toolbar`) or the zoom chip that follows this label
+        // in the same row. `IMAGE_ZOOM_CHIP_RESERVED_WIDTH` is a measured
+        // constant rather than `trailing_width`-style live measurement
+        // because the chip hasn't been laid out yet when this label needs
+        // its own width: it's drawn after the label, in this same
+        // leading-side `ui` (see the call below).
+        let trailing_width = trailing_ui.min_rect().width();
         let identity = format!("{} · {}×{}", download_filename(&path), image.x as u32, image.y as u32);
+        let label_max_width =
+            (ui.available_width() - trailing_width - IMAGE_ZOOM_CHIP_RESERVED_WIDTH).max(80.0).min(360.0);
         ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width().min(360.0), ui.available_height()),
+            egui::vec2(label_max_width, ui.available_height()),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| ui.add(egui::Label::new(identity).truncate()).on_hover_text(&path),
         );
@@ -9037,7 +9107,8 @@ impl App {
 
         let body = self.item_body_rect();
         let response = ui.interact(body, egui::Id::new("image_view_body"), egui::Sense::drag());
-        let (mut scale, mut pan) = self.image_view.effective(image, body.size());
+        let (orig_scale, orig_pan) = self.image_view.effective(image, body.size());
+        let (mut scale, mut pan) = (orig_scale, orig_pan);
         let mut changed = false;
         if response.hovered() {
             let factor = ui.input(|i| i.zoom_delta() * (i.smooth_scroll_delta.y * IMAGE_WHEEL_ZOOM_RATE).exp());
@@ -9055,7 +9126,15 @@ impl App {
         }
         if changed {
             pan = clamp_image_pan(pan, image * scale, body.size());
-            self.image_view = ImageViewState { zoom: ImageZoom::Scale(scale), pan };
+            // A drag attempt while at Fit with the image fully contained
+            // (no room to pan) reaches here with `scale`/`pan` clamped
+            // right back to what `effective` already reported -- committing
+            // a fixed `Scale` in that case would silently turn off Fit's
+            // "re-fit on window resize" behavior for no visible change.
+            // Only commit when something about the view actually moved.
+            if scale != orig_scale || pan != orig_pan {
+                self.image_view = ImageViewState { zoom: ImageZoom::Scale(scale), pan };
+            }
         }
 
         let painter = ui.painter_at(body);
@@ -13730,7 +13809,7 @@ impl App {
             }
             DebugCommand::AddressBar(text) => {
                 // Mirrors the real `TextEdit`'s `response.changed()` arm
-                // (see `build_item_ui`) — setting `address_bar_focused`
+                // (see `build_tab_view_ui`) — setting `address_bar_focused`
                 // directly stands in for a real click-driven egui focus
                 // transfer, which headless mode has no way to synthesize.
                 // `debug_address_bar_pin` (see its own doc comment) is what
@@ -14645,6 +14724,20 @@ mod tests {
         assert_eq!(image_fit_scale(egui::vec2(2000.0, 1000.0), body), 0.5);
         assert_eq!(image_fit_scale(egui::vec2(1000.0, 4000.0), body), 0.2);
         assert_eq!(image_fit_scale(egui::vec2(64.0, 64.0), body), 1.0);
+    }
+
+    #[test]
+    fn spawned_tab_visible_hides_focused_tab_behind_image_view() {
+        // Ordinary focused tab, no Image view up: visible, as before.
+        assert!(spawned_tab_visible(true, false, false));
+        // Focused tab, but Image view is showing in front of it: hidden.
+        assert!(!spawned_tab_visible(true, false, true));
+        // Split's secondary pane is always visible, even behind Image view.
+        assert!(spawned_tab_visible(false, true, true));
+        assert!(spawned_tab_visible(false, true, false));
+        // Unfocused, non-split tab: never visible.
+        assert!(!spawned_tab_visible(false, false, false));
+        assert!(!spawned_tab_visible(false, false, true));
     }
 
     #[test]
