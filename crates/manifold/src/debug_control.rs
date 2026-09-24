@@ -221,8 +221,8 @@ pub enum DebugCommand {
     DismissPeek,
     /// "Export Group..." with an explicit path instead of a real file
     /// dialog, same "bypass the dialog entirely" reason as
-    /// `ExportSession` — exports whichever group's context menu is
-    /// currently open (see `App::group_context_menu`).
+    /// `ExportSession` — exports only when the open node menu belongs to a
+    /// Group (see `App::node_menu`).
     ExportGroup(String),
     /// "Import Group..." with an explicit path, same reason as
     /// `ExportGroup`.

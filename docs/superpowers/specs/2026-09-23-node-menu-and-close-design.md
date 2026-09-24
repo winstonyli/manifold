@@ -135,7 +135,16 @@ Found while writing the implementation plan; these supersede the sections below 
 - A Download's menu never offers "Remove from Group" (pre-existing).
 - The graph card rendering loops are still per kind (the next
   generalization of this pattern).
-- A Note card can't be right-clicked or hover-closed when driven headless
-  (CLICK/MOUSEDOWN at its center) — reproduced on the pre-change binary,
-  so pre-existing; unknown whether it's a real hit-test bug or a
-  headless-driver quirk. Investigate.
+- Headless right-click/hover-close on a Note card was unreliable (worked in
+  one test session, not another) — reproduced on the pre-change binary, so
+  pre-existing; unknown whether it's a real hit-test bug or a headless-driver
+  quirk. When investigating, also verify Note hover ✕ → Recently Closed →
+  reopen live (so far code-inspected only).
+- Group Close / Dissolve / group hover ✕ never call `save_session`, so
+  closing a group with no Tab members (e.g. an exploded "Expand as Graph"
+  group) isn't persisted — after restart it comes back (pre-existing). Fix:
+  save after the group-level close/dissolve applies.
+- Hover ✕ on a never-typed note now records `ClosedNode::Note(\"\")`, which
+  can push a real entry out of the 10-slot Recently Closed cap (menu Delete
+  already did this). Consider skipping blank notes in `closed_node_for` — a
+  behavior change, needs a decision.

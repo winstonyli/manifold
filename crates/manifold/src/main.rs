@@ -4011,9 +4011,9 @@ impl App {
         }
     }
 
-    /// Called from `close_node` for a Download/Note/Image/Pdf/Json node --
-    /// same bound-then-push shape `close_tab`'s own `closed_tabs` push
-    /// already has.
+    /// Called from `close_node` for whatever `closed_node_for` returns
+    /// (Downloads never record) -- same bound-then-push shape `close_tab`'s
+    /// own `closed_tabs` push already has.
     fn record_closed_node(&mut self, node: ClosedNode) {
         self.closed_nodes.push(node);
         if self.closed_nodes.len() > MAX_CLOSED_NODES {
@@ -7899,8 +7899,11 @@ impl App {
     /// was showing this node, then `remove_node`s it. The single path
     /// behind a card's hover ✕, its context-menu Delete/"Remove from
     /// List", the Downloads popup's Remove, and `close_group`'s per-member
-    /// loop -- which is why it doesn't save: `close_group` saves once for
-    /// the whole group, and the UI paths go through `close_node_and_save`.
+    /// loop -- which is why it doesn't save: callers decide -- the single-node
+    /// UI paths go through `close_node_and_save`, while `close_group` and its
+    /// callers currently don't save at all (a save only happens if a Tab
+    /// member's `close_tab` triggers one; tracked as a follow-up in the
+    /// node-menu spec).
     /// (Before this was shared, `close_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
     /// reparented by `dissolve_group`, never actually destroyed -- a gap
