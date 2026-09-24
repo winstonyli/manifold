@@ -177,3 +177,26 @@ Found while writing the implementation plan; these supersede the sections below 
   `ItemNodeKind::Group`'s own render branch, not to the shared card frame
   (`paint_card_body`/`card_style`/`draw_node_close_button` are never touched
   by that branch and were unaffected either way).
+- **Fixed (`5699c3b`):** every parent->child edge was painted twice (double
+  alpha on the translucent stroke). The download-only edge loop from
+  `191fd30` became a copy of the all-nodes loop when `182e7e9` moved
+  downloads into `self.nodes`; the copy is gone. The first-launch demo has
+  no edges, so it can't show edge changes. To check edges headlessly, build
+  `manifold-engine-webview2` too, then pre-seed the isolated APPDATA with a
+  `settings.json` containing `"has_shown_first_launch_demo": true` and a
+  `session.json` whose `tabs` are one root plus children (`"parent":
+  "tab-10"`, `"engine": "webview2"`, `"url": "manifold://welcome"`, spread
+  `pos_x`/`pos_y`). Run the in-tree `target/debug/manifold.exe`; copies of
+  it elsewhere didn't start their engine hosts. Wait about 25 s before
+  `SCREENSHOT`. The focused card's live thumbnail varies from run to run, so
+  mask it out before diffing.
+- `IMPORTSESSION` + `CONFIRMIMPORT` while the first-launch demo's tabs are
+  still spawning: `replace_running_session` clears `self.nodes` but doesn't
+  cancel spawns already in flight, so demo tabs land in the imported scene
+  afterwards. When an imported tab id matched an in-flight one (`tab-0..2`),
+  that tab looped on "engine-host crashed ... restarting". The real Import
+  Session dialog may hit the same race.
+- A restored/imported tab with `"url": "about:blank"` never appears, with
+  nothing logged and no `tab_spawn_error` shown; the same session with
+  `manifold://welcome` works. Unknown whether the spawn fails silently or
+  never finishes.
