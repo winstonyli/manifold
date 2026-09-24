@@ -188,5 +188,30 @@ Found while writing the implementation plan; these supersede the sections below 
   `ItemNodeKind::Group`'s own render branch, not to the shared card frame
   (`paint_card_body`/`card_style`/`draw_node_close_button` are never touched
   by that branch and were unaffected either way).
+- **Fixed (`5699c3b`):** every parent->child edge was painted twice (double
+  alpha on the translucent stroke). The download-only edge loop from
+  `191fd30` became a copy of the all-nodes loop when `182e7e9` moved
+  downloads into `self.nodes`; the copy is gone. The first-launch demo has
+  no edges, so it can't show edge changes. To check edges headlessly, build
+  `manifold-engine-webview2` too, then pre-seed the isolated APPDATA with a
+  `settings.json` containing `"has_shown_first_launch_demo": true` and a
+  `session.json` whose `tabs` are one root plus children (`"parent":
+  "tab-10"`, `"engine": "webview2"`, `"url": "manifold://welcome"`, spread
+  `pos_x`/`pos_y`). Run the in-tree `target/debug/manifold.exe`; copies of
+  it elsewhere didn't start their engine hosts. `WAITTABS` (added later)
+  replaces the old ~25 s wait before `SCREENSHOT`. The focused card's live thumbnail varies from run to run, so
+  mask it out before diffing.
+- `IMPORTSESSION` + `CONFIRMIMPORT` while the first-launch demo's tabs are
+  still spawning: `replace_running_session` clears `self.nodes` but doesn't
+  cancel spawns already in flight, so demo tabs land in the imported scene
+  afterwards. When an imported tab id matched an in-flight one (`tab-0..2`),
+  that tab looped on "engine-host crashed ... restarting". The real Import
+  Session dialog may hit the same race. Headless, a `WAITTABS` before
+  `IMPORTSESSION` avoids it; the app-side fix would be to cancel or discard
+  spawns in flight on replace (`tab_spawns_in_flight` now counts them).
+- A restored/imported tab with `"url": "about:blank"` never appears, with
+  nothing logged and no `tab_spawn_error` shown; the same session with
+  `manifold://welcome` works. Unknown whether the spawn fails silently or
+  never finishes.
 - **Done:** a node menu's fade-out used to redraw from the node's *current* state, so it changed while it faded: after "Remove from Group" the row vanished and the menu shrank, and Pin turned into Unpin. Now `build_node_menu` reads a `NodeMenuView` each open frame, `node_menu_cache` freezes it for the fade-out, and a menu whose action removed its node (Delete, Close, Dissolve) fades too instead of vanishing. A fading menu is also click-through (`Area::interactable(false)`), so the rest of a double-click can't run an item twice. The four toolbar list popups (`build_list_popup_frame`) got the same click-through. Checked headless with the fade temporarily slowed to 3 s: the fading menu kept its "Remove from Group" row after the download had left the group, and a second click on it went through to the tab card behind. egui builds its hit test from the previous frame's layers, so the first fading frame can still take a click.
 - Other fading popups remain clickable while they fade out: the quick switcher, the Tab-view link menu, the engine pickers, tab actions, the split picker, and peek preview. The list popups still redraw live content during the fade (after a Recently Closed reopen, the list loses that row mid-fade). The fade lasts ~83 ms, so both are cosmetic or rare.
