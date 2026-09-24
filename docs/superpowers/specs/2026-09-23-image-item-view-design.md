@@ -229,3 +229,26 @@ PNGs (1920×1080 and 64×64):
 - Amend the toolbar-architecture spec's Non-goals: both recorded limits
   are resolved by this design.
 - Update `README.md` for the Graph toolbar and Item view.
+
+## Follow-ups (known, deferred at merge)
+
+- **Tab switch during a running transition** (Ctrl+Tab / quick switcher
+  mid-animation) leaves the wrong tab rendering: `focus_tab` shows tab B,
+  then the ToGraph transition finishes and hides only its own `node_id`.
+  Predates this work (affects Tab transitions too); needs a guard on
+  `focus_tab`'s callers or transition cancellation.
+- **Fit floor**: `image_fit_scale` clamps to `IMAGE_ZOOM_MIN` (10%), so an
+  image more than 10× the body overflows at Fit — contradicts "contain"
+  for extreme sizes. Possible fix: let Fit go below 10% and set the zoom
+  floor to `min(IMAGE_ZOOM_MIN, fit)`.
+- **Second viewable kind** (Pdf/Note): only the toolbar content is a
+  per-kind arm today. `viewed_image`, `showing_image_view`,
+  `image_transition_frame` and `focus_item`'s Image branch are
+  Image-specific, and `ItemToolbarActions` is Tab-shaped. Generalize (e.g.
+  `viewed_item`, with a serde alias for the on-disk field) when the second
+  kind is actually built.
+- `IMAGE_ZOOM_CHIP_RESERVED_WIDTH` is a measured constant; revisit if the
+  zoom chip's contents change.
+- **Redirected image while in Tab view**: when the focused tab turns out
+  to be a raw image (`redirect_tab_to_image`), opening the new Image
+  straight into Image view (instead of dropping to Graph) is now cheap.
