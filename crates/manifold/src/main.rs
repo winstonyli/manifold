@@ -4921,7 +4921,6 @@ impl App {
     /// content painted by `paint_card_body`. `None` when the node is gone
     /// or culled. The caller applies the kind's own click action from the
     /// returned response. Tab and Group cards keep their own loops.
-    #[allow(clippy::too_many_arguments)]
     fn draw_graph_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -5670,22 +5669,15 @@ impl App {
         result
     }
 
-    /// The tab context menu's "Fit Subtree" entry -- same margin/fallback
-    /// shape as `fit_all_nodes_scene_rect`, just scoped to `subtree_ids`
-    /// instead of the whole level.
+    /// The tab context menu's "Fit Subtree" entry -- same
+    /// `bounds_for_level` margin/fallback shape as `fit_all_nodes_scene_rect`,
+    /// just scoped to `subtree_ids` instead of the whole level. Sizing each
+    /// member by its own `node_card_rect` (via `bounds_for_level`) rather
+    /// than a flat `GRAPH_NODE_SIZE` matters here specifically: `subtree_ids`
+    /// follows `parent` links, which include Download children, so a
+    /// same-`GRAPH_NODE_SIZE` guess would mis-size those.
     fn fit_subtree_scene_rect(&self, root_id: &str) -> egui::Rect {
-        const MARGIN: f32 = 60.0;
-        let mut bounds = egui::Rect::NOTHING;
-        for id in self.subtree_ids(root_id) {
-            if let Some(node) = self.nodes.get(&id) {
-                let center = egui::Pos2::new(node.pos.x, node.pos.y);
-                bounds = bounds.union(egui::Rect::from_center_size(center, GRAPH_NODE_SIZE));
-            }
-        }
-        if !bounds.is_finite() {
-            return default_graph_scene_rect();
-        }
-        bounds.expand(MARGIN)
+        self.bounds_for_level(&self.subtree_ids(root_id))
     }
 
     /// `(level, node_count)` for whichever level `self.current_group` is
@@ -8282,7 +8274,7 @@ impl App {
     /// the group into `closed_groups` *before* touching anything, via the
     /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
     /// Group" can recreate it -- skipped when the export has no tabs (a
-    /// group containing only Notes/Images/Pdfs/Jsons/nested-empty-groups,
+    /// group containing only Downloads/Notes/Images/Pdfs/Jsons/nested-empty-groups,
     /// e.g. an "Expand as Graph" subtree), since reopening that snapshot
     /// would only recreate an empty, useless group and would otherwise
     /// flood the 5-slot stack and evict genuinely useful entries -- the
@@ -8292,9 +8284,9 @@ impl App {
     /// alongside the group-level snapshot, which would otherwise let a user
     /// reopen the same tabs twice (once via the group, once via the plain
     /// tab list) and end up with duplicates.
-    /// `closed_nodes` (Note/Image/Pdf/Json members, via `close_node`)
+    /// `closed_nodes` (Download/Note/Image/Pdf/Json members, via `close_node`)
     /// needs no equivalent truncation -- `export_group`'s own snapshot only
-    /// ever captures tab members, never those four kinds, so there's no
+    /// ever captures tab members, never those five kinds, so there's no
     /// analogous group-level copy for an individual `ClosedNode` entry to
     /// duplicate.
     fn close_group(&mut self, id: &str) {
@@ -8319,7 +8311,7 @@ impl App {
         self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
         // `close_node` doesn't save, and there's no save on exit -- without
-        // this, a group whose members were only Notes/Images/Pdfs/Jsons
+        // this, a group whose members were only Downloads/Notes/Images/Pdfs/Jsons
         // (no Tab member whose `close_tab` happens to save) would have
         // those members reappear after a restart unless some unrelated
         // action saved first.
@@ -10826,11 +10818,10 @@ impl App {
                 }
 
                 for id in tabs_at_level.clone() {
-                    let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
+                    let Some(node) = self.nodes.get(&id) else {
                         continue;
                     };
-                    let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
-                    let rect = egui::Rect::from_center_size(center_pos, GRAPH_NODE_SIZE);
+                    let rect = node_card_rect(node);
                     // Viewport culling: skip every bit of interact/paint
                     // work below for a node that isn't actually visible --
                     // the single highest-leverage fix for a graph with many
@@ -11571,11 +11562,10 @@ impl App {
                 // dragged tab dropped onto one joins it (handled above, in
                 // the tab loop, since that's where the drag-release fires).
                 for id in groups_at_level.clone() {
-                        let Some(node_pos) = self.nodes.get(&id).map(|n| n.pos) else {
+                        let Some(node) = self.nodes.get(&id) else {
                             continue;
                         };
-                        let center_pos = egui::Pos2::new(node_pos.x, node_pos.y);
-                        let rect = egui::Rect::from_center_size(center_pos, GROUP_NODE_SIZE);
+                        let rect = node_card_rect(node);
                         // Viewport culling -- see the tab loop's own comment.
                         if self.dragging.as_deref() != Some(id.as_str())
                             && !rect.intersects(self.graph_scene_rect)

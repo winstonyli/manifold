@@ -37,7 +37,11 @@ use crate::UserEvent;
 /// held past its max click duration (~0.8 s) as a long press, not a click.
 /// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
 /// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
-/// before a `SCREENSHOT` meant to show it.
+/// before a `SCREENSHOT` meant to show it. The stdin reader posts one event
+/// per line with no pacing between them, so unpaced mouse commands (a
+/// `MOUSEDOWN`/`MOUSEMOVE`/`MOUSEUP` sequence, or back-to-back `CLICK`s) can
+/// all land in the same egui frame and no drag or click registers at all --
+/// put a `sleep` of roughly 0.15-0.5 s between mouse commands.
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },
