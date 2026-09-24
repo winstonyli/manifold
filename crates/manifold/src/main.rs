@@ -1813,6 +1813,21 @@ struct Transition {
 
 const TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 
+/// A `Transition`'s current rect: smoothstep-eased between the Item-view
+/// end (`item_rect`) and the graph-card end (`graph_rect`), in whichever
+/// direction `transition.kind` runs.
+fn transition_eased_rect(transition: &Transition, item_rect: egui::Rect, graph_rect: egui::Rect) -> egui::Rect {
+    let (from, to) = match transition.kind {
+        TransitionKind::ToGraph => (item_rect, graph_rect),
+        TransitionKind::ToItem => (graph_rect, item_rect),
+    };
+    let t = (transition.start.elapsed().as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    // Smoothstep: eases in and out, rather than the constant-velocity
+    // (and slightly mechanical-looking) feel of plain linear `lerp`.
+    let eased = t * t * (3.0 - 2.0 * t);
+    egui::Rect::from_min_max(from.min + (to.min - from.min) * eased, from.max + (to.max - from.max) * eased)
+}
+
 /// An in-progress eased pan/zoom from one `graph_scene_rect` to another --
 /// entering/leaving a group used to snap the camera to the new level's
 /// `fit_all_nodes_scene_rect()` instantly; this animates the same jump over
@@ -5547,23 +5562,18 @@ impl App {
         }
     }
 
-    /// Leaves Item view for Graph view. For a Tab (`viewed_image` is
-    /// `None`), starts a shrink animation (see `Transition`) rather than
-    /// switching instantly -- the tab keeps rendering (`set_visible(true)`,
-    /// unchanged) for the animation's whole duration, so the thumbnail it
-    /// shrinks into shows real, current content instead of whatever frame
-    /// happened to be on screen when the animation started, only actually
-    /// suspended once the animation finishes (`finish_transition_if_done`).
-    /// For an Image, the exit is instant for now (`viewed_image` has no
-    /// shrink animation yet -- a later pass adds one).
+    /// Leaves Item view for Graph view -- starts a shrink animation (see
+    /// `Transition`) toward whichever node is shown, rather than switching
+    /// instantly. For a Tab (`viewed_image` is `None`), the tab keeps
+    /// rendering (`set_visible(true)`, unchanged) for the animation's whole
+    /// duration, so the thumbnail it shrinks into shows real, current
+    /// content instead of whatever frame happened to be on screen when the
+    /// animation started, only actually suspended once the animation
+    /// finishes (`finish_transition_if_done`). For an Image, the texture is
+    /// already there either way, so there's nothing equivalent to suspend.
     fn leave_to_graph(&mut self) {
         self.context_menu = None;
-        if self.viewed_image.take().is_some() {
-            self.view_mode = ViewMode::Graph;
-            self.save_session();
-            return;
-        }
-        match self.focused.clone() {
+        match self.viewed_image.clone().or_else(|| self.focused.clone()) {
             Some(id) => {
                 self.transition = Some(Transition {
                     node_id: id,
@@ -5571,8 +5581,9 @@ impl App {
                     start: std::time::Instant::now(),
                 });
             }
-            // No focused tab at all (shouldn't normally happen — Tab view
-            // always has one — but nothing to animate either way).
+            // No focused tab and no viewed image (shouldn't normally
+            // happen — Item view always has one — but nothing to animate
+            // either way).
             None => {
                 self.view_mode = ViewMode::Graph;
                 self.save_session();
@@ -5582,7 +5593,7 @@ impl App {
         self.dropdown_highlighted = None;
     }
 
-    /// Graph view's node-click equivalent of `focus_tab` — starts an
+    /// Graph view's node-click equivalent of `focus_item` — starts an
     /// expand animation instead of switching instantly. Deliberately a
     /// separate method rather than folding this into `focus_tab` itself:
     /// `focus_tab` is also used for a same-view tab switch (accepting an
@@ -5602,8 +5613,8 @@ impl App {
         if self.transition.is_some() {
             return;
         }
-        self.focus_tab(id);
-        // `focus_tab` already set `view_mode = Tab`, but `build_ui` renders
+        self.focus_item(id);
+        // `focus_item` already set `view_mode = Tab`, but `build_ui` renders
         // Graph view as the backdrop for as long as `self.transition` is
         // `Some` regardless of `view_mode` (see its own doc comment) —
         // `finish_transition_if_done` is what actually matters once the
@@ -5634,6 +5645,7 @@ impl App {
         match kind {
             TransitionKind::ToGraph => {
                 self.view_mode = ViewMode::Graph;
+                self.viewed_image = None;
                 if let Some(node) = self.nodes.get_mut(&node_id).and_then(|n| n.as_tab_mut()) {
                     node.tab.set_visible(false);
                 }
@@ -5666,61 +5678,63 @@ impl App {
         (scale, translation)
     }
 
+    /// Where a world-space rect lands on screen in Graph view right now --
+    /// the same projection `Scene` applies, computed outside it (see
+    /// `graph_world_to_screen_transform`).
+    fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
+        let screen = self.screen_size_points();
+        let scene_outer_rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
+            egui::vec2(screen.x, (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+        );
+        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        egui::Rect::from_min_max(
+            (translation + scale * world.min.to_vec2()).to_pos2(),
+            (translation + scale * world.max.to_vec2()).to_pos2(),
+        )
+    }
+
     /// The rect (in egui points, screen space) a `Transition` should draw
     /// its tab's live content quad at *this frame* — eased interpolation
     /// between Tab view's full content area and the tab's graph-node
     /// thumbnail spot, direction depending on `transition.kind`.
     fn transition_content_rect_points(&self, transition: &Transition) -> egui::Rect {
-        let screen = self
-            .window
-            .as_ref()
-            .map(|w| w.inner_size())
-            .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
-        let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-        let screen_points = egui::vec2(screen.width as f32 / ppp, screen.height as f32 / ppp);
-
+        let screen = self.screen_size_points();
         let full_content_rect = egui::Rect::from_min_size(
             egui::pos2(0.0, CHROME_HEIGHT_POINTS),
-            egui::vec2(screen_points.x, (screen_points.y - CHROME_HEIGHT_POINTS).max(0.0)),
+            egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
         );
-
         let node_rect = self
             .nodes
             .get(&transition.node_id)
             .map(|node| {
-                let scene_outer_rect = egui::Rect::from_min_size(
-                    egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-                    egui::vec2(screen_points.x, (screen_points.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
-                );
-                let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-                let world_rect =
+                self.graph_world_rect_to_screen(
                     egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE)
-                        .shrink(GRAPH_THUMB_MARGIN);
-                egui::Rect::from_min_max(
-                    egui::pos2(
-                        world_rect.min.x * scale + translation.x,
-                        world_rect.min.y * scale + translation.y,
-                    ),
-                    egui::pos2(
-                        world_rect.max.x * scale + translation.x,
-                        world_rect.max.y * scale + translation.y,
-                    ),
+                        .shrink(GRAPH_THUMB_MARGIN),
                 )
             })
             .unwrap_or(full_content_rect);
+        transition_eased_rect(transition, full_content_rect, node_rect)
+    }
 
-        let (from, to) = match transition.kind {
-            TransitionKind::ToGraph => (full_content_rect, node_rect),
-            TransitionKind::ToItem => (node_rect, full_content_rect),
-        };
-        let t = (transition.start.elapsed().as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-        // Smoothstep: eases in and out, rather than the constant-velocity
-        // (and slightly mechanical-looking) feel of plain linear `lerp`.
-        let eased = t * t * (3.0 - 2.0 * t);
-        egui::Rect::from_min_max(
-            from.min + (to.min - from.min) * eased,
-            from.max + (to.max - from.max) * eased,
-        )
+    /// Image counterpart of `transition_content_rect_points`: the image's
+    /// texture and where to paint it this frame, between its graph card
+    /// and its current Image-view rect (Fit on entry; whatever zoom/pan
+    /// the user left on exit), so the aspect ratio is right throughout.
+    /// `None` for a non-Image transition or a missing node/texture.
+    fn image_transition_frame(&self, transition: &Transition) -> Option<(egui::TextureId, egui::Rect)> {
+        let node = self.nodes.get(&transition.node_id)?;
+        let image = node.as_image()?;
+        let tex_id = self.gpu.as_ref()?.image_id(&transition.node_id)?;
+        let size = image_pixel_size(image);
+        let card = self.graph_world_rect_to_screen(egui::Rect::from_center_size(
+            egui::pos2(node.pos.x, node.pos.y),
+            image_node_card_size(image.width, image.height),
+        ));
+        let body = self.item_body_rect();
+        let (scale, pan) = self.image_view.effective(size, body.size());
+        let view = image_display_rect(body, size, scale, pan);
+        Some((tex_id, transition_eased_rect(transition, view, card)))
     }
 
     /// Closes a tab: tears down its process (via `EngineTab`'s `Drop` —
@@ -8582,6 +8596,18 @@ impl App {
         // `RedrawRequested` — see `transition_content_rect_points`.
         if self.transition.is_some() {
             self.build_graph_ui(ui);
+            // A Tab's transition quad is a GPU pane (`content_panes_pts`);
+            // an Image's is painted here, above the graph backdrop.
+            if let Some((tex_id, rect)) = self.transition.as_ref().and_then(|t| self.image_transition_frame(t)) {
+                ui.ctx()
+                    .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("image_transition")))
+                    .image(
+                        tex_id,
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+            }
             return;
         }
         match self.view_mode {
@@ -12829,7 +12855,7 @@ impl App {
         if let Some(id) = image_clicked {
             if self.nodes.contains_key(&id) {
                 self.selected_tabs.clear();
-                self.focus_item(&id);
+                self.start_transition_to_item(&id);
             }
         }
         if let Some(id) = download_close_requested {
