@@ -109,9 +109,9 @@ QUIT
 
 Run `bash target/card-frame-shots/drive.sh target/card-frame-shots/before target/card-frame-shots/scene.txt`, then open `before/scene.png` with the Read tool. Write each card's center (Note, Image, Pdf, Json, the "Try grouping" group, the Welcome tab) into `target/card-frame-shots/coords.txt`. At 1300x800 the demo Note spans about x167-389, y329-502, with its ✕ near (387, 332).
 
-With those coordinates, write one command file per check. Each file repeats `scene.txt`'s setup lines, then does its action, then two `MOUSEMOVE`s to the same spot, `SCREENSHOT`, and `QUIT`. Save the output as `before/<name>.png`:
+With those coordinates, write one command file per check. Each file repeats `scene.txt`'s setup lines, then does its action, then one `MOUSEMOVE` to that spot, `SCREENSHOT`, and `QUIT` (one move is enough since pointer commands get a frame before them; see `debug_control.rs`). Save the output as `before/<name>.png`:
 
-- `hover-<kind>.png` for Note, Image, Pdf and Json: move onto the card's center twice, then screenshot. The hover border and ✕ should show.
+- `hover-<kind>.png` for Note, Image, Pdf and Json: move onto the card's center, then screenshot. The hover border and ✕ should show.
 - `filter.png`: `GRAPHFILTERTEXT zzz`, then screenshot. Every card should be dimmed.
 - `drag-json.png`: `MOUSEDOWN` on the Json card, 8 `MOUSEMOVE`s stepping 20px right, `MOUSEUP`, then screenshot.
 - `rclick-json.png`: `CLICK <json center> right`, then screenshot. The menu should show.
