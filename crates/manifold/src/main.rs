@@ -239,8 +239,12 @@ enum NodeMenuAction {
 /// `fade_popup_state`, `clicked_outside_popup`) is shared. `delete_label`
 /// exists only because the download menu calls its own last item "Remove
 /// from List" rather than "Delete" -- same action, different wording, not
-/// worth a whole extra variant.
+/// worth a whole extra variant. `area_id` is the popup's own egui `Area`
+/// id -- still distinct per kind, so egui's per-area memory never bleeds
+/// between kinds.
+#[derive(Debug, PartialEq)]
 struct NodeMenuConfig {
+    area_id: &'static str,
     copy_text: bool,
     reveal_and_copy_path: bool,
     /// Shows an "Expand as Graph" button -- only ever `true` for a JSON
@@ -257,22 +261,21 @@ struct NodeMenuConfig {
 /// scaffolding differing only in which buttons show and what clicking one
 /// does. That scaffolding now lives here once (via `build_list_popup_frame`,
 /// with `pos` itself standing in for an anchor rect of zero size, so
-/// `.left_bottom()` still lands exactly on `pos`); the caller still owns
-/// every kind-specific effect (`reveal_node`/`as_pdf().path`/
-/// `gpu.free_image`/etc.), applied from the single `NodeMenuAction` this
-/// returns rather than duplicated per-button bools. A free function, like
-/// `build_list_popup_frame` itself -- callers still need `&mut self` free
-/// to apply whichever action came back.
+/// `.left_bottom()` still lands exactly on `pos`); the caller
+/// (`App::apply_node_menu_action`) owns every effect, applied from the
+/// single `NodeMenuAction` this returns rather than duplicated per-button
+/// bools. A free function, like `build_list_popup_frame` itself -- callers
+/// still need `&mut self` free to apply whichever action came back.
 fn build_node_context_menu(
     ui: &mut egui::Ui,
-    id: &str,
     pos: egui::Pos2,
     fade: f32,
     config: NodeMenuConfig,
 ) -> (Option<NodeMenuAction>, bool) {
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
-    let area_rect = build_list_popup_frame(ui.ctx(), id, anchor, config.width, config.width, fade, |ui| {
+    let area_rect =
+        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.width, config.width, fade, |ui| {
         if config.copy_text && ui.button("Copy Text").clicked() {
             action = Some(NodeMenuAction::CopyText);
         }
@@ -300,6 +303,42 @@ fn build_node_context_menu(
     });
     let clicked_outside = clicked_outside_popup(ui, area_rect, None);
     (action, clicked_outside)
+}
+
+/// Which items a Download/Note/Image/Pdf/Json card's right-click menu
+/// shows -- each kind's own row of what used to be five separate
+/// builders. `None` for Group and Tab, whose menus (rename field, color
+/// swatches, pin, …) are drawn by their own bespoke builders instead.
+/// Download hardcodes `has_group: false`: that menu never offered
+/// "Remove from Group", regardless of whether the download actually has
+/// one (pre-existing, kept as-is).
+fn node_menu_config(kind: ItemNodeKind, has_group: bool) -> Option<NodeMenuConfig> {
+    let file = |area_id, show_expand| NodeMenuConfig {
+        area_id,
+        copy_text: false,
+        reveal_and_copy_path: true,
+        show_expand,
+        has_group,
+        delete_label: "Delete",
+        width: 170.0,
+    };
+    match kind {
+        ItemNodeKind::Download => Some(NodeMenuConfig {
+            has_group: false,
+            delete_label: "Remove from List",
+            ..file("download_context_menu", false)
+        }),
+        ItemNodeKind::Note => Some(NodeMenuConfig {
+            copy_text: true,
+            reveal_and_copy_path: false,
+            width: 150.0,
+            ..file("note_context_menu", false)
+        }),
+        ItemNodeKind::Image => Some(file("image_context_menu", false)),
+        ItemNodeKind::Pdf => Some(file("pdf_context_menu", false)),
+        ItemNodeKind::Json => Some(file("json_context_menu", true)),
+        ItemNodeKind::Group | ItemNodeKind::Tab => None,
+    }
 }
 
 /// Lets a popup driven by `Option<T>` app state (the right-click context
@@ -2566,7 +2605,7 @@ struct App {
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
-    /// (see `group_context_menu`) sets this the same way. A real
+    /// (see `node_menu`) sets this the same way. A real
     /// `egui::TextEdit` replaces whichever plain button/menu row started
     /// it until Enter commits or Escape cancels. Transient UI state, not
     /// part of `GroupPayload` itself.
@@ -2575,57 +2614,19 @@ struct App {
     /// one-shot `response.request_focus()` pattern as
     /// `pending_focus_address_bar`.
     pending_focus_rename: bool,
-    /// `(group_id, screen_pos)` while a top-level right-click context menu
-    /// is showing for that group's card -- Rename/color swatches/Dissolve
-    /// in one place, see `App::build_group_context_menu`. Right-click is
-    /// otherwise the rectangle-select gesture over the graph panel (see
-    /// that gesture's own doc comment in `build_graph_ui`); a press landing
-    /// on a group's card specifically opens this instead of starting a
-    /// marquee.
-    group_context_menu: Option<(String, egui::Pos2)>,
-    /// Last real value of `group_context_menu`, kept around so `build_
-    /// group_context_menu` can keep drawing (fading out, not vanishing
-    /// instantly) for a few frames after `group_context_menu` itself goes
-    /// back to `None` -- see `fade_popup_state`.
-    group_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// `(download_id, screen_pos)` while a right-click context menu is
-    /// showing for that download's card -- Open Containing Folder/Copy
-    /// Path/Remove from List, same "consolidate scattered card actions
-    /// into one menu" idea `group_context_menu` already applies to groups.
-    /// A press landing on a download's card opens this instead of starting
-    /// a marquee, same reasoning as `group_context_menu`'s own doc comment.
-    download_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `download_context_menu`.
-    download_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// `(note_id, screen_pos)` while a right-click context menu is showing
-    /// for that note's card -- Remove from Group/Delete, same "consolidate
-    /// scattered card actions" idea every other kind's own context menu
-    /// already applies. A press landing on a note's card opens this instead
-    /// of starting a marquee, same reasoning as the others.
-    note_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `note_context_menu`.
-    note_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// Same role as `note_context_menu`, for an image node's card.
-    image_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `image_context_menu`.
-    image_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// Same role as `image_context_menu`, for a PDF node's card.
-    pdf_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `pdf_context_menu`.
-    pdf_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// Same role as `pdf_context_menu`, for a JSON node's card.
-    json_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `json_context_menu`.
-    json_context_menu_cache: Option<(String, egui::Pos2)>,
-    /// `(tab_id, screen_pos)` while a right-click context menu is showing
-    /// for that tab's card -- Pin/color/Remove from Group/Close in one
-    /// place, same "consolidate scattered card actions" idea
-    /// `group_context_menu`/`download_context_menu` already apply. A press
-    /// landing on a tab's card opens this instead of starting a marquee,
-    /// same reasoning as those two.
-    tab_context_menu: Option<(String, egui::Pos2)>,
-    /// Same fade-out role as `group_context_menu_cache`, for `tab_context_menu`.
-    tab_context_menu_cache: Option<(String, egui::Pos2)>,
+    /// `(node_id, screen_pos)` while a right-click context menu is showing
+    /// for that node's card -- one field for every kind, so at most one
+    /// menu is ever open by construction. Right-click is otherwise the
+    /// rectangle-select gesture over the graph panel (see that gesture's
+    /// own doc comment in `build_graph_ui`); a press landing on any card
+    /// opens this instead of starting a marquee. Drawn by
+    /// `App::build_node_menu`, which dispatches on the node's kind.
+    node_menu: Option<(String, egui::Pos2)>,
+    /// Last real value of `node_menu`, kept around so `build_node_menu`
+    /// can keep drawing (fading out, not vanishing instantly) for a few
+    /// frames after `node_menu` itself goes back to `None` -- see
+    /// `fade_popup_state`.
+    node_menu_cache: Option<(String, egui::Pos2)>,
     /// `Some(node_id)` while that node's JSON content is showing full-screen
     /// (`build_json_viewer`) -- a tab's own `TabPayload::json_body` (opened
     /// from Tab view's toolbar button or Graph view's tab context menu's
@@ -2638,7 +2639,7 @@ struct App {
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
-    /// Same fade-out role as `group_context_menu_cache`, for `quick_switcher`
+    /// Same fade-out role as `node_menu_cache`, for `quick_switcher`
     /// -- but rendered read-only (no live `TextEdit`, no clickable rows)
     /// once actually closing, since editing/clicking needs `&mut self.
     /// quick_switcher`, which no longer exists by then. See `build_quick_
@@ -2965,7 +2966,7 @@ struct App {
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
     context_menu: Option<ContextMenuState>,
-    /// Same fade-out role as `group_context_menu_cache`, for `context_menu`.
+    /// Same fade-out role as `node_menu_cache`, for `context_menu`.
     context_menu_cache: Option<ContextMenuState>,
 
     /// A brief toast message (full text, not just a path -- see `build_
@@ -3142,20 +3143,8 @@ impl Default for App {
             current_group: None,
             renaming_group: None,
             pending_focus_rename: false,
-            group_context_menu: None,
-            group_context_menu_cache: None,
-            download_context_menu: None,
-            download_context_menu_cache: None,
-            note_context_menu: None,
-            note_context_menu_cache: None,
-            image_context_menu: None,
-            image_context_menu_cache: None,
-            pdf_context_menu: None,
-            pdf_context_menu_cache: None,
-            json_context_menu: None,
-            json_context_menu_cache: None,
-            tab_context_menu: None,
-            tab_context_menu_cache: None,
+            node_menu: None,
+            node_menu_cache: None,
             json_viewer_node: None,
             quick_switcher: None,
             quick_switcher_cache: None,
@@ -4022,7 +4011,7 @@ impl App {
         }
     }
 
-    /// Shared by the four `build_*_context_menu`'s own `Delete` handlers --
+    /// Called from `close_node` for a Download/Note/Image/Pdf/Json node --
     /// same bound-then-push shape `close_tab`'s own `closed_tabs` push
     /// already has.
     fn record_closed_node(&mut self, node: ClosedNode) {
@@ -4785,7 +4774,7 @@ impl App {
     /// Download/Group each have their own reasons to stay separate (a tab
     /// can also drop onto another *tab* to form a new group, a download's
     /// own group-drop was never implemented at all -- see
-    /// `build_download_context_menu`'s own doc comment --, and a group
+    /// `node_menu_config`'s own doc comment --, and a group
     /// itself can't be dropped onto another group), so this only covers
     /// the four kinds whose drop behavior is genuinely identical.
     fn finish_draggable_node(&mut self, id: &str, response: &egui::Response, is_hovered: bool) {
@@ -6985,7 +6974,7 @@ impl App {
 
     /// Tab view's "Downloads (N)" dropdown -- every entry in
     /// `self.downloads` (the same data the graph view's own download
-    /// nodes/context menu show, see `App::download_context_menu`), most-
+    /// nodes/context menu show, see `App::node_menu`), most-
     /// recently-downloaded first, click a filename to open its containing
     /// folder (same as `reveal_node`), "x" to remove it from the list
     /// (same as `close_node_and_save`). Exists so a completed download can
@@ -7709,20 +7698,8 @@ impl App {
     /// flow: clicking "Rename" swaps this same menu's contents to the
     /// `TextEdit`, exactly like the toolbar's own in-subgraph rename does,
     /// rather than opening a second, separate text field somewhere else.
-    fn build_group_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.group_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("group_context_menu_fade"),
-            &current,
-            &mut self.group_context_menu_cache,
-        ) else {
-            return;
-        };
-        if !self.nodes.contains_key(&id) {
-            self.group_context_menu = None;
-            return;
-        }
+    /// Reached from `build_node_menu` for a Group node.
+    fn build_group_context_menu(&mut self, ui: &mut egui::Ui, id: String, pos: egui::Pos2, fade: f32) {
         let mut close = false;
         let mut dissolve = false;
         let mut close_group = false;
@@ -7861,7 +7838,7 @@ impl App {
             }
         }
         if close {
-            self.group_context_menu = None;
+            self.node_menu = None;
         }
     }
 
@@ -8051,278 +8028,72 @@ impl App {
         }
     }
 
-    /// Right-click menu for a download's card -- Open Containing Folder
-    /// (same effect as a plain click, see `reveal_node`), Copy Path,
-    /// Remove from List (same effect as the card's own close "x", see
-    /// `close_node_and_save`). See `build_node_context_menu`'s own doc comment for
-    /// the shared shell this (and every other node kind's context menu)
-    /// now draws through. No `has_group` gate here -- pre-existing, not
-    /// something this dedup pass introduced or fixed: this menu never
-    /// offered "Remove from Group" even before, regardless of whether the
-    /// download actually has one.
-    fn build_download_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.download_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("download_context_menu_fade"),
-            &current,
-            &mut self.download_context_menu_cache,
-        ) else {
+    /// The one right-click context menu for every node card. Fades via the
+    /// shared `node_menu`/`node_menu_cache` (one fade Id for all kinds --
+    /// per-kind Ids would go unpolled while another kind's menu is open,
+    /// breaking `fade_popup_state`'s continuous-polling rule), resolves the
+    /// node's kind, and dispatches: Group and Tab to their own bespoke
+    /// builders, every other kind to the shared `build_node_context_menu`
+    /// shell configured by `node_menu_config`. A node that's gone (closed
+    /// from its own menu, or elsewhere) clears the menu at once.
+    fn build_node_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.node_menu.clone();
+        let Some(((id, pos), fade)) =
+            fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.node_menu_cache)
+        else {
             return;
         };
-        if !self.nodes.contains_key(&id) {
-            self.download_context_menu = None;
+        let Some((kind, has_group)) =
+            self.nodes.get(&id).map(|node| (item_node_kind(&node.payload), node.group.is_some()))
+        else {
+            self.node_menu = None;
             return;
-        }
-
-        let (action, clicked_outside) = build_node_context_menu(
-            ui,
-            "download_context_menu",
-            pos,
-            fade,
-            NodeMenuConfig {
-                copy_text: false,
-                reveal_and_copy_path: true,
-                show_expand: false,
-                has_group: false,
-                delete_label: "Remove from List",
-                width: 170.0,
-            },
-        );
-
-        match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
-            Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.node_file_path(&id) {
-                    ui.ctx().copy_text(path);
+        };
+        match kind {
+            ItemNodeKind::Group => self.build_group_context_menu(ui, id, pos, fade),
+            ItemNodeKind::Tab => self.build_tab_context_menu(ui, id, pos, fade),
+            ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
+                let Some(config) = node_menu_config(kind, has_group) else {
+                    return;
+                };
+                let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, config);
+                let close = action.is_some() || clicked_outside;
+                if let Some(action) = action {
+                    self.apply_node_menu_action(ui.ctx(), &id, action);
+                }
+                if close {
+                    self.node_menu = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
-            _ => {}
-        }
-        if action.is_some() || clicked_outside {
-            self.download_context_menu = None;
         }
     }
 
-    /// Right-click menu for a note's card -- Copy Text, Remove from Group
-    /// (only while the note actually has one), and Delete. Same
-    /// consolidate-scattered-card-actions pattern (and identical
-    /// `fade_popup_state`/`clicked_outside_popup` shape) as
-    /// `build_download_context_menu`, which this closely mirrors.
-    fn build_note_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.note_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("note_context_menu_fade"),
-            &current,
-            &mut self.note_context_menu_cache,
-        ) else {
-            return;
-        };
-        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
-            self.note_context_menu = None;
-            return;
-        };
-
-        let (action, clicked_outside) = build_node_context_menu(
-            ui,
-            "note_context_menu",
-            pos,
-            fade,
-            NodeMenuConfig {
-                copy_text: true,
-                reveal_and_copy_path: false,
-                show_expand: false,
-                has_group,
-                delete_label: "Delete",
-                width: 150.0,
-            },
-        );
-
+    /// Applies whichever item was clicked in a Download/Note/Image/Pdf/Json
+    /// card's menu. Each action only ever appears on kinds where it makes
+    /// sense (`node_menu_config`), so none of these re-check the kind.
+    fn apply_node_menu_action(&mut self, ctx: &egui::Context, id: &str, action: NodeMenuAction) {
         match action {
-            Some(NodeMenuAction::CopyText) => {
-                if let Some(text) = self.nodes.get(&id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
-                    ui.ctx().copy_text(text);
+            NodeMenuAction::CopyText => {
+                if let Some(text) = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
+                    ctx.copy_text(text);
                 }
             }
-            Some(NodeMenuAction::RemoveFromGroup) => {
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.group = None;
+            NodeMenuAction::Reveal => self.reveal_node(id),
+            NodeMenuAction::CopyPath => {
+                if let Some(path) = self.node_file_path(id) {
+                    ctx.copy_text(path);
                 }
             }
-            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
-            _ => {}
-        }
-        if action.is_some() || clicked_outside {
-            self.note_context_menu = None;
-        }
-    }
-
-    /// Right-click menu for an image node's card -- Open Containing Folder,
-    /// Copy Path, Remove from Group (only while grouped), and Delete. Same
-    /// shape as `build_download_context_menu`, which this closely mirrors
-    /// (an image node's `path` is a real file the same way a download's is).
-    fn build_image_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.image_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("image_context_menu_fade"),
-            &current,
-            &mut self.image_context_menu_cache,
-        ) else {
-            return;
-        };
-        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
-            self.image_context_menu = None;
-            return;
-        };
-
-        let (action, clicked_outside) = build_node_context_menu(
-            ui,
-            "image_context_menu",
-            pos,
-            fade,
-            NodeMenuConfig {
-                copy_text: false,
-                reveal_and_copy_path: true,
-                show_expand: false,
-                has_group,
-                delete_label: "Delete",
-                width: 170.0,
-            },
-        );
-
-        match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
-            Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.node_file_path(&id) {
-                    ui.ctx().copy_text(path);
-                }
-            }
-            Some(NodeMenuAction::RemoveFromGroup) => {
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.group = None;
-                }
-            }
-            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
-            _ => {}
-        }
-        if action.is_some() || clicked_outside {
-            self.image_context_menu = None;
-        }
-    }
-
-    /// Right-click menu for a PDF node's card -- Open Containing Folder,
-    /// Copy Path, Remove from Group (only while grouped), and Delete. Same
-    /// shape as `build_image_context_menu`, which this closely mirrors.
-    fn build_pdf_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.pdf_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("pdf_context_menu_fade"),
-            &current,
-            &mut self.pdf_context_menu_cache,
-        ) else {
-            return;
-        };
-        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
-            self.pdf_context_menu = None;
-            return;
-        };
-
-        let (action, clicked_outside) = build_node_context_menu(
-            ui,
-            "pdf_context_menu",
-            pos,
-            fade,
-            NodeMenuConfig {
-                copy_text: false,
-                reveal_and_copy_path: true,
-                show_expand: false,
-                has_group,
-                delete_label: "Delete",
-                width: 170.0,
-            },
-        );
-
-        match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
-            Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.node_file_path(&id) {
-                    ui.ctx().copy_text(path);
-                }
-            }
-            Some(NodeMenuAction::RemoveFromGroup) => {
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.group = None;
-                }
-            }
-            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
-            _ => {}
-        }
-        if action.is_some() || clicked_outside {
-            self.pdf_context_menu = None;
-        }
-    }
-
-    /// Right-click menu for a JSON node's card -- Open Containing Folder,
-    /// Copy Path, Expand as Graph, Remove from Group (only while grouped),
-    /// and Delete. Same shape as `build_pdf_context_menu`, minus the
-    /// `gpu.free_image` call -- a JSON node has no GPU texture of any kind,
-    /// same as a note -- plus the one JSON-only "Expand as Graph" action
-    /// (see `App::expand_json_as_graph`).
-    fn build_json_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.json_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("json_context_menu_fade"),
-            &current,
-            &mut self.json_context_menu_cache,
-        ) else {
-            return;
-        };
-        let Some(has_group) = self.nodes.get(&id).map(|n| n.group.is_some()) else {
-            self.json_context_menu = None;
-            return;
-        };
-
-        let (action, clicked_outside) = build_node_context_menu(
-            ui,
-            "json_context_menu",
-            pos,
-            fade,
-            NodeMenuConfig {
-                copy_text: false,
-                reveal_and_copy_path: true,
-                show_expand: true,
-                has_group,
-                delete_label: "Delete",
-                width: 170.0,
-            },
-        );
-
-        match action {
-            Some(NodeMenuAction::Reveal) => self.reveal_node(&id),
-            Some(NodeMenuAction::ExpandAsGraph) => {
-                self.expand_json_as_graph(&id);
+            NodeMenuAction::ExpandAsGraph => {
+                self.expand_json_as_graph(id);
                 self.save_session();
             }
-            Some(NodeMenuAction::CopyPath) => {
-                if let Some(path) = self.node_file_path(&id) {
-                    ui.ctx().copy_text(path);
-                }
-            }
-            Some(NodeMenuAction::RemoveFromGroup) => {
-                if let Some(node) = self.nodes.get_mut(&id) {
+            NodeMenuAction::RemoveFromGroup => {
+                if let Some(node) = self.nodes.get_mut(id) {
                     node.group = None;
                 }
             }
-            Some(NodeMenuAction::Delete) => self.close_node_and_save(&id),
-            _ => {}
-        }
-        if action.is_some() || clicked_outside {
-            self.json_context_menu = None;
+            NodeMenuAction::Delete => self.close_node_and_save(id),
         }
     }
 
@@ -8332,22 +8103,13 @@ impl App {
     /// own hover-revealed eject button), and Close. See
     /// `App::build_group_context_menu` for the identical pattern this
     /// mirrors.
-    fn build_tab_context_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.tab_context_menu.clone();
-        let Some(((id, pos), fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("tab_context_menu_fade"),
-            &current,
-            &mut self.tab_context_menu_cache,
-        ) else {
-            return;
-        };
+    fn build_tab_context_menu(&mut self, ui: &mut egui::Ui, id: String, pos: egui::Pos2, fade: f32) {
         let Some((pinned, color, group)) = self
             .nodes
             .get(&id)
             .and_then(|n| n.as_tab().map(|t| (t.pinned, n.color, n.group.clone())))
         else {
-            self.tab_context_menu = None;
+            self.node_menu = None;
             return;
         };
         let mut close = false;
@@ -8485,7 +8247,7 @@ impl App {
             self.close_tab(&id);
         }
         if close {
-            self.tab_context_menu = None;
+            self.node_menu = None;
         }
     }
 
@@ -10181,8 +9943,8 @@ impl App {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
-            // Escape clears a rectangle-select selection, dismisses a
-            // group's context menu, and dismisses a hover-peek preview
+            // Escape clears a rectangle-select selection, dismisses any
+            // node's context menu, and dismisses a hover-peek preview
             // early -- `self.hovered` itself is left alone (clearing it
             // here would just get overwritten later this same frame by the
             // node loop below re-detecting the pointer still sitting over
@@ -10194,7 +9956,7 @@ impl App {
             // no-op the rest of the time.
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
-                self.group_context_menu = None;
+                self.node_menu = None;
                 self.pending_new_node = None;
                 self.dismiss_hover_peek();
             }
@@ -10381,77 +10143,13 @@ impl App {
                         })
                     })
                     .flatten();
-                if let Some(gid) = hit_group {
-                    self.group_context_menu = Some((gid, pos));
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(did) = hit_download {
-                    self.download_context_menu = Some((did, pos));
-                    self.group_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(nid) = hit_note {
-                    self.note_context_menu = Some((nid, pos));
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(iid) = hit_image {
-                    self.image_context_menu = Some((iid, pos));
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(pid) = hit_pdf {
-                    self.pdf_context_menu = Some((pid, pos));
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(jid) = hit_json {
-                    self.json_context_menu = Some((jid, pos));
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.tab_context_menu = None;
-                    self.rect_select_start = None;
-                } else if let Some(tid) = hit_tab {
-                    self.tab_context_menu = Some((tid, pos));
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
+                if let Some(id) =
+                    hit_group.or(hit_download).or(hit_note).or(hit_image).or(hit_pdf).or(hit_json).or(hit_tab)
+                {
+                    self.node_menu = Some((id, pos));
                     self.rect_select_start = None;
                 } else {
-                    self.group_context_menu = None;
-                    self.download_context_menu = None;
-                    self.note_context_menu = None;
-                    self.image_context_menu = None;
-                    self.pdf_context_menu = None;
-                    self.json_context_menu = None;
-                    self.tab_context_menu = None;
+                    self.node_menu = None;
                     self.rect_select_start = Some(pos);
                 }
             }
@@ -13069,13 +12767,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.pending_new_node = None;
-            self.group_context_menu = None;
-            self.download_context_menu = None;
-            self.note_context_menu = None;
-            self.image_context_menu = None;
-            self.pdf_context_menu = None;
-            self.json_context_menu = None;
-            self.tab_context_menu = None;
+            self.node_menu = None;
         }
         if leave_group_requested {
             // One level up, not straight to the top -- same "go to this
@@ -13094,13 +12786,7 @@ impl App {
             self.selected_tabs.clear();
             self.rect_select_start = None;
             self.pending_new_node = None;
-            self.group_context_menu = None;
-            self.download_context_menu = None;
-            self.note_context_menu = None;
-            self.image_context_menu = None;
-            self.pdf_context_menu = None;
-            self.json_context_menu = None;
-            self.tab_context_menu = None;
+            self.node_menu = None;
         }
         if let Some(id) = group_close_requested {
             self.dissolve_group(&id);
@@ -13160,13 +12846,7 @@ impl App {
                 self.build_recently_closed_popup(ui, rect, recently_closed_fade);
             }
         }
-        self.build_group_context_menu(ui);
-        self.build_download_context_menu(ui);
-        self.build_note_context_menu(ui);
-        self.build_image_context_menu(ui);
-        self.build_pdf_context_menu(ui);
-        self.build_json_context_menu(ui);
-        self.build_tab_context_menu(ui);
+        self.build_node_menu(ui);
     }
 }
 
@@ -13888,7 +13568,11 @@ impl App {
             }
             DebugCommand::DismissPeek => self.dismiss_hover_peek(),
             DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self.group_context_menu.clone() {
+                if let Some((group_id, _)) = self
+                    .node_menu
+                    .clone()
+                    .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
+                {
                     if let Some(export) = self.export_group(&group_id) {
                         group_export::save_to(&export, std::path::Path::new(&path));
                     }
@@ -14745,5 +14429,40 @@ mod tests {
             completed: true,
         }))
         .is_none());
+    }
+
+    // One row per kind, pinned to the exact menus each kind showed before
+    // the per-kind builders were merged (see the node-menu spec).
+    #[test]
+    fn node_menu_config_matches_each_kinds_menu() {
+        let simple = |area_id, copy_text, reveal_and_copy_path, show_expand, has_group, delete_label, width| {
+            Some(NodeMenuConfig { area_id, copy_text, reveal_and_copy_path, show_expand, has_group, delete_label, width })
+        };
+        for has_group in [false, true] {
+            // Download never offers "Remove from Group", grouped or not.
+            assert_eq!(
+                node_menu_config(ItemNodeKind::Download, has_group),
+                simple("download_context_menu", false, true, false, false, "Remove from List", 170.0)
+            );
+            assert_eq!(
+                node_menu_config(ItemNodeKind::Note, has_group),
+                simple("note_context_menu", true, false, false, has_group, "Delete", 150.0)
+            );
+            assert_eq!(
+                node_menu_config(ItemNodeKind::Image, has_group),
+                simple("image_context_menu", false, true, false, has_group, "Delete", 170.0)
+            );
+            assert_eq!(
+                node_menu_config(ItemNodeKind::Pdf, has_group),
+                simple("pdf_context_menu", false, true, false, has_group, "Delete", 170.0)
+            );
+            assert_eq!(
+                node_menu_config(ItemNodeKind::Json, has_group),
+                simple("json_context_menu", false, true, true, has_group, "Delete", 170.0)
+            );
+            // Group and Tab draw their own bespoke menus.
+            assert_eq!(node_menu_config(ItemNodeKind::Group, has_group), None);
+            assert_eq!(node_menu_config(ItemNodeKind::Tab, has_group), None);
+        }
     }
 }
