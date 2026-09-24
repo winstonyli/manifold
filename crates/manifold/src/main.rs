@@ -201,7 +201,8 @@ fn dialog_frame(ui: &egui::Ui) -> egui::Frame {
 
 /// The `Area`/`Frame` shell every toolbar list-dropdown (Recently Closed,
 /// Bookmarks, History, Downloads) wraps its own contents in -- pinned below
-/// `anchor_rect`, same fill/stroke/corner-radius/margin, same min/max width.
+/// `anchor_rect`, same fill/stroke/corner-radius/margin, same min/max width
+/// (`f32::INFINITY` for no maximum).
 /// A free function (not a method) so callers can still freely capture
 /// `&mut self` in `add_contents` -- an `&mut self` method here would
 /// conflict with that same borrow. Returns the drawn area's own rect, for
@@ -230,7 +231,11 @@ fn build_list_popup_frame(
             popup_frame(ui)
                 .show(ui, |ui| {
                     ui.set_min_width(min_width);
-                    ui.set_max_width(max_width);
+                    // An infinite cap makes egui lay out NaN rects; no cap
+                    // lets the area size to its contents.
+                    if max_width.is_finite() {
+                        ui.set_max_width(max_width);
+                    }
                     add_contents(ui);
                 });
         })
@@ -238,122 +243,210 @@ fn build_list_popup_frame(
         .rect
 }
 
-/// Which single item (if any) was clicked in a `build_node_context_menu`
-/// popup this frame -- what varies is only ever "which button," never how
-/// the popup itself is drawn, so the caller (which alone knows the kind's
-/// own path/accessor/cleanup) decides what each one actually does.
+/// What clicking one item of a node's right-click menu does, applied by
+/// `App::apply_node_menu_action`. `build_node_context_menu` only reports
+/// which item was clicked; the caller owns every effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum NodeMenuAction {
     CopyText,
     Reveal,
     CopyPath,
     ExpandAsGraph,
+    TogglePin,
+    Duplicate,
+    CopyUrl,
+    ViewJson,
+    FitSubtree,
+    /// Swaps the group menu's items for a name field (see
+    /// `build_node_context_menu`); the menu stays open.
+    Rename,
+    /// The rename field lost focus by any means but Escape.
+    CommitRename,
+    /// Escape in the rename field.
+    CancelRename,
+    SetColor(Option<egui::Color32>),
     RemoveFromGroup,
+    Dissolve,
+    ExportGroup,
+    /// Delete for a file card, "Remove from List" for a download, Close
+    /// for a tab or group.
     Delete,
 }
 
-/// Which items `build_node_context_menu` shows, and their exact wording --
-/// the only real difference between a download/image/PDF/JSON/note's own
-/// right-click menu, now that the shell itself (`build_list_popup_frame`,
-/// `fade_popup_state`, `clicked_outside_popup`) is shared. `delete_label`
-/// exists only because the download menu calls its own last item "Remove
-/// from List" rather than "Delete" -- same action, different wording, not
-/// worth a whole extra variant. `area_id` is the popup's own egui `Area`
-/// id -- still distinct per kind, so egui's per-area memory never bleeds
-/// between kinds.
+impl NodeMenuAction {
+    fn hover_text(self) -> Option<&'static str> {
+        match self {
+            NodeMenuAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum NodeMenuItem {
+    Button(&'static str, NodeMenuAction),
+    /// The "Color" label and tag-color swatch row, ending in a "no color"
+    /// ring.
+    Colors,
+    Separator,
+}
+
+/// A node's right-click menu: its items, in order. `area_id` is the
+/// popup's egui `Area` id, distinct per kind so egui's per-area memory
+/// never bleeds between kinds. The file menus have a fixed width; the tab
+/// and group menus have no maximum, so they grow to fit the swatch row.
 #[derive(Debug, PartialEq)]
 struct NodeMenuConfig {
     area_id: &'static str,
-    copy_text: bool,
-    reveal_and_copy_path: bool,
-    /// Shows an "Expand as Graph" button -- only ever `true` for a JSON
-    /// node's own menu. See `App::expand_json_as_graph`.
-    show_expand: bool,
-    has_group: bool,
-    delete_label: &'static str,
-    width: f32,
+    min_width: f32,
+    max_width: f32,
+    items: Vec<NodeMenuItem>,
 }
 
-/// Shared right-click context-menu builder for a download/image/PDF/JSON/
-/// note node's card -- previously five separate ~90-line functions, each a
-/// hand-copy of the same `Area`/`Frame`/fade/`clicked_outside_popup`
-/// scaffolding differing only in which buttons show and what clicking one
-/// does. That scaffolding now lives here once (via `build_list_popup_frame`,
-/// with `pos` itself standing in for an anchor rect of zero size, so
-/// `.left_bottom()` still lands exactly on `pos`); the caller
-/// (`App::apply_node_menu_action`) owns every effect, applied from the
-/// single `NodeMenuAction` this returns rather than duplicated per-button
-/// bools. A free function, like `build_list_popup_frame` itself -- callers
-/// still need `&mut self` free to apply whichever action came back.
+/// Draws a node's right-click menu and reports what was clicked this
+/// frame, plus whether the click landed outside the menu. A free function,
+/// like `build_list_popup_frame`, so the caller keeps `&mut self` free to
+/// apply the action. `pos` stands in for a zero-size anchor rect, so the
+/// menu opens right at the pointer. `rename` is the group-name draft (and
+/// whether to focus it this frame) while a group is being renamed: the
+/// menu then shows just that field. `color` rings the node's current
+/// swatch.
 fn build_node_context_menu(
     ui: &mut egui::Ui,
     pos: egui::Pos2,
     fade: f32,
     interactable: bool,
-    config: NodeMenuConfig,
+    config: &NodeMenuConfig,
+    color: Option<egui::Color32>,
+    rename: Option<(&mut String, bool)>,
 ) -> (Option<NodeMenuAction>, bool) {
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect =
-        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.width, config.width, fade, interactable, |ui| {
-        if config.copy_text && ui.button("Copy Text").clicked() {
-            action = Some(NodeMenuAction::CopyText);
-        }
-        if config.reveal_and_copy_path {
-            if ui.button("Open Containing Folder").clicked() {
-                action = Some(NodeMenuAction::Reveal);
+        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.min_width, config.max_width, fade, interactable, |ui| {
+            if let Some((draft, focus)) = rename {
+                let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                if focus {
+                    response.request_focus();
+                }
+                if response.lost_focus() {
+                    action = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        NodeMenuAction::CancelRename
+                    } else {
+                        NodeMenuAction::CommitRename
+                    });
+                }
+                return;
             }
-            if ui.button("Copy Path").clicked() {
-                action = Some(NodeMenuAction::CopyPath);
+            for item in &config.items {
+                match *item {
+                    NodeMenuItem::Button(label, item_action) => {
+                        let mut response = ui.button(label);
+                        if let Some(text) = item_action.hover_text() {
+                            response = response.on_hover_text(text);
+                        }
+                        if response.clicked() {
+                            action = Some(item_action);
+                        }
+                    }
+                    NodeMenuItem::Colors => {
+                        if let Some(picked) = color_swatch_row(ui, color) {
+                            action = Some(NodeMenuAction::SetColor(picked));
+                        }
+                    }
+                    NodeMenuItem::Separator => {
+                        ui.separator();
+                    }
+                }
             }
-        }
-        if config.show_expand && ui.button("Expand as Graph").clicked() {
-            action = Some(NodeMenuAction::ExpandAsGraph);
-        }
-        if config.has_group {
-            ui.separator();
-            if ui.button("Remove from Group").clicked() {
-                action = Some(NodeMenuAction::RemoveFromGroup);
-            }
-        }
-        ui.separator();
-        if ui.button(config.delete_label).clicked() {
-            action = Some(NodeMenuAction::Delete);
-        }
-    });
+        });
     let clicked_outside = clicked_outside_popup(ui, area_rect, None);
     (action, clicked_outside)
 }
 
-/// Which items a Download/Note/Image/Pdf/Json card's right-click menu
-/// shows -- each kind's own row of what used to be five separate
-/// builders. `None` for Group and Tab, whose menus (rename field, color
-/// swatches, pin, …) are drawn by their own bespoke builders instead.
-fn node_menu_config(kind: ItemNodeKind, has_group: bool) -> Option<NodeMenuConfig> {
-    let file = |area_id, show_expand| NodeMenuConfig {
-        area_id,
-        copy_text: false,
-        reveal_and_copy_path: true,
-        show_expand,
-        has_group,
-        delete_label: "Delete",
-        width: 170.0,
+/// The "Color" label and one swatch per `TAG_COLOR_PALETTE` entry, then a
+/// "no color" ring; `current` gets a ring of its own. Returns the clicked
+/// choice (`Some(None)` for no color).
+fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<Option<egui::Color32>> {
+    let mut picked = None;
+    ui.add_space(4.0);
+    ui.label("Color");
+    ui.horizontal(|ui| {
+        for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            match choice {
+                Some(swatch) => {
+                    ui.painter().circle_filled(rect.center(), 8.0, swatch);
+                    if current == Some(swatch) {
+                        ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(2.0, ui.visuals().text_color()));
+                    }
+                }
+                None => {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        8.0,
+                        egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
+                    );
+                }
+            }
+            if response.clicked() {
+                picked = Some(choice);
+            }
+        }
+    });
+    picked
+}
+
+/// Which items a node's right-click menu shows, from the state frozen in
+/// `view`. Export Group is left out in headless mode, since its file
+/// dialog would block on input that never comes (`EXPORTGROUP <path>`
+/// saves directly instead).
+fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
+    use NodeMenuAction as A;
+    use NodeMenuItem::{Button, Colors, Separator};
+    let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
+    // Every menu but the group's ends in Remove from Group (when the node
+    // is grouped) and the kind's delete item.
+    let with_group_and_delete = |area_id, min_width, max_width, mut items: Vec<NodeMenuItem>, delete_label| {
+        if view.has_group {
+            items.extend([Separator, Button("Remove from Group", A::RemoveFromGroup)]);
+        }
+        items.extend([Separator, Button(delete_label, A::Delete)]);
+        NodeMenuConfig { area_id, min_width, max_width, items }
     };
-    match kind {
-        ItemNodeKind::Download => Some(NodeMenuConfig {
-            delete_label: "Remove from List",
-            ..file("download_context_menu", false)
-        }),
-        ItemNodeKind::Note => Some(NodeMenuConfig {
-            copy_text: true,
-            reveal_and_copy_path: false,
-            width: 150.0,
-            ..file("note_context_menu", false)
-        }),
-        ItemNodeKind::Image => Some(file("image_context_menu", false)),
-        ItemNodeKind::Pdf => Some(file("pdf_context_menu", false)),
-        ItemNodeKind::Json => Some(file("json_context_menu", true)),
-        ItemNodeKind::Group | ItemNodeKind::Tab => None,
-    }
+    let (area_id, width, items, delete_label) = match view.kind {
+        ItemNodeKind::Download => ("download_context_menu", 170.0, file_items(), "Remove from List"),
+        ItemNodeKind::Note => ("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], "Delete"),
+        ItemNodeKind::Image => ("image_context_menu", 170.0, file_items(), "Delete"),
+        ItemNodeKind::Pdf => ("pdf_context_menu", 170.0, file_items(), "Delete"),
+        ItemNodeKind::Json => {
+            let mut items = file_items();
+            items.push(Button("Expand as Graph", A::ExpandAsGraph));
+            ("json_context_menu", 170.0, items, "Delete")
+        }
+        ItemNodeKind::Tab => {
+            let mut items = vec![
+                Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
+                Button("Duplicate", A::Duplicate),
+                Button("Copy URL", A::CopyUrl),
+            ];
+            if view.has_json {
+                items.push(Button("View as JSON", A::ViewJson));
+            }
+            items.extend([Button("Fit Subtree", A::FitSubtree), Colors]);
+            return with_group_and_delete("tab_context_menu", 150.0, f32::INFINITY, items, "Close");
+        }
+        ItemNodeKind::Group => {
+            let mut items =
+                vec![Button("Rename", A::Rename), Colors, Separator, Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
+            if !headless {
+                items.push(Button("Export Group...", A::ExportGroup));
+            }
+            return NodeMenuConfig { area_id: "group_context_menu", min_width: 150.0, max_width: f32::INFINITY, items };
+        }
+    };
+    with_group_and_delete(area_id, width, width, items, delete_label)
 }
 
 /// Everything a node's right-click menu shows that its own actions can
@@ -8400,164 +8493,6 @@ impl App {
         }
     }
 
-    /// Top-level right-click context menu for a group's card -- Rename,
-    /// a color swatch row, and Dissolve in one place, rather than the
-    /// click-name-to-rename/always-visible-swatch/hover-"x" trio spread
-    /// across the card itself. Reuses `self.renaming_group` for the Rename
-    /// flow: clicking "Rename" swaps this same menu's contents to the
-    /// `TextEdit`, exactly like the toolbar's own in-subgraph rename does,
-    /// rather than opening a second, separate text field somewhere else.
-    /// Reached from `build_node_menu` for a Group node.
-    fn build_group_context_menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: String,
-        pos: egui::Pos2,
-        fade: f32,
-        live: bool,
-        view: &NodeMenuView,
-    ) {
-        let mut close = false;
-        let mut dissolve = false;
-        let mut close_group = false;
-        let mut export_group_requested = false;
-        let is_renaming = view.renaming.is_some();
-
-        let area = egui::Area::new(egui::Id::new("group_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .interactable(live)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                popup_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_min_width(150.0);
-                        if let (false, Some(draft)) = (live, &view.renaming) {
-                            ui.add(egui::TextEdit::singleline(&mut draft.clone()).desired_width(140.0));
-                        } else if is_renaming {
-                            if let Some((_, draft)) = &mut self.renaming_group {
-                                let response =
-                                    ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
-                                if std::mem::take(&mut self.pending_focus_rename) {
-                                    response.request_focus();
-                                }
-                                if response.lost_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                        self.renaming_group = None;
-                                    } else if let Some((gid, name)) = self.renaming_group.take() {
-                                        let trimmed = name.trim();
-                                        if !trimmed.is_empty() {
-                                            if let Some(node) = self.nodes.get_mut(&gid).and_then(|n| n.as_group_mut()) {
-                                                node.name = trimmed.to_string();
-                                            }
-                                        }
-                                    }
-                                    close = true;
-                                }
-                            }
-                        } else {
-                            if ui.button("Rename").clicked() {
-                                let name = self
-                                    .nodes
-                                    .get(&id)
-                                    .and_then(|n| n.as_group())
-                                    .map(|g| g.name.clone())
-                                    .unwrap_or_default();
-                                self.renaming_group = Some((id.clone(), name));
-                                self.pending_focus_rename = true;
-                            }
-                            ui.add_space(4.0);
-                            ui.label("Color");
-                            ui.horizontal(|ui| {
-                                let current = view.color;
-                                for &swatch in &TAG_COLOR_PALETTE {
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(18.0, 18.0),
-                                        egui::Sense::click(),
-                                    );
-                                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                                    ui.painter().circle_filled(rect.center(), 8.0, swatch);
-                                    if current == Some(swatch) {
-                                        ui.painter().circle_stroke(
-                                            rect.center(),
-                                            8.0,
-                                            egui::Stroke::new(2.0, ui.visuals().text_color()),
-                                        );
-                                    }
-                                    if response.clicked() {
-                                        if let Some(node) = self.nodes.get_mut(&id) {
-                                            node.color = Some(swatch);
-                                        }
-                                        close = true;
-                                    }
-                                }
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(18.0, 18.0),
-                                    egui::Sense::click(),
-                                );
-                                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                                ui.painter().circle_stroke(
-                                    rect.center(),
-                                    8.0,
-                                    egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
-                                );
-                                if response.clicked() {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.color = None;
-                                    }
-                                    close = true;
-                                }
-                            });
-                            ui.add_space(4.0);
-                            ui.separator();
-                            if ui.button("Dissolve").clicked() {
-                                dissolve = true;
-                                close = true;
-                            }
-                            if ui.button("Close Group").clicked() {
-                                close_group = true;
-                                close = true;
-                            }
-                            // Real modal file dialog blocks on OS/human
-                            // input neither exists in headless mode, same
-                            // reasoning Export/Import Session and Bookmarks
-                            // already have -- `EXPORTGROUP <path>` calls the
-                            // same underlying save directly instead, against
-                            // whichever group's context menu is open.
-                            if !self.headless && ui.button("Export Group...").clicked() {
-                                export_group_requested = true;
-                                close = true;
-                            }
-                        }
-                    });
-            });
-
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside && !is_renaming {
-            close = true;
-        }
-
-        if dissolve {
-            self.dissolve_group(&id);
-        }
-        if close_group {
-            self.close_group(&id);
-        }
-        if export_group_requested {
-            if let Some(export) = self.export_group(&id) {
-                if let Some((path, toast)) =
-                    save_dialog_with_toast(format!("{}.json", export.name), "Group")
-                {
-                    group_export::save_to(&export, &path);
-                    self.queue_toast(toast.0);
-                }
-            }
-        }
-        if close {
-            self.node_menu = None;
-        }
-    }
-
     /// Closes every member of a group via `close_node` (a tab
     /// through the normal `close_tab` path -- teardown, reparenting,
     /// thumbnail cleanup all still apply, same as `close_all_except`/
@@ -8656,10 +8591,17 @@ impl App {
     }
 
     /// `close_node` for a single user action (hover ✕, context-menu
-    /// Delete, Downloads popup Remove), then persists the session -- except
-    /// for a Download, which isn't part of the saved session at all.
+    /// Delete/Close, Downloads popup Remove), then persists the session --
+    /// except for a Download, which isn't part of the saved session at
+    /// all, and a tab or group, whose `close_tab`/`close_group` already
+    /// save.
     fn close_node_and_save(&mut self, id: &str) {
-        let persisted = self.nodes.get(id).is_some_and(|node| node.as_download().is_none());
+        let persisted = self.nodes.get(id).is_some_and(|node| {
+            matches!(
+                item_node_kind(&node.payload),
+                ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json
+            )
+        });
         self.close_node(id);
         if persisted {
             self.save_session();
@@ -8754,13 +8696,14 @@ impl App {
     /// The one right-click context menu for every node card. Fades via the
     /// shared `node_menu`/`node_menu_cache` (one fade Id for all kinds --
     /// per-kind Ids would go unpolled while another kind's menu is open,
-    /// breaking `fade_popup_state`'s continuous-polling rule), resolves the
-    /// node's kind, and dispatches: Group and Tab to their own bespoke
-    /// builders, every other kind to the shared `build_node_context_menu`
-    /// shell configured by `node_menu_config`. A node that's gone (closed
-    /// from its own menu, or elsewhere) closes the menu. While fading out,
-    /// the menu draws its frozen `NodeMenuView` and is click-through, so a
-    /// second click (say, the rest of a double-click) can't act again.
+    /// breaking `fade_popup_state`'s continuous-polling rule), draws the
+    /// items `node_menu_config` lists for the node's kind, and applies the
+    /// clicked one. A node that's gone (closed from its own menu, or
+    /// elsewhere) closes the menu. While fading out, the menu draws its
+    /// frozen `NodeMenuView` and is click-through, so a second click (say,
+    /// the rest of a double-click) can't act again. While a group is being
+    /// renamed, a click outside commits the name (the field loses focus)
+    /// rather than just closing the menu.
     fn build_node_menu(&mut self, ui: &mut egui::Ui) {
         if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
             self.node_menu = None;
@@ -8775,22 +8718,23 @@ impl App {
             return;
         };
         let live = current.is_some();
-        match view.kind {
-            ItemNodeKind::Group => self.build_group_context_menu(ui, id, pos, fade, live, &view),
-            ItemNodeKind::Tab => self.build_tab_context_menu(ui, id, pos, fade, live, &view),
-            ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
-                let Some(config) = node_menu_config(view.kind, view.has_group) else {
-                    return;
-                };
-                let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, config);
-                let close = action.is_some() || clicked_outside;
-                if let Some(action) = action {
-                    self.apply_node_menu_action(ui.ctx(), &id, action);
-                }
-                if close {
-                    self.node_menu = None;
-                }
-            }
+        let config = node_menu_config(&view, self.headless);
+        let mut frozen_draft = view.renaming.clone();
+        let rename = match &mut self.renaming_group {
+            Some((gid, draft)) if live && *gid == id => Some((draft, std::mem::take(&mut self.pending_focus_rename))),
+            _ => frozen_draft.as_mut().map(|draft| (draft, false)),
+        };
+        let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
+        let close = match action {
+            Some(NodeMenuAction::Rename) => false,
+            Some(_) => true,
+            None => clicked_outside && view.renaming.is_none(),
+        };
+        if let Some(action) = action {
+            self.apply_node_menu_action(ui.ctx(), &id, action);
+        }
+        if close {
+            self.node_menu = None;
         }
     }
 
@@ -8807,9 +8751,9 @@ impl App {
         })
     }
 
-    /// Applies whichever item was clicked in a Download/Note/Image/Pdf/Json
-    /// card's menu. Each action only ever appears on kinds where it makes
-    /// sense (`node_menu_config`), so none of these re-check the kind.
+    /// Applies whichever item was clicked in a node's right-click menu.
+    /// Each action only ever appears on kinds where it makes sense
+    /// (`node_menu_config`), so none of these re-check the kind.
     fn apply_node_menu_action(&mut self, ctx: &egui::Context, id: &str, action: NodeMenuAction) {
         match action {
             NodeMenuAction::CopyText => {
@@ -8827,156 +8771,51 @@ impl App {
                 self.expand_json_as_graph(id);
                 self.save_session();
             }
+            NodeMenuAction::TogglePin => {
+                if let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
+                    tab.pinned = !tab.pinned;
+                }
+            }
+            NodeMenuAction::Duplicate => self.duplicate_tab(id),
+            NodeMenuAction::CopyUrl => {
+                if let Some(url) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) {
+                    ctx.copy_text(url);
+                }
+            }
+            NodeMenuAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
+            NodeMenuAction::FitSubtree => self.graph_scene_rect = self.fit_subtree_scene_rect(id),
+            NodeMenuAction::Rename => {
+                let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
+                self.renaming_group = Some((id.to_string(), name));
+                self.pending_focus_rename = true;
+            }
+            NodeMenuAction::CommitRename => {
+                if let Some((gid, name)) = self.renaming_group.take() {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        if let Some(group) = self.nodes.get_mut(&gid).and_then(|n| n.as_group_mut()) {
+                            group.name = trimmed.to_string();
+                        }
+                    }
+                }
+            }
+            NodeMenuAction::CancelRename => self.renaming_group = None,
+            NodeMenuAction::SetColor(color) => {
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.color = color;
+                }
+            }
             NodeMenuAction::RemoveFromGroup => remove_from_group(&mut self.nodes, id),
+            NodeMenuAction::Dissolve => self.dissolve_group(id),
+            NodeMenuAction::ExportGroup => {
+                if let Some(export) = self.export_group(id) {
+                    if let Some((path, toast)) = save_dialog_with_toast(format!("{}.json", export.name), "Group") {
+                        group_export::save_to(&export, &path);
+                        self.queue_toast(toast.0);
+                    }
+                }
+            }
             NodeMenuAction::Delete => self.close_node_and_save(id),
-        }
-    }
-
-    /// Right-click menu for a tab's card -- Pin/Unpin, the same 6-color
-    /// swatch row groups already have, Remove from Group (only while
-    /// actually viewing a group's own subgraph, same scope as the card's
-    /// own hover-revealed eject button), and Close. See
-    /// `App::build_group_context_menu` for the identical pattern this
-    /// mirrors.
-    fn build_tab_context_menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: String,
-        pos: egui::Pos2,
-        fade: f32,
-        live: bool,
-        view: &NodeMenuView,
-    ) {
-        let (pinned, color, has_json) = (view.pinned, view.color, view.has_json);
-        let mut close = false;
-        let mut toggle_pin = false;
-        let mut remove_requested = false;
-        let mut close_tab_requested = false;
-        let mut duplicate_requested = false;
-        let mut fit_subtree_requested = false;
-        let mut set_color: Option<Option<egui::Color32>> = None;
-        let mut view_json_requested = false;
-
-        let area = egui::Area::new(egui::Id::new("tab_context_menu"))
-            .fixed_pos(pos)
-            .order(egui::Order::Foreground)
-            .interactable(live)
-            .show(ui.ctx(), |ui| {
-                ui.set_opacity(fade);
-                popup_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_min_width(150.0);
-                        if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
-                            toggle_pin = true;
-                            close = true;
-                        }
-                        if ui.button("Duplicate").clicked() {
-                            duplicate_requested = true;
-                            close = true;
-                        }
-                        if ui.button("Copy URL").clicked() {
-                            if let Some(url) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.url.clone()) {
-                                ui.ctx().copy_text(url);
-                            }
-                            close = true;
-                        }
-                        if has_json && ui.button("View as JSON").clicked() {
-                            view_json_requested = true;
-                            close = true;
-                        }
-                        if ui
-                            .button("Fit Subtree")
-                            .on_hover_text("Zoom the graph to frame just this tab and its children")
-                            .clicked()
-                        {
-                            fit_subtree_requested = true;
-                            close = true;
-                        }
-                        ui.add_space(4.0);
-                        ui.label("Color");
-                        ui.horizontal(|ui| {
-                            for &swatch in &TAG_COLOR_PALETTE {
-                                let (rect, response) =
-                                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                                ui.painter().circle_filled(rect.center(), 8.0, swatch);
-                                if color == Some(swatch) {
-                                    ui.painter().circle_stroke(
-                                        rect.center(),
-                                        8.0,
-                                        egui::Stroke::new(2.0, ui.visuals().text_color()),
-                                    );
-                                }
-                                if response.clicked() {
-                                    set_color = Some(Some(swatch));
-                                    close = true;
-                                }
-                            }
-                            let (rect, response) =
-                                ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                            ui.painter().circle_stroke(
-                                rect.center(),
-                                8.0,
-                                egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
-                            );
-                            if response.clicked() {
-                                set_color = Some(None);
-                                close = true;
-                            }
-                        });
-                        if view.has_group {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            if ui.button("Remove from Group").clicked() {
-                                remove_requested = true;
-                                close = true;
-                            }
-                        }
-                        ui.add_space(4.0);
-                        ui.separator();
-                        if ui.button("Close").clicked() {
-                            close_tab_requested = true;
-                            close = true;
-                        }
-                    });
-            });
-
-        let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
-        if clicked_outside {
-            close = true;
-        }
-
-        if toggle_pin {
-            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                node.pinned = !node.pinned;
-            }
-        }
-        if let Some(color) = set_color {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.color = color;
-            }
-        }
-        if remove_requested {
-            remove_from_group(&mut self.nodes, &id);
-        }
-        if duplicate_requested {
-            self.duplicate_tab(&id);
-        }
-        if view_json_requested {
-            self.json_viewer_node = Some(id.clone());
-        }
-        if fit_subtree_requested {
-            self.graph_scene_rect = self.fit_subtree_scene_rect(&id);
-        }
-        // Closing the tab already makes its context menu meaningless, but
-        // `close_tab` doesn't know about this menu -- clear it explicitly
-        // rather than leaving a menu open for an id that no longer exists.
-        if close_tab_requested {
-            self.close_tab(&id);
-        }
-        if close {
-            self.node_menu = None;
         }
     }
 
@@ -14342,39 +14181,65 @@ mod tests {
     }
 
     // One row per kind, pinned to the exact menus each kind showed before
-    // the per-kind builders were merged (see the node-menu spec).
+    // the per-kind builders were merged (see the node-menu spec), and
+    // before the tab and group menus joined them.
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
-        let simple = |area_id, copy_text, reveal_and_copy_path, show_expand, has_group, delete_label, width| {
-            Some(NodeMenuConfig { area_id, copy_text, reveal_and_copy_path, show_expand, has_group, delete_label, width })
-        };
+        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, f32, String) {
+            let view = NodeMenuView { kind, has_group, color: None, pinned, has_json, renaming: None };
+            let config = node_menu_config(&view, headless);
+            let items: Vec<&str> = config
+                .items
+                .iter()
+                .map(|item| match item {
+                    NodeMenuItem::Button(label, _) => *label,
+                    NodeMenuItem::Colors => "<colors>",
+                    NodeMenuItem::Separator => "---",
+                })
+                .collect();
+            (config.area_id, config.min_width, config.max_width, items.join(" | "))
+        }
         for has_group in [false, true] {
             // A download can join a group like any card (drag onto it), so
             // its menu offers "Remove from Group" when grouped.
+            let g = if has_group { " | --- | Remove from Group" } else { "" };
+            let menu = |kind, pinned, has_json| menu(kind, has_group, pinned, has_json, false);
             assert_eq!(
-                node_menu_config(ItemNodeKind::Download, has_group),
-                simple("download_context_menu", false, true, false, has_group, "Remove from List", 170.0)
+                menu(ItemNodeKind::Download, false, false),
+                ("download_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Remove from List"))
+            );
+            assert_eq!(menu(ItemNodeKind::Note, false, false), ("note_context_menu", 150.0, 150.0, format!("Copy Text{g} | --- | Delete")));
+            assert_eq!(
+                menu(ItemNodeKind::Image, false, false),
+                ("image_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Delete"))
             );
             assert_eq!(
-                node_menu_config(ItemNodeKind::Note, has_group),
-                simple("note_context_menu", true, false, false, has_group, "Delete", 150.0)
+                menu(ItemNodeKind::Pdf, false, false),
+                ("pdf_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Delete"))
             );
             assert_eq!(
-                node_menu_config(ItemNodeKind::Image, has_group),
-                simple("image_context_menu", false, true, false, has_group, "Delete", 170.0)
+                menu(ItemNodeKind::Json, false, false),
+                ("json_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path | Expand as Graph{g} | --- | Delete"))
             );
             assert_eq!(
-                node_menu_config(ItemNodeKind::Pdf, has_group),
-                simple("pdf_context_menu", false, true, false, has_group, "Delete", 170.0)
+                menu(ItemNodeKind::Tab, false, false),
+                ("tab_context_menu", 150.0, f32::INFINITY, format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close"))
             );
             assert_eq!(
-                node_menu_config(ItemNodeKind::Json, has_group),
-                simple("json_context_menu", false, true, true, has_group, "Delete", 170.0)
+                menu(ItemNodeKind::Tab, true, true).3,
+                format!("Unpin | Duplicate | Copy URL | View as JSON | Fit Subtree | <colors>{g} | --- | Close")
             );
-            // Group and Tab draw their own bespoke menus.
-            assert_eq!(node_menu_config(ItemNodeKind::Group, has_group), None);
-            assert_eq!(node_menu_config(ItemNodeKind::Tab, has_group), None);
+            // A group's menu has no Remove from Group row, grouped or not.
+            assert_eq!(
+                menu(ItemNodeKind::Group, false, false),
+                ("group_context_menu", 150.0, f32::INFINITY, "Rename | <colors> | --- | Dissolve | Close Group | Export Group...".to_string())
+            );
         }
+        // Export Group's file dialog can't run headless.
+        assert_eq!(
+            menu(ItemNodeKind::Group, false, false, false, true).3,
+            "Rename | <colors> | --- | Dissolve | Close Group"
+        );
     }
 
     #[test]
