@@ -38,9 +38,8 @@ pub struct GroupExport {
     pub tabs: Vec<GroupExportTab>,
 }
 
-pub fn load_from(path: &Path) -> Option<GroupExport> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+pub fn load_from(path: &Path) -> Result<GroupExport, String> {
+    crate::json_file::load(path, "group")
 }
 
 pub fn save_to(export: &GroupExport, path: &Path) {

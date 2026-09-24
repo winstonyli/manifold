@@ -5,6 +5,7 @@ mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod group_export;
+mod json_file;
 mod redirect_fetch;
 mod pdf;
 mod pdf_fetch;
@@ -3126,7 +3127,7 @@ struct App {
 
     /// A brief toast message (full text, not just a path -- see `build_
     /// save_toast`'s own doc comment) for the most recent completed
-    /// download/save or crash/respawn notice, and when it was set —
+    /// download/save or crash/respawn notice, and when it was first drawn —
     /// cleared once `SAVE_TOAST_DURATION` has passed, at which point the
     /// next queued message (`save_toast_queue`) takes over, if any. Was
     /// "latest wins" with no queue at all until this session, when a
@@ -3136,10 +3137,10 @@ struct App {
     /// there -- a stale search count would be actively wrong, whereas a
     /// dropped one-time notification like "tab crashed" is just gone).
     save_toast: Option<(String, std::time::Instant)>,
-    /// See `save_toast`'s own doc comment -- messages that arrived while
-    /// another was already showing, shown one at a time in order once the
-    /// current one's `SAVE_TOAST_DURATION` elapses. Set via `queue_toast`,
-    /// never pushed to directly.
+    /// See `save_toast`'s own doc comment -- messages waiting to be shown,
+    /// one at a time in order, each after the previous one's
+    /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
+    /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
 
     /// When the auto-restore `session.json` was last written -- shown in
@@ -3274,13 +3275,13 @@ impl Default for App {
         let egui_ctx = egui::Context::default();
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
-        let settings = Settings::load();
+        let (settings, settings_err) = Settings::load();
         // Re-reads the file `settings::fingerprint()` already just read for
         // `load()` -- a second read of a file this small, once at startup,
         // isn't worth threading a fingerprint out through `load()`'s own
         // return type for.
         let settings_fingerprint = settings::fingerprint();
-        let bookmarks = bookmarks::load();
+        let (bookmarks, bookmarks_err) = bookmarks::load();
         // Before constructing anything that might make its own first real
         // HTTPS request (search suggestions, favicons) -- see `suggestions::
         // warm_up_https_client`'s own doc comment for why this needs to run
@@ -3288,7 +3289,7 @@ impl Default for App {
         // its own redundant warm-up (or, worse, one racing a real request
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
-        Self {
+        let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
             gpu: None,
@@ -3399,7 +3400,12 @@ impl Default for App {
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,
+        };
+        for err in [settings_err, bookmarks_err].into_iter().flatten() {
+            eprintln!("{err}");
+            app.queue_toast(err);
         }
+        app
     }
 }
 
@@ -3960,9 +3966,12 @@ impl App {
             if let Some(path) =
                 rfd::FileDialog::new().add_filter("Bookmarks", &["json"]).pick_file()
             {
-                if let Some(imported) = bookmarks::load_from(&path) {
-                    self.bookmarks = imported;
-                    bookmarks::save(&self.bookmarks);
+                match bookmarks::load_from(&path) {
+                    Ok(imported) => {
+                        self.bookmarks = imported;
+                        bookmarks::save(&self.bookmarks);
+                    }
+                    Err(err) => self.queue_toast(err),
                 }
                 self.close_settings_page();
             }
@@ -4443,7 +4452,7 @@ impl App {
             Ok(Some(session)) => session,
             Ok(None) => return false,
             Err(err) => {
-                eprintln!("session: {err}");
+                eprintln!("{err}");
                 self.queue_toast(err);
                 return false;
             }
@@ -8872,28 +8881,25 @@ impl App {
     /// "Saved " to -- every original "Saved <path>" call site now includes
     /// that itself, freeing this up for unrelated short-lived messages too
     /// (e.g. a crash/respawn notice, see `EngineToHost` handling below).
-    /// Every `save_toast` call site now goes through this instead of
-    /// setting the field directly -- shows `message` immediately if
-    /// nothing's currently showing, otherwise queues it behind whatever
-    /// is (see `save_toast_queue`'s own doc comment).
+    /// Queues `message` behind whatever toast is showing. `build_save_toast`
+    /// takes it off the queue when it first draws it, and its
+    /// `SAVE_TOAST_DURATION` starts then, not here: a toast queued during
+    /// startup (an unreadable settings/session file) used to spend part of
+    /// its time before the first frame.
     fn queue_toast(&mut self, message: String) {
-        if self.save_toast.is_some() {
-            self.save_toast_queue.push_back(message);
-        } else {
-            self.save_toast = Some((message, std::time::Instant::now()));
-        }
+        self.save_toast_queue.push_back(message);
     }
 
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
+        if self.save_toast.is_none() {
+            self.save_toast = self.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
+        }
         let Some((message, shown_at)) = &self.save_toast else { return };
         let elapsed = shown_at.elapsed();
         if elapsed >= SAVE_TOAST_DURATION {
-            self.save_toast = self
-                .save_toast_queue
-                .pop_front()
-                .map(|message| (message, std::time::Instant::now()));
+            self.save_toast = None;
             return;
         }
         let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
@@ -12448,8 +12454,9 @@ impl App {
         }
         if import_group_requested {
             if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {
-                if let Some(export) = group_export::load_from(&path) {
-                    self.import_group_export(export);
+                match group_export::load_from(&path) {
+                    Ok(export) => self.import_group_export(export),
+                    Err(err) => self.queue_toast(err),
                 }
             }
         }
@@ -13306,7 +13313,7 @@ impl App {
                 match session::Session::load_from(std::path::Path::new(&path)) {
                     Ok(session) => self.pending_import = Some(session),
                     Err(err) => {
-                        eprintln!("session: {err}");
+                        eprintln!("{err}");
                         self.queue_toast(err);
                     }
                 }
@@ -13338,8 +13345,12 @@ impl App {
                 }
             }
             DebugCommand::ImportGroup(path) => {
-                if let Some(export) = group_export::load_from(std::path::Path::new(&path)) {
-                    self.import_group_export(export);
+                match group_export::load_from(std::path::Path::new(&path)) {
+                    Ok(export) => self.import_group_export(export),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        self.queue_toast(err);
+                    }
                 }
             }
             DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
@@ -13347,9 +13358,15 @@ impl App {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
             DebugCommand::ImportBookmarks(path) => {
-                if let Some(imported) = bookmarks::load_from(std::path::Path::new(&path)) {
-                    self.bookmarks = imported;
-                    bookmarks::save(&self.bookmarks);
+                match bookmarks::load_from(std::path::Path::new(&path)) {
+                    Ok(imported) => {
+                        self.bookmarks = imported;
+                        bookmarks::save(&self.bookmarks);
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        self.queue_toast(err);
+                    }
                 }
             }
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
@@ -13681,13 +13698,8 @@ impl App {
                         // Not `self.queue_toast(...)` -- `node` above still
                         // holds a live borrow of `self.nodes` for this whole
                         // drain, which a method call on `self` can't see
-                        // past even though `save_toast`/`save_toast_queue`
-                        // are disjoint fields; direct field access can.
-                        if self.save_toast.is_some() {
-                            self.save_toast_queue.push_back(format!("Saved {path}"));
-                        } else {
-                            self.save_toast = Some((format!("Saved {path}"), std::time::Instant::now()));
-                        }
+                        // past; the disjoint field can be pushed to directly.
+                        self.save_toast_queue.push_back(format!("Saved {path}"));
                         download_events.push(DownloadEvent::Completed { path });
                     }
                 }

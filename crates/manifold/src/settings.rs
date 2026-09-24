@@ -48,7 +48,11 @@ impl SearchEngine {
 /// saved on every change (`save`, fire-and-forget — a failed write is
 /// logged, not fatal, since losing a settings change is annoying but never
 /// breaks the browser itself).
+/// `#[serde(default)]`: a file missing some fields keeps the ones it has
+/// and takes `Default` for the rest (field-level defaults, like
+/// `has_shown_first_launch_demo`'s, still win).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub default_search_engine: SearchEngine,
     #[serde(with = "engine_kind_serde")]
@@ -173,18 +177,18 @@ pub fn conflict_path() -> Option<PathBuf> {
 }
 
 impl Settings {
-    /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all
-    /// (unusual on Windows, but not worth panicking over) all just fall
-    /// back to defaults — a broken settings file should never stop the
-    /// browser from starting.
-    pub fn load() -> Self {
+    /// No `%APPDATA%` or no `settings.json`: defaults. An unreadable one
+    /// also gives defaults, but is moved aside first and reported as the
+    /// `Err` half (see `json_file::load_or_move_aside`) -- a broken settings
+    /// file should never stop the browser from starting.
+    pub fn load() -> (Self, Option<String>) {
         let Some(path) = settings_path() else {
-            return Self::default();
+            return (Self::default(), None);
         };
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-            .unwrap_or_default()
+        match crate::json_file::load_or_move_aside(&path, "settings") {
+            Ok(settings) => (settings.unwrap_or_default(), None),
+            Err(err) => (Self::default(), Some(err)),
+        }
     }
 
     pub fn save(&self) {

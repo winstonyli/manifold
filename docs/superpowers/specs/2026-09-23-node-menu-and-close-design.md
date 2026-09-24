@@ -238,8 +238,13 @@ Found while writing the implementation plan; these supersede the sections below 
     notices included) were never seen.
   Checked headless: the recipe seed without `next_tab_id` restores
   `tab-10..13`, and a new tab gets `tab-14`. A truncated `session.json`
-  toasts, is moved aside intact, and the demo loads. Still open:
-  `Settings::load` and `bookmarks::load_from` have the same silent fallback
-  followed by an overwrite on the first save.
+  toasts, is moved aside intact, and the demo loads. Follow-up: settings
+  and bookmarks had the same silent fallback and overwrite. `json_file.rs`
+  now holds `load` and `load_or_move_aside` for all of them, group import
+  included. `Settings` is `#[serde(default)]`, so a partial file keeps what
+  it has, and the recipe's one-field settings seed now loads. A toast's 4 s
+  now starts when it's first drawn, not when it's queued. Checked headless:
+  corrupt settings, bookmarks and session files are all moved aside, and
+  their three toasts show in turn.
 - **Done:** a node menu's fade-out used to redraw from the node's *current* state, so it changed while it faded: after "Remove from Group" the row vanished and the menu shrank, and Pin turned into Unpin. Now `build_node_menu` reads a `NodeMenuView` each open frame, `node_menu_cache` freezes it for the fade-out, and a menu whose action removed its node (Delete, Close, Dissolve) fades too instead of vanishing. A fading menu is also click-through (`Area::interactable(false)`), so the rest of a double-click can't run an item twice. The four toolbar list popups (`build_list_popup_frame`) got the same click-through. Checked headless with the fade temporarily slowed to 3 s: the fading menu kept its "Remove from Group" row after the download had left the group, and a second click on it went through to the tab card behind. egui builds its hit test from the previous frame's layers, so the first fading frame can still take a click.
 - **Done:** every other fading popup with clickable content is click-through while fading too: the quick switcher, the Tab-view link menu, tab actions, and the three engine pickers (`build_engine_picker_popup`). Peek preview only paints. Still open: the toolbar list popups redraw live content during the fade (after a Recently Closed reopen, the list loses that row mid-fade). The fade lasts ~83 ms, so this is cosmetic.

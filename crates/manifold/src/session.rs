@@ -5,7 +5,7 @@
 //! always spawning a single fresh root tab, so quitting and relaunching
 //! picks up roughly where it left off. A missing file falls back to a
 //! fresh start. An unreadable one does too, but is first moved aside (see
-//! `Session::load`) so the next save can't overwrite it.
+//! `json_file::load_or_move_aside`) so the next save can't overwrite it.
 //!
 //! Only the graph's *shape* is portable across a restart — page state
 //! (cookies, localStorage, IndexedDB, scroll position) is not, the same
@@ -182,29 +182,11 @@ fn named_session_path(name: &str) -> Option<PathBuf> {
 
 impl Session {
     /// `Ok(None)` for no `%APPDATA%` or no `session.json`: the caller starts
-    /// fresh. A file that exists but can't be read or parsed is renamed to
-    /// `session.unreadable-<unix-seconds>.json` and comes back as `Err` with
-    /// a message saying so. Left in place, the first save after the fresh
-    /// start would overwrite it: `App::save_session`'s fingerprint check
-    /// only guards a file this run has loaded.
+    /// fresh. An unreadable one is moved aside first -- see
+    /// `json_file::load_or_move_aside`.
     pub fn load() -> Result<Option<Self>, String> {
         let Some(path) = session_path() else { return Ok(None) };
-        if !path.exists() {
-            return Ok(None);
-        }
-        let err = match Self::load_from(&path) {
-            Ok(session) => return Ok(Some(session)),
-            Err(err) => err,
-        };
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let aside = path.with_file_name(format!("session.unreadable-{secs}.json"));
-        match std::fs::rename(&path, &aside) {
-            Ok(()) => Err(format!("{err} -- moved it to {}", aside.display())),
-            Err(rename_err) => Err(format!("{err} (and couldn't move it aside: {rename_err})")),
-        }
+        crate::json_file::load_or_move_aside(&path, "session")
     }
 
     pub fn save(&self) {
@@ -218,10 +200,7 @@ impl Session {
     /// "Open Session" list reads back whatever `save_as` wrote. The error
     /// names the file and says what's wrong with it, ready for a toast.
     pub fn load_from(path: &Path) -> Result<Self, String> {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|err| format!("Couldn't read {}: {err}", path.display()))?;
-        serde_json::from_str(&contents)
-            .map_err(|err| format!("Couldn't load session {}: {err}", path.display()))
+        crate::json_file::load(path, "session")
     }
 
     /// Same write as `save`, just to an arbitrary path.

@@ -1,7 +1,8 @@
 //! Bookmarks: a flat list of `(title, url, folder)` entries, persisted to
 //! `%APPDATA%\manifold\bookmarks.json` — same "missing/corrupt
 //! file just means empty, never fails to start" posture `settings.rs`/
-//! `session.rs` already have. `folder` is a single optional level, not a
+//! `session.rs` already have (a corrupt one is moved aside first). `folder`
+//! is a single optional level, not a
 //! real tree -- the toolbar dropdown groups by it (unfoldered entries
 //! first, then each named folder), but a folder can't contain another
 //! folder.
@@ -25,19 +26,22 @@ fn bookmarks_path() -> Option<PathBuf> {
 }
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
-/// return an empty list — same fallback posture as `Settings::load`.
-pub fn load() -> Vec<Bookmark> {
-    let Some(path) = bookmarks_path() else { return Vec::new() };
-    load_from(&path).unwrap_or_default()
+/// give an empty list — same fallback as `Settings::load`, including moving
+/// an unreadable file aside and reporting it as the `Err` half.
+pub fn load() -> (Vec<Bookmark>, Option<String>) {
+    let Some(path) = bookmarks_path() else { return (Vec::new(), None) };
+    match crate::json_file::load_or_move_aside(&path, "bookmarks") {
+        Ok(bookmarks) => (bookmarks.unwrap_or_default(), None),
+        Err(err) => (Vec::new(), Some(err)),
+    }
 }
 
 /// Same read as `load`, just from an arbitrary path — the "Import
 /// Bookmarks..." settings-popup button reads back whatever "Export
 /// Bookmarks..." wrote, same shape `Session::load_from`/`save_to` already
 /// have for named sessions.
-pub fn load_from(path: &Path) -> Option<Vec<Bookmark>> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+pub fn load_from(path: &Path) -> Result<Vec<Bookmark>, String> {
+    crate::json_file::load(path, "bookmarks")
 }
 
 pub fn save(bookmarks: &[Bookmark]) {
