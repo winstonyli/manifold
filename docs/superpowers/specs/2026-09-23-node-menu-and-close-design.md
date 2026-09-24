@@ -132,9 +132,8 @@ Found while writing the implementation plan; these supersede the sections below 
 - Menu "Remove from Group" sends a node to the top level, while the card's
   hover eject sends it one level up — inconsistent for nested groups
   (pre-existing).
-- A Download's menu never offers "Remove from Group" (pre-existing).
-- The graph card rendering loops are still per kind (the next
-  generalization of this pattern).
+- **Done** (graph card frame, `docs/superpowers/specs/2026-09-23-graph-card-frame-design.md`): a download joins a group by dragging onto it like any card, and its menu offers "Remove from Group" when grouped.
+- **Done:** one card frame for Download/Note/Image/Pdf/Json (same spec).
 - **Fixed after merge review — Note hover was a real bug:** a Note card was
   never hovered at all (no hover border, no hover ✕), with a real mouse too,
   ever since Notes were added (`87d0e95`). Its hover-only interact was

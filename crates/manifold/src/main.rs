@@ -309,9 +309,6 @@ fn build_node_context_menu(
 /// shows -- each kind's own row of what used to be five separate
 /// builders. `None` for Group and Tab, whose menus (rename field, color
 /// swatches, pin, …) are drawn by their own bespoke builders instead.
-/// Download hardcodes `has_group: false`: that menu never offered
-/// "Remove from Group", regardless of whether the download actually has
-/// one (pre-existing, kept as-is).
 fn node_menu_config(kind: ItemNodeKind, has_group: bool) -> Option<NodeMenuConfig> {
     let file = |area_id, show_expand| NodeMenuConfig {
         area_id,
@@ -324,7 +321,6 @@ fn node_menu_config(kind: ItemNodeKind, has_group: bool) -> Option<NodeMenuConfi
     };
     match kind {
         ItemNodeKind::Download => Some(NodeMenuConfig {
-            has_group: false,
             delete_label: "Remove from List",
             ..file("download_context_menu", false)
         }),
@@ -553,16 +549,17 @@ struct CardOutput {
 }
 
 /// Small hover-revealed "X" close button at a Graph-view card's top-right
-/// corner -- shared by Note/Image/Pdf/Json's own card loops in
-/// `build_graph_ui`, previously hand-copied once per kind. Colors are
-/// parameters rather than hardcoded: Note's card deliberately uses a
-/// different (warm, black-alpha-based) palette than Image/Pdf/Json's
-/// shared dark-chrome one, so the button needs to match whichever card
-/// it's drawn on. The icon's own paint is deferred -- see
-/// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
-/// are no longer parameters here at all. Returns whether it was clicked
-/// this frame -- the caller still decides what that means for its own kind
-/// (`node_close_requested` for every kind that uses it).
+/// corner -- called from `App::draw_graph_card` for all five card kinds
+/// (Download/Note/Image/Pdf/Json), previously hand-copied once per kind.
+/// Colors are parameters rather than hardcoded, coming from `card_style`:
+/// Note's card deliberately uses a different (warm, black-alpha-based)
+/// palette than the rest's shared themed one, so the button needs to
+/// match whichever card it's drawn on. The icon's own paint is deferred
+/// -- see `DeferredOverlays`'s own doc comment -- so
+/// `overlay_painter`/`project` are no longer parameters here at all.
+/// Returns whether it was clicked this frame -- the caller still decides
+/// what that means for its own kind (`node_close_requested` for every
+/// kind that uses it).
 fn draw_node_close_button(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -11540,6 +11537,9 @@ impl App {
                             continue;
                         };
                         if card.close_clicked {
+                            // The ✕ consumed this frame's click, so the
+                            // kind's own click action below (e.g. Image
+                            // maximize) is skipped.
                             node_close_requested = Some(id.clone());
                             continue;
                         }
@@ -14039,10 +14039,11 @@ mod tests {
             Some(NodeMenuConfig { area_id, copy_text, reveal_and_copy_path, show_expand, has_group, delete_label, width })
         };
         for has_group in [false, true] {
-            // Download never offers "Remove from Group", grouped or not.
+            // A download can join a group like any card (drag onto it), so
+            // its menu offers "Remove from Group" when grouped.
             assert_eq!(
                 node_menu_config(ItemNodeKind::Download, has_group),
-                simple("download_context_menu", false, true, false, false, "Remove from List", 170.0)
+                simple("download_context_menu", false, true, false, has_group, "Remove from List", 170.0)
             );
             assert_eq!(
                 node_menu_config(ItemNodeKind::Note, has_group),
