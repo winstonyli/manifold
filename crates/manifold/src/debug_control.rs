@@ -31,6 +31,13 @@ use crate::UserEvent;
 /// update/navigate logic) — this still exercises all of *this project's*
 /// logic, just not winit/egui's own keyboard event plumbing (which was never
 /// the source of a bug here).
+///
+/// Driving egui through these, learned the hard way: use `CLICK`, not a
+/// `MOUSEDOWN`/`MOUSEUP` pair spaced by a `sleep` -- egui drops a press
+/// held past its max click duration (~0.8 s) as a long press, not a click.
+/// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
+/// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
+/// before a `SCREENSHOT` meant to show it.
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },

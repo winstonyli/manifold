@@ -11396,29 +11396,10 @@ impl App {
                     )
                     .shrink(6.0 * inv_zoom);
 
-                    let hover_response = ui.interact(
-                        rect,
-                        egui::Id::new(("graph_note_node_hover", id.as_str())),
-                        egui::Sense::hover(),
-                    );
-                    let is_hovered =
-                        self.hovered.as_deref() == Some(id.as_str()) || hover_response.hovered();
-
                     let is_editing =
                         self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
                     ui.painter().rect_filled(rect, 2.0 * inv_zoom, NOTE_CARD_COLOR);
-                    let (border_width, border_color) = if is_hovered {
-                        (1.5, egui::Color32::from_black_alpha(200))
-                    } else {
-                        (1.0, egui::Color32::from_black_alpha(120))
-                    };
-                    ui.painter().rect_stroke(
-                        rect,
-                        2.0 * inv_zoom,
-                        egui::Stroke::new(border_width * inv_zoom, border_color),
-                        egui::StrokeKind::Inside,
-                    );
                     if !self.graph_lod_simplified {
                         let note_icon_pos = header_rect.left_center();
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -11534,6 +11515,40 @@ impl App {
                             note.editing = true;
                         }
                     }
+
+                    // Registered *after* the card's content and its
+                    // click_and_drag `response`, not before: egui (0.36,
+                    // `interaction.rs`) only counts a hover-only widget as
+                    // hovered when it sits on top of the topmost interactive
+                    // widget under the pointer. Registered first (as it
+                    // was), `response` -- or, while editing, the `TextEdit`
+                    // -- always outranked it, so a Note card was never
+                    // hovered: no hover border, and no hover ✕ at all.
+                    // Being hover-only, it still doesn't steal clicks or
+                    // drags from anything beneath it. (Other kinds use their
+                    // own `response.hovered()`; a Note can't, since while
+                    // editing its `response` covers only the header.)
+                    let hover_response = ui.interact(
+                        rect,
+                        egui::Id::new(("graph_note_node_hover", id.as_str())),
+                        egui::Sense::hover(),
+                    );
+                    let is_hovered =
+                        self.hovered.as_deref() == Some(id.as_str()) || hover_response.hovered();
+                    // Drawn over the content, which is fine: it's an inside
+                    // stroke on the card's edge, and the text is inset from
+                    // it (`text_rect`'s shrink).
+                    let (border_width, border_color) = if is_hovered {
+                        (1.5, egui::Color32::from_black_alpha(200))
+                    } else {
+                        (1.0, egui::Color32::from_black_alpha(120))
+                    };
+                    ui.painter().rect_stroke(
+                        rect,
+                        2.0 * inv_zoom,
+                        egui::Stroke::new(border_width * inv_zoom, border_color),
+                        egui::StrokeKind::Inside,
+                    );
 
                     if is_hovered
                         && draw_node_close_button(
