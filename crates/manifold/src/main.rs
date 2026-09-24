@@ -3106,6 +3106,9 @@ struct App {
     /// Set by a headless `SCREENSHOT` command; consumed on the next
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
+    /// The stdin reader waiting on `pending_screenshot` (see
+    /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
+    screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
     /// "Print to PDF": the target `.pdf` path, set alongside
     /// `pending_screenshot` (a temp PNG) so the underlying GPU capture
     /// mechanism doesn't need to know PDF exists at all -- once that
@@ -3397,6 +3400,7 @@ impl Default for App {
             quit_after_next_redraw: false,
             debug_address_bar_pin: false,
             pending_screenshot: None,
+            screenshot_waiter: None,
             pending_print_to_pdf: None,
             closed_tabs: Vec::new(),
             closed_nodes: Vec::new(),
@@ -13173,6 +13177,12 @@ impl ApplicationHandler<UserEvent> for App {
                     };
                     if outcome.surface_ok {
                         self.pending_screenshot = None;
+                        // The PNG is written by now (`render` saves it).
+                        if outcome.screenshot_result.is_some() {
+                            if let Some(waiter) = self.screenshot_waiter.take() {
+                                let _ = waiter.send(());
+                            }
+                        }
                         match outcome.screenshot_result {
                             Some(Ok(())) => {
                                 if let Some(path) = screenshot_path {
@@ -13420,8 +13430,11 @@ impl App {
                     }
                 }
             }
-            DebugCommand::Screenshot(path) => {
+            // Only ever intercepted by the stdin reader itself.
+            DebugCommand::Screenshot(_) => {}
+            DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
                 self.pending_screenshot = Some(path);
+                self.screenshot_waiter = Some(waiter);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

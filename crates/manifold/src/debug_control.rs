@@ -146,7 +146,15 @@ pub enum DebugCommand {
     /// Renders the next frame and saves it as a PNG at this path — includes
     /// chrome and any open dropdown, not just tab content, since it reads
     /// back the same composited frame a real screenshot would show.
+    /// Blocks the stdin reader until it's saved (or 30 s pass): frames can
+    /// stall for seconds, and the app holds one pending screenshot, so an
+    /// unblocked second `SCREENSHOT` (or a `QUIT`) used to drop the first.
+    /// Handled by `spawn_stdin_reader`, which sends
+    /// `NotifyWhenScreenshotTaken`; never reaches the app.
     Screenshot(String),
+    /// Internal, sent only by `spawn_stdin_reader` for `SCREENSHOT`: the
+    /// app saves the next frame to the path, then sends `()` on this.
+    NotifyWhenScreenshotTaken(String, std::sync::mpsc::Sender<()>),
     Resize(u32, u32),
     Quit,
     /// `Ctrl+K` equivalent — see `App::handle_global_shortcuts`.
@@ -337,7 +345,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("FINDPREVIOUS", "Find bar: previous match"),
     ("CLOSEFINDBAR", "Close the find bar"),
     ("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)"),
-    ("SCREENSHOT path", "Render the next frame and save it as a PNG at `path`"),
+    ("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)"),
     ("RESIZE w h", "Resize the window to (w, h)"),
     ("QUIT", "Exit the app"),
     ("QUICKSWITCHOPEN", "Ctrl+K -- open the quick switcher"),
@@ -626,6 +634,16 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
                     }
                     if rx.recv_timeout(timeout).is_err() {
                         eprintln!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing");
+                    }
+                }
+                Some(DebugCommand::Screenshot(path)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let cmd = DebugCommand::NotifyWhenScreenshotTaken(path.clone(), tx);
+                    if proxy.send_event(UserEvent::Debug(cmd)).is_err() {
+                        break;
+                    }
+                    if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
+                        eprintln!("SCREENSHOT: {path} not taken after 30 s; continuing");
                     }
                 }
                 Some(cmd) => {
