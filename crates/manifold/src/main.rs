@@ -6631,6 +6631,41 @@ impl App {
     /// `Settings::load`/`session::Session::load` already have. Doesn't
     /// itself call `save_session` -- both callers mutate persisted state
     /// and save themselves right after.
+    /// A download node for `path`, started from tab `tab_id`: placed next
+    /// to that tab, in the tab's group, with an edge from it. Shared by an
+    /// engine's `DownloadStarted` and the headless `ADDDOWNLOAD <path>`
+    /// debug command (downloads otherwise only ever come from a real
+    /// engine download, so headless runs had no way to get one). A no-op
+    /// if `tab_id` is gone. Downloads aren't persisted, so no save.
+    fn insert_download_node(&mut self, tab_id: String, path: String, total_bytes: Option<u64>) {
+        // "dl-" prefix so a download node's id can never collide with a
+        // tab's -- both share the same graph/edge id space
+        // (`graph_layout::step` sees them as one flat set of nodes).
+        let Some((node_pos, node_group)) = self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone())) else {
+            return;
+        };
+        let id = format!("dl-{}", self.next_download_id);
+        self.next_download_id += 1;
+        let pos = node_pos + graph_layout::spawn_jitter(&id);
+        self.nodes.insert(
+            id.clone(),
+            GraphNode {
+                parent: Some(tab_id),
+                group: node_group,
+                pos,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload: NodePayload::Download(DownloadPayload {
+                    path,
+                    bytes_received: 0,
+                    total_bytes,
+                    completed: false,
+                }),
+            },
+        );
+        self.node_order.push(id);
+    }
+
     fn insert_image_node(&mut self, path: String) -> bool {
         let id = self.alloc_image_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
@@ -13197,6 +13232,11 @@ impl App {
                     self.save_session();
                 }
             }
+            DebugCommand::AddDownload(path) => {
+                if let Some(tab_id) = self.focused.clone() {
+                    self.insert_download_node(tab_id, path, None);
+                }
+            }
             DebugCommand::Split(kind) => self.start_split(kind),
             DebugCommand::CloseSplit => self.close_split(),
             DebugCommand::ExpandJsonAsGraph(id) => {
@@ -13508,37 +13548,7 @@ impl App {
         for event in download_events {
             match event {
                 DownloadEvent::Started { tab_id, path, total_bytes } => {
-                    // "dl-" prefix (was `alloc_download_id`, inlined here --
-                    // that method took `&mut self` as a whole, awkward to
-                    // call while iterating `download_events`) so a download
-                    // node's id can never collide with a tab's -- both share
-                    // the same graph/edge id space (`graph_layout::step`
-                    // sees them as one flat set of nodes).
-                    let Some((node_pos, node_group)) =
-                        self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone()))
-                    else {
-                        continue;
-                    };
-                    let id = format!("dl-{}", self.next_download_id);
-                    self.next_download_id += 1;
-                    let pos = node_pos + graph_layout::spawn_jitter(&id);
-                    self.nodes.insert(
-                        id.clone(),
-                        GraphNode {
-                            parent: Some(tab_id),
-                            group: node_group,
-                            pos,
-                            vel: egui::Vec2::ZERO,
-                            color: None,
-                            payload: NodePayload::Download(DownloadPayload {
-                                path,
-                                bytes_received: 0,
-                                total_bytes,
-                                completed: false,
-                            }),
-                        },
-                    );
-                    self.node_order.push(id);
+                    self.insert_download_node(tab_id, path, total_bytes);
                 }
                 DownloadEvent::Progress { path, bytes_received } => {
                     if let Some(dl) =

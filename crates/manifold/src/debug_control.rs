@@ -41,7 +41,16 @@ use crate::UserEvent;
 /// per line with no pacing between them, so unpaced mouse commands (a
 /// `MOUSEDOWN`/`MOUSEMOVE`/`MOUSEUP` sequence, or back-to-back `CLICK`s) can
 /// all land in the same egui frame and no drag or click registers at all --
-/// put a `sleep` of roughly 0.15-0.5 s between mouse commands.
+/// put a `sleep` of roughly 0.15-0.5 s between mouse commands. A `CLICK`
+/// may only be processed when the *next* event arrives, so `MOUSEMOVE`
+/// near the same spot before moving the pointer away, or the click lands
+/// wherever it moved to. Open a right-click menu with a spaced
+/// `MOUSEDOWN`/`MOUSEUP ... right`, not `CLICK ... right`: a menu's first
+/// frame is egui's sizing pass, which may place it away from the
+/// pointer, and a release in that same frame counts as a click outside
+/// it, which closes it. First-launch demo tabs spawn asynchronously and can
+/// take 30 s or more headless; until the focused tab has spawned, commands
+/// that need it (e.g. `ADDDOWNLOAD`) do nothing.
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },
@@ -198,6 +207,11 @@ pub enum DebugCommand {
     /// a real file dialog — same reasoning as `AddImage`. See
     /// `App::insert_json_node`.
     AddJson(String),
+    /// A download node for `path`, as if the focused tab had just started
+    /// downloading it (no bytes, unknown total) -- downloads otherwise only
+    /// come from a real engine download. Nothing is fetched or written.
+    /// A no-op with no focused tab. See `App::insert_download_node`.
+    AddDownload(String),
     /// `F1` equivalent — toggles the keyboard-shortcut reference popup.
     ToggleShortcutsHelp,
     /// Sets the History popup's own filter box directly, same "direct call,
@@ -351,6 +365,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ADDIMAGE path", "Add an image node from `path`"),
     ("ADDPDF path", "Add a PDF node from `path`"),
     ("ADDJSON path", "Add a JSON node from `path`"),
+    ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
@@ -555,6 +570,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
+        "ADDDOWNLOAD" => Some(DebugCommand::AddDownload(rest.to_string())).filter(|_| !rest.is_empty()),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),

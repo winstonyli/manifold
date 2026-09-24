@@ -165,7 +165,9 @@ card kinds between them flip to top-first.
   - idle and hovered look of each kind (identical except Download's fill);
   - hover ✕ closes each kind; Recently Closed as before;
   - drag each kind; drag a Download onto a group → joins it, its menu
-    shows Remove from Group;
+    shows Remove from Group (not possible at first: nothing could create
+    a Download headless. Done later with the `ADDDOWNLOAD` debug
+    command: the drop, the menu, and Remove from Group all verified);
   - Image click maximizes; Json double-click opens the viewer; Note click
     enters editing;
   - Filter dims each kind;

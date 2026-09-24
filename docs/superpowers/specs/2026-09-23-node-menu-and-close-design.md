@@ -169,6 +169,17 @@ Found while writing the implementation plan; these supersede the sections below 
   type, and if you never click into it, it never loses focus either, so the
   note stays in editing mode indefinitely. Predates this branch — the old
   Note loop had no `request_focus()` call either (pre-existing).
+- A card menu can close on the frame it opens. `clicked_outside_popup`
+  runs on that first frame too, which is also egui's sizing pass for a
+  never-shown `Area`. The sizing pass assumes a default ~400 px tall area,
+  so a menu opened in the lower part of the screen is placed above the
+  pointer. If the right button is released in that same frame, the release
+  counts as a click outside the menu and closes it. The headless
+  `CLICK ... right` always does this (found while checking Download menus
+  with `ADDDOWNLOAD`). A real mouse normally releases a frame or more
+  later, but a touchpad two-finger tap might press and release within one
+  frame. Unverified on real hardware. A possible fix: skip the click-outside
+  check on the frame the menu opens (pre-existing).
 - A "Try grouping" Group card's own mini thumbnail (of its member tabs)
   sometimes renders blank in headless screenshots, seen across otherwise-
   identical runs during the graph-card-frame before/after comparison
