@@ -12829,6 +12829,23 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Debug(cmd) => {
+                // egui hit-tests pointer input against the widgets of the
+                // last frame, which may predate whatever changed since the
+                // previous command (a tab that just spawned, suggestions
+                // that just arrived); a CLICK on a node right after
+                // WAITTABS missed 3 runs out of 3. So draw the current
+                // state first.
+                let pointer = matches!(
+                    cmd,
+                    DebugCommand::MouseMove { .. }
+                        | DebugCommand::MouseDown { .. }
+                        | DebugCommand::MouseUp { .. }
+                        | DebugCommand::Click { .. }
+                        | DebugCommand::Scroll { .. }
+                );
+                if self.headless && pointer {
+                    self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
+                }
                 self.handle_debug_command(event_loop, cmd);
                 // The off-screen headless window can get `RedrawRequested`
                 // (WM_PAINT) only sporadically -- measured ~40 frames in

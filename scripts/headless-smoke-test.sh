@@ -5,8 +5,8 @@
 # was produced and isn't suspiciously small, and asserts on app state
 # (view mode, the focused tab's URL) read back through EXPORTSESSION, so
 # it catches wrong behavior as well as crashes. Exercises the address-bar
-# autocomplete flow end to end: launch (into Graph view), open the root
-# node into Tab view, type a query, screenshot the suggestion dropdown,
+# autocomplete flow end to end: launch (into Graph view), click the root
+# node to enter Tab view, type a query, screenshot the suggestion dropdown,
 # click a suggestion, screenshot the result; arrow-key highlight +
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
 # quit.
@@ -64,10 +64,11 @@ failed() {
 
 # The app saves a SCREENSHOT on its next drawn frame, which can take
 # seconds when the GPU is busy; wait up to the 30 s the app itself gives
-# one, then for the size to stop changing (a save in progress).
+# one, then for the size to stop changing (a save in progress; an empty
+# file counts as not written yet).
 wait_for_file() {
     local path="$1" waited=0 prev=-1 now
-    while [ ! -f "$path" ] && [ "$waited" -lt 150 ]; do
+    while [ ! -s "$path" ] && [ "$waited" -lt 150 ]; do
         sleep 0.2
         waited=$((waited + 1))
     done
@@ -133,23 +134,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The root tab spawns asynchronously (30 s or more on a loaded machine);
-# a fixed sleep here used to race it.
-send "WAITTABS"
-
 # Pin a known window size so the click coordinates below (measured against
 # this exact size during manual verification) stay valid regardless of
 # whatever winit's platform-default window size happens to be.
 send "RESIZE 816 639"
-sleep 1
 
-# The app launches into Graph view with the root tab focused; GRAPHOPEN
-# opens it into Tab view, which the address-bar flow below needs. A CLICK
-# on the node also needs a frame to have drawn it after it spawned (a
-# click is hit-tested against the last drawn frame); GRAPHOPEN doesn't.
-send "GRAPHOPEN"
+# The root tab spawns asynchronously (30 s or more on a loaded machine);
+# a fixed sleep here used to race it.
+send "WAITTABS"
+
+# The app launches into Graph view; with only the root tab, the layout
+# puts it at the window's center (~(407, 332) at 816x639). Clicking it
+# enters Tab view, which the address-bar flow below needs. This CLICK is
+# the first command after the tab spawns, so it lands only because
+# headless mode draws a frame before each pointer command (it missed 3
+# runs out of 3 without that). Keep it first: any command in between
+# renders a frame of its own and would hide a regression.
+send "CLICK 407 332"
 sleep 1
-check_state tab_view "GRAPHOPEN enters Tab view" 'd["view_mode_tab"]'
+check_state tab_view "clicking the just-spawned root node enters Tab view" 'd["view_mode_tab"]'
 
 send "ADDRESSBAR weather"
 sleep 3 # debounce (~200ms) + real DuckDuckGo suggestion fetch over the network
@@ -162,8 +165,6 @@ check_screenshot "$out_dir/dropdown.png" "autocomplete dropdown"
 # layout constants (CHROME_HEIGHT_POINTS in main.rs) ever change. (Already
 # had to move this twice — most recently when Tab view's separate tab-strip
 # and toolbar bars were merged into one, shrinking chrome height 58->32.)
-# The SCREENSHOT above also matters here: it makes the app draw the
-# dropdown, and a CLICK sent before any frame has drawn it hits nothing.
 send "CLICK 283 42"
 sleep 3 # navigation + first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
@@ -203,7 +204,11 @@ sleep 1
 send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
 sleep 1
 check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
-check_state escape_dismiss "Escape stays in Tab view and navigates nowhere"     'd["view_mode_tab"] and q != "pancake recipe" and "sourdough" in q'
+# Fails, correctly, if DuckDuckGo took longer than the 3 s above to
+# answer: an Escape with no dropdown leaves Tab view (seen once in about
+# 15 runs).
+check_state escape_dismiss "Escape stays in Tab view and navigates nowhere" \
+    'd["view_mode_tab"] and q != "pancake recipe" and "sourdough" in q'
 
 send "QUIT"
 if wait "$browser_pid"; then

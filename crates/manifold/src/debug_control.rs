@@ -38,10 +38,12 @@ use crate::UserEvent;
 /// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
 /// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
 /// before a `SCREENSHOT` meant to show it, and before a `MOUSEDOWN` on a
-/// card (without it, a right-click there opens the canvas menu). Each
-/// command renders its own frame in headless mode (see
-/// `UserEvent::Debug`'s handler), so mouse commands need no `sleep`
-/// between them; animations (menu fades, group drill-in) still take real
+/// card (without it, a right-click there opens the canvas menu; untested
+/// since pointer commands got a frame before them too, which may make one
+/// enough). Each command renders its own frame in headless mode, and a
+/// pointer command also one before it, so it's hit-tested against the
+/// current state (see `UserEvent::Debug`'s handler); mouse commands need
+/// no `sleep` between them. Animations (menu fades, group drill-in) still take real
 /// time. Open a right-click menu with `MOUSEDOWN`/`MOUSEUP ... right`, not
 /// `CLICK ... right`: a menu's first frame is egui's sizing pass, which may
 /// place it away from the pointer, and a release in that same frame counts
