@@ -189,6 +189,15 @@ pub enum DebugCommand {
     /// headless mode has no OS/human to answer one, so this bypasses it
     /// entirely and calls the same underlying save directly.
     ExportSession(String),
+    /// `EXPORTSTATE path` -- writes UI state that `session.json` doesn't
+    /// hold (and shouldn't: it's the user's saved session) as JSON, for a
+    /// test to check: `tab_view`, `transition`, `focused_url`,
+    /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
+    /// query, or `tab:<id>` for an open tab) and `highlighted` (a row
+    /// index, or null). Suggestions arriving from the network show up
+    /// only once a frame has drained them, and every command draws one, so
+    /// a test can poll this until `suggestions` fills.
+    ExportState(String),
     /// "Import..." with an explicit path, same "bypass the real file
     /// dialog" reason as `ExportSession`.
     ImportSession(String),
@@ -369,6 +378,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view"),
     ("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page"),
     ("EXPORTSESSION path", "Save the current session to `path`"),
+    ("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON"),
     ("IMPORTSESSION path", "Load a session from `path`"),
     ("EXPORTBOOKMARKS path", "Save bookmarks to `path`"),
     ("IMPORTBOOKMARKS path", "Load bookmarks from `path`"),
@@ -576,6 +586,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
         "TOGGLESETTINGSPAGE" => Some(DebugCommand::ToggleSettingsPage),
         "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTSTATE" => Some(DebugCommand::ExportState(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
         "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
         "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),

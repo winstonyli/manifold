@@ -13504,6 +13504,28 @@ impl App {
             DebugCommand::ExportSession(path) => {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));
             }
+            DebugCommand::ExportState(path) => {
+                let focused_url = self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+                let suggestions: Vec<String> = self
+                    .combined_suggestions()
+                    .into_iter()
+                    .map(|s| match s {
+                        Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
+                        Suggestion::Search { query } => query,
+                    })
+                    .collect();
+                let state = serde_json::json!({
+                    "tab_view": self.showing_tab_view(),
+                    "transition": self.transition.is_some(),
+                    "focused_url": focused_url,
+                    "address_bar_text": self.address_bar_text,
+                    "suggestions": suggestions,
+                    "highlighted": self.dropdown_highlighted,
+                });
+                if let Err(err) = std::fs::write(&path, state.to_string()) {
+                    eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
+                }
+            }
             DebugCommand::ImportSession(path) => {
                 match session::Session::load_from(std::path::Path::new(&path)) {
                     Ok(session) => self.pending_import = Some(session),

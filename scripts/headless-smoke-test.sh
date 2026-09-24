@@ -3,7 +3,8 @@
 # mode" section for the stdin text-command protocol this drives). Not a
 # full test framework and not pixel comparison: it checks each screenshot
 # was produced and isn't suspiciously small, and asserts on app state
-# (view mode, the focused tab's URL) read back through EXPORTSESSION, so
+# (view mode, the focused tab's URL, the suggestion rows and which one is
+# highlighted) read back through EXPORTSTATE, so
 # it catches wrong behavior as well as crashes. Exercises the address-bar
 # autocomplete flow end to end: launch (into Graph view), click the root
 # node to enter Tab view, type a query, screenshot the suggestion dropdown,
@@ -94,28 +95,53 @@ check_screenshot() {
     fi
 }
 
-# EXPORTSESSION writes the live session (tabs and their URLs, the focused
-# tab, `view_mode_tab`), which makes it the protocol's state query. `expr`
-# is a Python expression over `d` (the session), `url` (the focused tab's
-# URL) and `q` (that URL's `q=` search query, or "").
-check_state() {
-    local name="$1" label="$2" expr="$3" path="$out_dir/$1.json" result
-    send "EXPORTSESSION $out_dir_win\\$name.json"
+# EXPORTSTATE writes the app's UI state as JSON (see its doc comment in
+# debug_control.rs). `state NAME EXPR` exports it to NAME.json and
+# evaluates the Python expression EXPR over `s` (that state), `url` (the
+# focused tab's URL), `q` (that URL's `q=` search query, or "") and `row`
+# (the ROW environment variable, for comparing against a captured value): it
+# prints the value, or the URL with a third argument `url`, and succeeds
+# if the value is truthy.
+state() {
+    local path="$out_dir/$1.json"
+    rm -f "$path"
+    send "EXPORTSTATE $out_dir_win\\$1.json"
     wait_for_file "$path"
-    if result=$(python - "$path" "$expr" <<'EOF'
-import json, sys
+    python - "$path" "$2" "${3:-}" <<'EOF'
+import json, os, sys
 from urllib.parse import parse_qs, urlparse
-d = json.load(open(sys.argv[1], encoding="utf-8"))
-url = next((t["url"] for t in d["tabs"] if t["id"] == d["focused"]), "")
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+url = s["focused_url"] or ""
 q = parse_qs(urlparse(url).query).get("q", [""])[0]
-print(url)
-sys.exit(0 if eval(sys.argv[2]) else 1)
+row = os.environ.get("ROW", "")
+v = eval(sys.argv[2])
+print(url if sys.argv[3] == "url" else v)
+sys.exit(0 if v else 1)
 EOF
-    ); then
+}
+
+check_state() {
+    local name="$1" label="$2" expr="$3" result
+    if result=$(state "$name" "$expr" url); then
         pass "$label ($result)"
     else
         failed "$label: \`$expr\` is false (focused tab: ${result:-none})"
     fi
+}
+
+# Polls until EXPR holds, for up to ~15 s: suggestions come from
+# DuckDuckGo over the network, so a fixed sleep either wastes time or
+# (seen about once in 15 runs at 3 s) isn't enough.
+wait_state() {
+    local name="$1" label="$2" expr="$3" i
+    for i in $(seq 1 30); do
+        if state "$name" "$expr" >/dev/null; then
+            pass "$label"
+            return
+        fi
+        sleep 0.5
+    done
+    failed "$label: \`$expr\` still false after ~15 s"
 }
 
 # `coproc` gives a bidirectional pipe to the child — the same shape
@@ -152,13 +178,13 @@ send "WAITTABS"
 # renders a frame of its own and would hide a regression.
 send "CLICK 407 332"
 sleep 1
-check_state tab_view "clicking the just-spawned root node enters Tab view" 'd["view_mode_tab"]'
+check_state tab_view "clicking the just-spawned root node enters Tab view" 's["tab_view"]'
 
 send "ADDRESSBAR weather"
-sleep 3 # debounce (~200ms) + real DuckDuckGo suggestion fetch over the network
+wait_state weather_rows "suggestions for \"weather\" arrive" 's["suggestions"]'
 send "SCREENSHOT $out_dir_win\\dropdown.png"
-sleep 1
 check_screenshot "$out_dir/dropdown.png" "autocomplete dropdown"
+first_row=$(state weather_rows 's["suggestions"][0]')
 
 # First suggestion row's position below the address bar, at the 816x639
 # size pinned above — re-measure (via a manual SCREENSHOT) if chrome
@@ -168,47 +194,34 @@ check_screenshot "$out_dir/dropdown.png" "autocomplete dropdown"
 send "CLICK 283 42"
 sleep 3 # navigation + first paint
 send "SCREENSHOT $out_dir_win\\after_click.png"
-sleep 1
 check_screenshot "$out_dir/after_click.png" "post-click navigation"
-# Usually the first row is the typed text itself, but DuckDuckGo's order
-# varies (see the arrow-key check below), so only the prefix is certain.
-check_state after_click "clicking the first suggestion searches it" 'q.startswith("weather")'
+ROW="$first_row" check_state after_click "clicking the first suggestion searches it" 'q == row'
 
-# Arrow-key highlight + Enter-accept: two ARROWDOWNs land on the 2nd
-# suggestion row (the first press highlights row 1), and ENTER searches
-# that row's query — no coordinates involved. The state check can't tell
-# that row from the typed text: DuckDuckGo's order varies between runs,
-# and sometimes the typed text itself is the 2nd row. So it only checks
-# that Enter searched one of the suggestions; which row shows in the
-# screenshot.
+# Arrow-key highlight + Enter-accept: two ARROWDOWNs highlight the 2nd row
+# (the first press highlights the 1st), and ENTER searches that row's
+# query. No coordinates involved.
 send "ADDRESSBAR sourdough bread"
-sleep 3
+wait_state sourdough_rows "suggestions for \"sourdough bread\" arrive" 'len(s["suggestions"]) >= 2'
 send "ARROWDOWN"
-sleep 1
 send "ARROWDOWN"
-sleep 1
+check_state highlighted "two ARROWDOWNs highlight the 2nd row" 's["highlighted"] == 1'
+second_row=$(state highlighted 's["suggestions"][1]')
 send "ENTER"
 sleep 3
 send "SCREENSHOT $out_dir_win\\arrow_nav.png"
-sleep 1
 check_screenshot "$out_dir/arrow_nav.png" "arrow-key navigation"
-check_state arrow_nav "Enter searches a suggestion" 'q.startswith("sourdough bread")'
+ROW="$second_row" check_state arrow_nav "Enter searches the highlighted row" 'q == row'
 
 # Escape dismisses the dropdown without leaving Tab view (as opposed to a
 # second Escape / one with no dropdown showing, which leaves to Graph
-# view). Whether the dropdown itself is gone only shows in the screenshot.
+# view), and navigates nowhere.
 send "ADDRESSBAR pancake recipe"
-sleep 3
+wait_state pancake_rows "suggestions for \"pancake recipe\" arrive" 's["suggestions"]'
 send "ESCAPE"
-sleep 1
 send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
-sleep 1
 check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
-# Fails, correctly, if DuckDuckGo took longer than the 3 s above to
-# answer: an Escape with no dropdown leaves Tab view (seen once in about
-# 15 runs).
-check_state escape_dismiss "Escape stays in Tab view and navigates nowhere" \
-    'd["view_mode_tab"] and q != "pancake recipe" and "sourdough" in q'
+ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays in Tab view, navigates nowhere" \
+    's["tab_view"] and not s["suggestions"] and q == row'
 
 send "QUIT"
 if wait "$browser_pid"; then
