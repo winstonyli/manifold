@@ -2700,6 +2700,8 @@ struct TabSpawnOutcome {
     pos: egui::Vec2,
     vel: egui::Vec2,
     purpose: SpawnPurpose,
+    /// `App::session_generation` when the spawn started -- see that field.
+    generation: u64,
     result: std::io::Result<EngineTab>,
 }
 
@@ -2841,6 +2843,13 @@ struct App {
     /// reaches zero.
     tab_spawns_in_flight: usize,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
+    /// Bumped by `replace_running_session`. A tab spawn carries the value it
+    /// started under, and `handle_tab_spawn_result` drops a result from an
+    /// older one: it belongs to the replaced session, and inserting it would
+    /// add a stray tab to the new scene or, when its id matches one the new
+    /// session uses (both count from `tab-0`), replace that tab's node and
+    /// leave two engine hosts fighting over one id.
+    session_generation: u64,
     next_group_id: u64,
     next_note_id: u64,
     next_image_id: u64,
@@ -3300,6 +3309,7 @@ impl Default for App {
             next_download_id: 0,
             tab_spawns_in_flight: 0,
             tabs_spawned_waiters: Vec::new(),
+            session_generation: 0,
             next_group_id: 0,
             next_note_id: 0,
             next_image_id: 0,
@@ -4547,6 +4557,7 @@ impl App {
         self.selected_tabs.clear();
         self.rect_select_start = None;
         self.graph_settled_key = None;
+        self.session_generation += 1;
         self.apply_session(session);
         self.save_session();
     }
@@ -4728,6 +4739,7 @@ impl App {
             .clone()
             .expect("event_proxy set in main before any tab spawn");
         self.tab_spawns_in_flight += 1;
+        let generation = self.session_generation;
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(kind, &id, &url);
             let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome {
@@ -4741,6 +4753,7 @@ impl App {
                 pos,
                 vel,
                 purpose,
+                generation,
                 result,
             }));
         });
@@ -4753,13 +4766,30 @@ impl App {
     /// Focus/visibility for `Respawn` is decided here, at completion time —
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
-        let TabSpawnOutcome { id, parent, group, pinned, color, zoom_factor, url, pos, vel, purpose, result } =
-            outcome;
+        let TabSpawnOutcome {
+            id,
+            parent,
+            group,
+            pinned,
+            color,
+            zoom_factor,
+            url,
+            pos,
+            vel,
+            purpose,
+            generation,
+            result,
+        } = outcome;
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
         if self.tab_spawns_in_flight == 0 {
             for waiter in self.tabs_spawned_waiters.drain(..) {
                 let _ = waiter.send(());
             }
+        }
+        // Spawned for a session that's since been replaced: dropping the
+        // `EngineTab` shuts its engine host down. See `session_generation`.
+        if generation != self.session_generation {
+            return;
         }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave

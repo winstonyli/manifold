@@ -201,14 +201,18 @@ Found while writing the implementation plan; these supersede the sections below 
   it elsewhere didn't start their engine hosts. `WAITTABS` (added later)
   replaces the old ~25 s wait before `SCREENSHOT`. The focused card's live thumbnail varies from run to run, so
   mask it out before diffing.
-- `IMPORTSESSION` + `CONFIRMIMPORT` while the first-launch demo's tabs are
-  still spawning: `replace_running_session` clears `self.nodes` but doesn't
-  cancel spawns already in flight, so demo tabs land in the imported scene
-  afterwards. When an imported tab id matched an in-flight one (`tab-0..2`),
-  that tab looped on "engine-host crashed ... restarting". The real Import
-  Session dialog may hit the same race. Headless, a `WAITTABS` before
-  `IMPORTSESSION` avoids it; the app-side fix would be to cancel or discard
-  spawns in flight on replace (`tab_spawns_in_flight` now counts them).
+- **Fixed:** `IMPORTSESSION` + `CONFIRMIMPORT` while the first-launch demo's
+  tabs were still spawning let those demo tabs land in the imported scene. When
+  an imported id matched an in-flight one (`tab-0..2`), the late result replaced
+  the imported node and that tab looped on "engine-host crashed ... restarting".
+  The real Import Session dialog and Load Session hit the same race.
+  `replace_running_session` now bumps `App::session_generation`, and
+  `handle_tab_spawn_result` drops a spawn result from an older generation (the
+  dropped `EngineTab` shuts its host down). Repro: a three-tab session file with
+  ids `tab-0..2`, then `RESIZE`, `IMPORTSESSION`, `CONFIRMIMPORT` right away,
+  `WAITTABS`, `sleep 8`, `EXPORTSESSION`. Before the fix, 1 of 2 runs
+  crash-looped (5 restarts). After it, 4 of 4 runs came out clean: exactly the
+  imported tabs, no crash lines, and no engine processes left afterwards.
 - A restored/imported tab with `"url": "about:blank"` never appears, with
   nothing logged and no `tab_spawn_error` shown; the same session with
   `manifold://welcome` works. Unknown whether the spawn fails silently or
