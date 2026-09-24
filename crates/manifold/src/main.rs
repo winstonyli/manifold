@@ -10760,40 +10760,8 @@ impl App {
                 // Edges first so node cards paint on top of the lines feeding them.
                 // Both endpoints must share the currently-viewed level —
                 // see the physics block's own edge filter above for why.
-                for (id, node) in &self.nodes {
-                    if node.group != self.current_group {
-                        continue;
-                    }
-                    let Some(parent_id) = &node.parent else {
-                        continue;
-                    };
-                    let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
-                        continue;
-                    };
-                    let _ = id;
-                    let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
-                    let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
-                    // Viewport culling: unlike a node's own rect, an edge
-                    // can have one endpoint off-screen and the other on --
-                    // or pass through the viewport with both endpoints
-                    // outside it -- so this checks the bounding box of the
-                    // whole segment against the viewport, not either
-                    // endpoint alone. Not pixel-exact for a steep diagonal
-                    // that grazes past a corner of its own bounding box
-                    // without actually crossing the viewport, but that's a
-                    // rare, cheap-to-tolerate false negative, not a
-                    // visible edge going missing.
-                    if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
-                        draw_graph_edge(
-                            ui.painter(),
-                            parent_pos,
-                            node_pos,
-                            egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
-                        );
-                    }
-                }
-                // Download nodes are always parented to a tab (never to
-                // another download), so the same `self.nodes` lookup works.
+                // One pass over every node kind (tabs, downloads, ...), so
+                // each parent->child edge is drawn exactly once.
                 for node in self.nodes.values() {
                     if node.group != self.current_group {
                         continue;
@@ -10806,7 +10774,16 @@ impl App {
                     };
                     let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
                     let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
-                    // Viewport culling -- see the tab-edge loop's own comment.
+                    // Viewport culling: unlike a node's own rect, an edge
+                    // can have one endpoint off-screen and the other on --
+                    // or pass through the viewport with both endpoints
+                    // outside it -- so this checks the bounding box of the
+                    // whole segment against the viewport, not either
+                    // endpoint alone. Not pixel-exact for a steep diagonal
+                    // that grazes past a corner of its own bounding box
+                    // without actually crossing the viewport, but that's a
+                    // rare, cheap-to-tolerate false negative, not a
+                    // visible edge going missing.
                     if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
                         draw_graph_edge(
                             ui.painter(),
