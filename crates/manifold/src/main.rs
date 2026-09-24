@@ -7889,6 +7889,12 @@ impl App {
         }
         self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
+        // `close_node` doesn't save, and there's no save on exit -- without
+        // this, a group whose members were only Notes/Images/Pdfs/Jsons
+        // (no Tab member whose `close_tab` happens to save) would have
+        // those members reappear after a restart unless some unrelated
+        // action saved first.
+        self.save_session();
     }
 
     /// Closes one node, applying its kind's full cleanup: a Group recurses
@@ -7900,10 +7906,8 @@ impl App {
     /// behind a card's hover ✕, its context-menu Delete/"Remove from
     /// List", the Downloads popup's Remove, and `close_group`'s per-member
     /// loop -- which is why it doesn't save: callers decide -- the single-node
-    /// UI paths go through `close_node_and_save`, while `close_group` and its
-    /// callers currently don't save at all (a save only happens if a Tab
-    /// member's `close_tab` triggers one; tracked as a follow-up in the
-    /// node-menu spec).
+    /// UI paths go through `close_node_and_save`, and `close_group` saves
+    /// once after its whole loop.
     /// (Before this was shared, `close_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
     /// reparented by `dissolve_group`, never actually destroyed -- a gap

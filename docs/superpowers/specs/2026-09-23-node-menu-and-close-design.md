@@ -140,10 +140,13 @@ Found while writing the implementation plan; these supersede the sections below 
   pre-existing; unknown whether it's a real hit-test bug or a headless-driver
   quirk. When investigating, also verify Note hover ✕ → Recently Closed →
   reopen live (so far code-inspected only).
-- Group Close / Dissolve / group hover ✕ never call `save_session`, so
-  closing a group with no Tab members (e.g. an exploded "Expand as Graph"
-  group) isn't persisted — after restart it comes back (pre-existing). Fix:
-  save after the group-level close/dissolve applies.
+- **Fixed after merge review:** "Close Group" never saved, and there's no
+  save on exit, so a closed group's Note/Image/Pdf/top-level-Json members
+  reappeared after a restart unless another action saved first (Tab members
+  were fine — `close_tab` saves). `close_group` now saves once at the end.
+  (The review's first framing — "the group comes back" — was wrong: groups
+  and "Expand as Graph" leaves aren't in `session.json` at all, and
+  Dissolve / group hover ✕ change nothing persisted, so they need no save.)
 - Hover ✕ on a never-typed note now records `ClosedNode::Note("")`, which
   can push a real entry out of the 10-slot Recently Closed cap (menu Delete
   already did this). Consider skipping blank notes in `closed_node_for` — a
