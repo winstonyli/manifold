@@ -803,6 +803,21 @@ fn card_filter_text(payload: &NodePayload) -> &str {
     }
 }
 
+/// "Remove from Group" (the tab card's eject button, dragging a card out
+/// through the way back, and the tab and item menus): moves `id` up one
+/// level, into the parent of the group it's in, since groups nest. `None`
+/// (the top level) when that group isn't itself in one.
+fn remove_from_group(nodes: &mut NodeMap, id: &str) {
+    let grandparent = nodes
+        .get(id)
+        .and_then(|n| n.group.as_ref())
+        .and_then(|group| nodes.get(group))
+        .and_then(|g| g.group.clone());
+    if let Some(node) = nodes.get_mut(id) {
+        node.group = grandparent;
+    }
+}
+
 /// How many of `ids` (one kind's own node-id list at the current level)
 /// have a card (`node_card_rect`) intersecting `viewport` -- the exact
 /// same per-node rect the render loops build for their own cull check.
@@ -2472,11 +2487,11 @@ struct GraphNode {
     /// The "opened from" edge for a tab (which tab spawned it, making the
     /// tab collection a forest for Graph view), or, for a download, the tab
     /// it was downloaded from. `None` for a root node, and always `None`
-    /// for a group (never nested, never "opened from").
+    /// for a group (never "opened from").
     parent: Option<String>,
     /// Which group's subgraph this node is shown in -- `None` at the top
-    /// level. See `GroupPayload`'s own doc comment. Always `None` for a
-    /// group node itself.
+    /// level. Groups nest, so a group node has one too; see
+    /// `GroupPayload`'s own doc comment.
     group: Option<String>,
     pos: egui::Vec2,
     vel: egui::Vec2,
@@ -8845,11 +8860,7 @@ impl App {
                 self.expand_json_as_graph(id);
                 self.save_session();
             }
-            NodeMenuAction::RemoveFromGroup => {
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.group = None;
-                }
-            }
+            NodeMenuAction::RemoveFromGroup => remove_from_group(&mut self.nodes, id),
             NodeMenuAction::Delete => self.close_node_and_save(id),
         }
     }
@@ -8872,7 +8883,7 @@ impl App {
         let (pinned, color, has_json) = (view.pinned, view.color, view.has_json);
         let mut close = false;
         let mut toggle_pin = false;
-        let mut remove_from_group = false;
+        let mut remove_requested = false;
         let mut close_tab_requested = false;
         let mut duplicate_requested = false;
         let mut fit_subtree_requested = false;
@@ -8955,7 +8966,7 @@ impl App {
                             ui.add_space(4.0);
                             ui.separator();
                             if ui.button("Remove from Group").clicked() {
-                                remove_from_group = true;
+                                remove_requested = true;
                                 close = true;
                             }
                         }
@@ -8983,10 +8994,8 @@ impl App {
                 node.color = color;
             }
         }
-        if remove_from_group {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = None;
-            }
+        if remove_requested {
+            remove_from_group(&mut self.nodes, &id);
         }
         if duplicate_requested {
             self.duplicate_tab(&id);
@@ -12526,21 +12535,7 @@ impl App {
             }
         }
         if let Some(id) = remove_from_group_requested {
-            // One level up, not straight to the top -- the group `id` is
-            // currently in might itself be nested inside another (see
-            // `GroupPayload`'s own doc comment), so "eject" should land
-            // in *its* parent, same as `dissolve_group` reparenting a
-            // dissolved group's members to its own parent rather than
-            // always `None`.
-            let grandparent = self
-                .nodes
-                .get(&id)
-                .and_then(|n| n.group.clone())
-                .and_then(|parent| self.nodes.get(&parent))
-                .and_then(|g| g.group.clone());
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.group = grandparent;
-            }
+            remove_from_group(&mut self.nodes, &id);
         }
         if let Some(id) = mute_toggle_requested {
             self.toggle_muted(&id);
@@ -14444,6 +14439,32 @@ mod tests {
             assert_eq!(node_menu_config(ItemNodeKind::Group, has_group), None);
             assert_eq!(node_menu_config(ItemNodeKind::Tab, has_group), None);
         }
+    }
+
+    #[test]
+    fn remove_from_group_moves_up_one_level() {
+        let node = |group: Option<&str>, payload| GraphNode {
+            parent: None,
+            group: group.map(String::from),
+            pos: egui::Vec2::ZERO,
+            vel: egui::Vec2::ZERO,
+            color: None,
+            payload,
+        };
+        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into() });
+        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
+        let mut nodes = NodeMap::default();
+        nodes.insert("outer".into(), node(None, group("outer")));
+        nodes.insert("inner".into(), node(Some("outer"), group("inner")));
+        nodes.insert("deep".into(), node(Some("inner"), note()));
+        nodes.insert("shallow".into(), node(Some("outer"), note()));
+
+        remove_from_group(&mut nodes, "deep");
+        assert_eq!(nodes["deep"].group.as_deref(), Some("outer"));
+        remove_from_group(&mut nodes, "shallow");
+        assert_eq!(nodes["shallow"].group, None);
+        remove_from_group(&mut nodes, "shallow");
+        assert_eq!(nodes["shallow"].group, None);
     }
 
     #[test]
