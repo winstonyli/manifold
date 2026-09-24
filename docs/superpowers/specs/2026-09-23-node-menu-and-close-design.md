@@ -21,6 +21,16 @@ Recently Closed but its **hover ✕** does not, so a hover-closed note can't
 be reopened. After this change **both record**, matching menu Delete,
 closing a tab, and `close_group_member` (closing a whole group).
 
+## Plan-time corrections (to the spec)
+
+Found while writing the implementation plan; these supersede the sections below where they conflict.
+
+1. **One shared fade Id** (`"node_menu_fade"`), not one per kind. Per-kind fade Ids keyed off the *current* kind break `fade_popup_state`'s "poll every frame" rule (a kind's animation would go unpolled while another kind's menu is open, so the next open jumps straight to visible). Cost: right-clicking a card of a *different* kind while a menu is open now moves the menu instantly instead of cross-fading — exactly what right-clicking a second card of the *same* kind already does today. The popup **area** Ids stay per kind (`"download_context_menu"`, …, `"tab_context_menu"`), carried in `NodeMenuConfig::area_id` for the five simple kinds.
+2. **`node_file_path`**, not `node_copy_path` — it feeds both Reveal and Copy Path, so it's named for what it returns.
+3. **Escape closes any node menu.** Today Graph view's Escape clears only `group_context_menu`; with one state it clears `node_menu`, so Escape now also dismisses a Download/Note/Image/Pdf/Json/Tab menu. A second, deliberate, tiny behavior change (flag it in the final report).
+4. **Tab hover ✕ keeps its own `close_requested` local** (applied as `close_tab`, before `clicked_focus`) — `close_node`'s Tab arm is exactly `close_tab`, and folding it in would move its apply point past `clicked_focus` for no gain.
+5. **The Downloads popup's per-row Remove** also goes through `close_node` (it is a single node closing; spec: "used everywhere a single node closes").
+
 ## Non-goals
 
 - The Tab-view link menu (`App::context_menu`, from `ContextMenuLink`) —
@@ -116,3 +126,16 @@ closing a tab, and `close_group_member` (closing a whole group).
   menu Delete and hover ✕ on a note/image/pdf/json each put it in Recently
   Closed and reopening restores it; group hover ✕ still dissolves; tab
   menu Close still closes; download "Remove from List" still removes.
+
+## Follow-ups
+
+- Menu "Remove from Group" sends a node to the top level, while the card's
+  hover eject sends it one level up — inconsistent for nested groups
+  (pre-existing).
+- A Download's menu never offers "Remove from Group" (pre-existing).
+- The graph card rendering loops are still per kind (the next
+  generalization of this pattern).
+- A Note card can't be right-clicked or hover-closed when driven headless
+  (CLICK/MOUSEDOWN at its center) — reproduced on the pre-change binary,
+  so pre-existing; unknown whether it's a real hit-test bug or a
+  headless-driver quirk. Investigate.
