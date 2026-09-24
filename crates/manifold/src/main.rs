@@ -592,9 +592,8 @@ struct CardOutput {
 /// match whichever card it's drawn on. The icon's own paint is deferred
 /// -- see `DeferredOverlays`'s own doc comment -- so
 /// `overlay_painter`/`project` are no longer parameters here at all.
-/// Returns whether it was clicked this frame -- the caller still decides
-/// what that means for its own kind (`node_close_requested` for every
-/// kind that uses it).
+/// Returns the button's response: the caller decides what a click means
+/// for its own kind, and counts the button's hover as the card's.
 fn draw_node_close_button(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -604,7 +603,7 @@ fn draw_node_close_button(
     base_fill: egui::Color32,
     border_color: egui::Color32,
     icon_color: egui::Color32,
-) -> bool {
+) -> egui::Response {
     let close_rect = egui::Rect::from_center_size(card_rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
     let close_response = ui
         .interact(close_rect, egui::Id::new(close_id_salt), egui::Sense::click())
@@ -627,7 +626,7 @@ fn draw_node_close_button(
             icon_color,
         );
     }));
-    close_response.clicked()
+    close_response
 }
 
 /// Shows a native "Save As" dialog defaulting to `default_name`, filtered
@@ -5118,7 +5117,11 @@ impl App {
             None => response,
         };
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
-        let is_hovered = self.hovered.as_deref() == Some(id) || hover.hovered() || response.hovered();
+        let pointer_on_card = hover.hovered() || response.hovered();
+        // Last frame's hover too (as the tab and group loops do), which
+        // keeps the ✕ drawn while the pointer is on it: registered last,
+        // it takes the hover from both interacts above.
+        let is_hovered = self.hovered.as_deref() == Some(id) || pointer_on_card;
 
         // An inside stroke painted over the body; every body keeps its
         // content inset from the edge.
@@ -5132,8 +5135,8 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
-        let close_clicked = is_hovered
-            && draw_node_close_button(
+        let close = is_hovered.then(|| {
+            draw_node_close_button(
                 ui,
                 deferred_overlays,
                 rect,
@@ -5142,9 +5145,15 @@ impl App {
                 style.close_fill,
                 style.close_border,
                 style.close_icon,
-            );
+            )
+        });
+        let close_clicked = close.as_ref().is_some_and(|c| c.clicked());
 
-        self.finish_draggable_node(id, &response, is_hovered);
+        // This frame's hover only: passing `is_hovered` (which includes
+        // `self.hovered`) made a card stay hovered, ✕ and all, after the
+        // pointer left it, until another card was hovered.
+        let still_hovered = pointer_on_card || close.as_ref().is_some_and(|c| c.hovered());
+        self.finish_draggable_node(id, &response, still_hovered);
 
         if let Some(node) = self.nodes.get(id) {
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &[card_filter_text(&node.payload)], rect, style.dim_rounding);
@@ -6848,6 +6857,45 @@ impl App {
         let node = GraphNode { parent: None, group: None, pos, vel: egui::Vec2::ZERO, color: None, payload };
         self.nodes.insert(id.clone(), node);
         self.node_order.push(id);
+    }
+
+    /// Tries a placeholder's file again (a click on the card). Loaded, the
+    /// real card takes the placeholder's place: same id, position, group,
+    /// color and draw order. Still failing, it stays a placeholder with the
+    /// new error, which the insert has already toasted.
+    fn retry_missing_file(&mut self, id: &str) {
+        let Some(node) = self.nodes.get(id) else { return };
+        let (path, is_image) = match &node.payload {
+            NodePayload::Image(image) if image.error.is_some() => (image.path.clone(), true),
+            NodePayload::Json(json) if json.error.is_some() => (json.path.clone(), false),
+            _ => return,
+        };
+        let (pos, group, parent, color) = (node.pos, node.group.clone(), node.parent.clone(), node.color);
+        let in_order = self.node_order.iter().any(|n| n == id);
+        let result = if is_image {
+            self.insert_image_node_with_id(id.to_string(), path, pos, group)
+        } else {
+            self.insert_json_node_with_id(id.to_string(), path, pos, group)
+        };
+        match result {
+            Ok(()) => {
+                // The insert replaced the node and pushed its id again;
+                // keep it where it was.
+                if in_order {
+                    self.node_order.pop();
+                }
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.parent = parent;
+                    node.color = color;
+                }
+                self.save_session();
+            }
+            Err(error) => match self.nodes.get_mut(id).map(|n| &mut n.payload) {
+                Some(NodePayload::Image(image)) => image.error = Some(error),
+                Some(NodePayload::Json(json)) => json.error = Some(error),
+                _ => {}
+            },
+        }
     }
 
     fn insert_image_node(&mut self, path: String) -> bool {
@@ -10188,6 +10236,7 @@ impl App {
         let mut pending_new_group_at: Option<egui::Vec2> = None;
         let mut pending_new_file_at: Option<egui::Vec2> = None;
         let mut image_clicked: Option<String> = None;
+        let mut missing_file_clicked: Option<String> = None;
         let mut leave_group_requested = false;
         let mut group_close_requested: Option<String> = None;
         let mut color_cycle_requested: Option<String> = None;
@@ -11780,13 +11829,17 @@ impl App {
                             continue;
                         }
                         // A placeholder (see `ImagePayload::error`) has nothing
-                        // to open.
+                        // to open; a click tries its file again instead.
                         let missing_file = self.nodes.get(id).is_some_and(|n| {
                             n.as_image().is_some_and(|i| i.error.is_some())
                                 || n.as_json().is_some_and(|j| j.error.is_some())
                         });
                         match kind {
-                            _ if missing_file => {}
+                            _ if missing_file => {
+                                if card.response.clicked() {
+                                    missing_file_clicked = Some(id.clone());
+                                }
+                            }
                             // Click (not drag -- egui doesn't report
                             // `clicked()` for a drag) reveals the file.
                             ItemNodeKind::Download if card.response.clicked() => download_clicked = Some(id.clone()),
@@ -12440,6 +12493,9 @@ impl App {
                 self.selected_tabs.clear();
                 self.start_transition_to_item(&id);
             }
+        }
+        if let Some(id) = missing_file_clicked {
+            self.retry_missing_file(&id);
         }
         if let Some(id) = node_close_requested {
             self.close_node_and_save(&id);
