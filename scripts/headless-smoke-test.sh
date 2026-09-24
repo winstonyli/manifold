@@ -133,7 +133,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep 4 # startup: root tab spawn + first Servo frame
+# The root tab spawns asynchronously (30 s or more on a loaded machine);
+# a fixed sleep here used to race it.
+send "WAITTABS"
 
 # Pin a known window size so the click coordinates below (measured against
 # this exact size during manual verification) stay valid regardless of
@@ -142,10 +144,9 @@ send "RESIZE 816 639"
 sleep 1
 
 # The app launches into Graph view with the root tab focused; GRAPHOPEN
-# opens it into Tab view, which the address-bar flow below needs. Not a
-# CLICK at the node's expected spot: that missed about 2 runs in 5 in a
-# probe on a busy GPU (cause unconfirmed; likely the click being
-# hit-tested against a frame drawn before the RESIZE).
+# opens it into Tab view, which the address-bar flow below needs. A CLICK
+# on the node also needs a frame to have drawn it after it spawned (a
+# click is hit-tested against the last drawn frame); GRAPHOPEN doesn't.
 send "GRAPHOPEN"
 sleep 1
 check_state tab_view "GRAPHOPEN enters Tab view" 'd["view_mode_tab"]'
