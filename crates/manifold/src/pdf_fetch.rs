@@ -11,7 +11,7 @@
 use std::sync::mpsc;
 use std::thread;
 
-use pdfium_render::prelude::{Pdfium, PdfRenderConfig};
+use pdfium_render::prelude::{Pdfium, PdfRenderConfig, PdfiumError};
 
 /// Capped well above `IMAGE_NODE_MAX_SIZE` (`main.rs`) so the rendered page
 /// still looks sharp at the enlarged peek-preview size too, without paying
@@ -76,17 +76,38 @@ impl PdfFetcher {
     }
 }
 
+/// `PdfiumError`'s own `Display` is its pretty-printed `Debug` (a missing
+/// file comes out as a nine-line `IoError(Os { .. })`), too much for a toast.
+fn pdfium_error(err: PdfiumError) -> String {
+    match err {
+        PdfiumError::IoError(err) => err.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn render_first_page(pdfium: &Result<Pdfium, String>, path: &str) -> Result<PdfRenderResult, String> {
     let pdfium = pdfium.as_ref().map_err(String::clone)?;
-    let document = pdfium.load_pdf_from_file(path, None).map_err(|e| e.to_string())?;
+    let document = pdfium.load_pdf_from_file(path, None).map_err(pdfium_error)?;
     let pages = document.pages();
     let page_count = pages.len() as usize;
-    let page = pages.get(0).map_err(|e| e.to_string())?;
+    let page = pages.get(0).map_err(pdfium_error)?;
     let render_config = PdfRenderConfig::new()
         .set_target_width(PDF_RENDER_MAX_DIMENSION)
         .set_maximum_height(PDF_RENDER_MAX_DIMENSION);
-    let bitmap = page.render_with_config(&render_config).map_err(|e| e.to_string())?;
+    let bitmap = page.render_with_config(&render_config).map_err(pdfium_error)?;
     let width = bitmap.width() as u32;
     let height = bitmap.height() as u32;
     Ok(PdfRenderResult { width, height, page_count, rgba: bitmap.as_rgba_bytes() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdfium_error_is_one_line() {
+        let err = PdfiumError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert_eq!(pdfium_error(err), "gone");
+        assert!(!pdfium_error(PdfiumError::PageIndexOutOfBounds).contains('\n'));
+    }
 }

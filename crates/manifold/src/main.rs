@@ -6866,8 +6866,16 @@ impl App {
     /// Tries a placeholder's file again (a click on the card). Loaded, the
     /// real card takes the placeholder's place: same id, position, group,
     /// color and draw order. Still failing, it stays a placeholder with the
-    /// new error, which the insert has already toasted.
+    /// new error, which the insert has already toasted. A failed PDF card
+    /// just renders again (back to its spinner).
     fn retry_missing_file(&mut self, id: &str) {
+        if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
+            if matches!(pdf.outcome, Some(Err(_))) {
+                pdf.outcome = None;
+                self.pdf_fetcher.request(id.to_string(), pdf.path.clone());
+            }
+            return;
+        }
         let Some(node) = self.nodes.get(id) else { return };
         let (path, is_image) = match &node.payload {
             NodePayload::Image(image) if image.error.is_some() => (image.path.clone(), true),
@@ -11837,6 +11845,7 @@ impl App {
                         let missing_file = self.nodes.get(id).is_some_and(|n| {
                             n.as_image().is_some_and(|i| i.error.is_some())
                                 || n.as_json().is_some_and(|j| j.error.is_some())
+                                || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
                         });
                         match kind {
                             _ if missing_file => {
@@ -13431,7 +13440,7 @@ impl App {
                 }
             }
             // Only ever intercepted by the stdin reader itself.
-            DebugCommand::Screenshot(_) => {}
+            DebugCommand::Screenshot(_) | DebugCommand::Sleep(_) => {}
             DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
                 self.pending_screenshot = Some(path);
                 self.screenshot_waiter = Some(waiter);
@@ -13977,7 +13986,16 @@ impl App {
                         }));
                     }
                 }
+                // Toasted like a failed image/JSON load, and kept as the
+                // card's tooltip with the file named.
                 Err(err) => {
+                    let Some(path) = self.nodes.get(&id).and_then(|n| n.as_pdf()).map(|p| p.path.clone()) else {
+                        continue;
+                    };
+                    eprintln!("pdf: couldn't open {path}: {err}");
+                    let name = crate::json_file::file_name(std::path::Path::new(&path));
+                    let err = format!("Couldn't open PDF {name}: {err}");
+                    self.queue_toast(err.clone());
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
                         pdf.outcome = Some(Err(err));
                     }

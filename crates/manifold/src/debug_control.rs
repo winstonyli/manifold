@@ -292,6 +292,12 @@ pub enum DebugCommand {
     /// Handled by `spawn_stdin_reader` itself, which sends
     /// `NotifyWhenTabsSpawned`; never reaches the app.
     WaitTabs(std::time::Duration),
+    /// `SLEEP secs` -- pauses the stdin reader, so the pause stays in order
+    /// with the commands around it. A driver script's own `sleep` doesn't:
+    /// while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the script
+    /// keeps writing, and the lines it buffered arrive back to back.
+    /// Handled by `spawn_stdin_reader`; never reaches the app.
+    Sleep(std::time::Duration),
     /// Internal, sent only by `spawn_stdin_reader` for `WAITTABS`: the app
     /// sends `()` on this once `App::tab_spawns_in_flight` is zero.
     NotifyWhenTabsSpawned(std::sync::mpsc::Sender<()>),
@@ -383,6 +389,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ADDJSON path", "Add a JSON node from `path`"),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
+    ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
@@ -591,6 +598,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(
             if rest.is_empty() { 60.0 } else { rest.parse().ok().filter(|s: &f64| *s >= 0.0)? },
         ))),
+        "SLEEP" => Some(DebugCommand::Sleep(std::time::Duration::from_secs_f64(
+            rest.parse().ok().filter(|s: &f64| *s >= 0.0)?,
+        ))),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
@@ -636,6 +646,7 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
                         eprintln!("WAITTABS: tab spawns still in flight after {timeout:?}; continuing");
                     }
                 }
+                Some(DebugCommand::Sleep(duration)) => std::thread::sleep(duration),
                 Some(DebugCommand::Screenshot(path)) => {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let cmd = DebugCommand::NotifyWhenScreenshotTaken(path.clone(), tx);
