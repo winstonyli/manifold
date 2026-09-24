@@ -13255,6 +13255,11 @@ impl App {
     /// `WindowEvent`s, keyboard/text commands call the equivalent effect
     /// directly since `winit::event::KeyEvent` has no public constructor).
     fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
+        // A transition only ends in a frame, and frames can stall for
+        // seconds on a busy GPU, so one that ran out long ago could still
+        // be `Some` here and make the ENTER/ESCAPE/arrow guards below drop
+        // their command. It's timed by the clock, so end it by the clock.
+        self.finish_transition_if_done();
         match cmd {
             DebugCommand::MouseMove { x, y } => {
                 self.dispatch_window_event(
@@ -13380,7 +13385,9 @@ impl App {
             DebugCommand::ArrowUp if self.showing_tab_view() && self.transition.is_none() => {
                 self.pending_debug_arrow_up = true;
             }
-            DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {}
+            DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {
+                eprintln!("debug: {cmd:?} ignored: not in Tab view, or a view transition is running");
+            }
             DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
             DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
             DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
