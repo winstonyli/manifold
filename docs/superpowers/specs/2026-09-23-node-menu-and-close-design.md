@@ -250,5 +250,11 @@ Found while writing the implementation plan; these supersede the sections below 
   node whose file is missing or unreadable is toasted by
   `insert_image_node_with_id`/`insert_json_node_with_id` themselves.
   Session restore, add-file and reopen all used to drop the node silently.
+  On restore the card now stays as a placeholder (`ImagePayload::error`/
+  `JsonPayload::error`): the failed-PDF box with a `FILE_X` glyph and the
+  error as its tooltip, ignoring clicks. It stays in `session.json`, so it
+  loads normally once the file is back, and Delete removes it. Checked
+  headless: both placeholders render, survive the next save, and
+  double-clicks open nothing (the tooltip wasn't captured).
 - **Done:** a node menu's fade-out used to redraw from the node's *current* state, so it changed while it faded: after "Remove from Group" the row vanished and the menu shrank, and Pin turned into Unpin. Now `build_node_menu` reads a `NodeMenuView` each open frame, `node_menu_cache` freezes it for the fade-out, and a menu whose action removed its node (Delete, Close, Dissolve) fades too instead of vanishing. A fading menu is also click-through (`Area::interactable(false)`), so the rest of a double-click can't run an item twice. The four toolbar list popups (`build_list_popup_frame`) got the same click-through. Checked headless with the fade temporarily slowed to 3 s: the fading menu kept its "Remove from Group" row after the download had left the group, and a second click on it went through to the tab card behind. egui builds its hit test from the previous frame's layers, so the first fading frame can still take a click.
 - **Done:** every other fading popup with clickable content is click-through while fading too: the quick switcher, the Tab-view link menu, tab actions, and the three engine pickers (`build_engine_picker_popup`). Peek preview only paints. Still open: the toolbar list popups redraw live content during the fade (after a Recently Closed reopen, the list loses that row mid-fade). The fade lasts ~83 ms, so this is cosmetic.

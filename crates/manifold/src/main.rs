@@ -722,6 +722,31 @@ fn json_summary(value: &serde_json::Value) -> String {
 /// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
 /// bounds union so the two never disagree about how big a given image's
 /// card actually is.
+/// A restored image/JSON card whose file couldn't be loaded: the same
+/// `FILE_X` glyph a failed PDF card shows (see `ImagePayload::error`).
+fn paint_missing_file_card(
+    ui: &egui::Ui,
+    deferred_overlays: &mut DeferredOverlays,
+    rect: egui::Rect,
+    inv_zoom: f32,
+    lod_simplified: bool,
+) {
+    ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
+    if lod_simplified {
+        return;
+    }
+    let icon_pos = rect.center();
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        overlay_painter.text(
+            project(icon_pos),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::light::FILE_X,
+            egui::FontId::proportional(24.0),
+            DANGER_COLOR,
+        );
+    }));
+}
+
 fn image_node_card_size(width: u32, height: u32) -> egui::Vec2 {
     let (width, height) = (width.max(1) as f32, height.max(1) as f32);
     let scale = (IMAGE_NODE_MAX_SIZE.x / width).min(IMAGE_NODE_MAX_SIZE.y / height).min(1.0);
@@ -750,6 +775,8 @@ fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
         NodePayload::Tab(_) => GRAPH_NODE_SIZE,
         NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
         NodePayload::Note(_) => NOTE_NODE_SIZE,
+        // A placeholder has no real size: the same box a failed PDF gets.
+        NodePayload::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
         NodePayload::Image(image) => image_node_card_size(image.width, image.height),
         NodePayload::Pdf(pdf) => pdf_card_size(pdf),
         NodePayload::Json(_) => JSON_NODE_SIZE,
@@ -2267,13 +2294,17 @@ struct NotePayload {
 /// path -- same "re-derive, don't duplicate the bytes" posture a restored
 /// tab's fresh navigation already has, rather than embedding the picture's
 /// own bytes a second time. If the file has since moved or been deleted,
-/// restore skips that node rather than failing the whole session load,
-/// same "never let one bad thing stop everything else" posture
-/// `Settings::load`/`Session::load` already have.
+/// restore keeps a placeholder card for it (`error`) rather than failing
+/// the whole session load or forgetting the card.
 struct ImagePayload {
     path: String,
     width: u32,
     height: u32,
+    /// `Some` for a card restored from `session.json` whose file couldn't
+    /// be opened: no texture, `width`/`height` 0, drawn like a failed PDF
+    /// with this message as its tooltip. It stays in the session, so the
+    /// next launch tries the file again.
+    error: Option<String>,
 }
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
@@ -2334,6 +2365,9 @@ struct JsonPayload {
     /// Never persisted -- exploded leaves are session-only, matching
     /// `GroupPayload`'s own doc comment for the containers they live in.
     key: Option<String>,
+    /// Same as `ImagePayload::error`: a restored card whose file couldn't
+    /// be loaded (`value` is `Null`).
+    error: Option<String>,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -4515,9 +4549,14 @@ impl App {
             );
             self.node_order.push(note.id);
         }
+        // A card whose file is gone stays as a placeholder (`error`), so
+        // the next save doesn't forget it.
         for image in session.images {
             let pos = egui::vec2(image.pos_x, image.pos_y);
-            self.insert_image_node_with_id(image.id, image.path, pos, None);
+            if let Err(error) = self.insert_image_node_with_id(image.id.clone(), image.path.clone(), pos, None) {
+                let payload = ImagePayload { path: image.path, width: 0, height: 0, error: Some(error) };
+                self.insert_placeholder_node(image.id, pos, NodePayload::Image(payload));
+            }
         }
         for pdf in session.pdfs {
             let pos = egui::vec2(pdf.pos_x, pdf.pos_y);
@@ -4525,7 +4564,11 @@ impl App {
         }
         for json in session.jsons {
             let pos = egui::vec2(json.pos_x, json.pos_y);
-            self.insert_json_node_with_id(json.id, json.path, pos, None);
+            if let Err(error) = self.insert_json_node_with_id(json.id.clone(), json.path.clone(), pos, None) {
+                let value = serde_json::Value::Null;
+                let payload = JsonPayload { path: json.path, value, key: None, error: Some(error) };
+                self.insert_placeholder_node(json.id, pos, NodePayload::Json(payload));
+            }
         }
         let valid_focus = session
             .focused
@@ -4540,7 +4583,7 @@ impl App {
             .viewed_image
             .clone()
             .filter(|_| self.view_mode == ViewMode::Item)
-            .filter(|id| self.nodes.get(id).and_then(|n| n.as_image()).is_some());
+            .filter(|id| self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.error.is_none()));
         // Reset zoom/pan rather than carrying over whatever the previous
         // image (or this same session's own stale on-disk value) left
         // behind -- a loaded session's `viewed_image` always opens at Fit.
@@ -4753,6 +4796,7 @@ impl App {
                         "version": {"major": 0, "minor": 1}
                     }),
                     key: None,
+                    error: None,
                 }),
             },
         );
@@ -5308,6 +5352,12 @@ impl App {
             // `IMAGE_NODE_MAX_SIZE`), not a fixed size the way every other
             // kind's card is.
             ItemNodeKind::Image => {
+                let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
+                if let Some(error) = error {
+                    paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, self.graph_lod_simplified);
+                    body.tooltip = Some(error);
+                    return body;
+                }
                 let tex_id = self.gpu.as_ref().and_then(|g| g.image_id(id));
                 // LOD: the real texture blit (and the broken-image
                 // glyph text) skipped once simplified -- see the tab
@@ -5456,6 +5506,12 @@ impl App {
             // opens the full tree in `build_json_viewer`, the same popup a
             // tab's own "View as JSON" already uses.
             ItemNodeKind::Json => {
+                let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
+                if let Some(error) = error {
+                    paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, self.graph_lod_simplified);
+                    body.tooltip = Some(error);
+                    return body;
+                }
                 let Some(summary) = self.nodes.get(id).and_then(|n| n.as_json()).map(|json| match &json.key {
                     Some(key) => {
                         let key_display = if key.chars().count() > 16 {
@@ -6786,11 +6842,19 @@ impl App {
         self.node_order.push(id);
     }
 
+    /// Session restore's stand-in for an image/JSON card whose file
+    /// couldn't be loaded -- see `ImagePayload::error`.
+    fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: NodePayload) {
+        let node = GraphNode { parent: None, group: None, pos, vel: egui::Vec2::ZERO, color: None, payload };
+        self.nodes.insert(id.clone(), node);
+        self.node_order.push(id);
+    }
+
     fn insert_image_node(&mut self, path: String) -> bool {
         let id = self.alloc_image_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
-        self.insert_image_node_with_id(id, path, pos, group)
+        self.insert_image_node_with_id(id, path, pos, group).is_ok()
     }
 
     /// Shared by `insert_image_node` (fresh id/jittered position/current
@@ -6803,16 +6867,18 @@ impl App {
         path: String,
         pos: egui::Vec2,
         group: Option<String>,
-    ) -> bool {
+    ) -> Result<(), String> {
         // Toasted here, not by callers: session restore, add-file and
         // reopen all used to drop a missing or undecodable file silently.
+        // The error comes back too, for restore's placeholder card.
         let img = match image::open(&path) {
             Ok(img) => img,
             Err(err) => {
                 eprintln!("image: couldn't open {path}: {err}");
                 let name = crate::json_file::file_name(std::path::Path::new(&path));
-                self.queue_toast(format!("Couldn't open image {name}: {err}"));
-                return false;
+                let err = format!("Couldn't open image {name}: {err}");
+                self.queue_toast(err.clone());
+                return Err(err);
             }
         };
         let rgba = img.to_rgba8();
@@ -6828,11 +6894,11 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Image(ImagePayload { path, width, height }),
+                payload: NodePayload::Image(ImagePayload { path, width, height, error: None }),
             },
         );
         self.node_order.push(id);
-        true
+        Ok(())
     }
 
     /// Converts a tab whose page turned out to be a raw image response into
@@ -6878,7 +6944,8 @@ impl App {
             self.find_result = None;
         }
         let id = self.alloc_image_id();
-        self.insert_image_node_with_id(id, path, pos, group);
+        // Failure is already toasted; the tab it replaces is gone either way.
+        let _ = self.insert_image_node_with_id(id, path, pos, group);
         self.save_session();
     }
 
@@ -6935,7 +7002,7 @@ impl App {
         let id = self.alloc_json_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
-        self.insert_json_node_with_id(id, path, pos, group)
+        self.insert_json_node_with_id(id, path, pos, group).is_ok()
     }
 
     /// Shared by `insert_json_node` (fresh id/jittered position/current
@@ -6948,13 +7015,13 @@ impl App {
         path: String,
         pos: egui::Vec2,
         group: Option<String>,
-    ) -> bool {
+    ) -> Result<(), String> {
         // Toasted here, not by callers -- see `insert_image_node_with_id`.
         let value = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
             Ok(value) => value,
             Err(err) => {
-                self.queue_toast(err);
-                return false;
+                self.queue_toast(err.clone());
+                return Err(err);
             }
         };
         self.nodes.insert(
@@ -6965,11 +7032,11 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Json(JsonPayload { path, value, key: None }),
+                payload: NodePayload::Json(JsonPayload { path, value, key: None, error: None }),
             },
         );
         self.node_order.push(id);
-        true
+        Ok(())
     }
 
     /// "Expand as Graph" -- explodes a JSON node's structure into real,
@@ -7059,6 +7126,7 @@ impl App {
                             path: path.to_string(),
                             value: entry_value.clone(),
                             key: Some(key),
+                            error: None,
                         }),
                     },
                 );
@@ -7117,13 +7185,13 @@ impl App {
             (Some("json"), Some(pos)) => {
                 let id = self.alloc_json_id();
                 let group = self.current_group.clone();
-                self.insert_json_node_with_id(id, path, pos, group)
+                self.insert_json_node_with_id(id, path, pos, group).is_ok()
             }
             (Some("json"), None) => self.insert_json_node(path),
             (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), Some(pos)) => {
                 let id = self.alloc_image_id();
                 let group = self.current_group.clone();
-                self.insert_image_node_with_id(id, path, pos, group)
+                self.insert_image_node_with_id(id, path, pos, group).is_ok()
             }
             (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), None) => {
                 self.insert_image_node(path)
@@ -9227,7 +9295,7 @@ impl App {
         }
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
-        if self.insert_json_node_with_id(id, path.to_string_lossy().into_owned(), pos, group) {
+        if self.insert_json_node_with_id(id, path.to_string_lossy().into_owned(), pos, group).is_ok() {
             self.save_session();
             self.queue_toast("Saved as JSON node".to_string());
         }
@@ -11711,7 +11779,14 @@ impl App {
                             node_close_requested = Some(id.clone());
                             continue;
                         }
+                        // A placeholder (see `ImagePayload::error`) has nothing
+                        // to open.
+                        let missing_file = self.nodes.get(id).is_some_and(|n| {
+                            n.as_image().is_some_and(|i| i.error.is_some())
+                                || n.as_json().is_some_and(|j| j.error.is_some())
+                        });
                         match kind {
+                            _ if missing_file => {}
                             // Click (not drag -- egui doesn't report
                             // `clicked()` for a drag) reveals the file.
                             ItemNodeKind::Download if card.response.clicked() => download_clicked = Some(id.clone()),
@@ -14048,9 +14123,9 @@ mod tests {
         assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
         assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
         assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
-        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100 })), ItemNodeKind::Image);
+        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100, error: None })), ItemNodeKind::Image);
         assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
-        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None })), ItemNodeKind::Json);
+        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None, error: None })), ItemNodeKind::Json);
     }
 
     #[test]
@@ -14164,7 +14239,7 @@ mod tests {
             assert!(closed_node_for(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
         }
         assert!(matches!(
-            closed_node_for(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 1, height: 1 })),
+            closed_node_for(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 1, height: 1, error: None })),
             Some(ClosedNode::Image(path)) if path == "img.png"
         ));
         assert!(matches!(
@@ -14176,6 +14251,7 @@ mod tests {
                 path: "data.json".into(),
                 value: serde_json::Value::Null,
                 key: None,
+                error: None,
             })),
             Some(ClosedNode::Json(path)) if path == "data.json"
         ));
@@ -14184,6 +14260,7 @@ mod tests {
             path: "data.json".into(),
             value: serde_json::Value::Null,
             key: Some("k".into()),
+            error: None,
         }))
         .is_none());
         assert!(closed_node_for(&NodePayload::Group(GroupPayload { name: "g".into() })).is_none());
@@ -14238,12 +14315,12 @@ mod tests {
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
         assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into() })), GROUP_NODE_SIZE);
-        let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None });
+        let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None, error: None });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image = |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height });
+        let image = |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -14264,9 +14341,9 @@ mod tests {
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(card_filter_text(&download), "C:/dl/f.bin");
         assert_eq!(card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false })), "buy milk");
-        assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1 })), "cat.png");
+        assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1, error: None })), "cat.png");
         assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), "paper.pdf");
-        assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None })), "x.json");
+        assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None, error: None })), "x.json");
     }
     #[test]
     fn bump_past_id_clears_restored_ids() {
