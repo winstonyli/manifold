@@ -191,6 +191,9 @@ fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Opti
 /// the caller's own `clicked_outside_popup` check. `fade` (0.0-1.0, from the
 /// caller's own `ctx.animate_bool` on its own open flag) sets the whole
 /// popup's opacity, so it fades in/out instead of popping instantly.
+/// `interactable` is the caller's open flag: while fading out the popup is
+/// click-through, so the rest of a double-click on an item can't run it
+/// twice.
 fn build_list_popup_frame(
     ctx: &egui::Context,
     id: &str,
@@ -198,11 +201,13 @@ fn build_list_popup_frame(
     min_width: f32,
     max_width: f32,
     fade: f32,
+    interactable: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
     egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
+        .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             egui::Frame::default()
@@ -270,12 +275,13 @@ fn build_node_context_menu(
     ui: &mut egui::Ui,
     pos: egui::Pos2,
     fade: f32,
+    interactable: bool,
     config: NodeMenuConfig,
 ) -> (Option<NodeMenuAction>, bool) {
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect =
-        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.width, config.width, fade, |ui| {
+        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.width, config.width, fade, interactable, |ui| {
         if config.copy_text && ui.button("Copy Text").clicked() {
             action = Some(NodeMenuAction::CopyText);
         }
@@ -335,6 +341,25 @@ fn node_menu_config(kind: ItemNodeKind, has_group: bool) -> Option<NodeMenuConfi
         ItemNodeKind::Json => Some(file("json_context_menu", true)),
         ItemNodeKind::Group | ItemNodeKind::Tab => None,
     }
+}
+
+/// Everything a node's right-click menu shows that its own actions can
+/// change, read each frame while the menu is open and frozen in
+/// `node_menu_cache` for the fade-out. The fading menu keeps the look it
+/// had when an item was clicked, instead of redrawing the new state (a
+/// "Remove from Group" row vanishing, "Pin" turning into "Unpin", ...), and
+/// still fades when the action removed the node itself.
+#[derive(Clone)]
+struct NodeMenuView {
+    kind: ItemNodeKind,
+    has_group: bool,
+    color: Option<egui::Color32>,
+    /// Tab only.
+    pinned: bool,
+    /// Tab only.
+    has_json: bool,
+    /// Group only: the rename draft, while this group is being renamed.
+    renaming: Option<String>,
 }
 
 /// Lets a popup driven by `Option<T>` app state (the right-click context
@@ -2729,7 +2754,7 @@ struct App {
     /// can keep drawing (fading out, not vanishing instantly) for a few
     /// frames after `node_menu` itself goes back to `None` -- see
     /// `fade_popup_state`.
-    node_menu_cache: Option<(String, egui::Pos2)>,
+    node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
     /// `Some(node_id)` while that node's JSON content is showing full-screen
     /// (`build_json_viewer`) -- a tab's own `TabPayload::json_body` (opened
     /// from Tab view's toolbar button or Graph view's tab context menu's
@@ -4033,7 +4058,7 @@ impl App {
         let mut reopen_group_index: Option<usize> = None;
         let mut reopen_node_index: Option<usize> = None;
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, self.recently_closed_open, |ui| {
             for (index, group) in self.closed_groups.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
                     ui.label(egui_phosphor::light::FOLDER_SIMPLE);
@@ -7241,7 +7266,7 @@ impl App {
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, self.bookmarks_open, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.bookmarks_filter)
                     .desired_width(f32::INFINITY)
@@ -7392,7 +7417,7 @@ impl App {
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, self.history_open, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.history_filter)
                     .desired_width(f32::INFINITY)
@@ -7455,7 +7480,7 @@ impl App {
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, |ui| {
+            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, self.downloads_open, |ui| {
             if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
                 ui.label(egui::RichText::new("No downloads yet.").weak());
             }
@@ -8170,16 +8195,25 @@ impl App {
     /// `TextEdit`, exactly like the toolbar's own in-subgraph rename does,
     /// rather than opening a second, separate text field somewhere else.
     /// Reached from `build_node_menu` for a Group node.
-    fn build_group_context_menu(&mut self, ui: &mut egui::Ui, id: String, pos: egui::Pos2, fade: f32) {
+    fn build_group_context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: String,
+        pos: egui::Pos2,
+        fade: f32,
+        live: bool,
+        view: &NodeMenuView,
+    ) {
         let mut close = false;
         let mut dissolve = false;
         let mut close_group = false;
         let mut export_group_requested = false;
-        let is_renaming = self.renaming_group.as_ref().is_some_and(|(gid, _)| gid == &id);
+        let is_renaming = view.renaming.is_some();
 
         let area = egui::Area::new(egui::Id::new("group_context_menu"))
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
+            .interactable(live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 egui::Frame::default()
@@ -8189,7 +8223,9 @@ impl App {
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_min_width(150.0);
-                        if is_renaming {
+                        if let (false, Some(draft)) = (live, &view.renaming) {
+                            ui.add(egui::TextEdit::singleline(&mut draft.clone()).desired_width(140.0));
+                        } else if is_renaming {
                             if let Some((_, draft)) = &mut self.renaming_group {
                                 let response =
                                     ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
@@ -8224,7 +8260,7 @@ impl App {
                             ui.add_space(4.0);
                             ui.label("Color");
                             ui.horizontal(|ui| {
-                                let current = self.nodes.get(&id).and_then(|n| n.color);
+                                let current = view.color;
                                 for &swatch in &TAG_COLOR_PALETTE {
                                     let (rect, response) = ui.allocate_exact_size(
                                         egui::vec2(18.0, 18.0),
@@ -8513,28 +8549,31 @@ impl App {
     /// node's kind, and dispatches: Group and Tab to their own bespoke
     /// builders, every other kind to the shared `build_node_context_menu`
     /// shell configured by `node_menu_config`. A node that's gone (closed
-    /// from its own menu, or elsewhere) clears the menu at once.
+    /// from its own menu, or elsewhere) closes the menu. While fading out,
+    /// the menu draws its frozen `NodeMenuView` and is click-through, so a
+    /// second click (say, the rest of a double-click) can't act again.
     fn build_node_menu(&mut self, ui: &mut egui::Ui) {
-        let current = self.node_menu.clone();
-        let Some(((id, pos), fade)) =
+        if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
+            self.node_menu = None;
+        }
+        let current = self
+            .node_menu
+            .clone()
+            .and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
+        let Some(((id, pos, view), fade)) =
             fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.node_menu_cache)
         else {
             return;
         };
-        let Some((kind, has_group)) =
-            self.nodes.get(&id).map(|node| (item_node_kind(&node.payload), node.group.is_some()))
-        else {
-            self.node_menu = None;
-            return;
-        };
-        match kind {
-            ItemNodeKind::Group => self.build_group_context_menu(ui, id, pos, fade),
-            ItemNodeKind::Tab => self.build_tab_context_menu(ui, id, pos, fade),
+        let live = current.is_some();
+        match view.kind {
+            ItemNodeKind::Group => self.build_group_context_menu(ui, id, pos, fade, live, &view),
+            ItemNodeKind::Tab => self.build_tab_context_menu(ui, id, pos, fade, live, &view),
             ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
-                let Some(config) = node_menu_config(kind, has_group) else {
+                let Some(config) = node_menu_config(view.kind, view.has_group) else {
                     return;
                 };
-                let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, config);
+                let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, config);
                 let close = action.is_some() || clicked_outside;
                 if let Some(action) = action {
                     self.apply_node_menu_action(ui.ctx(), &id, action);
@@ -8544,6 +8583,19 @@ impl App {
                 }
             }
         }
+    }
+
+    fn node_menu_view(&self, id: &str) -> Option<NodeMenuView> {
+        let node = self.nodes.get(id)?;
+        let tab = node.as_tab();
+        Some(NodeMenuView {
+            kind: item_node_kind(&node.payload),
+            has_group: node.group.is_some(),
+            color: node.color,
+            pinned: tab.is_some_and(|t| t.pinned),
+            has_json: tab.is_some_and(|t| t.json_body.is_some()),
+            renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
+        })
     }
 
     /// Applies whichever item was clicked in a Download/Note/Image/Pdf/Json
@@ -8581,15 +8633,16 @@ impl App {
     /// own hover-revealed eject button), and Close. See
     /// `App::build_group_context_menu` for the identical pattern this
     /// mirrors.
-    fn build_tab_context_menu(&mut self, ui: &mut egui::Ui, id: String, pos: egui::Pos2, fade: f32) {
-        let Some((pinned, color, group)) = self
-            .nodes
-            .get(&id)
-            .and_then(|n| n.as_tab().map(|t| (t.pinned, n.color, n.group.clone())))
-        else {
-            self.node_menu = None;
-            return;
-        };
+    fn build_tab_context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: String,
+        pos: egui::Pos2,
+        fade: f32,
+        live: bool,
+        view: &NodeMenuView,
+    ) {
+        let (pinned, color, has_json) = (view.pinned, view.color, view.has_json);
         let mut close = false;
         let mut toggle_pin = false;
         let mut remove_from_group = false;
@@ -8598,12 +8651,11 @@ impl App {
         let mut fit_subtree_requested = false;
         let mut set_color: Option<Option<egui::Color32>> = None;
         let mut view_json_requested = false;
-        let has_json =
-            self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|t| t.json_body.is_some());
 
         let area = egui::Area::new(egui::Id::new("tab_context_menu"))
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
+            .interactable(live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 egui::Frame::default()
@@ -8672,7 +8724,7 @@ impl App {
                                 close = true;
                             }
                         });
-                        if group.is_some() {
+                        if view.has_group {
                             ui.add_space(4.0);
                             ui.separator();
                             if ui.button("Remove from Group").clicked() {
