@@ -803,6 +803,12 @@ fn card_filter_text(payload: &NodePayload) -> &str {
     }
 }
 
+/// A key press as egui receives it from a keyboard, for headless key
+/// commands (see `App::debug_input_events`).
+fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+}
+
 /// "Remove from Group" (the tab card's eject button, dragging a card out
 /// through the way back, and the tab and item menus): moves `id` up one
 /// level, into the parent of the group it's in, since groups nest. `None`
@@ -3070,54 +3076,36 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
-    /// Set by a headless `ESCAPE`/`ENTER`/`ARROWDOWN`/`ARROWUP` command,
-    /// consumed (and reset) the next time `build_tab_view_ui` checks the
-    /// corresponding real-keypress condition — see the comments at each
-    /// check site.
-    pending_debug_escape: bool,
-    pending_debug_enter: bool,
-    pending_debug_arrow_down: bool,
-    pending_debug_arrow_up: bool,
+    /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
+    /// added to the next frame's egui input exactly like real key presses
+    /// (see `RedrawRequested`), so they take the same code paths and, like
+    /// a real key, last one frame whether or not anything reads them.
+    debug_input_events: Vec<egui::Event>,
+    /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
+    /// once the address bar actually has egui focus: the command requests
+    /// focus through `pending_focus_address_bar`, which only takes hold in
+    /// the frame after, so typing waits for a frame where
+    /// `address_bar_focused` is true.
+    debug_address_bar_typing: Option<String>,
     /// Set by `Ctrl+L`/headless `FOCUSADDRESS` (see
     /// `App::focus_address_bar_shortcut`), consumed the next time
     /// `build_tab_view_ui` builds the address bar's `TextEdit` — unlike the
-    /// `pending_debug_*` flags above, this drives a *real* `request_focus()`
+    /// headless key commands above, this drives a *real* `request_focus()`
     /// call on the real widget (this is the one shortcut where a real user
-    /// genuinely wants real, persistent egui focus, not just the app-state
-    /// approximation `ADDRESSBAR`'s `debug_address_bar_pin` settles for),
-    /// so it needs a frame to actually exist as a widget to focus.
+    /// genuinely wants real, persistent egui focus; headless `ADDRESSBAR`
+    /// uses it too), so it needs a frame to actually exist as a widget to
+    /// focus.
     pending_focus_address_bar: bool,
-    /// Set by a headless `QUIT` that arrived while a `pending_debug_*` flag
-    /// above (or `pending_screenshot`) was still set — e.g. `ENTER`+`QUIT`,
+    /// Set by a headless `QUIT` that arrived while debug input above (or
+    /// `pending_screenshot`) was still waiting for a frame — e.g. `ENTER`+`QUIT`,
     /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
     /// immediately in that case could drop the pending command/screenshot
     /// before any frame ever consumed it (`event_loop.exit()` gives no
-    /// guarantee a `RedrawRequested` runs first). Deferring one frame lets
-    /// `build_tab_view_ui`/etc. consume the pending flag, or lets `RedrawRequested`
-    /// actually capture and save the pending screenshot, normally;
-    /// `RedrawRequested`'s handler checks this and exits right after.
-    quit_after_next_redraw: bool,
-    /// Set by a headless `ADDRESSBAR` command, cleared by `ENTER`/`ESCAPE`/
-    /// accepting a suggestion. A real click gives the `TextEdit` real,
-    /// *persistent* egui focus, so `response.has_focus()` keeps reporting
-    /// `true` frame after frame on its own — headless mode has no way to
-    /// synthesize that (see `debug_control`'s doc comment on why keyboard/
-    /// text commands are direct calls, not synthetic events), so
-    /// `ADDRESSBAR` sets `address_bar_focused` for only the one frame it's
-    /// processed on; the very next frame, the real (never actually
-    /// clicked) widget's honest `response.has_focus() == false` overwrites
-    /// it right back. Without this pin, `editing_address` (see
-    /// `build_tab_view_ui`) goes false again within ~1 frame for any URL-like
-    /// input (nothing populates suggestions to keep it true the way a
-    /// search query's does), and the very next frame's resync-to-tab-URL
-    /// clobbers whatever `ADDRESSBAR` just set — confirmed live: a
-    /// `SCREENSHOT` taken 1 second after `ADDRESSBAR https://github.com`
-    /// showed the address bar already back to the tab's real URL, for
-    /// every engine tried (not engine-specific). This pin makes
-    /// `address_bar_focused` stay true across frames the same way real
-    /// focus would, until something that should actually end editing
-    /// clears it.
-    debug_address_bar_pin: bool,
+    /// guarantee a `RedrawRequested` runs first). Holds how many more frames
+    /// to wait: `RedrawRequested` exits once nothing is pending, or when
+    /// this runs out (an `ADDRESSBAR` needs two frames, focus then typing;
+    /// a screenshot on a stalled surface might never land).
+    quit_after_redraws: Option<u8>,
     /// Set by a headless `SCREENSHOT` command; consumed on the next
     /// `RedrawRequested` and passed into `gpu::GpuState::render`.
     pending_screenshot: Option<String>,
@@ -3407,13 +3395,10 @@ impl Default for App {
             pan_drag_history: std::collections::VecDeque::new(),
             graph_settled_key: None,
             headless: false,
-            pending_debug_escape: false,
-            pending_debug_enter: false,
-            pending_debug_arrow_down: false,
-            pending_debug_arrow_up: false,
+            debug_input_events: Vec::new(),
+            debug_address_bar_typing: None,
             pending_focus_address_bar: false,
-            quit_after_next_redraw: false,
-            debug_address_bar_pin: false,
+            quit_after_redraws: None,
             pending_screenshot: None,
             screenshot_waiter: None,
             pending_print_to_pdf: None,
@@ -4326,7 +4311,6 @@ impl App {
         self.open_tab_suggestions.clear();
         self.search_suggestions.clear();
         self.address_bar_focused = false;
-        self.debug_address_bar_pin = false;
         self.dropdown_highlighted = None;
     }
 
@@ -4991,7 +4975,7 @@ impl App {
                         // showing the configured value.
                         self.send_zoom_to(&id);
                         if is_focused {
-                            if !self.address_bar_focused && !self.debug_address_bar_pin {
+                            if !self.address_bar_focused {
                                 self.address_bar_text = url;
                             }
                             // Resizing only matters for what's actually
@@ -6177,7 +6161,7 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
-            if !self.address_bar_focused && !self.debug_address_bar_pin {
+            if !self.address_bar_focused {
                 self.address_bar_text = node.url.clone();
             }
         }
@@ -6274,7 +6258,6 @@ impl App {
                 self.save_session();
             }
         }
-        self.debug_address_bar_pin = false;
         self.dropdown_highlighted = None;
     }
 
@@ -9640,9 +9623,7 @@ impl App {
             }
         }
 
-        let escape_pressed = (ui.input(|i| i.key_pressed(egui::Key::Escape))
-            || std::mem::take(&mut self.pending_debug_escape))
-            && self.quick_switcher.is_none();
+        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none();
         if frame.back_to_graph || escape_pressed {
             self.leave_to_graph();
         }
@@ -9856,15 +9837,7 @@ impl App {
             // (and Enter-accept) an unrelated row.
             self.dropdown_highlighted = None;
         }
-        // `pending_debug_enter` (headless mode's `ENTER` command,
-        // see `debug_control`) doesn't gate on `lost_focus()`:
-        // headless "focus" is set directly by the `ADDRESSBAR`
-        // command, not via a real click-driven egui focus
-        // transfer, so `response.lost_focus()` would never fire
-        // for it.
-        if std::mem::take(&mut self.pending_debug_enter)
-            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-        {
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             actions.enter_pressed = true;
         }
 
@@ -9925,8 +9898,7 @@ impl App {
         // proxy for "still actively editing" that survives that blip.
         let editing_address = self.address_bar_focused
             || !self.open_tab_suggestions.is_empty()
-            || !self.search_suggestions.is_empty()
-            || self.debug_address_bar_pin;
+            || !self.search_suggestions.is_empty();
         // `focused` is tab-only (see `App::focused`), so this always finds
         // a Tab; `if let` rather than `.unwrap()` so a future path that
         // breaks that invariant degrades to a stale address bar, not a
@@ -9998,15 +9970,9 @@ impl App {
         // buttons, on the exact frame a click landed on one — so the click
         // never reached anything and just silently dismissed the dropdown.
         let combined = self.combined_suggestions();
-        // Taken whether or not the dropdown is up, like a real key press:
-        // an ARROWUP sent before the suggestions arrived used to stay
-        // pending past the Enter that navigated, then highlight a row of
-        // the next address-bar edit's dropdown.
-        let debug_arrow_down = std::mem::take(&mut self.pending_debug_arrow_down);
-        let debug_arrow_up = std::mem::take(&mut self.pending_debug_arrow_up);
         if editing_address && !combined.is_empty() {
-            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) || debug_arrow_down;
-            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) || debug_arrow_up;
+            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             if arrow_down {
                 self.dropdown_highlighted = Some(match self.dropdown_highlighted {
                     Some(i) if i + 1 < combined.len() => i + 1,
@@ -10072,18 +10038,12 @@ impl App {
 
         let has_suggestions =
             !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty();
-        // `pending_debug_escape` (headless mode's `ESCAPE` command) folds
-        // into the same real-Escape check rather than getting its own
-        // branch, so headless testing exercises the exact same dismiss-vs-
-        // leave-to-graph logic a real keypress would.
         // Neutralized while the quick-switcher is open: it does its own,
         // separate Escape check in `build_quick_switcher` to close itself,
         // and `key_pressed` is a non-consuming peek -- without this, the
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
-        let escape_pressed = (ui.input(|i| i.key_pressed(egui::Key::Escape))
-            || std::mem::take(&mut self.pending_debug_escape))
-            && self.quick_switcher.is_none();
+        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none();
         if back_to_graph
             || (!has_suggestions && !self.find_bar_open && self.context_menu.is_none() && escape_pressed)
         {
@@ -10234,7 +10194,6 @@ impl App {
             self.navigate_tab(&focused_id, url);
             self.open_tab_suggestions.clear();
             self.search_suggestions.clear();
-            self.debug_address_bar_pin = false;
             self.dropdown_highlighted = None;
         }
     }
@@ -13116,6 +13075,20 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                             }
                         }
+                        // The hidden headless window never has OS focus, and egui
+                        // reports no widget focus (`Response::has_focus`) in an
+                        // unfocused window, so the address bar could never take
+                        // the typed text.
+                        if self.headless {
+                            raw_input.focused = true;
+                        }
+                        raw_input.events.append(&mut self.debug_input_events);
+                        if self.address_bar_focused {
+                            if let Some(text) = self.debug_address_bar_typing.take() {
+                                raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
+                                raw_input.events.push(egui::Event::Text(text));
+                            }
+                        }
                         self.update_window_title();
                         let ctx = self.egui_ctx.clone();
                         let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
@@ -13236,13 +13209,30 @@ impl ApplicationHandler<UserEvent> for App {
                     window.request_redraw();
                 }
 
-                // See `quit_after_next_redraw`'s doc comment — this frame's
-                // `build_ui` call above (already run, via `ctx.run_ui`) is
-                // what actually consumes any pending debug flag that was
-                // still set when `DebugCommand::Quit` deferred the exit;
-                // safe to exit now that it's had its one guaranteed frame.
-                if std::mem::take(&mut self.quit_after_next_redraw) {
-                    event_loop.exit();
+                // `ADDRESSBAR` text is typed in the first frame the address
+                // bar has focus; keep frames coming until then. Dropped if
+                // Tab view went away, since the bar won't be built again.
+                if self.debug_address_bar_typing.is_some() {
+                    if self.showing_tab_view() || self.transition.is_some() {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    } else {
+                        eprintln!("ADDRESSBAR: left Tab view before the address bar took focus; text dropped");
+                        self.debug_address_bar_typing = None;
+                    }
+                }
+
+                // See `quit_after_redraws`'s doc comment.
+                if let Some(left) = self.quit_after_redraws {
+                    if !self.debug_input_pending() || left == 0 {
+                        event_loop.exit();
+                    } else {
+                        self.quit_after_redraws = Some(left - 1);
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
                 }
             }
             _ => {}
@@ -13264,6 +13254,15 @@ impl App {
         let Some(window) = &self.window else { return };
         let id = window.id();
         self.window_event(event_loop, id, event);
+    }
+
+    /// Debug input that still needs a frame: queued keys, `ADDRESSBAR`
+    /// text not typed yet, a focus request, or a screenshot.
+    fn debug_input_pending(&self) -> bool {
+        !self.debug_input_events.is_empty()
+            || self.debug_address_bar_typing.is_some()
+            || self.pending_focus_address_bar
+            || self.pending_screenshot.is_some()
     }
 
     /// Applies one headless `DebugCommand` (see `debug_control`'s doc
@@ -13362,48 +13361,23 @@ impl App {
                     },
                 );
             }
-            DebugCommand::AddressBar(text) => {
-                // Mirrors the real `TextEdit`'s `response.changed()` arm
-                // (see `build_tab_view_ui`) — setting `address_bar_focused`
-                // directly stands in for a real click-driven egui focus
-                // transfer, which headless mode has no way to synthesize.
-                // `debug_address_bar_pin` (see its own doc comment) is what
-                // actually makes this stick across the frames between now
-                // and whenever `ENTER`/`ESCAPE`/a suggestion click ends it —
-                // `address_bar_focused` alone only lasts the one frame this
-                // command is processed on.
-                self.address_bar_focused = true;
-                self.debug_address_bar_pin = true;
-                let exclude = self.focused.clone().unwrap_or_default();
-                self.open_tab_suggestions = self.compute_open_tab_suggestions(&text, &exclude);
-                self.suggestion_fetcher.note_text_changed(&text);
-                self.address_bar_text = text;
+            // A click on the address bar, then select-all and typing: focus
+            // is requested now, and the text is typed as egui `Text` input in
+            // the first frame the bar has it (see `debug_address_bar_typing`).
+            DebugCommand::AddressBar(text) if self.showing_tab_view() => {
+                self.pending_focus_address_bar = true;
+                self.debug_address_bar_typing = Some(text);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
-            // Only `build_tab_view_ui` ever consumes these four (`std::mem::take`,
-            // same as a real key press), and it only runs while genuinely in
-            // Tab view with no transition animating -- setting the flag
-            // outside that window left it stuck `true` indefinitely (a real
-            // key press instead just evaporates unconsumed at end of frame,
-            // egui's `InputState` isn't a sticky latch the way this is).
-            // Found live: an `ESCAPE` sent while already in Graph view (a
-            // common "make sure we're in Graph view" test-setup step) stayed
-            // pending and fired the moment ANY later command opened a tab,
-            // silently bouncing straight back out to Graph.
-            DebugCommand::Enter if self.showing_tab_view() && self.transition.is_none() => {
-                self.pending_debug_enter = true;
-            }
-            DebugCommand::Escape if self.view_mode == ViewMode::Item && self.transition.is_none() => {
-                self.pending_debug_escape = true;
-            }
-            DebugCommand::ArrowDown if self.showing_tab_view() && self.transition.is_none() => {
-                self.pending_debug_arrow_down = true;
-            }
-            DebugCommand::ArrowUp if self.showing_tab_view() && self.transition.is_none() => {
-                self.pending_debug_arrow_up = true;
-            }
-            DebugCommand::Enter | DebugCommand::Escape | DebugCommand::ArrowDown | DebugCommand::ArrowUp => {
-                eprintln!("debug: {cmd:?} ignored: not in Tab view, or a view transition is running");
-            }
+            DebugCommand::AddressBar(_) => eprintln!("debug: ADDRESSBAR ignored: not in Tab view"),
+            // Real key presses for the next frame's egui input, so they go
+            // through the same checks a keyboard does, in any view.
+            DebugCommand::Enter => self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE)),
+            DebugCommand::Escape => self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE)),
+            DebugCommand::ArrowDown => self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE)),
+            DebugCommand::ArrowUp => self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE)),
             DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
             DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
             DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
@@ -13623,7 +13597,7 @@ impl App {
                 self.shortcuts_help_open = !self.shortcuts_help_open;
             }
             DebugCommand::Quit => {
-                // See `quit_after_next_redraw`'s doc comment: exiting right
+                // See `quit_after_redraws`'s doc comment: exiting right
                 // now could drop a pending Enter/Escape/arrow command, or a
                 // just-requested Screenshot that hasn't been captured yet
                 // (`pending_screenshot` is only consumed inside a
@@ -13631,14 +13605,8 @@ impl App {
                 // `Quit`, with no frame in between, would otherwise silently
                 // lose the screenshot the same way an unconsumed Enter
                 // could).
-                if self.pending_debug_enter
-                    || self.pending_debug_escape
-                    || self.pending_debug_arrow_down
-                    || self.pending_debug_arrow_up
-                    || self.pending_focus_address_bar
-                    || self.pending_screenshot.is_some()
-                {
-                    self.quit_after_next_redraw = true;
+                if self.debug_input_pending() {
+                    self.quit_after_redraws = Some(3);
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }

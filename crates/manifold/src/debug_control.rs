@@ -22,15 +22,17 @@ use crate::UserEvent;
 /// logic-bypassing shortcut — since that's the only way to actually exercise
 /// egui's real hit-testing/rendering-timing, which is exactly the code path
 /// that had the click-swallowing dropdown bug fixed in the autocomplete
-/// feature. Keyboard/text commands are the one exception: `winit::event::
-/// KeyEvent` has no public constructor outside the winit crate itself (its
-/// `platform_specific` field is `pub(crate)`), so there is no way to
-/// synthesize a real `WindowEvent::KeyboardInput` from application code at
-/// all. Those commands instead call the exact equivalent effect directly
-/// (send the same `InputEvent`s to a tab, or run the same address-bar
-/// update/navigate logic) — this still exercises all of *this project's*
-/// logic, just not winit/egui's own keyboard event plumbing (which was never
-/// the source of a bug here).
+/// feature. Keyboard commands can't go through winit the same way:
+/// `winit::event::KeyEvent` has no public constructor outside the winit
+/// crate (its `platform_specific` field is `pub(crate)`). The address-bar
+/// keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`) are
+/// instead injected one level down, as `egui::Event::Key`/`Text` in the
+/// next frame's `RawInput`, so the UI's own `key_pressed` checks and the
+/// real `TextEdit` see them. Headless mode also marks the window as focused
+/// for egui, since egui reports no widget focus in an unfocused window. The
+/// remaining keyboard commands (shortcuts, page input) call the exact
+/// equivalent effect directly (send the same `InputEvent`s to a tab, or run
+/// the same shortcut method).
 ///
 /// Driving egui through these, learned the hard way: use `CLICK`, not a
 /// `MOUSEDOWN`/`MOUSEUP` pair spaced by a `sleep` -- egui drops a press
@@ -59,24 +61,19 @@ pub enum DebugCommand {
     /// case, and avoids needing three round-trips through stdin for it.
     Click { x: f64, y: f64, button: MouseButton },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
-    /// Sets the address bar's text and focus state directly, then recomputes
-    /// suggestions exactly as `response.changed()` would — see this module's
-    /// doc comment for why address-bar *text entry* is a direct call rather
-    /// than a synthetic `KeyboardInput` event.
+    /// Focuses the address bar (Tab view only), then, once it has focus,
+    /// types the text over its contents as egui `Ctrl+A` + `Text` events,
+    /// so suggestions update through the real `response.changed()` path.
     AddressBar(String),
-    /// Simulates pressing Enter in the address bar (navigates using its
-    /// current text), regardless of whether it has "real" egui focus —
-    /// headless address-bar focus is set directly by `AddressBar`, not
-    /// through a real click-driven egui focus transfer.
+    /// An egui Enter key press: in the focused address bar, navigates using
+    /// its text or the highlighted suggestion.
     Enter,
-    /// Simulates pressing Escape — dismisses the suggestion dropdown if one
-    /// is showing, otherwise leaves Tab view for Graph view (same behavior
-    /// as a real Escape keypress).
+    /// An egui Escape key press: dismisses the suggestion dropdown if one
+    /// is showing, otherwise leaves Tab view for Graph view.
     Escape,
-    /// Simulates pressing Down/Up in the address bar — moves the
-    /// highlighted suggestion row (wrapping at both ends) the same way a
-    /// real arrow-key press would; `Enter` afterward accepts whichever row
-    /// ends up highlighted.
+    /// egui Down/Up key presses: in the address bar, move the highlighted
+    /// suggestion row (wrapping at both ends); `Enter` afterward accepts
+    /// whichever row ends up highlighted.
     ArrowDown,
     ArrowUp,
     /// Graph-view keyboard navigation equivalents -- see
@@ -121,8 +118,8 @@ pub enum DebugCommand {
     /// `Ctrl+F` equivalent — see `App::open_find_bar_shortcut`.
     OpenFindBar,
     /// Sets the find bar's search text directly and sends `FindStart` to
-    /// the focused tab — same "direct call, not a synthetic key event"
-    /// reason as `AddressBar`.
+    /// the focused tab — a direct call, not a synthetic key event (see this
+    /// module's doc comment).
     FindText(String),
     /// Sets the find bar's case-sensitivity toggle directly, re-sending
     /// `FindStart` if a search is already in progress — headless equivalent
@@ -160,8 +157,8 @@ pub enum DebugCommand {
     Quit,
     /// `Ctrl+K` equivalent — see `App::handle_global_shortcuts`.
     QuickSwitchOpen,
-    /// Sets the quick-switcher's search text directly, same "direct call,
-    /// not a synthetic key event" reason as `AddressBar`/`FindText`.
+    /// Sets the quick-switcher's search text directly, a direct call like
+    /// `FindText`.
     QuickSwitchText(String),
     /// Up/Down/Enter in the quick-switcher — see `App::quick_switcher_
     /// move`/`quick_switcher_confirm`.
@@ -171,10 +168,10 @@ pub enum DebugCommand {
     QuickSwitchEscape,
     /// Sets the settings popup's "Save Session As..." name field directly,
     /// same "direct call, not a synthetic key event" reason as
-    /// `AddressBar`/`FindText`.
+    /// `FindText`.
     SessionNameText(String),
     /// Sets the Graph view toolbar's filter box directly, same "direct
-    /// call, not a synthetic key event" reason as `AddressBar`/`FindText`.
+    /// call, not a synthetic key event" reason as `FindText`.
     GraphFilterText(String),
     /// `Ctrl+G` equivalent — see `App::toggle_view_mode_shortcut`.
     ToggleView,
@@ -253,7 +250,7 @@ pub enum DebugCommand {
     /// `F2` equivalent — see `App::rename_current_group_shortcut`.
     RenameGroup,
     /// Sets the bookmarks popup's own folder-rename draft directly, same
-    /// "direct call, not a synthetic key event" reason as `AddressBar`/
+    /// "direct call, not a synthetic key event" reason as
     /// `GraphFilterText` — a no-op if nothing is currently being renamed.
     BookmarkFolderText(String),
     /// Graph view's `Escape`-dismisses-peek equivalent — see
