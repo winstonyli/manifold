@@ -2453,10 +2453,12 @@ enum ClosedNode {
 /// "Expand as Graph" JSON leaf -- recording that as a `ClosedNode::Json`
 /// would let "undo" re-add the *whole source file* as a fresh top-level
 /// card, not the leaf that was actually closed. Only a genuine top-level
-/// JSON node's own path is real undo-worthy state.
+/// JSON node's own path is real undo-worthy state. Likewise a blank
+/// (empty or whitespace-only) Note: reopening it restores nothing, and
+/// recording it could push a real entry out of the `MAX_CLOSED_NODES` cap.
 fn closed_node_for(payload: &NodePayload) -> Option<ClosedNode> {
     match payload {
-        NodePayload::Note(note) => Some(ClosedNode::Note(note.text.clone())),
+        NodePayload::Note(note) => (!note.text.trim().is_empty()).then(|| ClosedNode::Note(note.text.clone())),
         NodePayload::Image(image) => Some(ClosedNode::Image(image.path.clone())),
         NodePayload::Pdf(pdf) => Some(ClosedNode::Pdf(pdf.path.clone())),
         NodePayload::Json(json) => json.key.is_none().then(|| ClosedNode::Json(json.path.clone())),
@@ -14420,6 +14422,11 @@ mod tests {
             closed_node_for(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
             Some(ClosedNode::Note(text)) if text == "n"
         ));
+        // A blank note (never typed in, or only whitespace): nothing to restore.
+        for text in ["", " 
+	"] {
+            assert!(closed_node_for(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
+        }
         assert!(matches!(
             closed_node_for(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 1, height: 1 })),
             Some(ClosedNode::Image(path)) if path == "img.png"

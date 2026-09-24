@@ -135,11 +135,25 @@ Found while writing the implementation plan; these supersede the sections below 
 - A Download's menu never offers "Remove from Group" (pre-existing).
 - The graph card rendering loops are still per kind (the next
   generalization of this pattern).
-- Headless right-click/hover-close on a Note card was unreliable (worked in
-  one test session, not another) — reproduced on the pre-change binary, so
-  pre-existing; unknown whether it's a real hit-test bug or a headless-driver
-  quirk. When investigating, also verify Note hover ✕ → Recently Closed →
-  reopen live (so far code-inspected only).
+- **Fixed after merge review — Note hover was a real bug:** a Note card was
+  never hovered at all (no hover border, no hover ✕), with a real mouse too,
+  ever since Notes were added (`87d0e95`). Its hover-only interact was
+  registered before its own `click_and_drag` interact, and egui 0.36
+  (`interaction.rs`) counts a hover-only widget as hovered only when it sits
+  on top of the topmost interactive widget under the pointer. It's now
+  registered after the card's content (the hover border moved with it). Live
+  checked: hover ✕ → Recently Closed (1) → reopen restores the note; drag
+  and click behave the same as before the change. The rest of the "unreliable
+  headless" symptoms were driver misuse, now written up on `DebugCommand`:
+  a `MOUSEDOWN`/`MOUSEUP` pair spaced by `sleep 1` is a long press, not a
+  click; a drag needs several moves; and a menu can be caught mid-fade-in if
+  no frame renders between the click and the `SCREENSHOT`.
+- Card hover is sticky for every kind: `is_hovered` includes
+  `self.hovered == id`, and `finish_draggable_node` stores `is_hovered` back
+  into `self.hovered`, so once hovered, a card keeps its ✕ until another card
+  takes the hover (pre-existing). That's probably what keeps the ✕ reachable,
+  since half of it hangs outside the card, so fixing it means giving the ✕'s
+  own hover a say.
 - **Fixed after merge review:** "Close Group" never saved, and there's no
   save on exit, so a closed group's Note/Image/Pdf/top-level-Json members
   reappeared after a restart unless another action saved first (Tab members
@@ -147,7 +161,7 @@ Found while writing the implementation plan; these supersede the sections below 
   (The review's first framing — "the group comes back" — was wrong: groups
   and "Expand as Graph" leaves aren't in `session.json` at all, and
   Dissolve / group hover ✕ change nothing persisted, so they need no save.)
-- Hover ✕ on a never-typed note now records `ClosedNode::Note("")`, which
-  can push a real entry out of the 10-slot Recently Closed cap (menu Delete
-  already did this). Consider skipping blank notes in `closed_node_for` — a
-  behavior change, needs a decision.
+- **Done:** closing a blank note (empty or whitespace-only) no longer adds it
+  to Recently Closed. Before this, either close path recorded
+  `ClosedNode::Note("")`, which restored nothing and could push a real entry
+  out of the 10-slot cap. `closed_node_for` skips blank notes (unit-tested).
