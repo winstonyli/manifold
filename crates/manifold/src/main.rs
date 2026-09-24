@@ -1475,18 +1475,21 @@ fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected: bool) -> b
 /// what used to be three separate plain `egui::ComboBox`es with no tier/
 /// tradeoff information at all. Returns the popup's own drawn rect (for
 /// the caller's `clicked_outside_popup` check) and whichever engine was
-/// clicked this frame, if any.
+/// clicked this frame, if any. `interactable` is the caller's open flag,
+/// same as `build_list_popup_frame`'s.
 fn build_engine_picker_popup(
     ctx: &egui::Context,
     id: &str,
     anchor_rect: egui::Rect,
     selected: Option<EngineKind>,
     fade: f32,
+    interactable: bool,
 ) -> (egui::Rect, Option<EngineKind>) {
     let mut picked = None;
     let area_rect = egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
+        .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             egui::Frame::default()
@@ -4003,6 +4006,7 @@ impl App {
                     rect,
                     Some(self.settings.default_starting_engine),
                     default_engine_fade,
+                    self.default_engine_picker_open,
                 );
                 if let Some(kind) = picked {
                     self.settings.default_starting_engine = kind;
@@ -4029,6 +4033,7 @@ impl App {
                     rect,
                     current_kind,
                     current_engine_fade,
+                    self.current_engine_picker_open,
                 );
                 if let Some(kind) = picked {
                     if let Some(id) = &current_tab_id {
@@ -7582,6 +7587,7 @@ impl App {
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
+            .interactable(self.tab_actions_open)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 egui::Frame::default()
@@ -7995,6 +8001,7 @@ impl App {
         egui::Area::new(egui::Id::new("quick_switcher"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
             .order(egui::Order::Foreground)
+            .interactable(is_live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 egui::Frame::default()
@@ -8157,6 +8164,7 @@ impl App {
         let area = egui::Area::new(egui::Id::new("context_menu"))
             .fixed_pos(egui::pos2(menu.x, menu.y))
             .order(egui::Order::Foreground)
+            .interactable(current.is_some())
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 egui::Frame::default()
@@ -9981,6 +9989,7 @@ impl App {
                     rect,
                     split_kind,
                     split_engine_fade,
+                    self.split_engine_picker_open,
                 );
                 if let Some(kind) = picked {
                     self.start_split(kind);
