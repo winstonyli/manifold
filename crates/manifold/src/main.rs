@@ -3402,7 +3402,6 @@ impl Default for App {
             pending_respawn_focus: None,
         };
         for err in [settings_err, bookmarks_err].into_iter().flatten() {
-            eprintln!("{err}");
             app.queue_toast(err);
         }
         app
@@ -4452,7 +4451,6 @@ impl App {
             Ok(Some(session)) => session,
             Ok(None) => return false,
             Err(err) => {
-                eprintln!("{err}");
                 self.queue_toast(err);
                 return false;
             }
@@ -6806,7 +6804,17 @@ impl App {
         pos: egui::Vec2,
         group: Option<String>,
     ) -> bool {
-        let Ok(img) = image::open(&path) else { return false };
+        // Toasted here, not by callers: session restore, add-file and
+        // reopen all used to drop a missing or undecodable file silently.
+        let img = match image::open(&path) {
+            Ok(img) => img,
+            Err(err) => {
+                eprintln!("image: couldn't open {path}: {err}");
+                let name = crate::json_file::file_name(std::path::Path::new(&path));
+                self.queue_toast(format!("Couldn't open image {name}: {err}"));
+                return false;
+            }
+        };
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
         if let Some(gpu) = &mut self.gpu {
@@ -6941,8 +6949,14 @@ impl App {
         pos: egui::Vec2,
         group: Option<String>,
     ) -> bool {
-        let Ok(text) = std::fs::read_to_string(&path) else { return false };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+        // Toasted here, not by callers -- see `insert_image_node_with_id`.
+        let value = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
+            Ok(value) => value,
+            Err(err) => {
+                self.queue_toast(err);
+                return false;
+            }
+        };
         self.nodes.insert(
             id.clone(),
             GraphNode {
@@ -13312,10 +13326,7 @@ impl App {
             DebugCommand::ImportSession(path) => {
                 match session::Session::load_from(std::path::Path::new(&path)) {
                     Ok(session) => self.pending_import = Some(session),
-                    Err(err) => {
-                        eprintln!("{err}");
-                        self.queue_toast(err);
-                    }
+                    Err(err) => self.queue_toast(err),
                 }
             }
             DebugCommand::ConfirmImport => {
@@ -13347,10 +13358,7 @@ impl App {
             DebugCommand::ImportGroup(path) => {
                 match group_export::load_from(std::path::Path::new(&path)) {
                     Ok(export) => self.import_group_export(export),
-                    Err(err) => {
-                        eprintln!("{err}");
-                        self.queue_toast(err);
-                    }
+                    Err(err) => self.queue_toast(err),
                 }
             }
             DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
@@ -13363,10 +13371,7 @@ impl App {
                         self.bookmarks = imported;
                         bookmarks::save(&self.bookmarks);
                     }
-                    Err(err) => {
-                        eprintln!("{err}");
-                        self.queue_toast(err);
-                    }
+                    Err(err) => self.queue_toast(err),
                 }
             }
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
