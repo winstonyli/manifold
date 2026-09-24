@@ -12592,9 +12592,10 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Debug(cmd) => {
                 self.handle_debug_command(event_loop, cmd);
-                // The off-screen headless window gets `RedrawRequested`
+                // The off-screen headless window can get `RedrawRequested`
                 // (WM_PAINT) only sporadically -- measured ~40 frames in
-                // 20 s, up to a second apart -- so several commands could
+                // 20 s under load (another process on the GPU, engines
+                // starting), ~60 fps on a quiet machine -- so several commands could
                 // land in one frame: a `MOUSEDOWN` and the `MOUSEMOVE`s after
                 // it were hit-tested at the pointer's final position, turning
                 // a card drag into a background pan. Rendering a frame right
