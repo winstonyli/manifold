@@ -475,6 +475,30 @@ fn draw_new_node_menu_row(
     response.clicked()
 }
 
+/// Graph toolbar filter: when `filter` doesn't match any of `haystacks`,
+/// dims the card at `rect` with one black scrim, pushed as a deferred
+/// overlay so it paints last (on the same untransformed foreground layer
+/// card text uses, so it covers that too, not just the thumbnail/borders
+/// below it) rather than threading a dim factor through every draw call.
+/// `rounding` matches the card's own corner radius (screen space).
+fn dim_if_filtered_out(
+    deferred_overlays: &mut DeferredOverlays,
+    filter: &str,
+    haystacks: &[&str],
+    rect: egui::Rect,
+    rounding: f32,
+) {
+    if graph_filter_dims(filter, haystacks) {
+        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+            overlay_painter.rect_filled(
+                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
+                rounding,
+                egui::Color32::from_black_alpha(190),
+            );
+        }));
+    }
+}
+
 /// Small hover-revealed "X" close button at a Graph-view card's top-right
 /// corner -- shared by Note/Image/Pdf/Json's own card loops in
 /// `build_graph_ui`, previously hand-copied once per kind. Colors are
@@ -2805,7 +2829,7 @@ struct App {
     /// drag by movement distance) and `build_graph_ui`'s own rendering of
     /// it. Deliberately *not* a `NodePayload`/`self.nodes` entry -- it's a
     /// pending choice, not real graph content, so it never needs excluding
-    /// from `groups_at_current_level`/session persistence/drag-into-group/
+    /// from `nodes_at_current_level(Group)`/session persistence/drag-into-group/
     /// filters the way a real new node kind would. Cleared on any camera
     /// movement (pan/zoom/Reset View/entering or leaving a group/minimap
     /// click), Escape, clicking elsewhere, or picking one of its own
@@ -4794,7 +4818,7 @@ impl App {
             // nested subgroup by dragging it onto that subgroup's own card
             // while both are visible in the same subgraph.
             if let Some(pos) = self.nodes.get(id).map(|n| n.pos) {
-                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                let dropped_on_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
                     self.nodes.get(gid).is_some_and(|g| {
                         egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
                             .contains(egui::Pos2::new(pos.x, pos.y))
@@ -4976,18 +5000,21 @@ impl App {
         id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone())
     }
 
-    /// `node_order`, filtered to tab-kind nodes at whichever level
-    /// `self.current_group` is currently viewing — the id list
-    /// `build_graph_ui`'s tab-rendering loop iterates, kept in stable
+    /// `node_order`, filtered to nodes of `kind` at whichever level
+    /// `self.current_group` is currently viewing -- the id list each of
+    /// `build_graph_ui`'s per-kind card loops iterates, kept in stable
     /// insertion order (unlike filtering `self.nodes` directly, a
-    /// `HashMap`'s iteration order isn't stable frame-to-frame).
-    fn tabs_at_current_level(&self) -> Vec<String> {
+    /// `HashMap`'s iteration order isn't stable frame-to-frame). The kind
+    /// filter matters even for one kind: a top-level group's own `group`
+    /// is `None`, same as `current_group` at the top level, so a level
+    /// check alone would leak group cards into every other kind's list.
+    fn nodes_at_current_level(&self, kind: ItemNodeKind) -> Vec<String> {
         self.node_order
             .iter()
             .filter(|id| {
                 self.nodes
                     .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_tab().is_some())
+                    .is_some_and(|n| n.group == self.current_group && item_node_kind(&n.payload) == kind)
             })
             .cloned()
             .collect()
@@ -5008,34 +5035,6 @@ impl App {
             current = self.nodes.get(&cur).and_then(|n| n.parent.clone());
         }
         false
-    }
-
-    fn downloads_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_download().is_some())
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Same shape as `downloads_at_current_level` -- a group is level-scoped
-    /// like every other kind now that groups nest (see `GroupPayload`'s own
-    /// doc comment), so this needs the same `n.group == self.current_group`
-    /// filter every other `*_at_current_level` already has.
-    fn groups_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_group().is_some())
-            })
-            .cloned()
-            .collect()
     }
 
     /// Every ancestor above `self.current_group`, root-most first, as
@@ -5068,64 +5067,9 @@ impl App {
         chain
     }
 
-    /// Same shape as `downloads_at_current_level` -- notes are level-scoped
-    /// like tabs/downloads (a note can live inside a group's own subgraph,
-    /// not just at the top level, unlike a group card itself).
-    fn notes_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_note().is_some())
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Same shape as `notes_at_current_level`, for image nodes.
-    fn images_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_image().is_some())
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Same shape as `images_at_current_level`, for PDF nodes.
-    fn pdfs_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_pdf().is_some())
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Same shape as `pdfs_at_current_level`, for JSON nodes.
-    fn jsons_at_current_level(&self) -> Vec<String> {
-        self.node_order
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && n.as_json().is_some())
-            })
-            .cloned()
-            .collect()
-    }
-
     /// "Reset View"'s scene rect: bounds every node currently visible at
-    /// this level (tabs/downloads, plus group cards -- same level rules
-    /// `tabs_at_current_level`/`downloads_at_current_level`/
-    /// `groups_at_current_level` already use) instead of always framing
+    /// this level (every kind -- same level rules `nodes_at_current_level`
+    /// already uses) instead of always framing
     /// the same fixed world-space rect regardless of how many nodes exist
     /// or where they've drifted to. Each node contributes its own
     /// half-size (a
@@ -5136,13 +5080,13 @@ impl App {
     /// bounding box has no sensible center/size to frame.
     fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
         self.bounds_for_level(
-            &self.tabs_at_current_level(),
-            &self.downloads_at_current_level(),
-            &self.notes_at_current_level(),
-            &self.images_at_current_level(),
-            &self.pdfs_at_current_level(),
-            &self.jsons_at_current_level(),
-            &self.groups_at_current_level(),
+            &self.nodes_at_current_level(ItemNodeKind::Tab),
+            &self.nodes_at_current_level(ItemNodeKind::Download),
+            &self.nodes_at_current_level(ItemNodeKind::Note),
+            &self.nodes_at_current_level(ItemNodeKind::Image),
+            &self.nodes_at_current_level(ItemNodeKind::Pdf),
+            &self.nodes_at_current_level(ItemNodeKind::Json),
+            &self.nodes_at_current_level(ItemNodeKind::Group),
         )
     }
 
@@ -5270,13 +5214,13 @@ impl App {
     fn current_level_settle_key(&self) -> (Option<String>, usize) {
         (
             self.current_group.clone(),
-            self.tabs_at_current_level().len()
-                + self.downloads_at_current_level().len()
-                + self.notes_at_current_level().len()
-                + self.images_at_current_level().len()
-                + self.pdfs_at_current_level().len()
-                + self.jsons_at_current_level().len()
-                + self.groups_at_current_level().len(),
+            self.nodes_at_current_level(ItemNodeKind::Tab).len()
+                + self.nodes_at_current_level(ItemNodeKind::Download).len()
+                + self.nodes_at_current_level(ItemNodeKind::Note).len()
+                + self.nodes_at_current_level(ItemNodeKind::Image).len()
+                + self.nodes_at_current_level(ItemNodeKind::Pdf).len()
+                + self.nodes_at_current_level(ItemNodeKind::Json).len()
+                + self.nodes_at_current_level(ItemNodeKind::Group).len(),
         )
     }
 
@@ -5293,7 +5237,7 @@ impl App {
     /// sites an id type they don't expect.
     fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
         let mut best: Option<(String, f32)> = None;
-        for id in self.tabs_at_current_level() {
+        for id in self.nodes_at_current_level(ItemNodeKind::Tab) {
             let Some(node) = self.nodes.get(&id) else { continue };
             let delta = node.pos - from;
             let along = delta.dot(dir);
@@ -5332,7 +5276,7 @@ impl App {
                 }
             }
             None => {
-                if let Some(first) = self.tabs_at_current_level().into_iter().next() {
+                if let Some(first) = self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().next() {
                     self.focused = Some(first);
                 }
             }
@@ -6696,14 +6640,14 @@ impl App {
     }
 
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
-    /// `tabs_at_current_level` returns (top level: every ungrouped tab,
+    /// `nodes_at_current_level(Tab)` returns (top level: every ungrouped tab,
     /// leaving groups and their members untouched; inside a group: every
     /// member, same effect as that group's own "Close Group" context-menu
     /// entry, just reachable without opening it). Each closes through the
     /// normal `close_tab` path, same "just that action run once per tab"
     /// shape `close_all_except`/`close_group` already have.
     fn close_all_at_current_level(&mut self) {
-        for id in self.tabs_at_current_level() {
+        for id in self.nodes_at_current_level(ItemNodeKind::Tab) {
             self.close_tab(&id);
         }
     }
@@ -9543,13 +9487,13 @@ impl App {
         // function (drag-and-drop-into-group checks, the right-click
         // hit-test chain) that don't run every idle frame, so caching them
         // here would have added surface area without the same payoff.
-        let tabs_at_level = self.tabs_at_current_level();
-        let downloads_at_level = self.downloads_at_current_level();
-        let notes_at_level = self.notes_at_current_level();
-        let images_at_level = self.images_at_current_level();
-        let pdfs_at_level = self.pdfs_at_current_level();
-        let jsons_at_level = self.jsons_at_current_level();
-        let groups_at_level = self.groups_at_current_level();
+        let tabs_at_level = self.nodes_at_current_level(ItemNodeKind::Tab);
+        let downloads_at_level = self.nodes_at_current_level(ItemNodeKind::Download);
+        let notes_at_level = self.nodes_at_current_level(ItemNodeKind::Note);
+        let images_at_level = self.nodes_at_current_level(ItemNodeKind::Image);
+        let pdfs_at_level = self.nodes_at_current_level(ItemNodeKind::Pdf);
+        let jsons_at_level = self.nodes_at_current_level(ItemNodeKind::Json);
+        let groups_at_level = self.nodes_at_current_level(ItemNodeKind::Group);
 
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport (approximating a variable-size Image/Pdf
@@ -9716,7 +9660,7 @@ impl App {
                     // is still discoverable. All three now work at any
                     // level, not just the top -- see `GroupPayload`'s own
                     // doc comment on nesting; each already acts on
-                    // `self.current_group`/`groups_at_current_level()`
+                    // `self.current_group`/`nodes_at_current_level(Group)`
                     // (its own level), never hardcoding the top level.
                     //
                     // The rule this toolbar actually follows, for any
@@ -10068,7 +10012,7 @@ impl App {
                 // `self.focused` stays tab-only), so a right-click there
                 // would otherwise just compute an empty selection.
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
-                let hit_group = self.groups_at_current_level().into_iter().find(|gid| {
+                let hit_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
                     self.nodes.get(gid).is_some_and(|g| {
                         egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
                             .contains(world_pos)
@@ -10076,7 +10020,7 @@ impl App {
                 });
                 let hit_download = hit_group.is_none()
                     .then(|| {
-                        self.downloads_at_current_level().into_iter().find(|did| {
+                        self.nodes_at_current_level(ItemNodeKind::Download).into_iter().find(|did| {
                             self.nodes.get(did).is_some_and(|d| {
                                 egui::Rect::from_center_size(egui::Pos2::new(d.pos.x, d.pos.y), DOWNLOAD_NODE_SIZE)
                                     .contains(world_pos)
@@ -10086,7 +10030,7 @@ impl App {
                     .flatten();
                 let hit_note = (hit_group.is_none() && hit_download.is_none())
                     .then(|| {
-                        self.notes_at_current_level().into_iter().find(|nid| {
+                        self.nodes_at_current_level(ItemNodeKind::Note).into_iter().find(|nid| {
                             self.nodes.get(nid).is_some_and(|n| {
                                 egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), NOTE_NODE_SIZE)
                                     .contains(world_pos)
@@ -10096,7 +10040,7 @@ impl App {
                     .flatten();
                 let hit_image = (hit_group.is_none() && hit_download.is_none() && hit_note.is_none())
                     .then(|| {
-                        self.images_at_current_level().into_iter().find(|iid| {
+                        self.nodes_at_current_level(ItemNodeKind::Image).into_iter().find(|iid| {
                             self.nodes.get(iid).is_some_and(|n| {
                                 n.as_image().is_some_and(|image| {
                                     let size = image_node_card_size(image.width, image.height);
@@ -10112,7 +10056,7 @@ impl App {
                     && hit_note.is_none()
                     && hit_image.is_none())
                     .then(|| {
-                        self.pdfs_at_current_level().into_iter().find(|pid| {
+                        self.nodes_at_current_level(ItemNodeKind::Pdf).into_iter().find(|pid| {
                             self.nodes.get(pid).is_some_and(|n| {
                                 n.as_pdf().is_some_and(|pdf| {
                                     let size = pdf_card_size(pdf);
@@ -10129,7 +10073,7 @@ impl App {
                     && hit_image.is_none()
                     && hit_pdf.is_none())
                     .then(|| {
-                        self.jsons_at_current_level().into_iter().find(|jid| {
+                        self.nodes_at_current_level(ItemNodeKind::Json).into_iter().find(|jid| {
                             self.nodes.get(jid).is_some_and(|n| {
                                 egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), JSON_NODE_SIZE)
                                     .contains(world_pos)
@@ -10144,7 +10088,7 @@ impl App {
                     && hit_pdf.is_none()
                     && hit_json.is_none())
                     .then(|| {
-                        self.tabs_at_current_level().into_iter().find(|tid| {
+                        self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|tid| {
                             self.nodes.get(tid).is_some_and(|n| {
                                 egui::Rect::from_center_size(egui::Pos2::new(n.pos.x, n.pos.y), GRAPH_NODE_SIZE)
                                     .contains(world_pos)
@@ -10180,7 +10124,7 @@ impl App {
             if !secondary_down {
                 self.rect_select_start = None;
                 // Barely moved -- a plain right-click, not a real
-                // rectangle-select drag. `groups_at_current_level`/etc.
+                // rectangle-select drag. `nodes_at_current_level`
                 // hit-testing above already ruled out landing on any real
                 // node, so this is genuinely empty background: show the
                 // "New Tab/Note/Group/File" card here instead of computing
@@ -10194,7 +10138,7 @@ impl App {
                         ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
                     );
                     self.selected_tabs = self
-                        .tabs_at_current_level()
+                        .nodes_at_current_level(ItemNodeKind::Tab)
                         .into_iter()
                         .filter(|id| {
                             self.nodes.get(id).is_some_and(|node| {
@@ -10985,7 +10929,7 @@ impl App {
                         // a different branch of the tree.
                         if self.current_group.is_none() {
                             if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|gid| {
+                                let dropped_on_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
                                     self.nodes.get(gid).is_some_and(|g| {
                                         egui::Rect::from_center_size(
                                             egui::Pos2::new(g.pos.x, g.pos.y),
@@ -11016,7 +10960,7 @@ impl App {
                                     // Not dropped on a group -- check
                                     // another ungrouped tab's card instead,
                                     // creating a new group with both.
-                                    // `tabs_at_current_level()` only ever
+                                    // `nodes_at_current_level(Tab)` only ever
                                     // returns ungrouped tabs at the top
                                     // level (its own filter is `n.group ==
                                     // self.current_group`, i.e. `None`
@@ -11024,7 +10968,7 @@ impl App {
                                     // already a valid drop target with no
                                     // extra check needed.
                                     let dropped_on_tab =
-                                        self.tabs_at_current_level().into_iter().find(|other_id| {
+                                        self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|other_id| {
                                             other_id != &id
                                                 && self.nodes.get(other_id).is_some_and(|other| {
                                                     egui::Rect::from_center_size(
@@ -11096,14 +11040,14 @@ impl App {
                             // with both," so this only applies once inside
                             // a group's own subgraph, where that meaning
                             // doesn't apply and no drop gesture existed at
-                            // all yet. `tabs_at_current_level` already only
+                            // all yet. `nodes_at_current_level(Tab)` already only
                             // returns this group's own members here (its
                             // filter is `n.group == self.current_group`),
                             // so any match is a valid sibling to reparent
                             // onto. Guarded against creating a cycle (e.g.
                             // dropping a tab onto its own descendant).
                             let dropped_on_sibling =
-                                self.tabs_at_current_level().into_iter().find(|other_id| {
+                                self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|other_id| {
                                     other_id != &id
                                         && self.nodes.get(other_id).is_some_and(|other| {
                                             egui::Rect::from_center_size(
@@ -11141,21 +11085,7 @@ impl App {
                         clicked_focus = Some(id.clone());
                     }
 
-                    // Graph toolbar filter: painted last (on the same
-                    // untransformed foreground layer the text above used,
-                    // so it covers that too, not just the thumbnail/
-                    // borders below it) rather than threading a dim factor
-                    // through every draw call above -- one extra scrim
-                    // covers the whole card in one shot.
-                    if graph_filter_dims(&self.graph_filter, &[&title, &url]) {
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                6.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
-                        }));
-                    }
+                    dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[&title, &url], rect, 6.0);
                 }
 
                 // Download nodes: no thumbnail/title-strip/audio-dot
@@ -11348,15 +11278,7 @@ impl App {
                     }
 
                     if let Some((download_path, ..)) = &download_info {
-                        if graph_filter_dims(&self.graph_filter, &[download_path]) {
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    6.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
-                            }));
-                        }
+                        dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[download_path], rect, 6.0);
                     }
                 }
 
@@ -11570,15 +11492,7 @@ impl App {
                     self.finish_draggable_node(&id, &response, is_hovered);
 
                     if let Some(note) = self.nodes.get(&id).and_then(|n| n.as_note()) {
-                        if graph_filter_dims(&self.graph_filter, &[&note.text]) {
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    6.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
-                            }));
-                        }
+                        dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[&note.text], rect, 6.0);
                     }
                 }
 
@@ -11703,17 +11617,7 @@ impl App {
                         image_clicked = Some(id.clone());
                     }
 
-                    {
-                        if graph_filter_dims(&self.graph_filter, &[download_filename(&image_path)]) {
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    4.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
-                            }));
-                        }
-                    }
+                    dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[download_filename(&image_path)], rect, 4.0);
                 }
 
                 // PDF nodes: same card shape as an image node (drag,
@@ -11870,17 +11774,7 @@ impl App {
 
                     self.finish_draggable_node(&id, &response, is_hovered);
 
-                    {
-                        if graph_filter_dims(&self.graph_filter, &[download_filename(&pdf_path)]) {
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.rect_filled(
-                                    egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                    4.0,
-                                    egui::Color32::from_black_alpha(190),
-                                );
-                            }));
-                        }
-                    }
+                    dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[download_filename(&pdf_path)], rect, 4.0);
                 }
 
                 // JSON nodes: always the same fixed `JSON_NODE_SIZE` box
@@ -11975,15 +11869,7 @@ impl App {
 
                     self.finish_draggable_node(&id, &response, is_hovered);
 
-                    if graph_filter_dims(&self.graph_filter, &[download_filename(&path)]) {
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.rect_filled(
-                                egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                4.0,
-                                egui::Color32::from_black_alpha(190),
-                            );
-                        }));
-                    }
+                    dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[download_filename(&path)], rect, 4.0);
                 }
 
                 // Group nodes: rendered at whichever level `self.current_group`
@@ -12308,7 +12194,7 @@ impl App {
                             // "drop onto a card" language a tab already
                             // uses to join a group.
                             if let Some(dragged_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.groups_at_current_level().into_iter().find(|other_id| {
+                                let dropped_on_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|other_id| {
                                     if other_id == &id {
                                         return false;
                                     }
@@ -12335,15 +12221,7 @@ impl App {
                         }
 
                         if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
-                            if graph_filter_dims(&self.graph_filter, &[&node.name]) {
-                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                    overlay_painter.rect_filled(
-                                        egui::Rect::from_min_max(project(rect.min), project(rect.max)),
-                                        6.0,
-                                        egui::Color32::from_black_alpha(190),
-                                    );
-                                }));
-                            }
+                            dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[&node.name], rect, 6.0);
                         }
                     }
 
@@ -12724,7 +12602,7 @@ impl App {
             }
         }
         if ungroup_all_requested {
-            for id in self.groups_at_current_level() {
+            for id in self.nodes_at_current_level(ItemNodeKind::Group) {
                 self.dissolve_group(&id);
             }
         }
