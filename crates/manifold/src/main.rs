@@ -9989,11 +9989,15 @@ impl App {
         // buttons, on the exact frame a click landed on one — so the click
         // never reached anything and just silently dismissed the dropdown.
         let combined = self.combined_suggestions();
+        // Taken whether or not the dropdown is up, like a real key press:
+        // an ARROWUP sent before the suggestions arrived used to stay
+        // pending past the Enter that navigated, then highlight a row of
+        // the next address-bar edit's dropdown.
+        let debug_arrow_down = std::mem::take(&mut self.pending_debug_arrow_down);
+        let debug_arrow_up = std::mem::take(&mut self.pending_debug_arrow_up);
         if editing_address && !combined.is_empty() {
-            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
-                || std::mem::take(&mut self.pending_debug_arrow_down);
-            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
-                || std::mem::take(&mut self.pending_debug_arrow_up);
+            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) || debug_arrow_down;
+            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) || debug_arrow_up;
             if arrow_down {
                 self.dropdown_highlighted = Some(match self.dropdown_highlighted {
                     Some(i) if i + 1 < combined.len() => i + 1,
