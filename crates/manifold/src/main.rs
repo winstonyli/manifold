@@ -243,11 +243,14 @@ fn build_list_popup_frame(
         .rect
 }
 
-/// What clicking one item of a node's right-click menu does, applied by
-/// `App::apply_node_menu_action`. `build_node_context_menu` only reports
-/// which item was clicked; the caller owns every effect.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum NodeMenuAction {
+/// Something done to one node, from its right-click menu or its card's
+/// own buttons, applied by `App::apply_node_action`.
+/// `build_node_context_menu` and the card loops only report which one was
+/// clicked; the caller owns every effect.
+#[derive(Clone, Debug, PartialEq)]
+enum NodeAction {
+    /// Opens the node into Item view (a tab or image card's click).
+    Open,
     CopyText,
     Reveal,
     CopyPath,
@@ -260,11 +263,19 @@ enum NodeMenuAction {
     /// Swaps the group menu's items for a name field (see
     /// `build_node_context_menu`); the menu stays open.
     Rename,
-    /// The rename field lost focus by any means but Escape.
-    CommitRename,
+    /// The rename field lost focus by any means but Escape. Carries the
+    /// typed name rather than reading `renaming_group` when applied, so it
+    /// still lands if leaving the group (which clears the draft) is applied
+    /// first: clicking the toolbar's back button while renaming does both
+    /// in one frame.
+    CommitRename(String),
     /// Escape in the rename field.
     CancelRename,
     SetColor(Option<egui::Color32>),
+    /// A card's color swatch: the next color in `TAG_COLOR_PALETTE`.
+    CycleColor,
+    ToggleMute,
+    RetryMissingFile,
     RemoveFromGroup,
     Dissolve,
     ExportGroup,
@@ -273,18 +284,43 @@ enum NodeMenuAction {
     Delete,
 }
 
-impl NodeMenuAction {
-    fn hover_text(self) -> Option<&'static str> {
+impl NodeAction {
+    fn hover_text(&self) -> Option<&'static str> {
         match self {
-            NodeMenuAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
+            NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
             _ => None,
         }
     }
 }
 
+/// A click in Graph view, collected while `build_graph_ui` draws and
+/// applied in order once it's done (`App::apply_graph_action`), when
+/// nothing is borrowing `self` for drawing any more.
+enum GraphAction {
+    Node(String, NodeAction),
+    /// A new tab under this parent (the toolbar's "+ New Tab", or the
+    /// empty-canvas card's New Tab, which can't place it where clicked:
+    /// see `spawn_new_tab_with_kind`).
+    NewTab(Option<String>),
+    /// The empty-canvas card's New Note/New Group/Add File, placed at the
+    /// right-clicked world position.
+    NewNote(egui::Vec2),
+    NewGroup(egui::Vec2),
+    NewFile(egui::Vec2),
+    EnterGroup(String),
+    LeaveGroup,
+    /// A group card dropped onto another: `source`'s members move into
+    /// `target`, and `source` goes.
+    MergeGroups { source: String, target: String },
+    GroupSelected,
+    CloseSelected,
+    UngroupAll,
+    ImportGroup,
+}
+
 #[derive(Debug, PartialEq)]
 enum NodeMenuItem {
-    Button(&'static str, NodeMenuAction),
+    Button(&'static str, NodeAction),
     /// The "Color" label and tag-color swatch row, ending in a "no color"
     /// ring.
     Colors,
@@ -319,7 +355,7 @@ fn build_node_context_menu(
     config: &NodeMenuConfig,
     color: Option<egui::Color32>,
     rename: Option<(&mut String, bool)>,
-) -> (Option<NodeMenuAction>, bool) {
+) -> (Option<NodeAction>, bool) {
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect =
@@ -331,27 +367,27 @@ fn build_node_context_menu(
                 }
                 if response.lost_focus() {
                     action = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        NodeMenuAction::CancelRename
+                        NodeAction::CancelRename
                     } else {
-                        NodeMenuAction::CommitRename
+                        NodeAction::CommitRename(draft.clone())
                     });
                 }
                 return;
             }
             for item in &config.items {
-                match *item {
+                match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = ui.button(label);
+                        let mut response = ui.button(*label);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
                         if response.clicked() {
-                            action = Some(item_action);
+                            action = Some(item_action.clone());
                         }
                     }
                     NodeMenuItem::Colors => {
                         if let Some(picked) = color_swatch_row(ui, color) {
-                            action = Some(NodeMenuAction::SetColor(picked));
+                            action = Some(NodeAction::SetColor(picked));
                         }
                     }
                     NodeMenuItem::Separator => {
@@ -403,7 +439,7 @@ fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option
 /// dialog would block on input that never comes (`EXPORTGROUP <path>`
 /// saves directly instead).
 fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
-    use NodeMenuAction as A;
+    use NodeAction as A;
     use NodeMenuItem::{Button, Colors, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
     // Every menu but the group's ends in Remove from Group (when the node
@@ -5878,8 +5914,8 @@ impl App {
         // Guards against an infinite loop if a cycle ever existed in the
         // `.group` parent chain -- not reachable today (the only path that
         // reparents an *existing* group, the merge-drag gesture, already
-        // refuses a cycle at the source -- see `group_merge_requested`'s own
-        // `creates_cycle` check), but this would hang the whole app with no
+        // refuses a cycle at the source -- see `GraphAction::MergeGroups`'s own
+        // ancestor check), but this would hang the whole app with no
         // error if it ever did happen, called every frame as it is, so the
         // guard is cheap insurance rather than something to skip.
         while let Some(id) = current {
@@ -6088,7 +6124,7 @@ impl App {
         // exact same filtered `self.nodes.iter()` twice, a duplicate-loop
         // artifact from the tabs/downloads/groups -> one `self.nodes` map
         // migration (the same recurring bug this project has already found
-        // and fixed four separate times elsewhere -- `group_merge_requested`,
+        // and fixed four separate times elsewhere -- `GraphAction::MergeGroups`,
         // `dissolve_group` twice, `replace_running_session`). Harmless for
         // `positions`/`velocities` (a `HashMap` insert of the same key
         // twice just overwrites itself), but a real correctness bug for
@@ -8726,12 +8762,12 @@ impl App {
         };
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
         let close = match action {
-            Some(NodeMenuAction::Rename) => false,
+            Some(NodeAction::Rename) => false,
             Some(_) => true,
             None => clicked_outside && view.renaming.is_none(),
         };
         if let Some(action) = action {
-            self.apply_node_menu_action(ui.ctx(), &id, action);
+            self.apply_node_action(ui.ctx(), &id, action);
         }
         if close {
             self.node_menu = None;
@@ -8754,60 +8790,72 @@ impl App {
     /// Applies whichever item was clicked in a node's right-click menu.
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
-    fn apply_node_menu_action(&mut self, ctx: &egui::Context, id: &str, action: NodeMenuAction) {
+    fn apply_node_action(&mut self, ctx: &egui::Context, id: &str, action: NodeAction) {
         match action {
-            NodeMenuAction::CopyText => {
+            NodeAction::Open => {
+                if self.nodes.contains_key(id) {
+                    self.selected_tabs.clear();
+                    self.start_transition_to_item(id);
+                }
+            }
+            NodeAction::CopyText => {
                 if let Some(text) = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()) {
                     ctx.copy_text(text);
                 }
             }
-            NodeMenuAction::Reveal => self.reveal_node(id),
-            NodeMenuAction::CopyPath => {
+            NodeAction::Reveal => self.reveal_node(id),
+            NodeAction::CopyPath => {
                 if let Some(path) = self.node_file_path(id) {
                     ctx.copy_text(path);
                 }
             }
-            NodeMenuAction::ExpandAsGraph => {
+            NodeAction::ExpandAsGraph => {
                 self.expand_json_as_graph(id);
                 self.save_session();
             }
-            NodeMenuAction::TogglePin => {
+            NodeAction::TogglePin => {
                 if let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
                     tab.pinned = !tab.pinned;
                 }
             }
-            NodeMenuAction::Duplicate => self.duplicate_tab(id),
-            NodeMenuAction::CopyUrl => {
+            NodeAction::Duplicate => self.duplicate_tab(id),
+            NodeAction::CopyUrl => {
                 if let Some(url) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) {
                     ctx.copy_text(url);
                 }
             }
-            NodeMenuAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
-            NodeMenuAction::FitSubtree => self.graph_scene_rect = self.fit_subtree_scene_rect(id),
-            NodeMenuAction::Rename => {
+            NodeAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
+            NodeAction::FitSubtree => self.graph_scene_rect = self.fit_subtree_scene_rect(id),
+            NodeAction::Rename => {
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus_rename = true;
             }
-            NodeMenuAction::CommitRename => {
-                if let Some((gid, name)) = self.renaming_group.take() {
-                    let trimmed = name.trim();
-                    if !trimmed.is_empty() {
-                        if let Some(group) = self.nodes.get_mut(&gid).and_then(|n| n.as_group_mut()) {
-                            group.name = trimmed.to_string();
-                        }
+            NodeAction::CommitRename(name) => {
+                self.renaming_group = None;
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    if let Some(group) = self.nodes.get_mut(id).and_then(|n| n.as_group_mut()) {
+                        group.name = trimmed.to_string();
                     }
                 }
             }
-            NodeMenuAction::CancelRename => self.renaming_group = None,
-            NodeMenuAction::SetColor(color) => {
+            NodeAction::CancelRename => self.renaming_group = None,
+            NodeAction::SetColor(color) => {
                 if let Some(node) = self.nodes.get_mut(id) {
                     node.color = color;
                 }
             }
-            NodeMenuAction::RemoveFromGroup => remove_from_group(&mut self.nodes, id),
-            NodeMenuAction::Dissolve => self.dissolve_group(id),
-            NodeMenuAction::ExportGroup => {
+            NodeAction::CycleColor => {
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.color = next_tag_color(node.color);
+                }
+            }
+            NodeAction::ToggleMute => self.toggle_muted(id),
+            NodeAction::RetryMissingFile => self.retry_missing_file(id),
+            NodeAction::RemoveFromGroup => remove_from_group(&mut self.nodes, id),
+            NodeAction::Dissolve => self.dissolve_group(id),
+            NodeAction::ExportGroup => {
                 if let Some(export) = self.export_group(id) {
                     if let Some((path, toast)) = save_dialog_with_toast(format!("{}.json", export.name), "Group") {
                         group_export::save_to(&export, &path);
@@ -8815,7 +8863,7 @@ impl App {
                     }
                 }
             }
-            NodeMenuAction::Delete => self.close_node_and_save(id),
+            NodeAction::Delete => self.close_node_and_save(id),
         }
     }
 
@@ -10005,45 +10053,159 @@ impl App {
         }
     }
 
-    fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
-        let mut new_tab_parent: Option<Option<String>> = None;
-        let mut clicked_focus: Option<String> = None;
-        let mut close_requested: Option<String> = None;
-        // Set by a Download/Note/Image/Pdf/Json card's hover ✕ -- all five
-        // close through the same `close_node_and_save` path their context
-        // menu's Delete uses. A tab's ✕ keeps `close_requested` (above) and
-        // a group's ✕ keeps `group_close_requested` (it dissolves, not closes).
-        let mut node_close_requested: Option<String> = None;
-        let mut download_clicked: Option<String> = None;
-        let mut pin_toggle_requested: Option<String> = None;
-        let mut remove_from_group_requested: Option<String> = None;
-        let mut tab_color_cycle_requested: Option<String> = None;
-        let mut mute_toggle_requested: Option<String> = None;
-        // Set by `pending_new_node`'s own card -- unlike `new_tab_parent`
-        // above (the toolbar's own jittered-position spawn), each of these
-        // carries the exact world position that was right-clicked.
-        let mut pending_new_tab_at: Option<egui::Vec2> = None;
-        let mut pending_new_note_at: Option<egui::Vec2> = None;
-        let mut pending_new_group_at: Option<egui::Vec2> = None;
-        let mut pending_new_file_at: Option<egui::Vec2> = None;
-        let mut image_clicked: Option<String> = None;
-        let mut missing_file_clicked: Option<String> = None;
-        let mut leave_group_requested = false;
-        let mut group_close_requested: Option<String> = None;
-        let mut color_cycle_requested: Option<String> = None;
-        let mut group_merge_requested: Option<(String, String)> = None;
-        let mut group_entered: Option<String> = None;
-        let mut rename_start: Option<(String, String)> = None;
-        let mut rename_commit: Option<String> = None;
-        let mut rename_cancel = false;
+    /// Applies one of `build_graph_ui`'s collected clicks. Called in click
+    /// order; no two of these depend on each other's order (a group rename
+    /// carries its own name, see `NodeAction::CommitRename`).
+    fn apply_graph_action(&mut self, ctx: &egui::Context, action: GraphAction) {
+        match action {
+            GraphAction::Node(id, action) => self.apply_node_action(ctx, &id, action),
+            GraphAction::NewTab(parent) => {
+                let home_page = self.settings.home_page.clone();
+                let group = self.current_group.clone();
+                self.spawn_new_tab(parent, group, &home_page);
+            }
+            GraphAction::NewNote(pos) => {
+                let id = self.alloc_note_id();
+                self.insert_note_at(id, pos);
+            }
+            GraphAction::NewGroup(pos) => {
+                let id = self.alloc_group_id();
+                self.insert_group_at(id, pos);
+            }
+            GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
+            GraphAction::GroupSelected => {
+                if self.selected_tabs.is_empty() {
+                    return;
+                }
+                let id = self.alloc_group_id();
+                // Centroid of the selected cards, rather than the usual
+                // world-center-plus-jitter spawn point: these tabs already have
+                // real positions the user just drew a box around, so the new
+                // group card should appear where they actually are, not at the
+                // origin of a possibly-distant part of the graph.
+                let count = self.selected_tabs.len() as f32;
+                let sum = self
+                    .selected_tabs
+                    .iter()
+                    .filter_map(|id| self.nodes.get(id))
+                    .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
+                let pos = sum / count;
+                let name = Self::default_group_name(&id);
+                self.nodes.insert(
+                    id.clone(),
+                    GraphNode {
+                        parent: None,
+                        group: self.current_group.clone(),
+                        pos,
+                        vel: egui::Vec2::ZERO,
+                        color: None,
+                        payload: NodePayload::Group(GroupPayload { name }),
+                    },
+                );
+                self.node_order.push(id.clone());
+                for tab_id in self.selected_tabs.drain() {
+                    if let Some(node) = self.nodes.get_mut(&tab_id) {
+                        node.group = Some(id.clone());
+                    }
+                }
+            }
+            GraphAction::CloseSelected => {
+                for id in std::mem::take(&mut self.selected_tabs) {
+                    self.close_tab(&id);
+                }
+            }
+            GraphAction::UngroupAll => {
+                for id in self.nodes_at_current_level(ItemNodeKind::Group) {
+                    self.dissolve_group(&id);
+                }
+            }
+            GraphAction::ImportGroup => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {
+                    match group_export::load_from(&path) {
+                        Ok(export) => self.import_group_export(export),
+                        Err(err) => self.queue_toast(err),
+                    }
+                }
+            }
+            // Entering/leaving a group eases the camera to the same target
+            // "Reset View" would jump to instantly -- keeping whatever pan/zoom
+            // the old level happened to be at would likely frame empty space
+            // rather than the new level's own nodes. `current_group` is updated
+            // first so `fit_all_nodes_scene_rect` bounds the level actually
+            // being switched *to*, not the one just left. Settling *before*
+            // fitting matters: the new level's members may never have been
+            // settled before (every group created via drag-and-drop starts with
+            // its members wherever the drop happened, often nearly overlapping)
+            // -- fitting first would target their old, pre-settle positions,
+            // which then jump to their real spacing mid-animation once the
+            // regular per-frame settle-check caught up one frame later.
+            // Updating `graph_settled_key` here too avoids that same settle
+            // running a second time on the very next frame. See
+            // `GraphCameraTween`'s doc comment for why the actual camera move
+            // eases instead of snapping, and why that's a separate mechanism
+            // from the Tab<->Graph `Transition`.
+            GraphAction::EnterGroup(id) => self.switch_group_level(Some(id)),
+            // One level up, not straight to the top -- same "go to this
+            // group's own parent" rule `dissolve_group`/the drag-to-eject
+            // handler both use, now that groups nest. Also ends any rename
+            // of the group being left.
+            GraphAction::LeaveGroup => {
+                let parent =
+                    self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+                self.switch_group_level(parent);
+                self.renaming_group = None;
+            }
+            GraphAction::MergeGroups { source, target } => {
+                // Refuse if `target` is nested inside `source` (directly
+                // or transitively, walking the same `.group` chain
+                // `group_breadcrumb` does) -- reassigning source's own members
+                // to target while target is one of them would leave it (or a
+                // group between them) pointing at itself once source is
+                // removed below, a self-reference cycle the tab-reparent drag
+                // path already guards against via `would_create_cycle`.
+                let mut ancestor = Some(target.clone());
+                while let Some(cur) = ancestor {
+                    if cur == source {
+                        return;
+                    }
+                    ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
+                }
+                for node in self.nodes.values_mut() {
+                    if node.group.as_deref() == Some(source.as_str()) {
+                        node.group = Some(target.clone());
+                    }
+                }
+                self.nodes.remove(&source);
+                self.node_order.retain(|g| g != &source);
+            }
+        }
+    }
 
+    /// Shows `group`'s level (`None` for the top), easing the camera to fit
+    /// it, and drops everything tied to the old level: the rectangle
+    /// selection (the toolbar's "Group Selected"/"Close Selected" would
+    /// otherwise act on tabs no longer visible), the empty-canvas card and
+    /// any open node menu.
+    fn switch_group_level(&mut self, group: Option<String>) {
+        self.current_group = group;
+        self.settle_current_level();
+        self.graph_settled_key = Some(self.current_level_settle_key());
+        self.graph_camera_tween = Some(GraphCameraTween {
+            from: self.graph_scene_rect,
+            to: self.fit_all_nodes_scene_rect(),
+            start: std::time::Instant::now(),
+        });
+        self.selected_tabs.clear();
+        self.rect_select_start = None;
+        self.pending_new_node = None;
+        self.node_menu = None;
+    }
+
+    fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
+        let mut actions: Vec<GraphAction> = Vec::new();
         let mut reset_view = false;
         let mut reset_zoom = false;
         let mut graph_zoom_step: Option<f32> = None;
-        let mut group_selected_requested = false;
-        let mut close_selected_requested = false;
-        let mut ungroup_all_requested = false;
-        let mut import_group_requested = false;
         let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         let mut leave_group_button_rect: Option<egui::Rect> = None;
@@ -10059,8 +10221,8 @@ impl App {
         // and allocating a fresh `Vec<String>` -- real, entirely avoidable
         // cost that ran unconditionally every frame regardless of whether
         // anything actually changed, since this app already redraws every
-        // frame. `self.current_group` can't change until `group_entered`/
-        // `leave_group_requested` are applied at the very end of this same
+        // frame. `self.current_group` can't change until `EnterGroup`/
+        // `LeaveGroup` actions are applied at the very end of this same
         // function, so every unconditional per-frame use below sees the
         // exact same, correct-for-this-frame level throughout. Left as
         // fresh calls: the two `current_level_settle_key()` call sites
@@ -10137,7 +10299,7 @@ impl App {
                             .button(egui_phosphor::light::CARET_LEFT)
                             .on_hover_text("Back one level");
                         if leave_group_response.clicked() {
-                            leave_group_requested = true;
+                            actions.push(GraphAction::LeaveGroup);
                         }
                         leave_group_button_rect = Some(leave_group_response.rect);
                         let crumb_count = breadcrumb.len();
@@ -10177,9 +10339,9 @@ impl App {
                                         }
                                         if response.lost_focus() {
                                             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                                rename_cancel = true;
+                                                actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
                                             } else {
-                                                rename_commit = Some(draft.clone());
+                                                actions.push(GraphAction::Node(id.clone(), NodeAction::CommitRename(draft.clone())));
                                             }
                                         }
                                     }
@@ -10192,12 +10354,12 @@ impl App {
                                     })
                                     .clicked()
                                 {
-                                    rename_start = Some((id.clone(), name.clone()));
+                                    actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
                                 }
                             } else {
                                 // An ancestor, not the current group itself
                                 // -- click to jump straight there (reuses
-                                // `group_entered`, the exact same "switch
+                                // `GraphAction::EnterGroup`, the exact same "switch
                                 // current_group and ease the camera" effect
                                 // double-clicking a group card triggers;
                                 // it doesn't care which direction that is).
@@ -10210,7 +10372,7 @@ impl App {
                                     })
                                     .clicked()
                                 {
-                                    group_entered = Some(id.clone());
+                                    actions.push(GraphAction::EnterGroup(id.clone()));
                                 }
                                 // `CARET_RIGHT`, not a raw "›" glyph -- same
                                 // tofu-box reasoning as the back-one-level
@@ -10231,7 +10393,7 @@ impl App {
                     // from the early-return branch) -- removing them is a
                     // pure simplification, not a capability loss.
                     if ui.button("+ New Tab").clicked() {
-                        new_tab_parent = Some(self.focused.clone());
+                        actions.push(GraphAction::NewTab(self.focused.clone()));
                     }
                     // These three buttons used to carry full text labels
                     // ("Import Group...", "Ungroup All", "Collapse Groups"/
@@ -10277,7 +10439,7 @@ impl App {
                                 .on_hover_text("Import Group...");
                                 grow(response.rect);
                                 if response.clicked() {
-                                    import_group_requested = true;
+                                    actions.push(GraphAction::ImportGroup);
                                 }
                             }
                             if !groups_at_level.is_empty() {
@@ -10289,7 +10451,7 @@ impl App {
                                 .on_hover_text("Ungroup All");
                                 grow(response.rect);
                                 if response.clicked() {
-                                    ungroup_all_requested = true;
+                                    actions.push(GraphAction::UngroupAll);
                                 }
                             }
                             if !groups_at_level.is_empty() {
@@ -10358,13 +10520,13 @@ impl App {
                         // into a new subgroup of whichever level is
                         // currently being viewed, not just the top.
                         if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
-                            group_selected_requested = true;
+                            actions.push(GraphAction::GroupSelected);
                         }
                         if ui
                             .button(format!("Close Selected ({})", self.selected_tabs.len()))
                             .clicked()
                         {
-                            close_selected_requested = true;
+                            actions.push(GraphAction::CloseSelected);
                         }
                     }
                     // Cloned rather than borrowed -- `self.tab_spawn_error =
@@ -10410,10 +10572,8 @@ impl App {
                     None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
                 };
             });
-            if let Some(parent) = new_tab_parent {
-                let home_page = self.settings.home_page.clone();
-                let group = self.current_group.clone();
-                self.spawn_new_tab(parent, group, &home_page);
+            for action in actions {
+                self.apply_graph_action(ui.ctx(), action);
             }
             return;
         }
@@ -11195,7 +11355,7 @@ impl App {
                         }
                         if audio_response.clicked() {
                             audio_clicked = true;
-                            mute_toggle_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::ToggleMute));
                         }
                     }
 
@@ -11246,7 +11406,7 @@ impl App {
                         }));
                     }
                     if pin_response.clicked() {
-                        pin_toggle_requested = Some(id.clone());
+                        actions.push(GraphAction::Node(id.clone(), NodeAction::TogglePin));
                     }
 
                     // Close button: a small square just outside the node's own
@@ -11295,7 +11455,7 @@ impl App {
                             );
                         }));
                         if close_response.clicked() {
-                            close_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
                         }
                     }
                     // Middle-click anywhere on the card closes it too, same
@@ -11303,7 +11463,7 @@ impl App {
                     // an alternative to the small "x" rather than a
                     // replacement for it.
                     if response.clicked_by(egui::PointerButton::Middle) {
-                        close_requested = Some(id.clone());
+                        actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
                     }
 
                     // Remove-from-group ("eject"): only shown while
@@ -11354,7 +11514,7 @@ impl App {
                         }));
                         if eject_response.clicked() {
                             eject_clicked = true;
-                            remove_from_group_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::RemoveFromGroup));
                         }
                     }
 
@@ -11387,7 +11547,7 @@ impl App {
                     }
                     if swatch_response.clicked() {
                         swatch_clicked = true;
-                        tab_color_cycle_requested = Some(id.clone());
+                        actions.push(GraphAction::Node(id.clone(), NodeAction::CycleColor));
                     }
 
                     if response.dragged() {
@@ -11531,7 +11691,7 @@ impl App {
                             // hover-revealed eject button, just reached by
                             // dragging the card itself out through the way
                             // back instead.
-                            remove_from_group_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::RemoveFromGroup));
                         } else if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
                             // Dropping one member of a group's own subgraph
                             // onto a sibling tab's card re-parents it there
@@ -11582,7 +11742,7 @@ impl App {
                         && !swatch_clicked
                         && !audio_clicked
                     {
-                        clicked_focus = Some(id.clone());
+                        actions.push(GraphAction::Node(id.clone(), NodeAction::Open));
                     }
 
                     dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[&title, &url], rect, 6.0);
@@ -11616,7 +11776,7 @@ impl App {
                             // The ✕ consumed this frame's click, so the
                             // kind's own click action below (e.g. Image
                             // maximize) is skipped.
-                            node_close_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
                             continue;
                         }
                         // A placeholder (see `ImagePayload::error`) has nothing
@@ -11629,12 +11789,12 @@ impl App {
                         match kind {
                             _ if missing_file => {
                                 if card.response.clicked() {
-                                    missing_file_clicked = Some(id.clone());
+                                    actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
                                 }
                             }
                             // Click (not drag -- egui doesn't report
                             // `clicked()` for a drag) reveals the file.
-                            ItemNodeKind::Download if card.response.clicked() => download_clicked = Some(id.clone()),
+                            ItemNodeKind::Download if card.response.clicked() => actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
                             // Click on the rendered note enters editing in place.
                             ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
                                 if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
@@ -11643,7 +11803,7 @@ impl App {
                             }
                             // Maximizes the image into Item view, the same
                             // gesture a Tab card uses.
-                            ItemNodeKind::Image if card.response.clicked() => image_clicked = Some(id.clone()),
+                            ItemNodeKind::Image if card.response.clicked() => actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
                             // Opens the full tree in `build_json_viewer`.
                             ItemNodeKind::Json if card.response.double_clicked() => {
                                 self.json_viewer_node = Some(id.clone())
@@ -11927,7 +12087,7 @@ impl App {
                                 );
                             }));
                             if close_response.clicked() {
-                                group_close_requested = Some(id.clone());
+                                actions.push(GraphAction::Node(id.clone(), NodeAction::Dissolve));
                             }
                         }
 
@@ -11958,7 +12118,7 @@ impl App {
                             }
                         }
                         if swatch_response.clicked() {
-                            color_cycle_requested = Some(id.clone());
+                            actions.push(GraphAction::Node(id.clone(), NodeAction::CycleColor));
                         }
 
                         if response.dragged() {
@@ -11987,7 +12147,7 @@ impl App {
                                     })
                                 });
                                 if let Some(target_id) = dropped_on_group {
-                                    group_merge_requested = Some((id.clone(), target_id));
+                                    actions.push(GraphAction::MergeGroups { source: id.clone(), target: target_id });
                                 }
                             }
                         }
@@ -11997,7 +12157,7 @@ impl App {
                             self.hovered = None;
                         }
                         if response.double_clicked() {
-                            group_entered = Some(id.clone());
+                            actions.push(GraphAction::EnterGroup(id.clone()));
                         }
 
                         if let Some(node) = self.nodes.get(&id).and_then(|n| n.as_group()) {
@@ -12085,19 +12245,19 @@ impl App {
                             &format!("{} Add File...", egui_phosphor::light::FILE_PLUS),
                         );
                     if clicked_tab {
-                        pending_new_tab_at = Some(pos);
+                        actions.push(GraphAction::NewTab(self.focused.clone()));
                         self.pending_new_node = None;
                     }
                     if clicked_note {
-                        pending_new_note_at = Some(pos);
+                        actions.push(GraphAction::NewNote(pos));
                         self.pending_new_node = None;
                     }
                     if clicked_group {
-                        pending_new_group_at = Some(pos);
+                        actions.push(GraphAction::NewGroup(pos));
                         self.pending_new_node = None;
                     }
                     if clicked_file {
-                        pending_new_file_at = Some(pos);
+                        actions.push(GraphAction::NewFile(pos));
                         self.pending_new_node = None;
                     }
                     // Same dismiss-on-click-elsewhere mechanism every other
@@ -12266,243 +12426,8 @@ impl App {
             }
         }
 
-        if let Some(parent) = new_tab_parent {
-            let home_page = self.settings.home_page.clone();
-            let group = self.current_group.clone();
-            self.spawn_new_tab(parent, group, &home_page);
-        }
-        if let Some(id) = close_requested {
-            self.close_tab(&id);
-        }
-        if let Some(id) = clicked_focus {
-            if self.nodes.contains_key(&id) {
-                self.selected_tabs.clear();
-                self.start_transition_to_item(&id);
-            }
-        }
-        if let Some(id) = image_clicked {
-            if self.nodes.contains_key(&id) {
-                self.selected_tabs.clear();
-                self.start_transition_to_item(&id);
-            }
-        }
-        if let Some(id) = missing_file_clicked {
-            self.retry_missing_file(&id);
-        }
-        if let Some(id) = node_close_requested {
-            self.close_node_and_save(&id);
-        }
-        if let Some(id) = download_clicked {
-            self.reveal_node(&id);
-        }
-        if let Some(id) = pin_toggle_requested {
-            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                node.pinned = !node.pinned;
-            }
-        }
-        if let Some(id) = remove_from_group_requested {
-            remove_from_group(&mut self.nodes, &id);
-        }
-        if let Some(id) = mute_toggle_requested {
-            self.toggle_muted(&id);
-        }
-        // The empty-canvas card's own four actions -- each spawns at the
-        // exact position that was right-clicked, unlike the toolbar
-        // buttons above (always jittered around world center). New Tab is
-        // the one exception: `spawn_new_tab` has no explicit-position
-        // parameter at all (a tab's real position is only ever derived
-        // from its parent/group, since the actual engine-host process
-        // spawn this triggers is asynchronous -- see `spawn_new_tab_with_kind`'s
-        // own doc comment) plumbing one through wasn't part of this pass,
-        // so this still lands wherever the normal "+ New Tab" jitter puts
-        // it, just parented/grouped the same as any other new tab here.
-        if pending_new_tab_at.is_some() {
-            let home_page = self.settings.home_page.clone();
-            let group = self.current_group.clone();
-            self.spawn_new_tab(self.focused.clone(), group, &home_page);
-        }
-        if let Some(pos) = pending_new_note_at {
-            let id = self.alloc_note_id();
-            self.insert_note_at(id, pos);
-        }
-        if let Some(pos) = pending_new_group_at {
-            let id = self.alloc_group_id();
-            self.insert_group_at(id, pos);
-        }
-        if pending_new_file_at.is_some() {
-            self.add_file_node(pending_new_file_at);
-        }
-        if group_selected_requested && !self.selected_tabs.is_empty() {
-            let id = self.alloc_group_id();
-            // Centroid of the selected cards, rather than the usual
-            // world-center-plus-jitter spawn point: these tabs already have
-            // real positions the user just drew a box around, so the new
-            // group card should appear where they actually are, not at the
-            // origin of a possibly-distant part of the graph.
-            let count = self.selected_tabs.len() as f32;
-            let sum = self
-                .selected_tabs
-                .iter()
-                .filter_map(|id| self.nodes.get(id))
-                .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
-            let pos = sum / count;
-            let name = Self::default_group_name(&id);
-            self.nodes.insert(
-                id.clone(),
-                GraphNode {
-                    parent: None,
-                    group: self.current_group.clone(),
-                    pos,
-                    vel: egui::Vec2::ZERO,
-                    color: None,
-                    payload: NodePayload::Group(GroupPayload { name }),
-                },
-            );
-            self.node_order.push(id.clone());
-            for tab_id in self.selected_tabs.drain() {
-                if let Some(node) = self.nodes.get_mut(&tab_id) {
-                    node.group = Some(id.clone());
-                }
-            }
-        }
-        if close_selected_requested {
-            for id in std::mem::take(&mut self.selected_tabs) {
-                self.close_tab(&id);
-            }
-        }
-        if ungroup_all_requested {
-            for id in self.nodes_at_current_level(ItemNodeKind::Group) {
-                self.dissolve_group(&id);
-            }
-        }
-        if import_group_requested {
-            if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {
-                match group_export::load_from(&path) {
-                    Ok(export) => self.import_group_export(export),
-                    Err(err) => self.queue_toast(err),
-                }
-            }
-        }
-        // Applied before `leave_group_requested` below: the "◀ Groups"
-        // button and the rename `TextEdit` share one toolbar row, so
-        // clicking "◀ Groups" while renaming causes the text field to lose
-        // focus the same frame (egui's ordinary click-away focus
-        // transfer), setting both `rename_commit` and
-        // `leave_group_requested` at once. Committing first means
-        // `self.renaming_group.take()` here observes the real value;
-        // `leave_group_requested`'s own clear becomes a harmless no-op on
-        // whatever `take()` already emptied, instead of the other order
-        // silently discarding the typed name before it's ever read.
-        if let Some(new_name) = rename_commit {
-            if let Some((id, _)) = self.renaming_group.take() {
-                let trimmed = new_name.trim();
-                if !trimmed.is_empty() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_group_mut()) {
-                        node.name = trimmed.to_string();
-                    }
-                }
-            }
-        }
-        if rename_cancel {
-            self.renaming_group = None;
-        }
-        // Entering/leaving a group eases the camera to the same target
-        // "Reset View" would jump to instantly -- keeping whatever pan/zoom
-        // the old level happened to be at would likely frame empty space
-        // rather than the new level's own nodes. `current_group` is updated
-        // first so `fit_all_nodes_scene_rect` bounds the level actually
-        // being switched *to*, not the one just left. Settling *before*
-        // fitting matters: the new level's members may never have been
-        // settled before (every group created via drag-and-drop starts with
-        // its members wherever the drop happened, often nearly overlapping)
-        // -- fitting first would target their old, pre-settle positions,
-        // which then jump to their real spacing mid-animation once the
-        // regular per-frame settle-check caught up one frame later.
-        // Updating `graph_settled_key` here too avoids that same settle
-        // running a second time on the very next frame. See
-        // `GraphCameraTween`'s doc comment for why the actual camera move
-        // eases instead of snapping, and why that's a separate mechanism
-        // from the Tab<->Graph `Transition` below.
-        if let Some(id) = group_entered {
-            self.current_group = Some(id);
-            self.settle_current_level();
-            self.graph_settled_key = Some(self.current_level_settle_key());
-            self.graph_camera_tween = Some(GraphCameraTween {
-                from: self.graph_scene_rect,
-                to: self.fit_all_nodes_scene_rect(),
-                start: std::time::Instant::now(),
-            });
-            // A rectangle-selection belongs to the level it was drawn on —
-            // carrying it into a different level left the toolbar's "Group
-            // Selected"/"Close Selected" buttons acting on tabs that aren't
-            // even visible here anymore.
-            self.selected_tabs.clear();
-            self.rect_select_start = None;
-            self.pending_new_node = None;
-            self.node_menu = None;
-        }
-        if leave_group_requested {
-            // One level up, not straight to the top -- same "go to this
-            // group's own parent" rule `dissolve_group`/the drag-to-eject
-            // handler above both use, now that groups nest.
-            self.current_group =
-                self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
-            self.settle_current_level();
-            self.graph_settled_key = Some(self.current_level_settle_key());
-            self.graph_camera_tween = Some(GraphCameraTween {
-                from: self.graph_scene_rect,
-                to: self.fit_all_nodes_scene_rect(),
-                start: std::time::Instant::now(),
-            });
-            self.renaming_group = None;
-            self.selected_tabs.clear();
-            self.rect_select_start = None;
-            self.pending_new_node = None;
-            self.node_menu = None;
-        }
-        if let Some(id) = group_close_requested {
-            self.dissolve_group(&id);
-        }
-        // A tab's and a group's color-cycle swatch click both just advance
-        // the same `node.color` field the same way -- `tab_color_cycle_
-        // requested`/`color_cycle_requested` can't both be Some in the same
-        // frame (each is only set by its own card's swatch, one click at a
-        // time), so `.or()` just picks whichever fired.
-        if let Some(id) = tab_color_cycle_requested.or(color_cycle_requested) {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.color = next_tag_color(node.color);
-            }
-        }
-        if let Some((source_id, target_id)) = group_merge_requested {
-            // Refuse if `target_id` is nested inside `source_id` (directly
-            // or transitively, walking the same `.group` chain
-            // `group_breadcrumb` does) -- reassigning source's own members
-            // to target while target is one of them would leave it (or a
-            // group between them) pointing at itself once source is
-            // removed below, a self-reference cycle the tab-reparent drag
-            // path already guards against via `would_create_cycle`.
-            let mut ancestor = Some(target_id.clone());
-            let mut creates_cycle = false;
-            while let Some(cur) = ancestor {
-                if cur == source_id {
-                    creates_cycle = true;
-                    break;
-                }
-                ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
-            }
-            if !creates_cycle {
-                for node in self.nodes.values_mut() {
-                    if node.group.as_deref() == Some(source_id.as_str()) {
-                        node.group = Some(target_id.clone());
-                    }
-                }
-                self.nodes.remove(&source_id);
-                self.node_order.retain(|g| g != &source_id);
-            }
-        }
-        if let Some((id, draft)) = rename_start {
-            self.renaming_group = Some((id, draft));
-            self.pending_focus_rename = true;
+        for action in actions {
+            self.apply_graph_action(ui.ctx(), action);
         }
 
         // Built last, now that `overlay_painter`'s node-decoration layer
