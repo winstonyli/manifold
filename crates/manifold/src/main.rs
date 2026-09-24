@@ -5547,13 +5547,15 @@ impl App {
         }
     }
 
-    /// Leaves Tab view for Graph view: starts a shrink animation (see
-    /// `Transition`) rather than switching instantly. The tab keeps
-    /// rendering (`set_visible(true)`, unchanged) for the animation's
-    /// whole duration, so the thumbnail it shrinks into shows real,
-    /// current content instead of whatever frame happened to be on screen
-    /// when the animation started — only actually suspended once the
-    /// animation finishes (`finish_transition_if_done`).
+    /// Leaves Item view for Graph view. For a Tab (`viewed_image` is
+    /// `None`), starts a shrink animation (see `Transition`) rather than
+    /// switching instantly -- the tab keeps rendering (`set_visible(true)`,
+    /// unchanged) for the animation's whole duration, so the thumbnail it
+    /// shrinks into shows real, current content instead of whatever frame
+    /// happened to be on screen when the animation started, only actually
+    /// suspended once the animation finishes (`finish_transition_if_done`).
+    /// For an Image, the exit is instant for now (`viewed_image` has no
+    /// shrink animation yet -- a later pass adds one).
     fn leave_to_graph(&mut self) {
         self.context_menu = None;
         if self.viewed_image.take().is_some() {
@@ -5772,7 +5774,15 @@ impl App {
         }
         if self.focused.as_deref() == Some(id) {
             self.focused = None;
-            self.view_mode = ViewMode::Graph;
+            // Only drop to Graph if a Tab was actually showing -- while an
+            // Image is maximized, `focused` is just the hidden last tab
+            // (see the Image Item View spec's "Plan-time corrections"), so
+            // closing it should leave Image view showing exactly as
+            // closing it from Graph view wouldn't change `view_mode`
+            // either.
+            if self.showing_tab_view() {
+                self.view_mode = ViewMode::Graph;
+            }
             // The tab (and its `EngineTab`) is already gone — nothing left
             // to send `FindStop` to, just reset the UI-side state directly
             // rather than going through `close_find_bar`'s normal send.
@@ -6199,7 +6209,11 @@ impl App {
         }
         if self.focused.as_deref() == Some(tab_id) {
             self.focused = None;
-            self.view_mode = ViewMode::Graph;
+            // Same "only a Tab showing actually leaves to Graph" guard as
+            // `close_tab` -- see its own comment.
+            if self.showing_tab_view() {
+                self.view_mode = ViewMode::Graph;
+            }
             self.find_bar_open = false;
             self.find_result = None;
         }
