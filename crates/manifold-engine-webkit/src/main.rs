@@ -2,7 +2,6 @@ mod input;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use gtk::prelude::*;
@@ -61,39 +60,9 @@ fn main() {
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");
     let mut to_host = MessageChannel::new(stream);
-    let mut from_host = MessageChannel::new(read_stream);
+    let from_host = MessageChannel::new(read_stream);
 
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match from_host.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    break;
-                }
-            }
-            Err(_) => {
-                // The control socket dropped without a graceful `Shutdown`
-                // message — manifold.exe exited abnormally (force-killed,
-                // crashed) rather than running `Drop for EngineTab`'s normal
-                // teardown, which is the only other place `Shutdown` would
-                // have come from. Windows still closes the TCP socket on
-                // process death regardless of whether any Rust destructor
-                // ran, so this `recv` reliably observes it (as an
-                // `UnexpectedEof` from `read_exact`) — but before this fix,
-                // nothing told the main loop, which kept polling GTK,
-                // capturing frames nobody could receive, and re-attempting
-                // now-dead sends forever: confirmed live via `taskkill /F
-                // /IM manifold.exe`, the orphaned manifold-engine-webkit (and
-                // the wsl.exe relay above it) pegged at ~45% CPU
-                // indefinitely. Synthesizing `Shutdown` here reuses the
-                // existing clean-exit path below for this case too, so a
-                // dead parent is torn down exactly like a graceful one.
-                let _ = tx.send(HostToEngine::Shutdown);
-                break;
-            }
-        }
-    });
+    let rx = ipc_protocol::transport::spawn_host_reader(from_host);
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
 

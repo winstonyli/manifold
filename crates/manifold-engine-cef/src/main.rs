@@ -9,7 +9,6 @@ mod nav_handler;
 mod render_handler;
 mod render_process_handler;
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 use cef::args::Args;
@@ -140,21 +139,10 @@ fn main() {
 
     // Two one-directional control sockets back to manifold — same
     // convention as manifold-engine-servo (see ipc_protocol::transport).
-    let (mut host_to_engine, mut control) =
+    let (host_to_engine, mut control) =
         ipc_protocol::transport::connect_local_pair(&socket_id)
             .expect("connect to manifold control sockets");
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match host_to_engine.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    });
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
     let (render_handler, size, latest_frame) =
         EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);

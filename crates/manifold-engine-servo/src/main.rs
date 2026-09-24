@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use dpi::PhysicalSize;
@@ -174,37 +173,14 @@ fn main() {
     // instead of one bidirectional stream means the reader thread below
     // never needs to duplicate a stream handle to read concurrently with
     // the main thread's sends.
-    let (mut host_to_engine, mut control) =
+    let (host_to_engine, mut control) =
         ipc_protocol::transport::connect_local_pair(&socket_id)
             .expect("connect to manifold control sockets");
 
     // A dedicated IO thread owns receiving HostToEngine messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
     // Send, so it must live entirely on this thread).
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match host_to_engine.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    break;
-                }
-            }
-            Err(_) => {
-                // The control socket dropped without a graceful `Shutdown`
-                // message — manifold.exe exited abnormally (force-killed,
-                // crashed) rather than running `Drop for EngineTab`'s normal
-                // teardown. Without this, nothing tells the main loop, which
-                // keeps spinning Servo's event loop and re-attempting
-                // now-dead sends forever — the same orphaned-process bug
-                // already found and fixed for manifold-engine-webkit's own
-                // reader thread; synthesizing `Shutdown` here reuses the
-                // same clean-exit path below for this case too.
-                let _ = tx.send(HostToEngine::Shutdown);
-                break;
-            }
-        }
-    });
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
     let rendering_context = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT))

@@ -142,20 +142,9 @@ fn main() {
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_engine`/`control` are one-directional (HostToEngine
     // in, EngineToHost out) -- see transport.rs's own doc comment.
-    let (mut host_to_engine, mut control) =
+    let (host_to_engine, mut control) =
         transport::connect_local_pair(&socket_id).expect("connect to manifold");
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match host_to_engine.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
-    });
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
     // Composition hosting against a real, off-screen host window -- see
     // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md

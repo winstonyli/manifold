@@ -1,5 +1,6 @@
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::{
@@ -8,6 +9,7 @@ use interprocess::local_socket::{
 };
 
 use crate::channel::MessageChannel;
+use crate::messages::HostToEngine;
 
 /// Control-channel connection between `manifold` and a same-machine
 /// engine-host (CEF, Servo). Frame pixels travel separately via
@@ -23,6 +25,29 @@ pub type LocalTransport = MessageChannel<LocalStream>;
 /// shared memory crosses the Windows/WSL2 boundary, so frame bytes are
 /// sent inline on this same TCP stream via `send_raw`/`recv_raw`.
 pub type RemoteTransport = MessageChannel<TcpStream>;
+
+/// An engine's reader thread: forwards each `HostToEngine` from
+/// `from_host` into the returned channel, so the engine's main thread (which
+/// has to keep driving its browser's event loop) only ever polls it. Stops
+/// after forwarding `Shutdown`. If the connection drops instead,
+/// manifold.exe died without its normal teardown (force-killed, crashed):
+/// the thread sends a `Shutdown` of its own, so the engine exits through
+/// its usual path instead of running orphaned. Before this was shared, only
+/// the WebKit and Servo engines did that; WebKit's orphan was seen live at
+/// ~45% CPU after `taskkill /F /IM manifold.exe`.
+pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
+    mut from_host: MessageChannel<S>,
+) -> mpsc::Receiver<HostToEngine> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || loop {
+        let msg = from_host.recv::<HostToEngine>().unwrap_or(HostToEngine::Shutdown);
+        let is_shutdown = matches!(msg, HostToEngine::Shutdown);
+        if tx.send(msg).is_err() || is_shutdown {
+            break;
+        }
+    });
+    rx
+}
 
 fn socket_name(socket_id: &str, suffix: &str) -> io::Result<Name<'static>> {
     format!("manifold-{socket_id}-{suffix}")
