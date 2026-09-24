@@ -183,6 +183,22 @@ fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Opti
     })
 }
 
+/// Background, border and padding shared by every menu and dropdown
+/// (right-click menus, toolbar lists, the address-bar suggestions).
+fn popup_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::default()
+        .fill(TOOLBAR_FILL)
+        .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+        .corner_radius(4u8)
+        .inner_margin(egui::Margin::same(6))
+}
+
+/// `popup_frame` for centered dialogs (quick switcher, shortcuts help,
+/// import confirm, JSON viewer): rounder, with more padding.
+fn dialog_frame(ui: &egui::Ui) -> egui::Frame {
+    popup_frame(ui).corner_radius(6u8).inner_margin(egui::Margin::same(14))
+}
+
 /// The `Area`/`Frame` shell every toolbar list-dropdown (Recently Closed,
 /// Bookmarks, History, Downloads) wraps its own contents in -- pinned below
 /// `anchor_rect`, same fill/stroke/corner-radius/margin, same min/max width.
@@ -211,11 +227,7 @@ fn build_list_popup_frame(
         .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
-            egui::Frame::default()
-                .fill(TOOLBAR_FILL)
-                .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                .corner_radius(4u8)
-                .inner_margin(egui::Margin::same(6))
+            popup_frame(ui)
                 .show(ui, |ui| {
                     ui.set_min_width(min_width);
                     ui.set_max_width(max_width);
@@ -1549,11 +1561,7 @@ fn build_engine_picker_popup(
         .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
-            egui::Frame::default()
-                .fill(TOOLBAR_FILL)
-                .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                .corner_radius(2u8)
-                .inner_margin(egui::Margin::same(8))
+            popup_frame(ui)
                 .show(ui, |ui| {
                     ui.set_width(340.0);
                     // Same "cap height, let it scroll" shape the other
@@ -7807,11 +7815,7 @@ impl App {
             .interactable(self.tab_actions_open)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(6))
+                popup_frame(ui)
                     .show(ui, |ui| {
                         ui.set_min_width(140.0);
                         if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
@@ -8015,11 +8019,7 @@ impl App {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, CHROME_HEIGHT_POINTS + 6.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::symmetric(10, 6))
+                popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let response = ui.add(
@@ -8221,11 +8221,7 @@ impl App {
             .interactable(is_live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
-                    .inner_margin(egui::Margin::same(10))
+                dialog_frame(ui)
                     .show(ui, |ui| {
                         ui.set_width(360.0);
                         if is_live {
@@ -8327,11 +8323,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
-                    .inner_margin(egui::Margin::same(14))
+                dialog_frame(ui)
                     .show(ui, |ui| {
                         ui.set_width(360.0);
                         ui.label(heading_text("Keyboard Shortcuts"));
@@ -8384,11 +8376,7 @@ impl App {
             .interactable(current.is_some())
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(3u8)
-                    .inner_margin(egui::Margin::symmetric(6, 4))
+                popup_frame(ui)
                     .show(ui, |ui| {
                         if ui.button("Open in new tab").clicked() {
                             open_tab = true;
@@ -8441,11 +8429,7 @@ impl App {
             .interactable(live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
+                popup_frame(ui)
                     .show(ui, |ui| {
                         ui.set_min_width(150.0);
                         if let (false, Some(draft)) = (live, &view.renaming) {
@@ -8879,11 +8863,7 @@ impl App {
             .interactable(live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(4u8)
-                    .inner_margin(egui::Margin::same(8))
+                popup_frame(ui)
                     .show(ui, |ui| {
                         ui.set_min_width(150.0);
                         if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
@@ -9057,11 +9037,7 @@ impl App {
                 // doc comment for why this indirection, unlike graph
                 // cards, is needed here specifically.
                 let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
-                let response = egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(3u8)
-                    .inner_margin(egui::Margin::symmetric(10, 6))
+                let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.label(message);
                     });
@@ -9177,11 +9153,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
-                    .inner_margin(egui::Margin::same(14))
+                dialog_frame(ui)
                     .show(ui, |ui| {
                         ui.set_min_width(240.0);
                         ui.label(heading_text("Import Session"));
@@ -9272,11 +9244,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::default()
-                    .fill(TOOLBAR_FILL)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                    .corner_radius(6u8)
-                    .inner_margin(egui::Margin::same(14))
+                dialog_frame(ui)
                     .show(ui, |ui| {
                         ui.set_width(560.0);
                         ui.set_height(520.0);
@@ -9992,13 +9960,13 @@ impl App {
                     .fixed_pos(rect.left_bottom())
                     .order(egui::Order::Foreground)
                     .show(ui.ctx(), |ui| {
-                        egui::Frame::default()
-                            .fill(TOOLBAR_FILL)
-                            .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-                            .corner_radius(4u8)
-                            .inner_margin(egui::Margin::same(4))
+                        // Inner width minus the frame's padding and border, so the
+                        // dropdown lines up with the address bar's edges.
+                        let frame = popup_frame(ui);
+                        let inner_width = rect.width() - frame.total_margin().sum().x;
+                        frame
                             .show(ui, |ui| {
-                                ui.set_width(rect.width());
+                                ui.set_width(inner_width);
                                 // `ui.set_width` alone only sets the *container's*
                                 // layout width (affects wrapping/available_width),
                                 // not an individual `Button`'s own size — left
