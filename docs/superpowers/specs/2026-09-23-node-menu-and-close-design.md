@@ -164,3 +164,16 @@ Found while writing the implementation plan; these supersede the sections below 
   to Recently Closed. Before this, either close path recorded
   `ClosedNode::Note("")`, which restored nothing and could push a real entry
   out of the 10-slot cap. `closed_node_for` skips blank notes (unit-tested).
+- Note edit mode never calls `request_focus()` on its `TextEdit`: after
+  clicking a note to enter edit mode, you have to click again to actually
+  type, and if you never click into it, it never loses focus either, so the
+  note stays in editing mode indefinitely. Predates this branch — the old
+  Note loop had no `request_focus()` call either (pre-existing).
+- A "Try grouping" Group card's own mini thumbnail (of its member tabs)
+  sometimes renders blank in headless screenshots, seen across otherwise-
+  identical runs during the graph-card-frame before/after comparison
+  (`task-3-report.md`, "Group-thumbnail flake, investigated"). Traced to a
+  pre-existing timing race in the thumbnail texture path specific to
+  `ItemNodeKind::Group`'s own render branch, not to the shared card frame
+  (`paint_card_body`/`card_style`/`draw_node_close_button` are never touched
+  by that branch and were unaffected either way).
