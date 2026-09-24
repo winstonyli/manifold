@@ -43,17 +43,17 @@ rm -f "$out_dir"/*.png
 # actually needs.
 out_dir_win="$(cygpath -w "$out_dir")"
 
-# A stray manifold-engine-servo.exe left over from an earlier crashed/killed
-# run collides with this run's own root tab on the deterministic "tab-0"
-# named pipe, silently leaving the app with zero tabs (see project
-# memory) — always start from a verified-clean process slate. The extra
-# settle time after killing matters: a just-killed process's named pipe
-# can take a moment to actually release (documented in project memory as
-# a real, if rare, race), and a fresh spawn attempted too soon can fail
-# with a plain "Access is denied" rather than a pipe-already-exists error.
-taskkill //F //IM manifold.exe >/dev/null 2>&1 || true
-taskkill //F //IM manifold-engine-servo.exe >/dev/null 2>&1 || true
-sleep 2
+# A fresh profile of its own, so the real %APPDATA%\manifold is never
+# read or written (and a real session can't move the root tab the click
+# below expects). `has_shown_first_launch_demo` skips the demo scene, so
+# the app starts with just the root tab. Other running manifold windows
+# are left alone: an engine pipe name they hold makes `spawn_tab` fall
+# back to a fresh one, and engines never outlive their manifold.exe (its
+# Job Object), so there are no orphans to clear first.
+profile="$repo_root/target/headless-test-appdata-$$"
+mkdir -p "$profile/manifold"
+echo '{"has_shown_first_launch_demo": true}' >"$profile/manifold/settings.json"
+export APPDATA="$(cygpath -w "$profile")"
 
 fail=0
 pass() { echo "PASS: $1"; }
@@ -64,6 +64,18 @@ failed() {
 
 check_screenshot() {
     local path="$1" label="$2" min_bytes="${3:-2000}"
+    # The app saves a SCREENSHOT on its next drawn frame, which can take
+    # seconds when the GPU is busy; wait up to the 30 s the app itself
+    # gives one, then for the size to stop changing (a save in progress).
+    local waited=0 prev=-1 now
+    while [ ! -f "$path" ] && [ "$waited" -lt 150 ]; do
+        sleep 0.2
+        waited=$((waited + 1))
+    done
+    while [ -f "$path" ] && now=$(stat -c%s "$path") && [ "$now" != "$prev" ]; do
+        prev=$now
+        sleep 0.2
+    done
     if [ ! -f "$path" ]; then
         failed "$label: screenshot not created ($path)"
         return
@@ -89,7 +101,7 @@ send() { echo "$1" >&"${BROWSER[1]}"; }
 cleanup() {
     kill "$browser_pid" 2>/dev/null || true
     wait "$browser_pid" 2>/dev/null
-    taskkill //F //IM manifold-engine-servo.exe >/dev/null 2>&1 || true
+    rm -rf "$profile"
 }
 trap cleanup EXIT
 
