@@ -5,6 +5,7 @@
 // Nothing outside `store` uses it until the app integration lands.
 #![allow(dead_code)]
 
+pub mod crc32c;
 pub mod varint;
 
 #[cfg(test)]
