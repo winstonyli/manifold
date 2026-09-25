@@ -49,9 +49,12 @@ it.
 Each document gets 128 random bits from the OS when it is created,
 stored as 16 raw bytes in every `Snapshot`. Sync (sub-project 2) uses it
 so peers know they hold the same document; invites carry it. Its text
-form is Crockford base32 (26 characters): case-insensitive, so it is
-safe in Windows file names, and free of look-alike characters, so it
-can be read out. Not nanoid or base64url: those are case-sensitive, and
+form is uppercase Crockford base32 plus its mod-37 check character
+(27 characters): case-insensitive, so it is safe in Windows file names;
+free of look-alike characters, so it can be read out; URL-safe without
+percent-encoding; selectable with one double-click; sortable; and all in
+QR alphanumeric mode. Decoding folds case, maps I/L to 1 and O to 0, and
+rejects a wrong check character. Not nanoid or base64url: those are case-sensitive, and
 two ids differing only in case would collide as file names. Save As
 and Import Session create a new document id; only sync shares one.
 
@@ -322,6 +325,16 @@ Headless:
   it; both `EXPORTSESSION` outputs match.
 - Crash: kill the process after edits and past the fsync debounce;
   reopening loses nothing.
+
+## Notes for sub-project 2
+
+- Invite links carry the document key after `#` (`manifold://join/<doc-id>#<key>`
+  or the https equivalent): the fragment is never sent to a server, so a
+  relay that logs URLs never sees the key.
+- Parked: human-oriented encodings for reading invites aloud (proquints,
+  BIP39 words, the PGP word list). The URL survey behind the Crockford
+  choice compared hex, RFC 4648 base32 and base32hex, z-base-32,
+  base36, base58, base62, base64url/nanoid, base85/Z85 and base45.
 
 ## Out of scope
 
