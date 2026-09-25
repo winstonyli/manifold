@@ -4861,6 +4861,7 @@ dependencies = [
  "egui_commonmark",
  "etcetera",
  "foldhash 0.2.0",
+ "getrandom 0.3.4",
  "image",
  "ipc-protocol",
  "pdfium-auto",

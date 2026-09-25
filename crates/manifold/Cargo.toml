@@ -67,6 +67,9 @@ raw-window-handle = "0.6"
 # different third generic parameter), so every existing call site across
 # this file keeps compiling unchanged.
 foldhash = "0.2"
+# OS randomness for the session store's per-launch actor ids, document
+# ids and file generations (`store::model`, `store::journal`).
+getrandom = "0.3"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

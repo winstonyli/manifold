@@ -1,0 +1,519 @@
+//! The shared document's data model (spec "Data model"): ids, the hybrid
+//! logical clock, node kinds, the field table, and nodes whose fields are
+//! last-writer-wins registers holding their field's own TLV encoding.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use super::ops::MoveRec;
+use super::tlv::{Reader, TlvError, Writer};
+
+/// A replica's id for one launch: random, never persisted or reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActorId(pub u64);
+
+impl ActorId {
+    pub fn random() -> Self {
+        ActorId(getrandom::u64().expect("the OS random source failed"))
+    }
+}
+
+/// A node or op id: the creating actor and its per-launch counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId {
+    pub actor: ActorId,
+    pub counter: u64,
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016x}-{}", self.actor.0, self.counter)
+    }
+}
+
+impl std::str::FromStr for NodeId {
+    type Err = String;
+
+    /// Parses exactly what `Display` prints.
+    fn from_str(s: &str) -> Result<Self, String> {
+        let bad = || format!("not a node id: {s:?}");
+        let (actor, counter) = s.split_once('-').ok_or_else(bad)?;
+        let hex = actor.len() == 16 && actor.bytes().all(|b| b.is_ascii_hexdigit());
+        let decimal = !counter.is_empty() && counter.bytes().all(|b| b.is_ascii_digit());
+        if !hex || !decimal {
+            return Err(bad());
+        }
+        let actor = u64::from_str_radix(actor, 16).map_err(|_| bad())?;
+        let counter = counter.parse().map_err(|_| bad())?;
+        Ok(NodeId { actor: ActorId(actor), counter })
+    }
+}
+
+/// 128 random bits naming a document (spec "Document id"). Its text form
+/// is left to sub-project 2, the first thing that shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DocId(pub [u8; 16]);
+
+impl DocId {
+    pub fn random() -> Self {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS random source failed");
+        DocId(bytes)
+    }
+}
+
+/// A hybrid logical clock reading: wall-clock milliseconds, then a counter
+/// for events within one millisecond.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Hlc {
+    pub ms: u64,
+    pub logical: u32,
+}
+
+/// What orders two writes: the HLC, then the writing actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Stamp {
+    pub hlc: Hlc,
+    pub actor: ActorId,
+}
+
+#[derive(Debug, Default)]
+pub struct Clock {
+    last: Hlc,
+}
+
+impl Clock {
+    /// The next local event's time: never behind `now_ms` or any time seen.
+    pub fn tick(&mut self, now_ms: u64) -> Hlc {
+        let ms = now_ms.max(self.last.ms);
+        self.last = if ms > self.last.ms {
+            Hlc { ms, logical: 0 }
+        } else {
+            match self.last.logical.checked_add(1) {
+                Some(logical) => Hlc { ms, logical },
+                // 2^32 events in one millisecond: borrow the next one.
+                None => Hlc { ms: ms + 1, logical: 0 },
+            }
+        };
+        self.last
+    }
+
+    /// Moves the clock past a time read from the file or another replica.
+    pub fn observe(&mut self, seen: Hlc) {
+        self.last = self.last.max(seen);
+    }
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Kind {
+    Tab,
+    Group,
+    Note,
+    Image,
+    Pdf,
+    Json,
+    JsonLeaf,
+    Download,
+    /// A kind a newer build wrote (kept, never shown), or `Unknown(0)` for
+    /// a node an op named before its `Create` arrived.
+    Unknown(u64),
+}
+
+const KINDS: [(Kind, u64, &str); 8] = [
+    (Kind::Tab, 1, "tab"),
+    (Kind::Group, 2, "group"),
+    (Kind::Note, 3, "note"),
+    (Kind::Image, 4, "image"),
+    (Kind::Pdf, 5, "pdf"),
+    (Kind::Json, 6, "json"),
+    (Kind::JsonLeaf, 7, "json_leaf"),
+    (Kind::Download, 8, "download"),
+];
+
+impl Kind {
+    pub fn code(self) -> u64 {
+        match self {
+            Kind::Unknown(code) => code,
+            known => KINDS.iter().find(|k| k.0 == known).map_or(0, |k| k.1),
+        }
+    }
+
+    pub fn from_code(code: u64) -> Kind {
+        KINDS.iter().find(|k| k.1 == code).map_or(Kind::Unknown(code), |k| k.0)
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        KINDS.iter().find(|k| k.0 == self).map(|k| k.2)
+    }
+
+    pub fn from_name(name: &str) -> Option<Kind> {
+        KINDS.iter().find(|k| k.2 == name).map(|k| k.0)
+    }
+}
+
+/// Engine codes for the `engine` field: code `n` is `ENGINES[n - 1]`,
+/// spelled as `process_manager::engine_kind_serde` spells it.
+pub const ENGINES: [&str; 4] = ["servo", "cef", "webkit", "webview2"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldType {
+    /// Two `f32`: `{1: x, 2: y}`.
+    Pos,
+    /// `0xRRGGBB` as a varint; absent means untagged, so black is `Some(0)`.
+    Color,
+    /// A node id with its full actor: `{1: actor (fixed64), 2: counter}`.
+    /// Never an actor-table index, which is local to one file and would
+    /// break inside a field this build writes back without knowing it.
+    Id,
+    Str,
+    Bool,
+    /// An `ENGINES` code.
+    Engine,
+}
+
+#[derive(Debug)]
+pub struct FieldDef {
+    pub no: u32,
+    pub name: &'static str,
+    pub ty: FieldType,
+    /// Emitted only by named user actions, never by diffing (spec "Local
+    /// edits become ops").
+    pub explicit: bool,
+}
+
+/// Field numbers. Never reuse one; retired numbers go in `RESERVED`.
+pub mod field {
+    pub const POS: u32 = 1;
+    pub const COLOR: u32 = 2;
+    /// The tree edge: set by `Create` and changed only by `Move`.
+    pub const GROUP: u32 = 3;
+    pub const PARENT: u32 = 4;
+    pub const URL: u32 = 5;
+    pub const ENGINE: u32 = 6;
+    pub const PINNED: u32 = 7;
+    pub const NAME: u32 = 8;
+    pub const FROM_JSON: u32 = 9;
+    pub const TEXT: u32 = 10;
+    pub const PATH: u32 = 11;
+    pub const KEY: u32 = 12;
+    pub const VALUE: u32 = 13;
+}
+
+pub static FIELDS: [FieldDef; 13] = [
+    FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos, explicit: true },
+    FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color, explicit: false },
+    FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id, explicit: false },
+    FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id, explicit: false },
+    FieldDef { no: field::URL, name: "url", ty: FieldType::Str, explicit: true },
+    FieldDef { no: field::ENGINE, name: "engine", ty: FieldType::Engine, explicit: false },
+    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool, explicit: false },
+    FieldDef { no: field::NAME, name: "name", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool, explicit: false },
+    FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
+];
+
+/// Retired field numbers, never to be reused (checked by a test).
+pub const RESERVED: [u32; 0] = [];
+
+pub fn field_def(no: u32) -> Option<&'static FieldDef> {
+    FIELDS.iter().find(|f| f.no == no)
+}
+
+pub fn field_by_name(name: &str) -> Option<&'static FieldDef> {
+    FIELDS.iter().find(|f| f.name == name)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldValue {
+    Pos(f32, f32),
+    Color(Option<u32>),
+    Id(Option<NodeId>),
+    Str(String),
+    Bool(bool),
+    Engine(u64),
+}
+
+impl FieldValue {
+    /// What a missing field decodes to.
+    pub fn absent(ty: FieldType) -> FieldValue {
+        match ty {
+            FieldType::Pos => FieldValue::Pos(0.0, 0.0),
+            FieldType::Color => FieldValue::Color(None),
+            FieldType::Id => FieldValue::Id(None),
+            FieldType::Str => FieldValue::Str(String::new()),
+            FieldType::Bool => FieldValue::Bool(false),
+            FieldType::Engine => FieldValue::Engine(0),
+        }
+    }
+}
+
+/// `value` as field `no` of a node message, key and value; empty when it
+/// holds what absence decodes to, so equal values encode equally.
+pub fn encode_field(no: u32, value: &FieldValue) -> Vec<u8> {
+    let mut w = Writer::new();
+    match value {
+        FieldValue::Pos(x, y) => {
+            let mut m = Writer::new();
+            if *x != 0.0 {
+                m.f32(1, *x);
+            }
+            if *y != 0.0 {
+                m.f32(2, *y);
+            }
+            if !m.is_empty() {
+                w.message(no, &m);
+            }
+        }
+        FieldValue::Color(Some(rgb)) => w.varint(no, u64::from(*rgb)),
+        FieldValue::Id(Some(id)) => w.message(no, &id_message(*id)),
+        FieldValue::Str(s) if !s.is_empty() => w.str(no, s),
+        FieldValue::Bool(true) => w.varint(no, 1),
+        FieldValue::Engine(code) if *code != 0 => w.varint(no, *code),
+        _ => {}
+    }
+    w.into_bytes()
+}
+
+fn id_message(id: NodeId) -> Writer {
+    let mut m = Writer::new();
+    if id.actor.0 != 0 {
+        m.fixed64(1, id.actor.0);
+    }
+    if id.counter != 0 {
+        m.varint(2, id.counter);
+    }
+    m
+}
+
+fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError> {
+    let mut id = NodeId { actor: ActorId(0), counter: 0 };
+    for field in Reader::new(buf) {
+        let field = field?;
+        match field.no {
+            1 => id.actor = ActorId(field.value.fixed64()?),
+            2 => id.counter = field.value.u64()?,
+            _ => {}
+        }
+    }
+    Ok(id)
+}
+
+/// Decodes `encode_field`'s output (or any encoding of field `def`; the
+/// last occurrence wins).
+pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvError> {
+    let mut value = FieldValue::absent(def.ty);
+    for field in Reader::new(encoded) {
+        let v = field?.value;
+        value = match def.ty {
+            FieldType::Pos => {
+                let (mut x, mut y) = (0.0, 0.0);
+                for f in Reader::new(v.bytes()?) {
+                    let f = f?;
+                    match f.no {
+                        1 => x = f.value.f32()?,
+                        2 => y = f.value.f32()?,
+                        _ => {}
+                    }
+                }
+                FieldValue::Pos(x, y)
+            }
+            FieldType::Color => FieldValue::Color(Some(v.u32()?)),
+            FieldType::Id => FieldValue::Id(Some(decode_id(v.bytes()?)?)),
+            FieldType::Str => FieldValue::Str(v.str()?.to_owned()),
+            FieldType::Bool => FieldValue::Bool(v.bool()?),
+            FieldType::Engine => FieldValue::Engine(v.u64()?),
+        };
+    }
+    Ok(value)
+}
+
+/// A last-writer-wins register: the winning write's stamp, and its value
+/// as `encode_field` encodes it (empty = absent).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reg {
+    pub stamp: Stamp,
+    pub enc: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Node {
+    pub kind: Kind,
+    /// Every field but `group`, by number, including numbers this build
+    /// doesn't know (kept raw so compaction writes them back).
+    pub fields: BTreeMap<u32, Reg>,
+    /// The tree edge, owned by the move log (`ops.rs`). It may name a
+    /// deleted group; see `Doc::effective_group`.
+    pub group: Option<NodeId>,
+    pub deleted: bool,
+}
+
+impl Node {
+    /// A node an op named before its `Create` arrived; shown once it does.
+    pub fn placeholder() -> Node {
+        Node { kind: Kind::Unknown(0), fields: BTreeMap::new(), group: None, deleted: false }
+    }
+
+    /// Shown in the graph: created, not deleted, and of a kind this build knows.
+    pub fn is_live(&self) -> bool {
+        !self.deleted && !matches!(self.kind, Kind::Unknown(_))
+    }
+
+    /// Field `no`'s value; its default when unset or undecodable.
+    pub fn get(&self, no: u32) -> FieldValue {
+        let def = field_def(no).expect("a field number from `field`");
+        self.fields
+            .get(&no)
+            .and_then(|reg| decode_field(def, &reg.enc).ok())
+            .unwrap_or_else(|| FieldValue::absent(def.ty))
+    }
+
+    /// This node as a plain node message, `group` included: what a
+    /// `Create` carries.
+    pub fn message(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        let group = encode_field(field::GROUP, &FieldValue::Id(self.group));
+        let mut group_written = false;
+        for (&no, reg) in &self.fields {
+            if no > field::GROUP && !group_written {
+                w.raw(&group);
+                group_written = true;
+            }
+            w.raw(&reg.enc);
+        }
+        if !group_written {
+            w.raw(&group);
+        }
+        w.into_bytes()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Doc {
+    pub id: DocId,
+    pub nodes: BTreeMap<NodeId, Node>,
+    /// Per actor, one past the highest op counter applied.
+    pub version: BTreeMap<ActorId, u64>,
+    /// The latest HLC applied, so a reopened replica's clock starts past it.
+    pub clock: Hlc,
+    /// Applied moves in stamp order, for undo and redo (`ops.rs`).
+    pub(crate) moves: Vec<MoveRec>,
+}
+
+impl Doc {
+    pub fn new(id: DocId) -> Doc {
+        Doc { id, nodes: BTreeMap::new(), version: BTreeMap::new(), clock: Hlc::default(), moves: Vec::new() }
+    }
+
+    /// The live nodes, in id order.
+    pub fn live(&self) -> impl Iterator<Item = (NodeId, &Node)> {
+        self.nodes.iter().filter(|(_, node)| node.is_live()).map(|(id, node)| (*id, node))
+    }
+
+    /// The group `id` is shown in: its own, or, when that group was
+    /// deleted, its nearest live ancestor (spec "Semantics").
+    pub fn effective_group(&self, id: NodeId) -> Option<NodeId> {
+        let mut group = self.nodes.get(&id)?.group;
+        for _ in 0..=self.nodes.len() {
+            match group.and_then(|g| self.nodes.get(&g)) {
+                Some(node) if node.deleted => group = node.group,
+                _ => return group,
+            }
+        }
+        unreachable!("the move log keeps the tree acyclic")
+    }
+
+    /// Whether `ancestor` is on the path from `of` to the root, `of`
+    /// excluded. Walks deleted nodes too, so every replica answers alike.
+    pub fn is_ancestor(&self, ancestor: NodeId, of: NodeId) -> bool {
+        let mut cur = self.nodes.get(&of).and_then(|n| n.group);
+        for _ in 0..=self.nodes.len() {
+            match cur {
+                Some(c) if c == ancestor => return true,
+                Some(c) => cur = self.nodes.get(&c).and_then(|n| n.group),
+                None => return false,
+            }
+        }
+        true // a cycle; `apply_move` never makes one
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_ids_print_and_parse() {
+        let id = NodeId { actor: ActorId(0x1f3a_9c00_0000_00ab), counter: 17 };
+        assert_eq!(id.to_string(), "1f3a9c00000000ab-17");
+        assert_eq!(id.to_string().parse(), Ok(id));
+        for bad in ["", "tab-3", "1f3a9c00000000ab-", "1f3a9c00000000ab-+1", "+f3a9c00000000ab-1"] {
+            assert!(bad.parse::<NodeId>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_clock_never_goes_back() {
+        let mut clock = Clock::default();
+        assert_eq!(clock.tick(10), Hlc { ms: 10, logical: 0 });
+        assert_eq!(clock.tick(10), Hlc { ms: 10, logical: 1 });
+        assert_eq!(clock.tick(5), Hlc { ms: 10, logical: 2 });
+        clock.observe(Hlc { ms: 20, logical: 4 });
+        assert_eq!(clock.tick(15), Hlc { ms: 20, logical: 5 });
+        clock.observe(Hlc { ms: 30, logical: u32::MAX });
+        assert_eq!(clock.tick(0), Hlc { ms: 31, logical: 0 });
+    }
+
+    #[test]
+    fn field_numbers_are_unique_and_never_reserved() {
+        let mut seen = std::collections::BTreeSet::new();
+        for def in &FIELDS {
+            assert!(seen.insert(def.no), "field {} twice", def.no);
+            assert!(!RESERVED.contains(&def.no), "field {} is reserved", def.no);
+        }
+    }
+
+    #[test]
+    fn values_round_trip_and_defaults_encode_to_nothing() {
+        let id = NodeId { actor: ActorId(9), counter: 4 };
+        let cases = [
+            (field::POS, FieldValue::Pos(1.5, -2.0)),
+            (field::POS, FieldValue::Pos(0.0, 3.0)),
+            (field::COLOR, FieldValue::Color(Some(0))),
+            (field::COLOR, FieldValue::Color(Some(0x12_34_56))),
+            (field::PARENT, FieldValue::Id(Some(id))),
+            (field::URL, FieldValue::Str("https://example.com/".into())),
+            (field::PINNED, FieldValue::Bool(true)),
+            (field::ENGINE, FieldValue::Engine(4)),
+        ];
+        for (no, value) in cases {
+            let enc = encode_field(no, &value);
+            assert!(!enc.is_empty(), "{value:?}");
+            assert_eq!(decode_field(field_def(no).unwrap(), &enc), Ok(value));
+        }
+        for def in &FIELDS {
+            assert!(encode_field(def.no, &FieldValue::absent(def.ty)).is_empty(), "{}", def.name);
+            assert_eq!(decode_field(def, &[]), Ok(FieldValue::absent(def.ty)));
+        }
+        assert_eq!(encode_field(field::POS, &FieldValue::Pos(-0.0, -0.0)), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn kinds_have_codes_and_names() {
+        for (kind, code, name) in KINDS {
+            assert_eq!(Kind::from_code(code), kind);
+            assert_eq!(Kind::from_name(name), Some(kind));
+            assert_eq!((kind.code(), kind.name()), (code, Some(name)));
+        }
+        assert_eq!(Kind::from_code(40), Kind::Unknown(40));
+        assert_eq!(Kind::Unknown(40).code(), 40);
+    }
+}
