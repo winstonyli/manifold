@@ -26,7 +26,7 @@
 
 ## Headless probe helper
 
-Tasks 1–5 each run a headless probe. They share one helper, created in Task 1 Step 7, at `target/cardframe/probe.py` (under the git-ignored `target/`). It writes command files, runs `scripts/drive.sh` with an isolated seed that skips the first-launch demo, and reads `EXPORTSTATE`'s `cards` list (added in Task 1) to find each card's screen position.
+Tasks 1–5 each run a headless probe. They share one helper, created in Task 1 Step 10, at `target/cardframe/probe.py` (under the git-ignored `target/`). It writes command files, runs `scripts/drive.sh` with an isolated seed that skips the first-launch demo, and reads `EXPORTSTATE`'s `cards` list (added in Task 1) to find each card's screen position.
 
 Card positions are deterministic between runs: `NEWNOTE`/`NEWGROUP` place a card at `GRAPH_WORLD_CENTER + spawn_jitter(&id)`, the ids come from fresh counters, and the camera starts the same. So a probe runs once to learn the layout, then again with the gestures. Headless runs at scale factor 1, so `EXPORTSTATE`'s points are the pixels `CLICK`/`MOUSEDOWN` take (the smoke test's `DOUBLECLICK 250 125` on a `NEWGROUP` card relies on the same).
 
