@@ -27,6 +27,24 @@ pub struct GroupExportTab {
     pub engine: EngineKind,
     pub pos_x: f32,
     pub pos_y: f32,
+    /// The nested group (a `GroupExportGroup::id`) this tab sits in;
+    /// `None` for the exported group itself.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+/// A group nested, at any depth, inside the exported one. Its id, like a
+/// tab's, only links members within this export.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GroupExportGroup {
+    pub id: String,
+    pub name: String,
+    pub color: Option<(u8, u8, u8)>,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    /// Same as `GroupExportTab::group`.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,6 +54,9 @@ pub struct GroupExport {
     /// and converted at the call site.
     pub color: Option<(u8, u8, u8)>,
     pub tabs: Vec<GroupExportTab>,
+    /// Empty in files from before nested groups were exported.
+    #[serde(default)]
+    pub groups: Vec<GroupExportGroup>,
 }
 
 pub fn load_from(path: &Path) -> Result<GroupExport, String> {
@@ -56,5 +77,19 @@ pub fn save_to(export: &GroupExport, path: &Path) {
             }
         }
         Err(err) => eprintln!("group_export: failed to serialize: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_without_nested_groups_loads() {
+        let json = r#"{"name": "Reading", "color": null, "tabs": [
+            {"id": "tab-1", "parent": null, "url": "https://example.com/", "engine": "webview2", "pos_x": 0.0, "pos_y": 0.0}]}"#;
+        let export: GroupExport = serde_json::from_str(json).unwrap();
+        assert!(export.groups.is_empty());
+        assert_eq!(export.tabs[0].group, None);
     }
 }

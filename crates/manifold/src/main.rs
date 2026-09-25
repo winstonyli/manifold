@@ -5083,18 +5083,65 @@ impl App {
     }
 
     /// Builds an exportable snapshot of `group_id`'s own subtree -- its
-    /// name, tag color, and every member tab's url/engine/position, with
-    /// `parent` links preserved only between members of this same group
-    /// (see `group_export::GroupExportTab`'s own doc comment). `None` if
-    /// the group doesn't exist.
+    /// name, tag color, the groups nested in it at any depth, and every
+    /// tab in any of them (url/engine/position), with `parent` links
+    /// preserved only between those tabs (see `group_export::
+    /// GroupExportTab`'s own doc comment). "Expand as Graph" groups
+    /// (`GroupPayload::from_json`) are left out as in a session; their
+    /// members go in the nearest exported group around them. `None` if the
+    /// group doesn't exist.
     fn export_group(&self, group_id: &str) -> Option<group_export::GroupExport> {
         let group_node = self.nodes.get(group_id)?;
         let group = group_node.as_group()?;
         let group_color = group_node.color;
-        let member_ids: std::collections::HashSet<&str> = self
+        // `group_id` and every group inside it, at any depth.
+        let mut inside: HashSet<&str> = HashSet::from([group_id]);
+        loop {
+            let before = inside.len();
+            for (id, node) in &self.nodes {
+                if node.as_group().is_some() && node.group.as_deref().is_some_and(|g| inside.contains(g)) {
+                    inside.insert(id.as_str());
+                }
+            }
+            if inside.len() == before {
+                break;
+            }
+        }
+        // The exported group a node in `group` goes in: `None` for
+        // `group_id` itself, else the nearest group that isn't `from_json`.
+        let export_group = |group: Option<&str>| -> Option<String> {
+            // Re-borrowed from `self.nodes` so the walk up can reassign it.
+            let mut group = group.and_then(|g| self.nodes.get_key_value(g)).map(|(id, _)| id.as_str());
+            while let Some(id) = group.filter(|&id| id != group_id) {
+                let node = self.nodes.get(id)?;
+                match node.as_group() {
+                    Some(g) if !g.from_json => return Some(id.to_string()),
+                    _ => group = node.group.as_deref(),
+                }
+            }
+            None
+        };
+        let groups = self
+            .node_order
+            .iter()
+            .filter(|id| id.as_str() != group_id && inside.contains(id.as_str()))
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let nested = node.as_group().filter(|g| !g.from_json)?;
+                Some(group_export::GroupExportGroup {
+                    id: id.clone(),
+                    name: nested.name.clone(),
+                    color: node.color.map(|c| (c.r(), c.g(), c.b())),
+                    pos_x: node.pos.x,
+                    pos_y: node.pos.y,
+                    group: export_group(node.group.as_deref()),
+                })
+            })
+            .collect();
+        let member_ids: HashSet<&str> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.group.as_deref() == Some(group_id))
+            .filter(|(_, n)| n.group.as_deref().is_some_and(|g| inside.contains(g)))
             .map(|(id, _)| id.as_str())
             .collect();
         let tabs = self
@@ -5110,6 +5157,7 @@ impl App {
                     engine,
                     pos_x: node.pos.x,
                     pos_y: node.pos.y,
+                    group: export_group(node.group.as_deref()),
                 })
             })
             .collect();
@@ -5117,15 +5165,17 @@ impl App {
             name: group.name.clone(),
             color: group_color.map(|c| (c.r(), c.g(), c.b())),
             tabs,
+            groups,
         })
     }
 
-    /// Recreates an exported group at the top level -- a new group `GraphNode`
-    /// plus each member tab, spawned via the normal async path. Every tab
-    /// gets a freshly allocated id (`alloc_tab_id`) rather than reusing the
-    /// exported one, since importing into an already-running session can't
-    /// assume the old ids are free; `parent` links are remapped through the
-    /// same old-id -> new-id map built while allocating them. Uses
+    /// Recreates an exported group at the level being viewed -- a new group
+    /// `GraphNode`, its nested groups, and each member tab, spawned via the
+    /// normal async path. Every tab and group gets a freshly allocated id
+    /// (`alloc_tab_id`/`alloc_group_id`) rather than reusing the exported
+    /// one, since importing into an already-running session can't assume
+    /// the old ids are free; `parent` and `group` links are remapped
+    /// through the old-id -> new-id maps built while allocating them. Uses
     /// `SpawnPurpose::Restore` so imported tabs never steal focus, same as
     /// startup session restore.
     fn import_group_export(&mut self, export: group_export::GroupExport) {
@@ -5145,14 +5195,31 @@ impl App {
         );
         self.node_order.push(group_id.clone());
 
-        let id_map: std::collections::HashMap<String, String> =
+        let group_map: HashMap<String, String> =
+            export.groups.iter().map(|g| (g.id.clone(), self.alloc_group_id())).collect();
+        // A link to a group the file doesn't have lands in the imported group itself.
+        let new_group = |old: Option<String>| Some(old.and_then(|g| group_map.get(&g).cloned()).unwrap_or_else(|| group_id.clone()));
+        for nested in export.groups {
+            let Some(new_id) = group_map.get(&nested.id).cloned() else { continue };
+            let node = GraphNode {
+                parent: None,
+                group: new_group(nested.group),
+                pos: egui::vec2(nested.pos_x, nested.pos_y),
+                vel: egui::Vec2::ZERO,
+                color: nested.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)),
+                payload: NodePayload::Group(GroupPayload { name: nested.name, from_json: false }),
+            };
+            self.nodes.insert(new_id.clone(), node);
+            self.node_order.push(new_id);
+        }
+        let id_map: HashMap<String, String> =
             export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_tab_id())).collect();
         for tab in export.tabs {
             let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
             let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
             let pos = egui::vec2(tab.pos_x, tab.pos_y);
             let spawn = TabSpawn::new(new_id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
-            self.spawn_tab_async(TabSpawn { parent, group: Some(group_id.clone()), ..spawn });
+            self.spawn_tab_async(TabSpawn { parent, group: new_group(tab.group), ..spawn });
         }
     }
 
