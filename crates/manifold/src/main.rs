@@ -2847,8 +2847,8 @@ struct TabPayload {
     /// The current page's own raw JSON text, if `EngineToHost::JsonBody`
     /// reported it as one -- see that message's own doc comment for
     /// detection/per-engine support. Cleared back to `None` whenever this
-    /// tab's url changes for real (same gate `history`/`nav_url_changed`
-    /// already use), so navigating away from a JSON response doesn't leave
+    /// tab's url changes for real (same gate `history` and the session save
+    /// already use, in `handle_engine_message`), so navigating away from a JSON response doesn't leave
     /// a stale "View as JSON" affordance pointing at content that's no
     /// longer showing.
     json_body: Option<String>,
@@ -12790,12 +12790,11 @@ impl App {
 
     /// Drains every tab's `events_rx` (not just the focused one — a
     /// background tab can still crash, or finish an in-flight swap, while
-    /// suspended) and applies the results. Frame uploads are collected and
-    /// applied after crash/swap handling, since either of those can remove
-    /// the very graph node a queued `FrameReady` refers to — applying to a
-    /// since-removed tab_id is harmless (checked at upload time via `gpu`
-    /// only, no `self.nodes` lookup needed there) but there's no reason to
-    /// upload a stale frame for a tab that's mid-replacement.
+    /// suspended), applies every message but frames in arrival order through
+    /// `handle_engine_message`, and then uploads each tab's newest frame.
+    /// Draining first means no tab node stays borrowed while a message is
+    /// applied, so any message can touch any node. Frames go last because a
+    /// crash or swap in the same drain replaces the tab they came from.
     fn drain_tab_events(&mut self) {
         struct FrameUpdate {
             tab_id: String,
@@ -12812,7 +12811,6 @@ impl App {
             pixels: Option<Vec<u8>>,
         }
 
-        let tab_ids: Vec<String> = self.node_order.clone();
         // Keyed by tab id, not a plain `Vec` -- only the *latest* `FrameReady`
         // for a tab ever matters (each one fully supersedes the last in
         // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
@@ -12842,288 +12840,53 @@ impl App {
         // with CEF as the default engine stayed flat).
         let mut frame_updates: std::collections::HashMap<String, FrameUpdate> =
             std::collections::HashMap::new();
-        let mut swap_finishes: Vec<(String, EngineKind, String)> = Vec::new();
-        let mut crashes: Vec<(String, String)> = Vec::new();
-        let mut open_tab_requests: Vec<(String, String)> = Vec::new();
-        // `(tab_id, url, kind)` triples to hand to `redirect_fetcher` once
-        // this whole per-tab loop finishes -- deferred for the same reason
-        // as `download_events` below (`node` holds a live mutable borrow of
-        // this one `self.nodes` entry for the whole drain; the actual
-        // tab-to-node conversion, once the fetch completes, needs
-        // `self.nodes.remove`/`insert`, so even just *starting* the fetch
-        // here stays consistent with that rule rather than being a special
-        // case).
-        let mut redirect_content_tabs: Vec<(String, String, RedirectKind)> = Vec::new();
-        // Download events, deferred the same way as `frame_updates`/
-        // `crashes`/etc. above rather than applied inline: unlike before the
-        // Tab/Download merge onto one shared `self.nodes` map, `node` here
-        // is itself a live mutable borrow of one `self.nodes` entry for the
-        // whole `try_recv` drain below -- a same-loop `self.nodes.insert`/
-        // `values_mut()` for a download would now conflict with that borrow
-        // (previously fine: download bookkeeping lived in a *different*
-        // field, `self.downloads`, than the `self.tabs` entry `node`
-        // borrowed).
-        // One ordered `Vec`, not three separate ones, so a fast download's
-        // `Started`+`Progress`+`Completed` (all arriving within the same
-        // `try_recv` drain) still get applied in that same relative order
-        // after the loop -- three separate `Vec`s would lose the ordering
-        // between event *kinds*, only preserving it within each kind.
-        enum DownloadEvent {
-            Started { tab_id: String, path: String, total_bytes: Option<u64> },
-            Progress { path: String, bytes_received: u64 },
-            Completed { path: String },
-        }
-        let mut download_events: Vec<DownloadEvent> = Vec::new();
-        // Whether any tab's real (settled) url changed this pass — used to
-        // trigger one `save_session()` after the loop below rather than one
-        // per `NavigationStateChanged` (title/history-only changes and a
-        // same-url reload both leave this `false`; url actually changing is
-        // the one thing worth persisting here).
-        let mut nav_url_changed = false;
-        // Read up front: the loop below holds a mutable borrow of `self.nodes`
-        // throughout, so `self.ppp()` can't be called from inside it.
-        let ppp = self.ppp() as f32;
-
-        for tab_id in &tab_ids {
-            let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
+        let mut messages: Vec<(String, EngineToHost)> = Vec::new();
+        for tab_id in &self.node_order {
+            let Some(tab) = self.nodes.get(tab_id).and_then(|n| n.as_tab()) else {
                 continue;
             };
-            while let Ok(msg) = node.tab.events_rx.try_recv() {
+            while let Ok(msg) = tab.tab.events_rx.try_recv() {
                 match msg {
-                    EngineToHost::FrameReady {
-                        width,
-                        height,
-                        pixels,
-                        ..
-                    } => {
+                    EngineToHost::FrameReady { width, height, pixels, .. } => {
                         frame_updates.insert(
                             tab_id.clone(),
                             FrameUpdate {
                                 tab_id: tab_id.clone(),
-                                socket_id: node.tab.socket_id.clone(),
-                                kind: node.tab.kind,
+                                socket_id: tab.tab.socket_id.clone(),
+                                kind: tab.tab.kind,
                                 width,
                                 height,
                                 pixels,
                             },
                         );
                     }
-                    EngineToHost::StateSnapshot(state) => {
-                        if let Some(target) = node.swap_target.take() {
-                            swap_finishes.push((tab_id.clone(), target, state.url));
-                        }
-                    }
-                    EngineToHost::NavigationStateChanged {
-                        url,
-                        title,
-                        can_go_back,
-                        can_go_forward,
-                        loading,
-                    } => {
-                        if node.url != url {
-                            nav_url_changed = true;
-                            node.json_body = None;
-                            self.history.push(HistoryEntry { title: title.clone(), url: url.clone() });
-                            if self.history.len() > MAX_HISTORY_ENTRIES {
-                                self.history.remove(0);
-                            }
-                            // The origin is known as soon as the url is --
-                            // no need to wait for the page to actually
-                            // finish loading, unlike a page's own favicon
-                            // link tag this project doesn't parse anyway
-                            // (see `favicon_fetch`'s own doc comment).
-                            // `favicon_resolved`/`FaviconFetcher`'s own
-                            // `in_flight` set both dedupe repeat requests,
-                            // so this can fire on every url change with no
-                            // extra bookkeeping needed here.
-                            if let Some(origin) = favicon_fetch::url_origin(&url) {
-                                if !self.favicon_resolved.contains(&origin) {
-                                    self.favicon_fetcher.request(origin);
-                                }
-                            }
-                        }
-                        node.url = url;
-                        node.title = title;
-                        node.can_go_back = can_go_back;
-                        node.can_go_forward = can_go_forward;
-                        node.loading = loading;
-                    }
-                    EngineToHost::Crashed { reason } => {
-                        crashes.push((tab_id.clone(), reason));
-                    }
-                    EngineToHost::OpenTabRequested { url } => {
-                        open_tab_requests.push((tab_id.clone(), url));
-                    }
-                    EngineToHost::FindResult { count, active_index } => {
-                        // Ignore a result from a tab that isn't the one the
-                        // find bar is currently searching — shouldn't
-                        // normally happen (`close_find_bar` sends
-                        // `FindStop` on every focus change), but a stray
-                        // late result from just before a switch is cheap to
-                        // guard against.
-                        if self.focused.as_deref() == Some(tab_id.as_str()) {
-                            self.find_result = Some((count, active_index));
-                        }
-                    }
-                    EngineToHost::AudioPlayingChanged { playing } => {
-                        node.audio_playing = playing;
-                    }
-                    EngineToHost::JsonBody { body } => {
-                        node.json_body = Some(body);
-                    }
-                    EngineToHost::RedirectableContent { content_type } => {
-                        if let Some(kind) = redirect_fetch::classify(&content_type) {
-                            redirect_content_tabs.push((tab_id.clone(), node.url.clone(), kind));
-                        }
-                    }
-                    EngineToHost::ContextMenuLink { x, y, href } => {
-                        // Content-area coordinates -> window point space.
-                        // The engine echoes back the same physical-pixel
-                        // surface coordinates the right-click was sent in
-                        // (see `ipc_protocol::InputEvent`'s doc comment), so
-                        // this is the one place that has to divide out the
-                        // DPI scale: egui lays out in logical points. Then
-                        // shifted down past the toolbar, since Tab view's
-                        // content starts below it (see
-                        // `CHROME_HEIGHT_POINTS`'s other call sites). Only
-                        // meaningful for the tab currently on screen.
-                        if self.focused.as_deref() == Some(tab_id.as_str()) {
-                            self.context_menu = Some(ContextMenuState {
-                                x: x as f32 / ppp,
-                                y: y as f32 / ppp + CHROME_HEIGHT_POINTS,
-                                href,
-                            });
-                        }
-                    }
-                    // Deferred to after this whole `tab_ids` loop (see
-                    // `download_events`'s own doc comment) -- `node` here
-                    // holds a live mutable borrow of this one `self.nodes`
-                    // entry for the whole `try_recv` drain, so a same-loop
-                    // `self.nodes.insert`/`values_mut()` for a download
-                    // would conflict with it.
-                    EngineToHost::DownloadStarted { path, total_bytes } => {
-                        download_events.push(DownloadEvent::Started {
-                            tab_id: tab_id.clone(),
-                            path,
-                            total_bytes,
-                        });
-                    }
+                    // Only the last of a run of same-path Progress events is
+                    // ever visible (applying one overwrites `bytes_received`),
+                    // and each costs a scan of every node, so a run collapses
+                    // into its newest.
                     EngineToHost::DownloadProgress { path, bytes_received } => {
-                        // Only the *last* Progress value for a given path
-                        // ever has any visible effect -- the apply loop
-                        // below just overwrites `bytes_received`
-                        // unconditionally, so a run of same-path Progress
-                        // events back to back is the same "processed every
-                        // one, only the newest visible" waste `FrameReady`'s
-                        // own drain had, just far cheaper per instance (an
-                        // O(n) node scan, not a GPU texture). Coalesced here
-                        // by updating the last-pushed entry in place when
-                        // it's already a Progress for this same path,
-                        // rather than a separate HashMap -- keeps
-                        // Started/Progress/Completed ordering (see this
-                        // `Vec`'s own doc comment) exactly as before for
-                        // everything else, since only adjacent same-path
-                        // entries coalesce.
-                        if let Some(DownloadEvent::Progress { path: last_path, bytes_received: last_bytes }) =
-                            download_events.last_mut()
+                        if let Some((_, EngineToHost::DownloadProgress { path: last, bytes_received: last_bytes })) =
+                            messages.last_mut()
                         {
-                            if *last_path == path {
+                            if *last == path {
                                 *last_bytes = bytes_received;
-                            } else {
-                                download_events.push(DownloadEvent::Progress { path, bytes_received });
+                                continue;
                             }
-                        } else {
-                            download_events.push(DownloadEvent::Progress { path, bytes_received });
                         }
+                        messages.push((tab_id.clone(), EngineToHost::DownloadProgress { path, bytes_received }));
                     }
-                    EngineToHost::DownloadCompleted { path } => {
-                        // Not `self.queue_toast(...)` -- `node` above still
-                        // holds a live borrow of `self.nodes` for this whole
-                        // drain, which a method call on `self` can't see
-                        // past; the disjoint field can be pushed to directly.
-                        self.save_toast_queue.push_back(format!("Saved {path}"));
-                        download_events.push(DownloadEvent::Completed { path });
-                    }
+                    msg => messages.push((tab_id.clone(), msg)),
                 }
             }
         }
-        for event in download_events {
-            match event {
-                DownloadEvent::Started { tab_id, path, total_bytes } => {
-                    self.insert_download_node(tab_id, path, total_bytes);
-                }
-                DownloadEvent::Progress { path, bytes_received } => {
-                    if let Some(dl) =
-                        self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path))
-                    {
-                        dl.bytes_received = bytes_received;
-                    }
-                }
-                DownloadEvent::Completed { path } => {
-                    if let Some(dl) =
-                        self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path))
-                    {
-                        dl.completed = true;
-                    }
-                }
-            }
+        // One `save_session()` for the whole drain rather than one per
+        // `NavigationStateChanged`.
+        let mut url_changed = false;
+        for (tab_id, msg) in messages {
+            url_changed |= self.handle_engine_message(&tab_id, msg);
         }
-        if nav_url_changed {
+        if url_changed {
             self.save_session();
-        }
-
-        for (tab_id, reason) in crashes {
-            let Some(spawn) = self.nodes.get(&tab_id).and_then(|n| {
-                let t = n.as_tab()?;
-                TabSpawn::respawn(&tab_id, n, t.tab.kind, t.url.clone())
-            }) else {
-                continue;
-            };
-            let url = &spawn.url;
-            eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
-            // Previously silent from the actual app's own UI -- this only
-            // ever showed up in the console, so a user with no terminal
-            // open had no way to know a tab had crashed and quietly come
-            // back, e.g. mid-navigation with unsaved page state lost.
-            // Reuses the same toast infrastructure "Saved <path>" already
-            // has (generalized to a plain message, see `save_toast`'s own
-            // doc comment) rather than a second, separate notification
-            // mechanism.
-            self.queue_toast(format!("Tab crashed, restarted: {url}"));
-            self.nodes.remove(&tab_id);
-            // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
-            // `finish_swap`'s own comment on this.
-            if self.dragging.as_deref() == Some(tab_id.as_str()) {
-                self.dragging = None;
-            }
-            if self.hovered.as_deref() == Some(tab_id.as_str()) {
-                self.hovered = None;
-            }
-            self.respawn_tab(spawn);
-        }
-
-        for (tab_id, target, url) in swap_finishes {
-            self.finish_swap(&tab_id, target, url);
-        }
-
-        // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
-        // intercepted by CEF/WebKit - see EngineToHost::OpenTabRequested's
-        // doc comment): a child of whichever tab requested it, staying in
-        // the current view rather than auto-focusing, same as an explicit
-        // "+ New Tab" click.
-        for (requesting_tab_id, url) in open_tab_requests {
-            let parent = Some(requesting_tab_id);
-            let group = self.group_of(&parent);
-            self.spawn_new_tab(parent, group, &url);
-        }
-
-        // See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
-        // comment -- kicks off `manifold`'s own independent fetch of this
-        // tab's current url; the actual tab-to-node conversion happens once
-        // that completes, in `redirect_fetcher`'s own `tick()` drain below,
-        // not here.
-        for (tab_id, url, kind) in redirect_content_tabs {
-            self.redirect_fetcher.request(tab_id, url, kind);
         }
 
         for (origin, result) in self.favicon_fetcher.tick() {
@@ -13222,6 +12985,162 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Applies one message from tab `tab_id`'s engine (see
+    /// `drain_tab_events`, which uploads frames itself). Messages that
+    /// update the tab do nothing once it's gone, e.g. after a crash earlier
+    /// in the same drain. Returns whether the tab's settled url changed
+    /// (title/history-only changes and a same-url reload don't count),
+    /// the one thing here worth saving the session for.
+    fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
+        match msg {
+            EngineToHost::FrameReady { .. } => {}
+            EngineToHost::StateSnapshot(state) => {
+                let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
+                if let Some(target) = target {
+                    self.finish_swap(tab_id, target, state.url);
+                }
+            }
+            EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading } => {
+                let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
+                    return false;
+                };
+                let url_changed = node.url != url;
+                if url_changed {
+                    node.json_body = None;
+                    self.history.push(HistoryEntry { title: title.clone(), url: url.clone() });
+                    if self.history.len() > MAX_HISTORY_ENTRIES {
+                        self.history.remove(0);
+                    }
+                    // The origin is known as soon as the url is --
+                    // no need to wait for the page to actually
+                    // finish loading, unlike a page's own favicon
+                    // link tag this project doesn't parse anyway
+                    // (see `favicon_fetch`'s own doc comment).
+                    // `favicon_resolved`/`FaviconFetcher`'s own
+                    // `in_flight` set both dedupe repeat requests,
+                    // so this can fire on every url change with no
+                    // extra bookkeeping needed here.
+                    if let Some(origin) = favicon_fetch::url_origin(&url) {
+                        if !self.favicon_resolved.contains(&origin) {
+                            self.favicon_fetcher.request(origin);
+                        }
+                    }
+                }
+                node.url = url;
+                node.title = title;
+                node.can_go_back = can_go_back;
+                node.can_go_forward = can_go_forward;
+                node.loading = loading;
+                return url_changed;
+            }
+            EngineToHost::Crashed { reason } => {
+                let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
+                    let t = n.as_tab()?;
+                    TabSpawn::respawn(tab_id, n, t.tab.kind, t.url.clone())
+                }) else {
+                    return false;
+                };
+                let url = &spawn.url;
+                eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
+                // Previously silent from the actual app's own UI -- this only
+                // ever showed up in the console, so a user with no terminal
+                // open had no way to know a tab had crashed and quietly come
+                // back, e.g. mid-navigation with unsaved page state lost.
+                // Reuses the same toast infrastructure "Saved <path>" already
+                // has (generalized to a plain message, see `save_toast`'s own
+                // doc comment) rather than a second, separate notification
+                // mechanism.
+                self.queue_toast(format!("Tab crashed, restarted: {url}"));
+                self.nodes.remove(tab_id);
+                // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
+                // `finish_swap`'s own comment on this.
+                if self.dragging.as_deref() == Some(tab_id) {
+                    self.dragging = None;
+                }
+                if self.hovered.as_deref() == Some(tab_id) {
+                    self.hovered = None;
+                }
+                self.respawn_tab(spawn);
+            }
+            // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
+            // intercepted by CEF/WebKit - see EngineToHost::OpenTabRequested's
+            // doc comment): a child of whichever tab requested it, staying in
+            // the current view rather than auto-focusing, same as an explicit
+            // "+ New Tab" click.
+            EngineToHost::OpenTabRequested { url } => {
+                let parent = Some(tab_id.to_string());
+                let group = self.group_of(&parent);
+                self.spawn_new_tab(parent, group, &url);
+            }
+            EngineToHost::FindResult { count, active_index } => {
+                // Ignore a result from a tab that isn't the one the find bar
+                // is currently searching — shouldn't normally happen
+                // (`close_find_bar` sends `FindStop` on every focus change),
+                // but a stray late result from just before a switch is cheap
+                // to guard against.
+                if self.focused.as_deref() == Some(tab_id) {
+                    self.find_result = Some((count, active_index));
+                }
+            }
+            EngineToHost::AudioPlayingChanged { playing } => {
+                if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+                    tab.audio_playing = playing;
+                }
+            }
+            EngineToHost::JsonBody { body } => {
+                if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+                    tab.json_body = Some(body);
+                }
+            }
+            // See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+            // comment -- kicks off `manifold`'s own independent fetch of this
+            // tab's current url; the actual tab-to-node conversion happens
+            // once that completes, in `redirect_fetcher`'s own `tick()` drain
+            // in `drain_tab_events`, not here.
+            EngineToHost::RedirectableContent { content_type } => {
+                let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+                if let (Some(url), Some(kind)) = (url, redirect_fetch::classify(&content_type)) {
+                    self.redirect_fetcher.request(tab_id.to_string(), url, kind);
+                }
+            }
+            EngineToHost::ContextMenuLink { x, y, href } => {
+                let ppp = self.ppp() as f32;
+                // Content-area coordinates -> window point space.
+                // The engine echoes back the same physical-pixel
+                // surface coordinates the right-click was sent in
+                // (see `ipc_protocol::InputEvent`'s doc comment), so
+                // this is the one place that has to divide out the
+                // DPI scale: egui lays out in logical points. Then
+                // shifted down past the toolbar, since Tab view's
+                // content starts below it (see
+                // `CHROME_HEIGHT_POINTS`'s other call sites). Only
+                // meaningful for the tab currently on screen.
+                if self.focused.as_deref() == Some(tab_id) {
+                    self.context_menu = Some(ContextMenuState {
+                        x: x as f32 / ppp,
+                        y: y as f32 / ppp + CHROME_HEIGHT_POINTS,
+                        href,
+                    });
+                }
+            }
+            EngineToHost::DownloadStarted { path, total_bytes } => {
+                self.insert_download_node(tab_id.to_string(), path, total_bytes);
+            }
+            EngineToHost::DownloadProgress { path, bytes_received } => {
+                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
+                    dl.bytes_received = bytes_received;
+                }
+            }
+            EngineToHost::DownloadCompleted { path } => {
+                self.queue_toast(format!("Saved {path}"));
+                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
+                    dl.completed = true;
+                }
+            }
+        }
+        false
     }
 }
 
