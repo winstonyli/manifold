@@ -2467,6 +2467,7 @@ impl App {
             let spawn = TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
             self.spawn_tab_async(TabSpawn { parent: tab.parent, ..spawn });
         }
+        self.camera.frame_restored = true;
     }
 
     /// "Open Session" (settings popup): loads a named save and replaces the

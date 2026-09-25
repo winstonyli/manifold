@@ -152,6 +152,11 @@ pub(crate) struct GraphCamera {
     /// earlier gesture can never leak into a later release's velocity
     /// estimate.
     pub(crate) drag_history: std::collections::VecDeque<(std::time::Instant, egui::Pos2)>,
+    /// Set by `apply_session`. The camera isn't saved, so a restored graph
+    /// can lie entirely off screen; once the restored tabs have spawned,
+    /// `build_graph_ui` fits the view if none of the level's nodes is
+    /// visible, and otherwise leaves the framing alone.
+    pub(crate) frame_restored: bool,
 }
 
 impl GraphCamera {
@@ -162,6 +167,7 @@ impl GraphCamera {
             tween: None,
             momentum: None,
             drag_history: std::collections::VecDeque::new(),
+            frame_restored: false,
         }
     }
 
@@ -448,6 +454,17 @@ impl App {
         // order doesn't decide what paints on top, though: see
         // `overlay_painter`'s own comment for why its layer is
         // `Order::Middle`.
+        // See `GraphCamera::frame_restored`.
+        if self.camera.frame_restored && self.tab_spawns_in_flight == 0 {
+            self.camera.frame_restored = false;
+            if lod_visible_count == 0 {
+                // Settled first, as in `switch_group_level`: fitting the
+                // pre-settle positions would leave spread-out nodes off screen.
+                self.settle_current_level();
+                self.graph_settled_key = Some(self.current_level_settle_key());
+                self.camera.jump_to(self.fit_all_nodes_scene_rect());
+            }
+        }
         if reset_view {
             self.camera.jump_to(self.fit_all_nodes_scene_rect());
             self.pending_new_node = None;
