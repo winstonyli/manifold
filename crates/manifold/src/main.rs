@@ -11,6 +11,7 @@ mod pdf;
 mod pdf_fetch;
 mod process_manager;
 mod session;
+mod store;
 mod settings;
 mod suggestions;
 mod node;
