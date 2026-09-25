@@ -142,8 +142,9 @@ in_group, overloaded, selected }` is cloned per card.
 | Audio | Tab, when playing or muted | always | where it is today | `ToggleMute` |
 
 - `paint_control(ui, control, rect, &view, inv_zoom)` is one `match`
-  holding today's drawing code for each control. Close still goes
-  through `draw_node_close_button` and its deferred overlay.
+  holding today's drawing code for each control. Close now goes
+  through `paint_control_square` (via `paint_card_control`) and its
+  deferred overlay.
 - A middle-click on the card returns the Close action.
 - The first clicked control becomes `CardOutput.control`. This replaces
   Tab's `pin_response`, `eject_clicked`, `swatch_clicked` and

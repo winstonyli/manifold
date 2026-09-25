@@ -932,18 +932,14 @@ fn paint_card_control(
                 }));
             }
         }
-        // Audio-playing/muted indicator:
-        // (like the engine-identity one below the thumbnail),
-        // not a speaker glyph — confirmed elsewhere in this
-        // project that several Unicode symbol glyphs render as
-        // empty boxes in this app's font, so a painter-drawn
-        // shape is the reliable choice, not text. `audio_playing`
-        // is only ever true for WebView2/WebKit tabs — see
-        // `TabPayload::audio_playing`'s doc comment — but the dot
-        // also shows (and stays clickable) whenever `muted` is
-        // set, even after audio stops, so there's always a way
-        // to see and undo a mute from Graph view without first
-        // switching to Tab view.
+        // Audio-playing/muted indicator: shown while playing so audio
+        // isn't a surprise, and kept showing while muted (even after
+        // audio stops) so a mute can always be seen and undone from
+        // Graph view without first switching to Tab view.
+        // `audio_playing` is only ever true for WebView2/WebKit tabs —
+        // see `TabPayload::audio_playing`'s doc comment. Muted draws a
+        // real `SPEAKER_X` icon; actually playing draws a small
+        // painter-drawn waveform instead -- see its own rationale below.
         CardControl::Audio => {
             if view.muted {
                 // Muted stays static -- nothing is actually
@@ -1142,11 +1138,6 @@ fn json_summary(value: &serde_json::Value) -> String {
     }
 }
 
-/// An image node's own card size: `width`x`height` scaled down (never up)
-/// to fit inside `IMAGE_NODE_MAX_SIZE` while preserving aspect ratio --
-/// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
-/// bounds union so the two never disagree about how big a given image's
-/// card actually is.
 /// A restored image/JSON card whose file couldn't be loaded: the same
 /// `FILE_X` glyph a failed PDF card shows (see `ImagePayload::error`).
 fn paint_missing_file_card(
@@ -1169,6 +1160,11 @@ fn paint_missing_file_card(
     }));
 }
 
+/// An image node's own card size: `width`x`height` scaled down (never up)
+/// to fit inside `IMAGE_NODE_MAX_SIZE` while preserving aspect ratio --
+/// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
+/// bounds union so the two never disagree about how big a given image's
+/// card actually is.
 fn image_node_card_size(width: u32, height: u32) -> egui::Vec2 {
     let (width, height) = (width.max(1) as f32, height.max(1) as f32);
     let scale = (IMAGE_NODE_MAX_SIZE.x / width).min(IMAGE_NODE_MAX_SIZE.y / height).min(1.0);
@@ -5810,8 +5806,8 @@ impl App {
                 }
                 let tex_id = self.gpu.as_ref().and_then(|g| g.image_id(id));
                 // LOD: the real texture blit (and the broken-image
-                // glyph text) skipped once simplified -- see the tab
-                // loop's own doc comment. Unlike a tab card, an image
+                // glyph text) skipped once simplified -- see the Tab
+                // arm's own LOD comment. Unlike a tab card, an image
                 // node has no separate background fill of its own (the
                 // picture *is* the fill). The simplified state shows the
                 // frame's plain fill, matching every other kind's
@@ -5879,8 +5875,8 @@ impl App {
                     body.tooltip = Some(err.clone());
                 }
                 // LOD: same "plain solid box instead of the real
-                // content" simplification as the Image arm -- see the tab
-                // loop's own doc comment.
+                // content" simplification as the Image arm -- see the
+                // Tab arm's own LOD comment.
                 if !self.graph_lod_simplified {
                     match state {
                         Some(Ok((Some(tex_id), page_count))) => {
@@ -6409,8 +6405,8 @@ impl App {
     }
 
     /// `node_order`, filtered to nodes of `kind` at whichever level
-    /// `self.current_group` is currently viewing -- the id list each of
-    /// `build_graph_ui`'s per-kind card loops iterates, kept in stable
+    /// `self.current_group` is currently viewing -- the id list
+    /// `build_graph_ui`'s one card loop iterates for that kind, kept in stable
     /// insertion order (unlike filtering `self.nodes` directly, a
     /// `HashMap`'s iteration order isn't stable frame-to-frame). The kind
     /// filter matters even for one kind: a top-level group's own `group`
@@ -13647,9 +13643,6 @@ mod tests {
         .is_none());
     }
 
-    // One row per kind, pinned to the exact menus each kind showed before
-    // the per-kind builders were merged (see the node-menu spec), and
-    // before the tab and group menus joined them.
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
         CardView {
@@ -13722,6 +13715,39 @@ mod tests {
         assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
     }
 
+    /// Pins each `CardControl`'s corner/offset anchor and size, at
+    /// inv_zoom 1.0 and 2.0, as a regression check on `CardControl::rect`.
+    #[test]
+    fn card_control_rects_sit_on_their_corners() {
+        use CardControl::*;
+        let card = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 80.0));
+        for inv_zoom in [1.0_f32, 2.0] {
+            assert_eq!(
+                Swatch.rect(card, inv_zoom),
+                egui::Rect::from_center_size(card.right_bottom(), egui::Vec2::splat(16.0) * inv_zoom)
+            );
+            assert_eq!(
+                Pin.rect(card, inv_zoom),
+                egui::Rect::from_center_size(card.left_bottom(), egui::Vec2::splat(16.0) * inv_zoom)
+            );
+            assert_eq!(
+                Audio.rect(card, inv_zoom),
+                egui::Rect::from_center_size(
+                    card.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom,
+                    egui::Vec2::splat(16.0) * inv_zoom
+                )
+            );
+            assert_eq!(
+                Eject.rect(card, inv_zoom),
+                egui::Rect::from_center_size(card.left_top(), egui::Vec2::splat(18.0) * inv_zoom)
+            );
+            assert_eq!(
+                Close.rect(card, inv_zoom),
+                egui::Rect::from_center_size(card.right_top(), egui::Vec2::splat(18.0) * inv_zoom)
+            );
+        }
+    }
+
     #[test]
     fn drop_action_matches_the_drop_table() {
         use ItemNodeKind as K;
@@ -13744,6 +13770,9 @@ mod tests {
         assert_eq!(drop_action(K::Image, card(K::Json), true), None);
     }
 
+    // One row per kind, pinned to the exact menus each kind showed before
+    // the per-kind builders were merged (see the node-menu spec), and
+    // before the tab and group menus joined them.
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
         fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, String) {
@@ -13865,6 +13894,7 @@ mod tests {
         assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None, error: None })), ["x.json"]);
         assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into() })), ["Reading"]);
     }
+
     #[test]
     fn bump_past_id_clears_restored_ids() {
         let mut counter = 0;
