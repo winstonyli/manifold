@@ -95,7 +95,7 @@ pub enum DebugCommand {
     TypeIntoPage(String),
     /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
     KeyPage(KeyCode),
-    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_tab_shortcut`.
+    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
     ReopenTab,
     /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
     ZoomIn,
@@ -352,7 +352,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("REOPENTAB", "Ctrl+Shift+T -- reopen the last closed tab"),
+    ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
     ("ZOOMRESET", "Ctrl+0 -- reset zoom"),

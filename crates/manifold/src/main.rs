@@ -3002,69 +3002,103 @@ struct GroupPayload {
     name: String,
 }
 
-/// Snapshot of a tab taken by `close_tab` just before removal, enough to
-/// respawn it via `Ctrl+Shift+T`/headless `REOPENTAB` (the last one) or the
-/// "Recently Closed" toolbar dropdown (any specific one) — see `App::
-/// closed_tabs`. Not cookies/localStorage/scroll position, same "graph
-/// shape only" limitation session restore and an engine swap already both
-/// have.
-struct ClosedTab {
-    url: String,
-    kind: EngineKind,
-    parent: Option<String>,
-    group: Option<String>,
+/// One "Recently Closed" entry: a closed node and, if it's a group,
+/// everything under it, as it was (see `closed_entry`). `nodes[0]` is the
+/// node that was closed. `App::reopen_closed` rebuilds it with fresh ids.
+/// Not cookies/localStorage/scroll position, the same "graph shape only"
+/// limit session restore and an engine swap have.
+struct ClosedEntry {
+    nodes: Vec<ClosedNode>,
 }
 
-/// How many closed tabs `App::closed_tabs` remembers before dropping the
-/// oldest -- unbounded would leak slowly for a long-running session that
-/// opens/closes a lot of tabs, and a real browser's own "Recently closed"
-/// list is bounded too.
-const MAX_CLOSED_TABS: usize = 10;
+/// One node of a `ClosedEntry`, with its old id. `group`/`parent` are old
+/// ids too: reopening remaps the ones inside the entry and keeps the rest
+/// only if that node still exists.
+struct ClosedNode {
+    id: String,
+    parent: Option<String>,
+    group: Option<String>,
+    pos: egui::Vec2,
+    color: Option<egui::Color32>,
+    piece: ClosedPiece,
+}
 
-/// Same reasoning as `MAX_CLOSED_TABS`, just a smaller cap -- closing a
-/// whole group is a rarer, heavier action than closing one tab.
-const MAX_CLOSED_GROUPS: usize = 5;
-
-/// A Note/Image/Pdf/Json node's content, captured just before it's
-/// destroyed -- either via its own "Delete" context-menu action, or via
-/// `close_node` when its containing group is closed. Unlike a tab
-/// or group, deleting one of these four kinds previously had no undo path
-/// at all, a real risk specifically for Notes (user-typed content,
-/// permanently gone on a single misclick, unlike a tab/group's own
-/// already-existing "Recently Closed" recovery). Doesn't preserve the
-/// original position, same as `ClosedTab`'s own reopen behavior -- a fresh
-/// jittered spawn, not a restored one.
-enum ClosedNode {
+/// The kind-specific part of a `ClosedNode`. A file-backed node keeps only
+/// its path and is reloaded, so a changed or missing file reopens as it is
+/// now; a note and an "Expand as Graph" leaf keep their content.
+enum ClosedPiece {
+    Tab { url: String, kind: EngineKind, pinned: bool, zoom_factor: f64 },
+    Group { name: String },
     Note(String),
     Image(String),
     Pdf(String),
     Json(String),
+    JsonLeaf { path: String, key: Option<String>, value: serde_json::Value },
 }
 
-/// Which `ClosedNode` (if any) closing a node with this payload should add
-/// to "Recently Closed" -- the one rule behind every single-node close
-/// (`App::close_node`: hover ✕, context-menu Delete, closing a group's
-/// members). `None` for a Tab (it has its own `closed_tabs` stack via
-/// `close_tab`), a Group (`close_group` snapshots it into
-/// `closed_groups`), a Download (no "closed" state), and a synthetic
-/// "Expand as Graph" JSON leaf -- recording that as a `ClosedNode::Json`
-/// would let "undo" re-add the *whole source file* as a fresh top-level
-/// card, not the leaf that was actually closed. Only a genuine top-level
-/// JSON node's own path is real undo-worthy state. Likewise a blank
-/// (empty or whitespace-only) Note: reopening it restores nothing, and
-/// recording it could push a real entry out of the `MAX_CLOSED_NODES` cap.
-fn closed_node_for(payload: &NodePayload) -> Option<ClosedNode> {
-    match payload {
-        NodePayload::Note(note) => (!note.text.trim().is_empty()).then(|| ClosedNode::Note(note.text.clone())),
-        NodePayload::Image(image) => Some(ClosedNode::Image(image.path.clone())),
-        NodePayload::Pdf(pdf) => Some(ClosedNode::Pdf(pdf.path.clone())),
-        NodePayload::Json(json) => json.key.is_none().then(|| ClosedNode::Json(json.path.clone())),
-        NodePayload::Tab(_) | NodePayload::Group(_) | NodePayload::Download(_) => None,
+/// How many entries `App::closed` keeps before dropping the oldest, like a
+/// browser's own bounded "Recently closed" list.
+const MAX_CLOSED: usize = 20;
+
+/// What of `payload` is worth reopening. `None` for a Download (it has no
+/// closed state) and a blank note (nothing to restore).
+fn closed_piece(payload: &NodePayload) -> Option<ClosedPiece> {
+    Some(match payload {
+        NodePayload::Tab(tab) => ClosedPiece::Tab {
+            url: tab.url.clone(),
+            kind: tab.tab.kind,
+            pinned: tab.pinned,
+            zoom_factor: tab.zoom_factor,
+        },
+        NodePayload::Group(group) => ClosedPiece::Group { name: group.name.clone() },
+        NodePayload::Note(note) if !note.text.trim().is_empty() => ClosedPiece::Note(note.text.clone()),
+        NodePayload::Image(image) => ClosedPiece::Image(image.path.clone()),
+        NodePayload::Pdf(pdf) => ClosedPiece::Pdf(pdf.path.clone()),
+        NodePayload::Json(json) if json.key.is_none() => ClosedPiece::Json(json.path.clone()),
+        NodePayload::Json(json) => {
+            ClosedPiece::JsonLeaf { path: json.path.clone(), key: json.key.clone(), value: json.value.clone() }
+        }
+        NodePayload::Note(_) | NodePayload::Download(_) => return None,
+    })
+}
+
+/// The `ClosedEntry` closing `id` should record: `id` and, for a group,
+/// every node under it at any depth (in `order`, i.e. draw order), minus
+/// what `closed_piece` skips. `None` when `id` itself isn't worth
+/// reopening, which includes a lone "Expand as Graph" leaf: it's one of
+/// many, and each would push a real entry out of `MAX_CLOSED`.
+fn closed_entry(nodes: &NodeMap, order: &[String], id: &str) -> Option<ClosedEntry> {
+    let snapshot = |id: &str, node: &GraphNode, piece| ClosedNode {
+        id: id.to_string(),
+        parent: node.parent.clone(),
+        group: node.group.clone(),
+        pos: node.pos,
+        color: node.color,
+        piece,
+    };
+    let root = nodes.get(id)?;
+    let piece = closed_piece(&root.payload)?;
+    if matches!(piece, ClosedPiece::JsonLeaf { .. }) {
+        return None;
     }
+    let mut entry = vec![snapshot(id, root, piece)];
+    // Only a group has members; for anything else this finds none.
+    let mut levels = vec![id.to_string()];
+    while let Some(level) = levels.pop() {
+        for (member_id, member) in order.iter().filter_map(|m| nodes.get(m).map(|n| (m, n))) {
+            if member.group.as_deref() != Some(level.as_str()) {
+                continue;
+            }
+            if member.as_group().is_some() {
+                levels.push(member_id.clone());
+            }
+            if let Some(piece) = closed_piece(&member.payload) {
+                entry.push(snapshot(member_id, member, piece));
+            }
+        }
+    }
+    Some(ClosedEntry { nodes: entry })
 }
-
-/// Same reasoning as `MAX_CLOSED_TABS`.
-const MAX_CLOSED_NODES: usize = 10;
 
 /// One entry in `App::history` -- see that field's own doc comment.
 struct HistoryEntry {
@@ -3569,42 +3603,11 @@ struct App {
     /// including for an ordinary "Screenshot" button click.
     pending_print_to_pdf: Option<String>,
 
-    /// Find-in-page: tied to the focused tab only, not persisted per-tab —
-    /// closes (and sends `FindStop`) on tab switch/close, same "don't try
-    /// to be a full session" scope as the address bar's own suggestion
-    /// state. `find_text` mirrors what's sent as the last `FindStart`;
-    /// `find_result` is `None` until the first `FindResult` for the current
-    /// search arrives (so the bar shows nothing rather than a stale count
-    /// while a fresh search is still in flight). See `EngineToHost::
-    /// FindResult`'s doc comment for why `active_index` is always 0 on a
-    /// WebKit tab and Servo tabs never populate this at all.
-    /// `Ctrl+Shift+T`/headless `REOPENTAB` respawns and removes the last
-    /// entry; the "Recently Closed" toolbar dropdown can also respawn (and
-    /// remove) any specific one — see `ClosedTab`'s own doc comment. Capped
-    /// at `MAX_CLOSED_TABS`, oldest dropped first.
-    closed_tabs: Vec<ClosedTab>,
-    /// Whole groups closed via `close_group` (its own "Close Group" context-
-    /// menu entry) -- each a full `group_export::GroupExport` snapshot
-    /// (name, tag color, member tabs/positions), same shape "Export
-    /// Group..." already produces, so reopening one goes through the exact
-    /// same `import_group_export` a real file import would. Listed in the
-    /// same "Recently Closed" dropdown as `closed_tabs`, in their own
-    /// section -- `close_group` closes each member through the normal
-    /// `close_tab` path too (for its other bookkeeping: parent-relinking,
-    /// thumbnail cleanup, focus/hover reset), then throws away the
-    /// individual `ClosedTab` entries that produced, so a closed group
-    /// doesn't ALSO leave behind N separate single-tab undo entries a user
-    /// could reopen from and get duplicates. Capped at `MAX_CLOSED_GROUPS`,
-    /// oldest dropped first. Not reachable from `Ctrl+Shift+T` (that
-    /// shortcut only ever looks at `closed_tabs`) -- only the dropdown.
-    closed_groups: Vec<group_export::GroupExport>,
-    /// Note/Image/Pdf/Json nodes deleted via `close_node` -- hover ✕,
-    /// their own context menu's "Delete", or a containing group being
-    /// closed -- see `ClosedNode`'s own doc comment for why this exists.
-    /// Listed in the same "Recently Closed" dropdown as `closed_tabs`/
-    /// `closed_groups`, in their own section. Capped at `MAX_CLOSED_NODES`,
-    /// oldest dropped first.
-    closed_nodes: Vec<ClosedNode>,
+    /// "Recently Closed", oldest first: one entry per close, capped at
+    /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
+    /// `Ctrl+Shift+T`/headless `REOPENTAB` reopens the newest. See
+    /// `ClosedEntry`.
+    closed: Vec<ClosedEntry>,
 
     /// The minimal right-click context menu, if currently showing — see
     /// `ContextMenuState`'s own doc comment.
@@ -3644,6 +3647,15 @@ struct App {
     session_fingerprint: Option<u64>,
     settings_fingerprint: Option<u64>,
 
+    /// Find-in-page: tied to the focused tab only, not persisted per-tab —
+    /// closes (and sends `FindStop`) on tab switch/close, same "don't try
+    /// to be a full session" scope as the address bar's own suggestion
+    /// state. `find_text` mirrors what's sent as the last `FindStart`;
+    /// `find_result` is `None` until the first `FindResult` for the current
+    /// search arrives (so the bar shows nothing rather than a stale count
+    /// while a fresh search is still in flight). See `EngineToHost::
+    /// FindResult`'s doc comment for why `active_index` is always 0 on a
+    /// WebKit tab and Servo tabs never populate this at all.
     find_bar_open: bool,
     find_text: String,
     /// Resets to `false` on every `close_find_bar` — a fresh find session
@@ -3850,9 +3862,7 @@ impl Default for App {
             pending_screenshot: None,
             screenshot_waiter: None,
             pending_print_to_pdf: None,
-            closed_tabs: Vec::new(),
-            closed_nodes: Vec::new(),
-            closed_groups: Vec::new(),
+            closed: Vec::new(),
             context_menu: None,
             context_menu_cache: None,
             save_toast: None,
@@ -4564,66 +4574,46 @@ impl App {
         }
     }
 
-    /// The "Recently Closed" toolbar dropdown (Graph view, top level or
-    /// not -- unlike groups, this isn't level-scoped): closed groups first
-    /// (`self.closed_groups`), then closed tabs (`self.closed_tabs`), each
-    /// section most recently closed first, click one to respawn it and
-    /// remove it from its list. `Ctrl+Shift+T`/`REOPENTAB` only ever
-    /// reaches `closed_tabs`' *last* entry (see that field's own doc
-    /// comment for why groups aren't reachable that way); this dropdown is
-    /// the only way to reopen an older tab, or any closed group at all.
+    /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
+    /// every entry, newest first; click one to reopen it where it was.
     fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
-        let mut reopen_tab_index: Option<usize> = None;
-        let mut reopen_group_index: Option<usize> = None;
-        let mut reopen_node_index: Option<usize> = None;
+        let mut reopen_index: Option<usize> = None;
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, self.recently_closed_open, |ui| {
-            for (index, group) in self.closed_groups.iter().enumerate().rev() {
+            for (index, entry) in self.closed.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
-                    ui.label(egui_phosphor::light::FOLDER_SIMPLE);
-                    let label = format!("{} ({})", group.name, group.tabs.len());
+                    let label = match &entry.nodes[0].piece {
+                        ClosedPiece::Tab { url, kind, .. } => {
+                            engine_dot(ui, *kind, 8.0);
+                            url.clone()
+                        }
+                        ClosedPiece::Group { name } => {
+                            ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+                            format!("{name} ({})", entry.nodes.len() - 1)
+                        }
+                        ClosedPiece::Note(text) => {
+                            ui.label(egui_phosphor::light::NOTE_PENCIL);
+                            text.lines().next().unwrap_or_default().to_string()
+                        }
+                        ClosedPiece::Image(path) => {
+                            ui.label(egui_phosphor::light::IMAGE);
+                            path.clone()
+                        }
+                        ClosedPiece::Pdf(path) => {
+                            ui.label(egui_phosphor::light::FILE_PDF);
+                            path.clone()
+                        }
+                        ClosedPiece::Json(path) | ClosedPiece::JsonLeaf { path, .. } => {
+                            ui.label(egui_phosphor::light::BRACKETS_CURLY);
+                            path.clone()
+                        }
+                    };
                     if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        reopen_group_index = Some(index);
-                    }
-                });
-            }
-            if !self.closed_groups.is_empty() && !self.closed_tabs.is_empty() {
-                ui.separator();
-            }
-            for (index, closed) in self.closed_tabs.iter().enumerate().rev() {
-                ui.horizontal(|ui| {
-                    engine_dot(ui, closed.kind, 8.0);
-                    if ui.add(egui::Label::new(&closed.url).truncate().sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        reopen_tab_index = Some(index);
-                    }
-                });
-            }
-            if !self.closed_nodes.is_empty() && (!self.closed_groups.is_empty() || !self.closed_tabs.is_empty()) {
-                ui.separator();
-            }
-            for (index, node) in self.closed_nodes.iter().enumerate().rev() {
-                let (icon, label) = match node {
-                    ClosedNode::Note(text) => {
-                        (egui_phosphor::light::NOTE_PENCIL, text.lines().next().unwrap_or("(empty note)"))
-                    }
-                    ClosedNode::Image(path) => (egui_phosphor::light::IMAGE, path.as_str()),
-                    ClosedNode::Pdf(path) => (egui_phosphor::light::FILE_PDF, path.as_str()),
-                    ClosedNode::Json(path) => (egui_phosphor::light::BRACKETS_CURLY, path.as_str()),
-                };
-                ui.horizontal(|ui| {
-                    ui.label(icon);
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        reopen_node_index = Some(index);
+                        reopen_index = Some(index);
                     }
                 });
             }
@@ -4631,50 +4621,97 @@ impl App {
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
-        if let Some(index) = reopen_group_index {
-            let export = self.closed_groups.remove(index);
-            self.import_group_export(export);
-            close = true;
-        }
-        if let Some(index) = reopen_tab_index {
-            let closed = self.closed_tabs.remove(index);
-            self.respawn_closed_tab(closed);
-            close = true;
-        }
-        if let Some(index) = reopen_node_index {
-            match self.closed_nodes.remove(index) {
-                ClosedNode::Note(text) => self.respawn_closed_note(text),
-                ClosedNode::Image(path) => {
-                    self.insert_image_node(path);
-                    self.save_session();
-                }
-                ClosedNode::Pdf(path) => {
-                    self.insert_pdf_node(path);
-                    self.save_session();
-                }
-                ClosedNode::Json(path) => {
-                    self.insert_json_node(path);
-                    self.save_session();
-                }
-            }
+        if let Some(index) = reopen_index {
+            let entry = self.closed.remove(index);
+            self.reopen_closed(entry);
             close = true;
         }
         if clicked_outside {
             close = true;
         }
-        if close || (self.closed_tabs.is_empty() && self.closed_groups.is_empty() && self.closed_nodes.is_empty()) {
+        if close || self.closed.is_empty() {
             self.recently_closed_open = false;
         }
     }
 
-    /// Called from `close_node` for whatever `closed_node_for` returns
-    /// (Downloads never record) -- same bound-then-push shape `close_tab`'s
-    /// own `closed_tabs` push already has.
-    fn record_closed_node(&mut self, node: ClosedNode) {
-        self.closed_nodes.push(node);
-        if self.closed_nodes.len() > MAX_CLOSED_NODES {
-            self.closed_nodes.remove(0);
+    /// Records what closing `id` loses (see `closed_entry`), dropping the
+    /// oldest entry past `MAX_CLOSED`. Called before anything is removed.
+    fn record_closed(&mut self, id: &str) {
+        if let Some(entry) = closed_entry(&self.nodes, &self.node_order, id) {
+            self.closed.push(entry);
+            if self.closed.len() > MAX_CLOSED {
+                self.closed.remove(0);
+            }
         }
+    }
+
+    /// Rebuilds a closed entry where it was: fresh ids, the old positions
+    /// and tags, links between its own nodes remapped, and links outside it
+    /// kept only if that node still exists (else the top level, or no
+    /// parent). Tabs spawn as new tabs (`SpawnPurpose::New`, nothing
+    /// focused). An image or JSON file that's gone since is toasted and
+    /// skipped; a PDF reopens as its error card.
+    fn reopen_closed(&mut self, entry: ClosedEntry) {
+        let mut ids = std::collections::HashMap::new();
+        for node in &entry.nodes {
+            let id = match node.piece {
+                ClosedPiece::Tab { .. } => self.alloc_tab_id(),
+                ClosedPiece::Group { .. } => self.alloc_group_id(),
+                ClosedPiece::Note(_) => self.alloc_note_id(),
+                ClosedPiece::Image(_) => self.alloc_image_id(),
+                ClosedPiece::Pdf(_) => self.alloc_pdf_id(),
+                ClosedPiece::Json(_) | ClosedPiece::JsonLeaf { .. } => self.alloc_json_id(),
+            };
+            ids.insert(node.id.clone(), id);
+        }
+        let relink = |old: &Option<String>| {
+            let old = old.as_ref()?;
+            ids.get(old).cloned().or_else(|| self.nodes.contains_key(old).then(|| old.clone()))
+        };
+        let placed: Vec<_> = entry.nodes.iter().map(|n| (relink(&n.parent), relink(&n.group))).collect();
+        for (node, (parent, group)) in entry.nodes.into_iter().zip(placed) {
+            let id = ids[&node.id].clone();
+            let ClosedNode { pos, color, piece, .. } = node;
+            // `None` once a helper has inserted the node itself.
+            let payload = match piece {
+                ClosedPiece::Tab { url, kind, pinned, zoom_factor } => {
+                    self.tab_spawn_error = None;
+                    let spawn = TabSpawn::new(id, url, kind, pos, SpawnPurpose::New, zoom_factor);
+                    let carry = TabCarry { pinned, color, zoom_factor };
+                    self.spawn_tab_async(TabSpawn { parent, group, carry, ..spawn });
+                    continue;
+                }
+                ClosedPiece::Group { name } => Some(NodePayload::Group(GroupPayload { name })),
+                ClosedPiece::Note(text) => Some(NodePayload::Note(NotePayload { text, editing: false })),
+                ClosedPiece::JsonLeaf { path, key, value } => {
+                    Some(NodePayload::Json(JsonPayload { path, value, key, error: None }))
+                }
+                ClosedPiece::Image(path) => {
+                    let _ = self.insert_image_node_with_id(id.clone(), path, pos, group.clone());
+                    None
+                }
+                ClosedPiece::Pdf(path) => {
+                    self.insert_pdf_node_with_id(id.clone(), path, pos, group.clone());
+                    None
+                }
+                ClosedPiece::Json(path) => {
+                    let _ = self.insert_json_node_with_id(id.clone(), path, pos, group.clone());
+                    None
+                }
+            };
+            match payload {
+                Some(payload) => {
+                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel: egui::Vec2::ZERO, color, payload });
+                    self.node_order.push(id);
+                }
+                None => {
+                    if let Some(node) = self.nodes.get_mut(&id) {
+                        node.color = color;
+                    }
+                }
+            }
+        }
+        self.save_session();
     }
 
     fn navigate_tab(&mut self, tab_id: &str, url: String) {
@@ -5065,7 +5102,7 @@ impl App {
 
     /// Tears down every currently-open tab/download/group -- each tab's own
     /// `EngineTab::Drop` handles process shutdown+kill, the same
-    /// mechanism `close_tab` already relies on, so clearing the map is
+    /// mechanism `destroy_tab` already relies on, so clearing the map is
     /// enough, no per-tab teardown call needed -- then replays `session`
     /// via `apply_session`, same as startup replays `session.json`. Shared
     /// by `load_named_session` and the "Import Session..." confirm popup's
@@ -5255,7 +5292,7 @@ impl App {
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
-        // same guard `reopen_closed_tab_shortcut` applies for the same
+        // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
         let group = group.filter(|g| self.nodes.contains_key(g));
@@ -5392,7 +5429,7 @@ impl App {
     /// kind has anything else to persist/tear down on removal the way a
     /// tab's engine process or a group's membership does, so one plain
     /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/
-    /// `hovered` guard `close_tab`/`finish_swap` also apply) covers both.
+    /// `hovered` guard `destroy_tab`/`finish_swap` also apply) covers both.
     fn remove_node(&mut self, id: &str) {
         self.nodes.remove(id);
         self.node_order.retain(|d| d != id);
@@ -6831,11 +6868,10 @@ impl App {
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_engine`),
-    /// `reopen_closed_tab_shortcut` (the closed tab's own engine, not
-    /// necessarily today's default), and `start_split` (`SpawnPurpose::
-    /// Split` instead of `New`, everything else identical) -- `purpose` is
-    /// threaded through to `spawn_tab_async` rather than hardcoded, since
-    /// those three cases genuinely differ in what should happen once the
+    /// `duplicate_tab` (the original tab's own engine), and `start_split`
+    /// (`SpawnPurpose::Split` instead of `New`, everything else identical)
+    /// -- `purpose` is threaded through to `spawn_tab_async` rather than
+    /// hardcoded, since those cases genuinely differ in what should happen once the
     /// spawn completes (see `handle_tab_spawn_result`'s own per-purpose
     /// match). Returns the new tab's id, allocated synchronously even
     /// though the real engine-host process spawn (and thus the node's own
@@ -7152,17 +7188,12 @@ impl App {
     /// `Shutdown` + kill), frees its graph-view thumbnail, and reparents
     /// its children to its own parent so the forest stays connected rather
     /// than orphaning that whole subtree. Falls back to Graph view if the
-    /// closed tab was focused.
-    fn close_tab(&mut self, id: &str) {
-        let Some((parent, url, kind, group)) = self.nodes.get(id).and_then(|n| {
-            n.as_tab().map(|t| (n.parent.clone(), t.url.clone(), t.tab.kind, n.group.clone()))
-        }) else {
+    /// closed tab was focused. Records nothing: `close_node` is the close
+    /// that feeds "Recently Closed".
+    fn destroy_tab(&mut self, id: &str) {
+        let Some(parent) = self.nodes.get(id).filter(|n| n.as_tab().is_some()).map(|n| n.parent.clone()) else {
             return;
         };
-        self.closed_tabs.push(ClosedTab { url, kind, parent: parent.clone(), group });
-        if self.closed_tabs.len() > MAX_CLOSED_TABS {
-            self.closed_tabs.remove(0);
-        }
         for node in self.nodes.values_mut() {
             if node.parent.as_deref() == Some(id) {
                 node.parent = parent.clone();
@@ -7173,7 +7204,7 @@ impl App {
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
-        // `selected_tabs` -- harmless to the no-op `close_tab`/`nodes.get`
+        // `selected_tabs` -- harmless to the no-op `destroy_tab`/`nodes.get`
         // callers that already tolerate a missing id, but it skews
         // "Group Selected"'s centroid (divides by a count that includes
         // dead ids) and overcounts the toolbar's own "(N)" labels.
@@ -7240,7 +7271,7 @@ impl App {
         // the new one at the same tab_id — the new engine-host's named-pipe
         // listeners would collide with the old ones otherwise.
         self.nodes.remove(tab_id);
-        // Same stale-state guard `close_tab` already applies: without it, a
+        // Same stale-state guard `destroy_tab` already applies: without it, a
         // drag in progress on this exact tab when its engine swap/crash
         // fires would leave `self.dragging` pointing at an id invisible for
         // the whole respawn window, then get misread as "just dropped" the
@@ -7337,7 +7368,7 @@ impl App {
         });
 
         if reopen_tab {
-            self.reopen_closed_tab_shortcut();
+            self.reopen_closed_shortcut();
         }
         if new_tab {
             self.new_tab_shortcut();
@@ -7482,28 +7513,6 @@ impl App {
         let id = self.alloc_note_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_note_at(id, pos);
-    }
-
-    /// "Recently Closed" reopening a deleted `ClosedNode::Note` -- unlike
-    /// `insert_note_at` (always blank, `editing: true`, for a genuinely new
-    /// note), this restores real saved text and starts rendered rather than
-    /// mid-edit, matching how a restored/imported note should look.
-    fn respawn_closed_note(&mut self, text: String) {
-        let id = self.alloc_note_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group: self.current_group.clone(),
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Note(NotePayload { text, editing: false }),
-            },
-        );
-        self.node_order.push(id);
-        self.save_session();
     }
 
     /// Shared by `new_note_shortcut` (fresh id/jittered position) and the
@@ -7682,7 +7691,7 @@ impl App {
     /// `insert_image_node_with_id` verbatim, so a redirected image is
     /// indistinguishable from one added via "+ Image" from this point on.
     /// Reparents the tab's own children to its own parent and clears the
-    /// same dragging/hovered/focused guards `close_tab` does -- but doesn't
+    /// same dragging/hovered/focused guards `destroy_tab` does -- but doesn't
     /// push to `closed_tabs`, since this isn't a user-initiated close to
     /// remember as reopenable.
     fn redirect_tab_to_image(&mut self, tab_id: &str, path: String) {
@@ -7710,7 +7719,7 @@ impl App {
         if self.focused.as_deref() == Some(tab_id) {
             self.focused = None;
             // Same "only a Tab showing actually leaves to Graph" guard as
-            // `close_tab` -- see its own comment.
+            // `destroy_tab` -- see its own comment.
             if self.showing_tab_view() {
                 self.view_mode = ViewMode::Graph;
             }
@@ -8089,32 +8098,20 @@ impl App {
         self.spawn_new_tab(parent, group, &home_page);
     }
 
-    /// `Ctrl+Shift+T` / headless `REOPENTAB` — respawns the most recently
-    /// closed tab (the end of `self.closed_tabs`; a no-op if the list is
-    /// empty). Its original parent respawns it as a new root instead if
-    /// that parent was itself closed/no longer exists — `spawn_new_tab_
-    /// with_kind` already treats an unknown parent id this way for
-    /// graph-position purposes, and `process_manager::spawn_tab` doesn't
-    /// require a real parent tab to exist either.
-    fn reopen_closed_tab_shortcut(&mut self) {
-        let Some(closed) = self.closed_tabs.pop() else { return };
-        self.respawn_closed_tab(closed);
-    }
-
-    /// Shared by `reopen_closed_tab_shortcut` (always the last entry) and
-    /// the "Recently Closed" toolbar dropdown (any specific entry the user
-    /// picked, already removed from `self.closed_tabs` by the caller).
-    fn respawn_closed_tab(&mut self, closed: ClosedTab) {
-        // A stale/dissolved `closed.group` is sanitized centrally in
-        // `handle_tab_spawn_result` once this spawn actually completes.
-        self.spawn_new_tab_with_kind(closed.parent, closed.group, &closed.url, closed.kind, SpawnPurpose::New);
+    /// `Ctrl+Shift+T` / headless `REOPENTAB` — reopens the newest "Recently
+    /// Closed" entry of any kind, where it was (`reopen_closed`); a no-op
+    /// if there's none.
+    fn reopen_closed_shortcut(&mut self) {
+        if let Some(entry) = self.closed.pop() {
+            self.reopen_closed(entry);
+        }
     }
 
     /// `Ctrl+W` / headless `CLOSETAB` — closes the focused tab, a no-op if
     /// none is focused (Graph view with nothing selected).
     fn close_focused_tab_shortcut(&mut self) {
         if let Some(id) = self.focused.clone() {
-            self.close_tab(&id);
+            self.close_node(&id);
         }
     }
 
@@ -8132,11 +8129,11 @@ impl App {
     /// leaving groups and their members untouched; inside a group: every
     /// member, same effect as that group's own "Close Group" context-menu
     /// entry, just reachable without opening it). Each closes through the
-    /// normal `close_tab` path, same "just that action run once per tab"
-    /// shape `close_all_except`/`close_group` already have.
+    /// normal `close_node` path, same "just that action run once per tab"
+    /// shape `close_all_except` already has.
     fn close_all_at_current_level(&mut self) {
         for id in self.nodes_at_current_level(ItemNodeKind::Tab) {
-            self.close_tab(&id);
+            self.close_node(&id);
         }
     }
 
@@ -8586,8 +8583,8 @@ impl App {
     }
 
     /// Tab view's "Close Others" button: closes every open tab except
-    /// `keep_id` through the normal `close_tab` path (teardown, reparenting,
-    /// the `closed_tabs` stack all still apply -- this is just that same
+    /// `keep_id` through the normal `close_node` path (teardown, reparenting,
+    /// Recently Closed all still apply -- this is just that same
     /// action run once per other tab, not a bulk shortcut around it).
     fn close_all_except(&mut self, keep_id: &str) {
         let other_ids: Vec<String> = self
@@ -8597,7 +8594,7 @@ impl App {
             .cloned()
             .collect();
         for id in other_ids {
-            self.close_tab(&id);
+            self.close_node(&id);
         }
     }
 
@@ -9108,42 +9105,10 @@ impl App {
         }
     }
 
-    /// Closes every member of a group via `close_node` (a tab
-    /// through the normal `close_tab` path -- teardown, reparenting,
-    /// thumbnail cleanup all still apply, same as `close_all_except`/
-    /// `close_selected`; a nested subgroup recurses into this same
-    /// function; a Note/Image/Pdf/Json/Download member is destroyed too,
-    /// via the same cleanup its own "Delete" context-menu action already
-    /// applies -- see `close_node`'s own doc comment for why this
-    /// exists), then dissolves the now-empty group itself. Snapshots
-    /// the group into `closed_groups` *before* touching anything, via the
-    /// same `export_group` "Export Group..." itself uses, so "Reopen Closed
-    /// Group" can recreate it -- skipped when the export has no tabs (a
-    /// group containing only Downloads/Notes/Images/Pdfs/Jsons/nested-empty-groups,
-    /// e.g. an "Expand as Graph" subtree), since reopening that snapshot
-    /// would only recreate an empty, useless group and would otherwise
-    /// flood the 5-slot stack and evict genuinely useful entries -- the
-    /// individual `ClosedTab` entries
-    /// `close_tab` pushes along the way are then thrown away (`closed_tabs`
-    /// truncated back to its pre-loop length) rather than left behind
-    /// alongside the group-level snapshot, which would otherwise let a user
-    /// reopen the same tabs twice (once via the group, once via the plain
-    /// tab list) and end up with duplicates.
-    /// `closed_nodes` (Download/Note/Image/Pdf/Json members, via `close_node`)
-    /// needs no equivalent truncation -- `export_group`'s own snapshot only
-    /// ever captures tab members, never those five kinds, so there's no
-    /// analogous group-level copy for an individual `ClosedNode` entry to
-    /// duplicate.
-    fn close_group(&mut self, id: &str) {
-        if let Some(export) = self.export_group(id) {
-            if !export.tabs.is_empty() {
-                self.closed_groups.push(export);
-                if self.closed_groups.len() > MAX_CLOSED_GROUPS {
-                    self.closed_groups.remove(0);
-                }
-            }
-        }
-        let closed_tabs_before = self.closed_tabs.len();
+    /// Destroys a group and everything in it, at any depth (`destroy_node`
+    /// on each member), then the group itself. Records nothing: `close_node`
+    /// has already recorded the whole subtree as one entry.
+    fn destroy_group(&mut self, id: &str) {
         let member_ids: Vec<String> = self
             .nodes
             .iter()
@@ -9151,47 +9116,46 @@ impl App {
             .map(|(tid, _)| tid.clone())
             .collect();
         for tid in member_ids {
-            self.close_node(&tid);
+            self.destroy_node(&tid);
         }
-        self.closed_tabs.truncate(closed_tabs_before);
         self.dissolve_group(id);
-        // `close_node` doesn't save, and there's no save on exit -- without
+        // `destroy_node` doesn't save, and there's no save on exit -- without
         // this, a group whose members were only Downloads/Notes/Images/Pdfs/Jsons
-        // (no Tab member whose `close_tab` happens to save) would have
+        // (no Tab member whose `destroy_tab` happens to save) would have
         // those members reappear after a restart unless some unrelated
         // action saved first.
         self.save_session();
     }
 
-    /// Closes one node, applying its kind's full cleanup: a Group recurses
-    /// (`close_group`), a Tab goes through `close_tab` (feeding "Recently
-    /// Closed" tabs), and a Download/Note/Image/Pdf/Json records whatever
-    /// `closed_node_for` says (feeding "Recently Closed" nodes), frees its
-    /// GPU texture if it's an Image/Pdf, clears `json_viewer_node` if it
-    /// was showing this node, then `remove_node`s it. The single path
-    /// behind a card's hover ✕, its context-menu Delete/"Remove from
-    /// List", the Downloads popup's Remove, and `close_group`'s per-member
-    /// loop -- which is why it doesn't save: callers decide -- the single-node
-    /// UI paths go through `close_node_and_save`, and `close_group` saves
-    /// once after its whole loop.
-    /// (Before this was shared, `close_tab`'s own no-op-on-non-tab guard
+    /// Closes one node: records it (and, for a group, everything under it)
+    /// as one "Recently Closed" entry, then `destroy_node`s it. The single
+    /// user-facing close: a card's hover ✕, its context-menu Delete/Close/
+    /// "Remove from List", the Downloads popup's Remove, Ctrl+W, Close
+    /// Selected and the rest. It doesn't save (callers decide:
+    /// `close_node_and_save`); a tab's or group's destroy saves itself.
+    fn close_node(&mut self, id: &str) {
+        self.record_closed(id);
+        self.destroy_node(id);
+    }
+
+    /// Removes one node with its kind's full cleanup, recording nothing: a
+    /// Group recurses (`destroy_group`), a Tab goes through `destroy_tab`,
+    /// and a Download/Note/Image/Pdf/Json frees its GPU texture if it's an
+    /// Image/Pdf, clears `json_viewer_node` if it was showing this node,
+    /// then `remove_node`s it.
+    /// (Before this was shared, `destroy_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
     /// reparented by `dissolve_group`, never actually destroyed -- a gap
     /// confirmed while building "Expand as Graph", whose whole output is
     /// `JsonPayload` leaves nested inside Groups.)
-    fn close_node(&mut self, id: &str) {
-        let Some((kind, closed)) =
-            self.nodes.get(id).map(|node| (item_node_kind(&node.payload), closed_node_for(&node.payload)))
-        else {
+    fn destroy_node(&mut self, id: &str) {
+        let Some(kind) = self.nodes.get(id).map(|node| item_node_kind(&node.payload)) else {
             return;
         };
         match kind {
-            ItemNodeKind::Group => self.close_group(id),
-            ItemNodeKind::Tab => self.close_tab(id),
+            ItemNodeKind::Group => self.destroy_group(id),
+            ItemNodeKind::Tab => self.destroy_tab(id),
             ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
-                if let Some(closed) = closed {
-                    self.record_closed_node(closed);
-                }
                 if matches!(kind, ItemNodeKind::Image | ItemNodeKind::Pdf) {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.free_image(id);
@@ -9208,8 +9172,8 @@ impl App {
     /// `close_node` for a single user action (hover ✕, context-menu
     /// Delete/Close, Downloads popup Remove), then persists the session --
     /// except for a Download, which isn't part of the saved session at
-    /// all, and a tab or group, whose `close_tab`/`close_group` already
-    /// save.
+    /// all, and a tab or group, whose `destroy_tab`/`destroy_group`
+    /// already save.
     fn close_node_and_save(&mut self, id: &str) {
         let persisted = self.nodes.get(id).is_some_and(|node| {
             matches!(
@@ -10679,7 +10643,7 @@ impl App {
             }
             GraphAction::CloseSelected => {
                 for id in std::mem::take(&mut self.selected_tabs) {
-                    self.close_tab(&id);
+                    self.close_node(&id);
                 }
             }
             GraphAction::UngroupAll => {
@@ -11036,9 +11000,8 @@ impl App {
                     {
                         self.graph_filter.clear();
                     }
-                    if !self.closed_tabs.is_empty() || !self.closed_groups.is_empty() || !self.closed_nodes.is_empty() {
-                        let count = self.closed_tabs.len() + self.closed_groups.len() + self.closed_nodes.len();
-                        let label = format!("Recently Closed ({count})");
+                    if !self.closed.is_empty() {
+                        let label = format!("Recently Closed ({})", self.closed.len());
                         let response = ui.button(label);
                         if response.clicked() {
                             self.recently_closed_open = !self.recently_closed_open;
@@ -12589,7 +12552,7 @@ impl App {
                     }
                 }
             }
-            DebugCommand::ReopenTab => self.reopen_closed_tab_shortcut(),
+            DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
             DebugCommand::ZoomOut => self.zoom_out_shortcut(),
             DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
@@ -12795,7 +12758,7 @@ impl App {
             }
             DebugCommand::CloseGroup(id) => {
                 if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
-                    self.close_group(&id);
+                    self.close_node(&id);
                 }
             }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
@@ -13128,7 +13091,7 @@ impl App {
             // mechanism.
             self.queue_toast(format!("Tab crashed, restarted: {url}"));
             self.nodes.remove(&tab_id);
-            // Same stale-state guard `close_tab`/`finish_swap` apply — see
+            // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
             // `finish_swap`'s own comment on this.
             if self.dragging.as_deref() == Some(tab_id.as_str()) {
                 self.dragging = None;
@@ -13520,53 +13483,74 @@ mod tests {
     }
 
     // `Tab` is left out for the same reason as the test above: `TabPayload`
-    // can't be constructed in a unit test. Its arm returns `None` by the
-    // match's exhaustiveness, and `close_node` routes tabs to `close_tab`
-    // (which keeps its own Recently Closed stack) before this is consulted.
+    // can't be constructed in a unit test.
     #[test]
-    fn closed_node_for_records_only_undo_worthy_payloads() {
+    fn closed_piece_skips_what_has_nothing_to_restore() {
         assert!(matches!(
-            closed_node_for(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
-            Some(ClosedNode::Note(text)) if text == "n"
+            closed_piece(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
+            Some(ClosedPiece::Note(text)) if text == "n"
         ));
         // A blank note (never typed in, or only whitespace): nothing to restore.
         for text in ["", " 
 	"] {
-            assert!(closed_node_for(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
+            assert!(closed_piece(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
         }
         assert!(matches!(
-            closed_node_for(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 1, height: 1, error: None })),
-            Some(ClosedNode::Image(path)) if path == "img.png"
+            closed_piece(&NodePayload::Json(JsonPayload { path: "d.json".into(), value: serde_json::Value::Null, key: None, error: None })),
+            Some(ClosedPiece::Json(path)) if path == "d.json"
         ));
         assert!(matches!(
-            closed_node_for(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
-            Some(ClosedNode::Pdf(path)) if path == "doc.pdf"
+            closed_piece(&NodePayload::Json(JsonPayload { path: "d.json".into(), value: 1.into(), key: Some("k".into()), error: None })),
+            Some(ClosedPiece::JsonLeaf { key: Some(key), .. }) if key == "k"
         ));
-        assert!(matches!(
-            closed_node_for(&NodePayload::Json(JsonPayload {
-                path: "data.json".into(),
-                value: serde_json::Value::Null,
-                key: None,
-                error: None,
-            })),
-            Some(ClosedNode::Json(path)) if path == "data.json"
-        ));
-        // A synthetic "Expand as Graph" leaf: never recorded.
-        assert!(closed_node_for(&NodePayload::Json(JsonPayload {
-            path: "data.json".into(),
-            value: serde_json::Value::Null,
-            key: Some("k".into()),
-            error: None,
-        }))
-        .is_none());
-        assert!(closed_node_for(&NodePayload::Group(GroupPayload { name: "g".into() })).is_none());
-        assert!(closed_node_for(&NodePayload::Download(DownloadPayload {
+        assert!(closed_piece(&NodePayload::Download(DownloadPayload {
             path: "file.bin".into(),
             bytes_received: 0,
             total_bytes: None,
             completed: true,
         }))
         .is_none());
+    }
+
+    /// Closing a group records it and everything under it at any depth as
+    /// one entry, root first, skipping blank notes and nothing outside it.
+    #[test]
+    fn closed_entry_snapshots_the_whole_subtree() {
+        let node = |group: Option<&str>, payload| GraphNode {
+            parent: None,
+            group: group.map(str::to_string),
+            pos: egui::Vec2::ZERO,
+            vel: egui::Vec2::ZERO,
+            color: None,
+            payload,
+        };
+        let note = |text: &str| NodePayload::Note(NotePayload { text: text.into(), editing: false });
+        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into() });
+        let leaf = || NodePayload::Json(JsonPayload { path: "d.json".into(), value: 1.into(), key: Some("k".into()), error: None });
+        let image = NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
+        let mut nodes = NodeMap::default();
+        let mut order = Vec::new();
+        for (id, n) in [
+            ("grp-0", node(None, group("Outer"))),
+            ("note-0", node(Some("grp-0"), note("kept"))),
+            ("note-1", node(Some("grp-0"), note(" "))),
+            ("grp-1", node(Some("grp-0"), group("Inner"))),
+            ("img-0", node(Some("grp-1"), image)),
+            ("json-0", node(Some("grp-1"), leaf())),
+            ("note-2", node(None, note("outside"))),
+        ] {
+            nodes.insert(id.to_string(), n);
+            order.push(id.to_string());
+        }
+        let entry = closed_entry(&nodes, &order, "grp-0").unwrap();
+        let ids: Vec<&str> = entry.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["grp-0", "note-0", "grp-1", "img-0", "json-0"]);
+        assert_eq!(entry.nodes[3].group.as_deref(), Some("grp-1"));
+
+        nodes.insert("json-1".into(), node(None, leaf()));
+        assert!(closed_entry(&nodes, &order, "json-1").is_none());
+        assert!(closed_entry(&nodes, &order, "note-1").is_none());
+        assert_eq!(closed_entry(&nodes, &order, "note-2").unwrap().nodes.len(), 1);
     }
 
     /// A `CardView` for `kind` with nothing set, for tests to override.
