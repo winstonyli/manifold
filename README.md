@@ -290,6 +290,15 @@ Each engine-host writes its own log to `%TEMP%\manifold-<tab_id>.log`.
 
 **Image view**: clicking an image card maximizes it into Item view (the same animated expand/shrink a tab card uses; Escape or the "Graph" button returns). The toolbar is the shared Item toolbar frame -- "Graph" at the left, the Help/Settings chip at the right -- with the image's own content between: its filename and pixel size, a zoom chip (−, percentage, +, Fit; the same chip the Graph toolbar uses), and Open Containing Folder / Copy Path. The image opens at Fit (contained, never above 100%); the mouse wheel zooms about the cursor (10%–1600%), dragging pans (never past the image's edges), and `Ctrl+=`/`Ctrl+-`/`Ctrl+0` zoom it. A maximized image is restored on relaunch (at Fit). Tab-only shortcuts (Ctrl+W, F5, …) keep acting on the last focused tab, as they do from Graph view.
 
+## Branches
+
+Since 2026-09-25, day-to-day work goes on `dev`, and `main` moves only at releases.
+
+- Commit and push to `dev`. Feature branches and worktrees branch from `dev` and merge back into it.
+- A release merges `dev` into `main` with `git merge --no-ff dev`, then tags it `vX.Y.Z`. Following `main`'s first parents then lists exactly the releases.
+- A hotfix branches from `main`, merges into `main` (tagged like a release), then merges into `dev`.
+- Everything on `main` up to `2a88b50` predates this convention and is the pre-release baseline. `dev` starts from there.
+
 ## Headless mode (automated testing)
 
 ```bash
