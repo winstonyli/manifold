@@ -5634,9 +5634,11 @@ impl App {
         // a Note's text while editing (where `response` is only the
         // header) still counts; being hover-only it takes no clicks.
         let response = ui.interact(body.interact_rect, egui::Id::new(("graph_card", id)), egui::Sense::click_and_drag());
+        // Not while a card's menu is open: the pointer is usually still on
+        // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
-            Some(tooltip) => response.on_hover_text(tooltip),
-            None => response,
+            Some(tooltip) if self.node_menu.is_none() => response.on_hover_text(tooltip),
+            _ => response,
         };
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
         let pointer_on_card = hover.hovered() || response.hovered();
@@ -11086,13 +11088,10 @@ impl App {
         // `build_shortcuts_help`/`build_recently_closed_popup`/the three
         // context menus below are all deferred to the very end of this
         // function (past the Scene/`overlay_painter` node-rendering block),
-        // not called here where their button rects are computed -- found
-        // live that a card's title/pin-icon decorations (painted via
-        // `overlay_painter`, a *separate* `Order::Foreground` layer created
-        // further down) rendered on top of these popups, since within one
-        // egui `Order` tier, layers paint in the order they're first
-        // touched each frame, and `overlay_painter` didn't exist yet at
-        // this point in the function.
+        // not called here where their button rects are computed. That
+        // order doesn't decide what paints on top, though: see
+        // `overlay_painter`'s own comment for why its layer is
+        // `Order::Middle`.
         if reset_view {
             self.graph_scene_rect = self.fit_all_nodes_scene_rect();
             self.pending_new_node = None;
@@ -11203,10 +11202,15 @@ impl App {
         };
         // Clipped to the graph panel's own rect (not `layer_painter`'s
         // default full-content-rect) so a node near the top edge can't
-        // paint its label over the toolbar above.
+        // paint its label over the toolbar above. `Order::Middle`: above
+        // the Scene (Background), below every popup, menu and toast (all
+        // Foreground Areas). Within one `Order`, egui paints Area layers in
+        // their stacking order and a bare layer like this one after all of
+        // them (`GraphicsLayers::drain`), so at Foreground it covered the
+        // cards' own context menus.
         let overlay_painter = egui::Painter::new(
             ui.ctx().clone(),
-            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("graph_decoration_text")),
+            egui::LayerId::new(egui::Order::Middle, egui::Id::new("graph_decoration_text")),
             scene_outer_rect,
         );
 
