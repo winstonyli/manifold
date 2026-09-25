@@ -44,6 +44,17 @@ it.
 
 ## Data model
 
+### Document id
+
+Each document gets 128 random bits from the OS when it is created,
+stored as 16 raw bytes in every `Snapshot`. Sync (sub-project 2) uses it
+so peers know they hold the same document; invites carry it. Its text
+form is Crockford base32 (26 characters): case-insensitive, so it is
+safe in Windows file names, and free of look-alike characters, so it
+can be read out. Not nanoid or base64url: those are case-sensitive, and
+two ids differing only in case would collide as file names. Save As
+and Import Session create a new document id; only sync shares one.
+
 ### Actors and ids
 
 - Each launch draws a random 64-bit **actor id** from the OS
@@ -79,7 +90,7 @@ A set of nodes. Each node has:
 | `color` | all | `None` = untagged |
 | `group` | all | the tree edge; changed only by `Move` |
 | `parent` | Tab | "opened from" link, a plain register |
-| `url`, `engine`, `title`, `pinned`, `zoom` | Tab | `title` is written by whichever replica's engine loaded the page |
+| `url`, `engine`, `title`, `pinned`, `zoom` | Tab | `url` is set only by user-started navigation (typed, clicked, back/forward), never by redirects or script navigation, so replicas whose logins redirect differently don't bounce each other's tabs. `title` is written by whichever replica's engine loaded the page |
 | `name`, `from_json` | Group | |
 | `text` | Note | whole string, LWW (sub-project 4 replaces it) |
 | `path` | Image, Pdf, Json, JsonLeaf, Download | |
@@ -216,7 +227,7 @@ frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
   region never parses as a frame. `len = 0` and `frame_type = 0` are
   invalid.
 - Frame types: `Actors` (actor u64 → index table, appended as actors
-  appear), `Snapshot` (materialized document, tombstone set, version
+  appear), `Snapshot` (document id, materialized document, tombstone set, version
   vector, and a reserved field for a retained Move-log tail),
   `Ops` (a batch from one actor; counters and HLCs delta-encoded within
   the batch), `Local` (personal state).
