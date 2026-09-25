@@ -7,6 +7,7 @@
 
 pub mod crc32c;
 pub mod journal;
+pub mod json;
 pub mod model;
 pub mod ops;
 pub mod tlv;
