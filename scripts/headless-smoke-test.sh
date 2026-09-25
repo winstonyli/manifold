@@ -10,15 +10,15 @@
 # node to enter Tab view, type a query, screenshot the suggestion dropdown,
 # click a suggestion, screenshot the result; arrow-key highlight +
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
-# entering and leaving a group in Graph view; quit.
+# entering and leaving a group in Graph view; tab drops inside a group
+# (reparent, the cycle refusal) and ejecting a rectangle-selected tab;
+# quit. The drop checks click cards where EXPORTSTATE's `cards` says they
+# are, after the layout stops moving (`settle`), not at fixed coordinates.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
-# focuses another tab). That needs a second tab, which needs clicking a
-# graph-view node — and a node's on-screen position depends on the
-# force-directed layout's physics settling, not a fixed coordinate the way
-# chrome buttons are. There's no position-query debug command yet to make
-# that click reliable, so it's left to manual verification for now (see
-# project memory for the one-off manual pass that confirmed it works).
+# focuses another tab), left to manual verification (see project memory
+# for the one-off manual pass that confirmed it works). EXPORTSTATE's
+# `cards` could now find the second tab's node to click.
 #
 # Run after `cargo build -p manifold`. Exits 0 if every check passed.
 set -uo pipefail # not -e: a failed check should still let later checks run
@@ -238,6 +238,107 @@ send "DOUBLECLICK 250 125"
 check_state group_in "double-clicking the group card enters the group" 'not s["tab_view"] and s["current_group"]'
 send "CLICK 22 17"
 check_state group_out "the back button leaves the group" 's["current_group"] is None'
+
+# Tab drops inside a group. `query NAME EXPR` evaluates EXPR over an
+# already-exported NAME.json without exporting again: `s` (the state),
+# `cards` (by id), `tabs`/`groups` (sorted ids), `xy(id)` and `lt(id)` (a
+# card's center and top-left corner, where its eject button sits, as "x
+# y") and `bbox` (every tab's rects' bounds grown by 20, as "x0 y0 x1 y1").
+query() {
+    python - "$out_dir/$1.json" "$2" <<'EOF'
+import json, os, sys
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+cards = {c["id"]: c for c in s["cards"]}
+tabs = sorted(i for i, c in cards.items() if c["kind"] == "Tab")
+groups = sorted(i for i, c in cards.items() if c["kind"] == "Group")
+xy = lambda i: "%.0f %.0f" % tuple(cards[i]["screen"])
+lt = lambda i: "%.0f %.0f" % (cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
+r = [cards[i]["rect"] for i in tabs]
+bbox = "%.0f %.0f %.0f %.0f" % (max(0, min(x[0] for x in r) - 20), max(40, min(x[1] for x in r) - 20),
+                                max(x[2] for x in r) + 20, max(x[3] for x in r) + 20) if r else ""
+env = os.environ
+print(eval(sys.argv[2]))
+EOF
+}
+
+check_query() {
+    if [ "$(query "$1" "bool($3)")" = True ]; then pass "$2"; else failed "$2: \`$3\` is false in $1.json"; fi
+}
+
+# Exports until two exports in a row agree on every card's rect, leaving
+# the last as NAME.json. After entering a group the camera eases, and
+# SLEEP draws no frames (each command draws one), so a fixed sleep can
+# read positions mid-ease; a drag there lands on empty canvas.
+settle() {
+    local prev="" now i
+    for i in $(seq 1 40); do
+        state "$1" 1 >/dev/null
+        now=$(query "$1" 'sorted((i, [round(v, 1) for v in c["rect"]]) for i, c in cards.items())')
+        [ "$now" = "$prev" ] && return 0
+        prev=$now
+        sleep 0.3
+    done
+    failed "$1: the layout never stopped moving"
+}
+
+# `drag X0 Y0 X1 Y1 [button]`: a press, six moves and a release with no
+# sleep between them (see debug_control.rs's advice on drags).
+drag() {
+    local i
+    send "MOUSEDOWN $1 $2${5:+ $5}"
+    for i in 1 2 3 4 5 6; do send "MOUSEMOVE $(($1 + ($3 - $1) * i / 6)) $(($2 + ($4 - $2) * i / 6))"; done
+    send "MOUSEUP $3 $4${5:+ $5}"
+}
+
+# A two-tab group from a file, entered by double-clicking its card.
+cat >"$out_dir/pair.group.json" <<'EOF'
+{"name": "Pair", "color": null, "tabs": [
+ {"id": "a", "parent": null, "url": "manifold://welcome", "engine": "webview2", "pos_x": -150.0, "pos_y": 0.0},
+ {"id": "b", "parent": null, "url": "manifold://welcome", "engine": "webview2", "pos_x": 150.0, "pos_y": 0.0}]}
+EOF
+before=$(query group_out 'groups')
+send "IMPORTGROUP $out_dir_win\pair.group.json"
+send "WAITTABS"
+# The imported card lands wherever the jitter puts it, which can be off
+# screen at this zoom: the toolbar's Reset View (fit all) button brings
+# every card into view (its spot at 816 wide, as measured from a
+# SCREENSHOT; re-measure if the Graph toolbar changes).
+send "CLICK 326 17"
+settle pair_top
+pair=$(BEFORE="$before" query pair_top '[g for g in groups if g not in eval(env["BEFORE"])][0]')
+send "DOUBLECLICK $(query pair_top "xy('$pair')")"
+settle pair_in
+check_query pair_in "double-clicking the imported group's card enters it" "s['current_group'] == '$pair' and len(tabs) == 2"
+read -r m1 m2 <<<"$(query pair_in '" ".join(tabs)')"
+
+drag $(query pair_in "xy('$m1')") $(query pair_in "xy('$m2')")
+settle reparented
+check_query reparented "a tab dropped on a sibling tab inside a group is reparented under it" \
+    "cards['$m1']['parent'] == '$m2'"
+# The pair now overlaps exactly, and which is on top follows spawn order,
+# so move whichever the press picks up onto empty canvas first.
+read -r x y <<<"$(query reparented "xy('$m1')")"
+drag "$x" "$y" $((x - 250)) $((y - 150))
+settle apart
+drag $(query apart "xy('$m2')") $(query apart "xy('$m1')")
+settle cycle
+PREV="$(query apart "cards['$m2']['screen']")" check_query cycle "dropping a tab onto its own child is refused" \
+    "cards['$m2']['screen'] != eval(env['PREV']) and cards['$m2']['parent'] is None and cards['$m1']['parent'] == '$m2'"
+
+# A right-drag marquee selects both; ejecting one through its button
+# takes it out of the selection too (the pair overlaps again, so either
+# may be the one ejected).
+drag $(query cycle 'bbox') right
+settle selected
+check_query selected "a right-drag marquee selects both tabs" "s['selected_tabs'] == tabs"
+read -r x y <<<"$(query selected "xy('$m1')")"
+read -r ex ey <<<"$(query selected "lt('$m1')")"
+send "MOUSEMOVE $x $y"
+send "MOUSEMOVE $ex $ey"
+send "CLICK $ex $ey"
+settle ejected
+check_query ejected "ejecting a selected tab also drops it from the selection" \
+    "len(tabs) == 1 and s['selected_tabs'] == tabs"
 
 send "QUIT"
 if wait "$browser_pid"; then
