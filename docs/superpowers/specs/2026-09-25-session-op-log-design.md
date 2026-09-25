@@ -49,13 +49,20 @@ it.
 Each document gets 128 random bits from the OS when it is created,
 stored as 16 raw bytes in every `Snapshot`. Sync (sub-project 2) uses it
 so peers know they hold the same document; invites carry it. Its text
-form is uppercase Crockford base32 plus its mod-37 check character
-(27 characters): case-insensitive, so it is safe in Windows file names;
-free of look-alike characters, so it can be read out; URL-safe without
-percent-encoding; selectable with one double-click; sortable; and all in
-QR alphanumeric mode. Decoding folds case, maps I/L to 1 and O to 0, and
-rejects a wrong check character. Not nanoid or base64url: those are case-sensitive, and
-two ids differing only in case would collide as file names. Save As
+form is 26 uppercase Crockford base32 digits (the 128 bits, big-endian,
+top digit 0–3) plus two check digits, 28 characters: case-insensitive,
+so it is safe in Windows file names; free of look-alike characters, so
+it can be read out; URL-safe without percent-encoding; selectable with
+one double-click; sortable; and all in QR alphanumeric mode. The check
+digits are chosen so the whole 28-digit number is 0 mod 1021 (a prime
+below 32²): every single-character substitution and every adjacent
+transposition, check digits included, is rejected, and a random string
+passes about 1 time in 1000. Decoding folds case, maps I/L to 1 and O
+to 0, and rejects a failed check. Not Crockford's own mod-37 check
+character: its extra symbols `* ~ $ =` break file names (`*`), QR
+alphanumeric mode (`~ $ =`) and double-click selection. Not nanoid or
+base64url: those are case-sensitive, and two ids differing only in case
+would collide as file names. Save As
 and Import Session create a new document id; only sync shares one.
 
 ### Actors and ids

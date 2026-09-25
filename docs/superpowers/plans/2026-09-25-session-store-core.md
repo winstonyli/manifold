@@ -33,7 +33,7 @@ These settle points the spec left open or got wrong. Task 7 writes them into the
 5. **The header carries a random 64-bit generation** instead of the spec's "file id". `file = magic | format_version | generation (u64 LE) | frame*`. Each compaction writes a new one; a reader seeing a different generation (or a shorter file) re-reads from the start. Why: Windows file ids need the unstable `windows_by_handle` API.
 6. **Stamps must be unique per op.** Last-writer-wins and the move log both order by `(hlc, actor)`; two different ops with equal stamps would merge in arrival order. `Clock::tick` guarantees uniqueness; test helpers must too (`logical = counter`).
 7. **fsync opens the file for writing.** On Windows, `FlushFileBuffers` on a read-only handle fails with "Access is denied" (found by the `a_newer_builds_frames_and_fields_survive` test).
-8. **Open question, not ruled (for the user):** the document id's text form. The spec's Crockford mod-37 check symbols are `* ~ $ = U`; `*` is invalid in Windows file names, `~ $ =` are not QR alphanumeric, and punctuation breaks double-click selection, contradicting the spec's own claims. Proposed: two check characters, `n mod 1021` written in base32, which catch every single substitution and adjacent transposition. Nothing in this plan uses the text form (`--dump` prints hex), so it waits for sub-project 2.
+8. **Document id text form (decided 2026-09-25, already in the spec).** Crockford's mod-37 check symbols `* ~ $ =` contradicted the spec's claims, so the text form is 26 digits plus two check digits making the whole number 0 mod 1021; a brute-force check found no undetected single substitution or adjacent transposition. Nothing in this plan uses the text form (`--dump` prints hex).
 
 ---
 
@@ -3248,19 +3248,7 @@ git commit -m "store: JSON snapshots and import with fresh ids" -m "Co-Authored-
 
 The spec is the authority Plan B argues from, so it must say what the code does. Make these edits (find each passage by its quoted text):
 
-- [ ] **Step 1: Document id.** After the paragraph ending "only sync shares one.", add:
-
-```markdown
-**Open (2026-09-25):** the mod-37 check symbols are `* ~ $ = U`, and
-`*` is invalid in Windows file names, `~ $ =` are not QR alphanumeric,
-and punctuation breaks double-click selection, contradicting the claims
-above. Proposed instead: two check characters, `n mod 1021` in base32
-(catches every single substitution and adjacent transposition). Decided
-in sub-project 2, the first user of the text form; until then `--dump`
-prints the id in hex.
-```
-
-- [ ] **Step 2: Op ids.** Replace "- An **op id** is also `(actor, counter)` from the same counter." with:
+- [ ] **Step 1: Op ids.** Replace "- An **op id** is also `(actor, counter)` from the same counter." with:
 
 ```markdown
 - An **op id** is also `(actor, counter)` from the same counter. A
@@ -3270,9 +3258,9 @@ prints the id in hex.
   order depends on it.
 ```
 
-- [ ] **Step 3: `color` row.** In the field table, replace "`None` = untagged" with "`None` = untagged; black is `Some(0)` and is encoded".
+- [ ] **Step 2: `color` row.** In the field table, replace "`None` = untagged" with "`None` = untagged; black is `Some(0)` and is encoded".
 
-- [ ] **Step 4: Delete and Move.** Replace "- **Delete**: tombstone; later `Set`/`Move` on it are ignored." with "- **Delete**: tombstone; its registers are cleared and later `Set`s on it are ignored. `Move`s still apply (below)." Replace "A `Move` of a tombstoned node is ignored; a `Move` of a live node into a tombstoned group applies, and display re-homes it." with:
+- [ ] **Step 3: Delete and Move.** Replace "- **Delete**: tombstone; later `Set`/`Move` on it are ignored." with "- **Delete**: tombstone; its registers are cleared and later `Set`s on it are ignored. `Move`s still apply (below)." Replace "A `Move` of a tombstoned node is ignored; a `Move` of a live node into a tombstoned group applies, and display re-homes it." with:
 
 ```markdown
 Moves apply to tombstoned nodes like any other, so whether a `Delete`
@@ -3281,7 +3269,7 @@ undo and redo of later moves differed between replicas). A node in a
 tombstoned group is displayed at its nearest live ancestor.
 ```
 
-- [ ] **Step 5: Ids in field values.** Replace the bullet starting "- node id: nested `{1: actor index, 2: counter}`." (through "full 64-bit actor id.") with:
+- [ ] **Step 4: Ids in field values.** Replace the bullet starting "- node id: nested `{1: actor index, 2: counter}`." (through "full 64-bit actor id.") with:
 
 ```markdown
 - node id in a frame's own structure (op targets, `Move` groups,
@@ -3296,18 +3284,18 @@ tombstoned group is displayed at its nearest live ancestor.
 
 and in the next bullet replace "absent when untagged;" with "absent when untagged (black is `Some(0)`, present). A field is omitted only when it holds exactly what absence decodes to;".
 
-- [ ] **Step 6: Header.** Replace the file grammar line `file  = magic "MNF\0" | format_version (varint) | frame*` with `file  = magic "MNF\0" | format_version (varint) | generation (u64 LE) | frame*`, and after the code block's closing fence add:
+- [ ] **Step 5: Header.** Replace the file grammar line `file  = magic "MNF\0" | format_version (varint) | frame*` with `file  = magic "MNF\0" | format_version (varint) | generation (u64 LE) | frame*`, and after the code block's closing fence add:
 
 ```markdown
 - `generation` is random, new at each compaction: a reader holding an
   offset into the old file sees it change and re-reads from the start.
 ```
 
-- [ ] **Step 7: File id.** In "Two instances on one profile", replace "if its file id differs from the one it read last (another instance compacted)" with "if its header's generation differs from the one it read last, or the file is shorter than its offset (another instance compacted)". In "Compact", replace "write `magic, Actors, Snapshot, Local` to a temp file" with "write a header with a new generation, then `Actors, Snapshot, Local`, to a temp file".
+- [ ] **Step 6: File id.** In "Two instances on one profile", replace "if its file id differs from the one it read last (another instance compacted)" with "if its header's generation differs from the one it read last, or the file is shorter than its offset (another instance compacted)". In "Compact", replace "write `magic, Actors, Snapshot, Local` to a temp file" with "write a header with a new generation, then `Actors, Snapshot, Local`, to a temp file".
 
-- [ ] **Step 8: fsync.** In "Append", after "`fsync` is debounced to ~1 s and forced on exit;", add " (on Windows the handle must be opened for writing, or `FlushFileBuffers` fails)".
+- [ ] **Step 7: fsync.** In "Append", after "`fsync` is debounced to ~1 s and forced on exit;", add " (on Windows the handle must be opened for writing, or `FlushFileBuffers` fails)".
 
-- [ ] **Step 9: Check and commit.** Several quoted passages wrap across lines in the spec; match them across the line breaks. Then run `grep -n "tombstoned node is ignored\|magic, Actors\|its file$\|untagged;$" docs/superpowers/specs/2026-09-25-session-op-log-design.md`; expected: no output (each is a phrase the edits above remove).
+- [ ] **Step 8: Check and commit.** Several quoted passages wrap across lines in the spec; match them across the line breaks. Then run `grep -n "tombstoned node is ignored\|magic, Actors\|its file$\|untagged;$" docs/superpowers/specs/2026-09-25-session-op-log-design.md`; expected: no output (each is a phrase the edits above remove).
 
 ```bash
 git add docs/superpowers/specs/2026-09-25-session-op-log-design.md
