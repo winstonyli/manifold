@@ -34,6 +34,8 @@ if [ ! -x "$exe" ]; then
     echo "headless-smoke-test: $exe not found — build first (cargo build -p manifold)" >&2
     exit 1
 fi
+. "$repo_root/scripts/fresh-exe.sh"
+require_fresh_exe "$exe" || exit 1
 
 mkdir -p "$out_dir"
 rm -f "$out_dir"/*.png "$out_dir"/*.json
