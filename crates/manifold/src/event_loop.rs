@@ -391,7 +391,7 @@ impl App {
                     raw_input.focused = true;
                 }
                 raw_input.events.append(&mut self.debug_input_events);
-                if self.address_bar_focused {
+                if self.address_bar.focused {
                     if let Some(text) = self.debug_address_bar_typing.take() {
                         raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
                         raw_input.events.push(egui::Event::Text(text));
@@ -791,7 +791,7 @@ impl App {
             DebugCommand::ExportState(path) => {
                 let focused_url = self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
                 let suggestions: Vec<String> = self
-                    .combined_suggestions()
+                    .address_bar.combined()
                     .into_iter()
                     .map(|s| match s {
                         Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
@@ -825,9 +825,9 @@ impl App {
                     "tab_view": self.showing_tab_view(),
                     "transition": self.transition.is_some(),
                     "focused_url": focused_url,
-                    "address_bar_text": self.address_bar_text,
+                    "address_bar_text": self.address_bar.text,
                     "suggestions": suggestions,
-                    "highlighted": self.dropdown_highlighted,
+                    "highlighted": self.address_bar.highlighted,
                     "current_group": self.current_group,
                     "cards": cards,
                     "selected_tabs": selected_tabs,

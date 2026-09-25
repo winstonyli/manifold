@@ -166,6 +166,17 @@ impl SuggestionFetcher {
         }
     }
 
+    /// Drops the pending query and any fetch in flight, for when the
+    /// dropdown is dismissed: a response landing after that would otherwise
+    /// reopen it. Forgets `last_fetched` too, so typing the same query again
+    /// fetches it again.
+    pub fn cancel(&mut self) {
+        self.generation += 1;
+        self.pending_query = None;
+        self.pending_since = None;
+        self.last_fetched = None;
+    }
+
     /// Call once per frame. Fires the debounced HTTP fetch if it's due,
     /// and returns freshly-arrived, still-relevant suggestions if any
     /// landed this tick (an empty `Vec` clears previous ones — e.g. the
@@ -225,4 +236,21 @@ fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
             .filter_map(|item| item.as_str().map(str::to_string))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancelled_fetch_cannot_deliver() {
+        let mut fetcher = SuggestionFetcher::new();
+        fetcher.note_text_changed("rust lang");
+        let in_flight = fetcher.generation;
+        fetcher.cancel();
+        // The response to the fetch that was in flight lands after the cancel.
+        fetcher.tx.send((in_flight, vec!["rust language".into()])).unwrap();
+        assert_eq!(fetcher.tick(), None);
+        assert_eq!(fetcher.pending_query, None);
+    }
 }

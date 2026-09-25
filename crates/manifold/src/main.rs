@@ -1463,16 +1463,8 @@ struct App {
 
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
-    address_bar_text: String,
-    address_bar_focused: bool,
-    /// Address-bar autocomplete: open-tab matches are recomputed
-    /// synchronously (cheap, from data already in memory) whenever the text
-    /// changes; search-engine suggestions arrive later, asynchronously, via
-    /// `suggestion_fetcher`'s debounced background fetch. Only shown while
-    /// `address_bar_focused`.
-    open_tab_suggestions: Vec<Suggestion>,
-    search_suggestions: Vec<String>,
-    suggestion_fetcher: SuggestionFetcher,
+    /// Tab view's address bar and its autocomplete. See `AddressBar`.
+    address_bar: AddressBar,
     /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
     /// module's own doc comment for why favicons are fetched independently
     /// here rather than aggregated from each engine's own (inconsistent)
@@ -1490,13 +1482,6 @@ struct App {
     /// string), not duplicated here -- this only needs to remember whether
     /// resolution was already attempted, not the result itself.
     favicon_resolved: HashSet<String>,
-    /// Index into `combined_suggestions()` the user has moved to via
-    /// Up/Down — `None` means no row is highlighted (Enter falls through
-    /// to a plain navigate of the typed text). Reset whenever the
-    /// suggestion list itself changes or the dropdown closes, so a stale
-    /// index can never point at an unrelated row — see `build_tab_view_ui`'s
-    /// dropdown-handling comments for the full set of reset sites.
-    dropdown_highlighted: Option<usize>,
 
     /// Graph view: the node currently being dragged (pinned in the physics
     /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
@@ -1600,7 +1585,7 @@ struct App {
     /// once the address bar actually has egui focus: the command requests
     /// focus through `pending_focus`, which only takes hold in
     /// the frame after, so typing waits for a frame where
-    /// `address_bar_focused` is true.
+    /// `address_bar.focused` is true.
     debug_address_bar_typing: Option<String>,
     /// A focus request waiting for its `TextEdit` to be built (see
     /// `FocusTarget`): set by `Ctrl+L`/`Ctrl+F`/`Ctrl+K`, starting a
@@ -1820,16 +1805,11 @@ impl Default for App {
             key_modifiers: 0,
             egui_ctx,
             egui_state: None,
-            address_bar_text: settings.home_page.clone(),
-            address_bar_focused: false,
-            open_tab_suggestions: Vec::new(),
-            search_suggestions: Vec::new(),
-            suggestion_fetcher: SuggestionFetcher::new(),
+            address_bar: AddressBar::new(settings.home_page.clone()),
             favicon_fetcher: FaviconFetcher::new(),
             pdf_fetcher: PdfFetcher::new(),
             redirect_fetcher: RedirectFetcher::new(),
             favicon_resolved: HashSet::new(),
-            dropdown_highlighted: None,
             dragging: None,
             hovered: None,
             peek_suppressed: None,
@@ -2215,20 +2195,6 @@ impl App {
             .collect()
     }
 
-    /// The combined, ordered list the dropdown actually renders: open tabs
-    /// first (jumping to something already loaded beats a fresh
-    /// navigation/search), then search-engine suggestions.
-    fn combined_suggestions(&self) -> Vec<Suggestion> {
-        let mut all = self.open_tab_suggestions.clone();
-        all.extend(
-            self.search_suggestions
-                .iter()
-                .cloned()
-                .map(|query| Suggestion::Search { query }),
-        );
-        all
-    }
-
     /// Accepting a suggestion: jump straight to an already-open tab (no
     /// navigation at all), or navigate the focused tab to a search.
     /// Either way the dropdown itself is cleared and the address bar drops
@@ -2242,10 +2208,8 @@ impl App {
                 self.navigate_tab(focused_tab_id, url);
             }
         }
-        self.open_tab_suggestions.clear();
-        self.search_suggestions.clear();
-        self.address_bar_focused = false;
-        self.dropdown_highlighted = None;
+        self.address_bar.dismiss();
+        self.address_bar.focused = false;
     }
 
     /// Snapshots the current tab graph (shape, url/engine/position per tab,
@@ -2813,7 +2777,7 @@ impl App {
                     SpawnPurpose::Root => {
                         self.focused = Some(id.clone());
                         self.view_mode = ViewMode::Graph;
-                        self.address_bar_text = url;
+                        self.address_bar.text = url;
                         self.send_resize_to(&id);
                         self.send_zoom_to(&id);
                     }
@@ -2841,8 +2805,8 @@ impl App {
                         // showing the configured value.
                         self.send_zoom_to(&id);
                         if is_focused {
-                            if !self.address_bar_focused {
-                                self.address_bar_text = url;
+                            if !self.address_bar.focused {
+                                self.address_bar.text = url;
                             }
                             // Resizing only matters for what's actually
                             // shown -- skip it while Image view hides this
@@ -2857,7 +2821,7 @@ impl App {
                     SpawnPurpose::Restore => {
                         self.send_zoom_to(&id);
                         if is_focused {
-                            self.address_bar_text = url;
+                            self.address_bar.text = url;
                             if visible {
                                 self.send_resize_to(&id);
                             }
@@ -3627,8 +3591,8 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
             node.tab.set_visible(true);
-            if !self.address_bar_focused {
-                self.address_bar_text = node.url.clone();
+            if !self.address_bar.focused {
+                self.address_bar.text = node.url.clone();
             }
         }
         self.focused = Some(id.to_string());
@@ -3724,7 +3688,7 @@ impl App {
                 self.save_session();
             }
         }
-        self.dropdown_highlighted = None;
+        self.address_bar.highlighted = None;
     }
 
     /// Graph view's node-click equivalent of `focus_item` — starts an
@@ -4878,7 +4842,7 @@ impl App {
 
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
     /// since Graph view has no address bar to focus. Queues a focus request
-    /// rather than setting `address_bar_focused` directly: real egui focus
+    /// rather than setting `address_bar.focused` directly: real egui focus
     /// can only be requested on the widget, when `build_tab_view_ui` builds
     /// it (see `FocusTarget`).
     fn focus_address_bar_shortcut(&mut self) {

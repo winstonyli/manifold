@@ -3,6 +3,55 @@
 
 use super::*;
 
+/// Tab view's address bar and its autocomplete dropdown.
+pub(crate) struct AddressBar {
+    pub(crate) text: String,
+    pub(crate) focused: bool,
+    /// Open tabs matching `text`, recomputed synchronously (cheap, from
+    /// data already in memory) whenever it changes.
+    pub(crate) open_tab_suggestions: Vec<Suggestion>,
+    /// Search-engine suggestions, which arrive later from `fetcher`'s
+    /// debounced background fetch.
+    pub(crate) search_suggestions: Vec<String>,
+    pub(crate) fetcher: SuggestionFetcher,
+    /// Index into `combined()` the user has moved to with Up/Down; `None`
+    /// means no row is highlighted (Enter navigates to the typed text).
+    /// Reset whenever the list changes or the dropdown closes, so a stale
+    /// index can't point at an unrelated row.
+    pub(crate) highlighted: Option<usize>,
+}
+
+impl AddressBar {
+    pub(crate) fn new(text: String) -> Self {
+        Self {
+            text,
+            focused: false,
+            open_tab_suggestions: Vec::new(),
+            search_suggestions: Vec::new(),
+            fetcher: SuggestionFetcher::new(),
+            highlighted: None,
+        }
+    }
+
+    /// The dropdown's rows: open tabs first (jumping to one already loaded
+    /// beats a fresh navigation), then searches.
+    pub(crate) fn combined(&self) -> Vec<Suggestion> {
+        let mut all = self.open_tab_suggestions.clone();
+        all.extend(self.search_suggestions.iter().cloned().map(|query| Suggestion::Search { query }));
+        all
+    }
+
+    /// Closes the dropdown, and cancels the search fetch in flight: its
+    /// response would otherwise reopen the dropdown after an Enter or
+    /// Escape.
+    pub(crate) fn dismiss(&mut self) {
+        self.open_tab_suggestions.clear();
+        self.search_suggestions.clear();
+        self.highlighted = None;
+        self.fetcher.cancel();
+    }
+}
+
 /// The "back to Graph" control every non-Graph item view shares (today,
 /// only Tab view; see the design spec's "item-view shared chip" layer).
 /// Deliberately not chip-wrapped, unlike the icon clusters elsewhere in
@@ -293,7 +342,7 @@ impl App {
         // real measured width begins.
         let text_width = (ui.available_rect_before_wrap().width() - trailing_width).max(40.0);
         let response = ui.add(
-            egui::TextEdit::singleline(&mut self.address_bar_text)
+            egui::TextEdit::singleline(&mut self.address_bar.text)
                 .desired_width(text_width)
                 // Match `style.spacing.button_padding` (set in
                 // `apply_style`) so the address bar renders the
@@ -309,18 +358,18 @@ impl App {
         if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
             response.request_focus();
         }
-        self.address_bar_focused = response.has_focus();
+        self.address_bar.focused = response.has_focus();
         actions.address_bar_rect = Some(response.rect);
 
         if response.changed() {
-            self.open_tab_suggestions =
-                self.compute_open_tab_suggestions(&self.address_bar_text, focused_id);
-            self.suggestion_fetcher.note_text_changed(&self.address_bar_text);
+            self.address_bar.open_tab_suggestions =
+                self.compute_open_tab_suggestions(&self.address_bar.text, focused_id);
+            self.address_bar.fetcher.note_text_changed(&self.address_bar.text);
             // A changed query invalidates whatever row was
             // highlighted for the *previous* suggestion list —
             // keeping a stale index could silently highlight
             // (and Enter-accept) an unrelated row.
-            self.dropdown_highlighted = None;
+            self.address_bar.highlighted = None;
         }
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             actions.enter_pressed = true;
@@ -374,7 +423,7 @@ impl App {
             }
             return;
         }
-        // Not just `!self.address_bar_focused`: found live that the moment
+        // Not just `!self.address_bar.focused`: found live that the moment
         // the suggestion dropdown's buttons first appear, egui's own
         // keyboard-focus tracking transiently moves off the `TextEdit` for
         // a frame (a real, reproducible bug, not a one-off) — `has_focus()`
@@ -382,16 +431,16 @@ impl App {
         // away whatever the user had just typed by resyncing to the tab's
         // real URL mid-keystroke. Suggestions being non-empty is a good
         // proxy for "still actively editing" that survives that blip.
-        let editing_address = self.address_bar_focused
-            || !self.open_tab_suggestions.is_empty()
-            || !self.search_suggestions.is_empty();
+        let editing_address = self.address_bar.focused
+            || !self.address_bar.open_tab_suggestions.is_empty()
+            || !self.address_bar.search_suggestions.is_empty();
         // `focused` is tab-only (see `App::focused`), so this always finds
         // a Tab; `if let` rather than `.unwrap()` so a future path that
         // breaks that invariant degrades to a stale address bar, not a
         // panic.
         if !editing_address {
             if let Some(tab) = self.nodes.get(&focused_id).and_then(|n| n.as_tab()) {
-                self.address_bar_text = tab.url.clone();
+                self.address_bar.text = tab.url.clone();
             }
         }
         let mut navigate = None;
@@ -429,8 +478,8 @@ impl App {
 
         self.build_context_menu(ui);
 
-        if let Some(results) = self.suggestion_fetcher.tick() {
-            self.search_suggestions = results;
+        if let Some(results) = self.address_bar.fetcher.tick() {
+            self.address_bar.search_suggestions = results;
         }
 
         // Autocomplete dropdown: a separate `egui::Area` anchored right
@@ -438,7 +487,7 @@ impl App {
         // own layout — the dropdown needs to float over the content area
         // below chrome, which a plain widget inside the toolbar couldn't
         // do without stretching the toolbar itself). Clicking a row accepts
-        // it directly; Up/Down move `dropdown_highlighted` (wrapping at
+        // it directly; Up/Down move `AddressBar::highlighted` (wrapping at
         // both ends) and Enter accepts whichever row is highlighted (see
         // `enter_pressed`'s resolution below) — reading arrow keys via
         // `ui.input(|i| i.key_pressed(...))` here, after the `TextEdit`
@@ -449,24 +498,24 @@ impl App {
         // that actually needed care, via `enter_pressed`'s deferred
         // resolution — a singleline `TextEdit` losing focus on Enter is a
         // real, meaningful interaction to not double-handle).
-        // Gated on `editing_address`, not raw `self.address_bar_focused`:
+        // Gated on `editing_address`, not raw `self.address_bar.focused`:
         // the same one-frame focus blip documented above (egui's focus
         // tracking transiently leaving the `TextEdit` when the dropdown's
         // buttons appear) was also hiding this whole Area, including the
         // buttons, on the exact frame a click landed on one — so the click
         // never reached anything and just silently dismissed the dropdown.
-        let combined = self.combined_suggestions();
+        let combined = self.address_bar.combined();
         if editing_address && !combined.is_empty() {
             let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
             let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             if arrow_down {
-                self.dropdown_highlighted = Some(match self.dropdown_highlighted {
+                self.address_bar.highlighted = Some(match self.address_bar.highlighted {
                     Some(i) if i + 1 < combined.len() => i + 1,
                     _ => 0,
                 });
             }
             if arrow_up {
-                self.dropdown_highlighted = Some(match self.dropdown_highlighted {
+                self.address_bar.highlighted = Some(match self.address_bar.highlighted {
                     Some(i) if i > 0 => i - 1,
                     _ => combined.len() - 1,
                 });
@@ -496,7 +545,7 @@ impl App {
                                 // is untouched.
                                 let full_width = ui.available_width();
                                 for (idx, suggestion) in combined.iter().enumerate() {
-                                    let highlighted = self.dropdown_highlighted == Some(idx);
+                                    let highlighted = self.address_bar.highlighted == Some(idx);
                                     let mut button = egui::Button::new(suggestion.label())
                                         .truncate()
                                         .min_size(egui::vec2(full_width, 0.0));
@@ -516,14 +565,14 @@ impl App {
         }
 
         if enter_pressed {
-            match self.dropdown_highlighted.filter(|&i| i < combined.len()) {
+            match self.address_bar.highlighted.filter(|&i| i < combined.len()) {
                 Some(idx) => self.accept_suggestion(combined[idx].clone(), &focused_id),
-                None => navigate = Some(self.address_bar_text.clone()),
+                None => navigate = Some(self.address_bar.text.clone()),
             }
         }
 
         let has_suggestions =
-            !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty();
+            !self.address_bar.open_tab_suggestions.is_empty() || !self.address_bar.search_suggestions.is_empty();
         // Neutralized while the quick-switcher is open: it does its own,
         // separate Escape check in `build_quick_switcher` to close itself,
         // and `key_pressed` is a non-consuming peek -- without this, the
@@ -548,9 +597,7 @@ impl App {
             } else if self.find.open {
                 self.close_find_bar();
             } else if has_suggestions {
-                self.open_tab_suggestions.clear();
-                self.search_suggestions.clear();
-                self.dropdown_highlighted = None;
+                self.address_bar.dismiss();
             }
         }
         if go_back {
@@ -651,9 +698,7 @@ impl App {
         if let Some(text) = navigate {
             let url = resolve_navigation_url(&text, self.settings.default_search_engine);
             self.navigate_tab(&focused_id, url);
-            self.open_tab_suggestions.clear();
-            self.search_suggestions.clear();
-            self.dropdown_highlighted = None;
+            self.address_bar.dismiss();
         }
     }
 }
