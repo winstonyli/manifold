@@ -1424,6 +1424,10 @@ struct App {
     /// whose waiting senders sit in `tabs_spawned_waiters` until this
     /// reaches zero.
     tab_spawns_in_flight: usize,
+    /// The `SpawnPurpose::Restore` share of `tab_spawns_in_flight`: tabs
+    /// that are already in the saved session but not yet back in `nodes`.
+    /// `save_session` waits for it to reach zero.
+    restore_spawns_in_flight: usize,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
@@ -1767,6 +1771,7 @@ impl Default for App {
             view_mode: ViewMode::Item,
             ids: NodeIds::default(),
             tab_spawns_in_flight: 0,
+            restore_spawns_in_flight: 0,
             tabs_spawned_waiters: Vec::new(),
             session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
@@ -2198,7 +2203,15 @@ impl App {
     /// the full incident. The first save of a run (`session_fingerprint`
     /// still `None` -- nothing was ever loaded, or this is a fresh install)
     /// always proceeds normally; there's nothing to conflict with yet.
+    ///
+    /// Skipped while restored tabs are still spawning
+    /// (`restore_spawns_in_flight`): a snapshot then would drop them, and
+    /// a crash before the last one landed would leave that file behind.
+    /// The last landing saves (`handle_tab_spawn_result`).
     fn save_session(&mut self) {
+        if self.restore_spawns_in_flight > 0 {
+            return;
+        }
         let snapshot = self.build_session_snapshot();
         let on_disk = session::fingerprint();
         if self.session_fingerprint.is_some() && on_disk != self.session_fingerprint {
@@ -2710,6 +2723,9 @@ impl App {
             .clone()
             .expect("event_proxy set in main before any tab spawn");
         self.tab_spawns_in_flight += 1;
+        if matches!(spawn.purpose, SpawnPurpose::Restore) {
+            self.restore_spawns_in_flight += 1;
+        }
         let generation = self.session_generation;
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
@@ -2736,9 +2752,18 @@ impl App {
                 let _ = waiter.send(());
             }
         }
+        let restore_done = matches!(purpose, SpawnPurpose::Restore) && {
+            self.restore_spawns_in_flight = self.restore_spawns_in_flight.saturating_sub(1);
+            self.restore_spawns_in_flight == 0
+        };
         // Spawned for a session that's since been replaced: dropping the
         // `EngineTab` shuts its engine host down. See `session_generation`.
         if generation != self.session_generation {
+            // Every way out of this fn saves once the last restored tab has
+            // landed, so the saves skipped meanwhile (`save_session`) happen.
+            if restore_done {
+                self.save_session();
+            }
             return;
         }
         // A group dissolved while this spawn was still in flight (spawning
@@ -2751,7 +2776,12 @@ impl App {
             match self.nodes.get(&id).filter(|n| n.as_failed_tab().is_some()) {
                 Some(card) => (card.parent.clone(), card.group.clone(), card.pos, card.color),
                 // Closed while retrying (see `failed_tab_retries`).
-                None => return,
+                None => {
+                    if restore_done {
+                        self.save_session();
+                    }
+                    return;
+                }
             }
         } else {
             (parent, group, pos, color)
