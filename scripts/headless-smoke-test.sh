@@ -12,6 +12,7 @@
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
 # entering and leaving a group in Graph view; tab drops inside a group
 # (reparent, the cycle refusal) and ejecting a rectangle-selected tab;
+# the overloaded and empty groups' border colors (needs Pillow);
 # quit. The drop checks click cards where EXPORTSTATE's `cards` says they
 # are, after the layout stops moving (`settle`), not at fixed coordinates.
 #
@@ -339,6 +340,53 @@ send "CLICK $ex $ey"
 settle ejected
 check_query ejected "ejecting a selected tab also drops it from the selection" \
     "len(tabs) == 1 and s['selected_tabs'] == tabs"
+
+# Border colors, read off a screenshot: a group of more than 8 members
+# rests on DANGER_COLOR (196, 87, 58), and the empty group from above on
+# ACCENT (215, 162, 74). `card_border`'s unit test covers which color
+# wins; this checks the member count reaches it and the frame paints it.
+# The mouse waits in an empty corner so no card eases toward its hover
+# color.
+send "CLICK 22 17"
+python - "$out_dir/nine.group.json" <<'EOF'
+import json, sys
+tab = lambda i: {"id": f"t{i}", "parent": None, "url": "manifold://welcome", "engine": "webview2", "pos_x": 0.0, "pos_y": 0.0}
+json.dump({"name": "Nine", "color": None, "tabs": [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
+EOF
+settle top
+before_nine=$(query top 'groups')
+send "IMPORTGROUP $out_dir_win\nine.group.json"
+send "WAITTABS"
+send "CLICK 326 17"
+send "MOUSEMOVE 806 629"
+settle nine
+nine=$(BEFORE="$before_nine" query nine '[g for g in groups if g not in eval(env["BEFORE"])][0]')
+empty=$(BEFORE="$before" query nine 'eval(env["BEFORE"])[0]')
+send "SCREENSHOT $out_dir_win\borders.png"
+check_screenshot "$out_dir/borders.png" "group borders"
+# `border NAME ID RGB` succeeds if a pixel on ID's left edge, at
+# mid-height, is within 40 of RGB (the stroke is about 1 px wide).
+border() {
+    python - "$out_dir/$1.json" "$out_dir/borders.png" "$2" "$3" <<'EOF'
+import json, sys
+from PIL import Image
+cards = {c["id"]: c for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]}
+img = Image.open(sys.argv[2]).convert("RGB")
+left, top, _, bottom = cards[sys.argv[3]]["rect"]
+y = round((top + bottom) / 2)
+want = eval(sys.argv[4])
+near = min(sum((a - b) ** 2 for a, b in zip(img.getpixel((x, y)), want)) ** 0.5 for x in range(round(left) - 1, round(left) + 3))
+sys.exit(0 if near < 40 else 1)
+EOF
+}
+if ! python -c "import PIL" 2>/dev/null; then
+    echo "SKIP: group border colors (needs Pillow: pip install pillow)"
+else
+    if border nine "$nine" "(196, 87, 58)"; then pass "a group of 9 has a DANGER_COLOR border"
+    else failed "the 9-member group $nine's border isn't DANGER_COLOR (see borders.png)"; fi
+    if border nine "$empty" "(215, 162, 74)" && ! border nine "$empty" "(196, 87, 58)"; then pass "an empty group has an ACCENT border"
+    else failed "the empty group $empty's border isn't ACCENT (see borders.png)"; fi
+fi
 
 send "QUIT"
 if wait "$browser_pid"; then
