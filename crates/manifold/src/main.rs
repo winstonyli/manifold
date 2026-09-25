@@ -744,13 +744,28 @@ struct CardView {
     overloaded: bool,
     /// Group only: its members' ids, for its thumbnail grid and count.
     members: Vec<String>,
+    /// The open tab: its border is ACCENT.
+    focused: bool,
+    /// Tab only.
+    pinned: bool,
+    /// Tab only.
+    muted: bool,
+    /// Tab only.
+    audio_playing: bool,
+    /// In the rectangle selection (tabs only): washed in ACCENT, and
+    /// dragged as one unit.
+    selected: bool,
 }
 
 /// A card's border width and color at hover progress `hover_t` (0 at
 /// rest, 1 hovered): the tag color at rest, else DANGER_COLOR for an
 /// overloaded group, else the kind's idle color, easing toward its hover
-/// color, from width 1 to 1.5.
+/// color, from width 1 to 1.5. A focused tab's is ACCENT at 2.5.
 fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::Color32) {
+    // The strongest, least ambiguous signal: not eased, and over any tag.
+    if view.focused {
+        return (2.5, ACCENT);
+    }
     let resting = view.color.unwrap_or(if view.overloaded { DANGER_COLOR } else { style.border_idle });
     (1.0 + 0.5 * hover_t, lerp_color32(resting, style.border_hover, hover_t))
 }
@@ -761,6 +776,8 @@ fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum CardControl {
     Swatch,
+    Pin,
+    Audio,
     Eject,
     Close,
 }
@@ -774,6 +791,8 @@ impl CardControl {
     fn action(self, kind: ItemNodeKind) -> NodeAction {
         match self {
             CardControl::Swatch => NodeAction::CycleColor,
+            CardControl::Pin => NodeAction::TogglePin,
+            CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
             CardControl::Close if kind == ItemNodeKind::Group => NodeAction::Dissolve,
             CardControl::Close => NodeAction::Delete,
@@ -784,6 +803,8 @@ impl CardControl {
     fn rect(self, card: egui::Rect, inv_zoom: f32) -> egui::Rect {
         let (anchor, size) = match self {
             CardControl::Swatch => (card.right_bottom(), 16.0),
+            CardControl::Pin => (card.left_bottom(), 16.0),
+            CardControl::Audio => (card.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom, 16.0),
             CardControl::Eject => (card.left_top(), 18.0),
             CardControl::Close => (card.right_top(), 18.0),
         };
@@ -792,10 +813,19 @@ impl CardControl {
 }
 
 /// The buttons `view`'s card shows, in registration order (see
-/// `CardControl`): the swatch on every card, eject on a grouped one, and
-/// the ✕ last, so it wins over anything under it.
+/// `CardControl`): the swatch on every card, a tab's pin, and its audio
+/// indicator while playing or muted, eject on a grouped one, and the ✕
+/// last, so it wins over anything under it.
 fn card_controls(view: &CardView) -> Vec<CardControl> {
     let mut controls = vec![CardControl::Swatch];
+    if view.kind == ItemNodeKind::Tab {
+        controls.push(CardControl::Pin);
+        // Also while muted after audio stops, so a mute can always be
+        // seen and undone from Graph view.
+        if view.audio_playing || view.muted {
+            controls.push(CardControl::Audio);
+        }
+    }
     if view.in_group {
         controls.push(CardControl::Eject);
     }
@@ -866,6 +896,7 @@ fn paint_card_control(
     view: &CardView,
     style: &CardStyle,
     inv_zoom: f32,
+    lod_simplified: bool,
 ) -> egui::Response {
     let rect = control.rect(card_rect, inv_zoom);
     let response = ui
@@ -881,6 +912,108 @@ fn paint_card_control(
                 // click.
                 None => {
                     ui.painter().circle_stroke(rect.center(), 6.0 * inv_zoom, egui::Stroke::new(1.5 * inv_zoom, style.border_idle));
+                }
+            }
+        }
+        // A `PUSH_PIN` icon, ACCENT when pinned. A pinned node is left out
+        // of the force-directed layout (see `TabPayload::pinned`).
+        CardControl::Pin => {
+            let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
+            if !lod_simplified {
+                let pin_icon_pos = rect.center();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(pin_icon_pos),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::light::PUSH_PIN,
+                        egui::FontId::proportional(14.0),
+                        pin_color,
+                    );
+                }));
+            }
+        }
+        // Audio-playing/muted indicator:
+        // (like the engine-identity one below the thumbnail),
+        // not a speaker glyph — confirmed elsewhere in this
+        // project that several Unicode symbol glyphs render as
+        // empty boxes in this app's font, so a painter-drawn
+        // shape is the reliable choice, not text. `audio_playing`
+        // is only ever true for WebView2/WebKit tabs — see
+        // `TabPayload::audio_playing`'s doc comment — but the dot
+        // also shows (and stays clickable) whenever `muted` is
+        // set, even after audio stops, so there's always a way
+        // to see and undo a mute from Graph view without first
+        // switching to Tab view.
+        CardControl::Audio => {
+            if view.muted {
+                // Muted stays static -- nothing is actually
+                // playing to animate. A real `SPEAKER_X` icon
+                // rather than a plain red dot (migrated
+                // alongside the pin/eject icons): a bare dot
+                // only meant "muted" once you'd learned the
+                // convention, where the icon states it. Text,
+                // so drawn on `overlay_painter` like the pin/
+                // eject icons, not `ui.painter()` like the
+                // waveform's own vector bars below.
+                if !lod_simplified {
+                    let icon_pos = rect.center();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(icon_pos),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::light::SPEAKER_X,
+                            egui::FontId::proportional(12.0),
+                            DANGER_COLOR,
+                        );
+                    }));
+                }
+            } else {
+                // Actually playing: a tiny 3-bar waveform
+                // instead of a static dot -- painter-drawn
+                // rects, not a speaker/equalizer glyph, same
+                // "this app's font can't be trusted with
+                // symbol glyphs" reasoning as everywhere else.
+                // Animated off the real OS clock (`SystemTime`)
+                // rather than `ui.input(|i| i.time)` — found
+                // live that the latter reads as frozen across
+                // separate headless `SCREENSHOT`-triggered
+                // redraws despite each one genuinely re-running
+                // this code (confirmed via the also-fresh
+                // `audio_playing` state each time), while
+                // `SystemTime::now()` reliably ticks between
+                // them. Three bars on staggered sine phases so
+                // they don't all move in lockstep. This app
+                // already requests a redraw unconditionally at
+                // the end of every frame (see `RedrawRequested`'s
+                // own handling), so nothing further is needed
+                // to keep it animating on its own.
+                // A warm sage rather than a minty green -- still
+                // unambiguously "active/live" (the universal
+                // recording-light color family), just shifted to
+                // sit with the rest of this app's warm palette
+                // instead of against it.
+                let waveform_color = egui::Color32::from_rgb(150, 190, 90);
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                let bar_w = 2.5 * inv_zoom;
+                let gap = 1.5 * inv_zoom;
+                let max_h = 10.0 * inv_zoom;
+                let min_h = 3.0 * inv_zoom;
+                let total_w = bar_w * 3.0 + gap * 2.0;
+                let base_x = rect.center().x - total_w / 2.0;
+                let base_y = rect.center().y + max_h / 2.0;
+                for i in 0..3 {
+                    let phase = i as f64 * 1.7;
+                    let h = min_h
+                        + (max_h - min_h) * 0.5 * (1.0 + (t * 6.0 + phase).sin() as f32);
+                    let x = base_x + i as f32 * (bar_w + gap);
+                    let bar_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(x, base_y - h),
+                        egui::Pos2::new(x + bar_w, base_y),
+                    );
+                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
                 }
             }
         }
@@ -2228,18 +2361,19 @@ fn in_reading_order<C: ?Sized, A, B>(
     }
 }
 
-/// The actual shapes `draw_card_glow` paints -- split out so a caller whose
-/// rect isn't known until *after* its content is laid out (the save toast:
-/// an `egui::Frame` that auto-sizes to its own label) can still put the
-/// glow visually *behind* that content. `Painter::add` only ever appends
-/// (there's no "insert behind" for shapes already painted), so that caller
-/// pre-reserves placeholder slots with `Shape::Noop` before drawing its
-/// frame, then retroactively fills them in with these via `Painter::set`
-/// once the frame's real rect is known -- the standard egui pattern for
-/// this, also how e.g. selection highlights behind not-yet-laid-out text
-/// are done. A graph card's rect is fixed upfront (`GRAPH_NODE_SIZE`/
-/// `GROUP_NODE_SIZE`), so `draw_card_glow` itself just paints these
-/// directly, immediately, without needing this indirection.
+/// A soft glow tinted the card's own border color, grown outward with
+/// decreasing alpha: a plain black drop shadow was invisible against this
+/// app's near-black background. `intensity` scales the alpha only, not the
+/// spread, so a hover brightens it without resizing the card. Returned as
+/// shapes rather than painted, so a caller can still put the glow visually
+/// *behind* content laid out before the glow is known (the save toast: an
+/// `egui::Frame` that auto-sizes to its own label; a graph card, whose
+/// hover is only known after its body). `Painter::add` only ever appends
+/// (there's no "insert behind" for shapes already painted), so such a
+/// caller pre-reserves a placeholder slot with `Shape::Noop`, then fills it
+/// in with these via `Painter::set` -- the standard egui pattern for this,
+/// also how e.g. selection highlights behind not-yet-laid-out text are
+/// done.
 fn card_glow_shapes(
     rect: egui::Rect,
     base_corner_radius: f32,
@@ -2255,30 +2389,6 @@ fn card_glow_shapes(
             egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
         )
     })
-}
-
-/// A soft colored glow behind a graph card (tab or group), grown outward
-/// from its own rect with decreasing alpha -- used instead of a plain black
-/// drop-shadow, which was tried first and found live to be invisible
-/// against this app's near-black `BG` (nothing darker to contrast against).
-/// Tinted the card's own border/tag color rather than a neutral shade, so
-/// it doubles as an echo of that color-coding; no offset (radiates evenly
-/// outward) since it isn't meant to imply a directional light source.
-/// `intensity` (1.0 = normal) scales the alpha only, not the spread --
-/// a hover "lift" cue, brightening the existing glow rather than resizing
-/// the card itself, which would misalign it against its own thumbnail/
-/// label content (drawn at the card's un-hovered rect).
-fn draw_card_glow(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    base_corner_radius: f32,
-    color: egui::Color32,
-    inv_zoom: f32,
-    intensity: f32,
-) {
-    for shape in card_glow_shapes(rect, base_corner_radius, color, inv_zoom, intensity) {
-        painter.add(shape);
-    }
 }
 
 /// A parent-child graph edge, bowed into a gentle quadratic-bezier curve
@@ -5341,28 +5451,41 @@ impl App {
         } else {
             Vec::new()
         };
+        let tab = node.as_tab();
         Some(CardView {
             kind,
             color: node.color,
             in_group: node.group.is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
+            focused: self.focused.as_deref() == Some(id),
+            pinned: tab.is_some_and(|t| t.pinned),
+            muted: tab.is_some_and(|t| t.muted),
+            audio_playing: tab.is_some_and(|t| t.audio_playing),
+            selected: self.selected_tabs.contains(id),
         })
     }
 
-    /// One card of any kind but Tab on the graph: everything the kinds
-    /// share (cull, click/drag and hover interacts, border,
-    /// hover ✕, drag and drop through `drop_target`, filter dim), with the
+    /// One card of any kind on the graph: everything the kinds share
+    /// (cull, click/drag and hover interacts, border, controls, selection
+    /// wash, drag and drop through `drop_target`, filter dim), with the
     /// per-kind content painted by `paint_card_body`, plus the frame's own
     /// background, glow and eased hover. `None` when the node is gone or
     /// culled. The caller applies the kind's own click action from the
-    /// returned response. Tab cards keep their own loop.
+    /// returned response.
     fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let rect = node_card_rect(self.nodes.get(id)?);
-        // Viewport culling -- see the tab loop's own comment. Never culls
-        // the node being dragged, so a drag off-screen keeps tracking.
+        // Viewport culling: skip every bit of interact/paint
+        // work below for a node that isn't actually visible --
+        // the single highest-leverage fix for a graph with many
+        // more nodes than fit on screen at once. Never culls
+        // the node currently being dragged, even once it's
+        // moved outside the viewport -- `ui.interact`'s own
+        // drag tracking is what keeps a drag alive frame to
+        // frame, so skipping it mid-drag would freeze the node
+        // in place the instant it crossed the visible edge.
         if self.dragging.as_deref() != Some(id) && !rect.intersects(self.graph_scene_rect) {
             return None;
         }
@@ -5390,9 +5513,9 @@ impl App {
         };
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
         let pointer_on_card = hover.hovered() || response.hovered();
-        // Last frame's hover too (as the tab loop does), which
-        // keeps the ✕ drawn while the pointer is on it: registered last,
-        // it takes the hover from both interacts above.
+        // Last frame's hover too, which keeps the ✕ drawn while the
+        // pointer is on it: registered last, it takes the hover from both
+        // interacts above.
         let is_hovered = self.hovered.as_deref() == Some(id) || pointer_on_card;
 
         // One eased hover drives the glow, the fill's brightening and the
@@ -5423,6 +5546,16 @@ impl App {
                 egui::StrokeKind::Outside,
             );
         }
+        // Rectangle-select's highlight: a translucent ACCENT wash, distinct
+        // from the focus border (an outline only), so a selected tab still
+        // reads differently from the focused one when both apply.
+        if view.selected {
+            ui.painter().rect_filled(
+                rect,
+                2.0 * inv_zoom,
+                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
+            );
+        }
 
         // Registered after both interacts above, so they take the pointer.
         let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
@@ -5431,7 +5564,7 @@ impl App {
             if card_control.hover_only() && !is_hovered {
                 continue;
             }
-            let control_response = paint_card_control(ui, deferred_overlays, card_control, rect, id, &view, &style, inv_zoom);
+            let control_response = paint_card_control(ui, deferred_overlays, card_control, rect, id, &view, &style, inv_zoom, self.graph_lod_simplified);
             control_hovered |= control_response.hovered();
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action(view.kind));
@@ -5444,8 +5577,14 @@ impl App {
         let still_hovered = pointer_on_card || control_hovered;
         if response.dragged() {
             self.dragging = Some(id.to_string());
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.pos += response.drag_delta();
+            // Dragging one selected tab moves the whole selection, as one
+            // unit (see `take_drag_unit`).
+            let delta = response.drag_delta();
+            let moved = if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            for moved_id in moved {
+                if let Some(node) = self.nodes.get_mut(&moved_id) {
+                    node.pos += delta;
+                }
             }
         } else if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
@@ -5501,7 +5640,7 @@ impl App {
                 // to a real icon for consistency once the icon
                 // font was already in place for everything else.
                 // LOD: icon/filename text skipped once simplified
-                // -- see the tab loop's own doc comment.
+                // -- see the Tab arm's own LOD comment.
                 if !self.graph_lod_simplified {
                     let download_icon_pos = rect.center_top();
                     let download_icon_color = ui.visuals().text_color();
@@ -5637,7 +5776,7 @@ impl App {
                     // LOD: skip the markdown render (real parsing +
                     // rich text layout, one of the pricier per-node
                     // widgets in this whole view) once simplified --
-                    // see the tab loop's own doc comment. Never
+                    // see the Tab arm's own LOD comment. Never
                     // applies to the `is_editing` branch above: a
                     // note actively being typed into must never have
                     // its live `TextEdit` yanked out from under the
@@ -6001,7 +6140,109 @@ impl App {
                 }
                 }
             }
-            ItemNodeKind::Tab => unreachable!("Tab cards are drawn by their own loop in build_graph_ui"),
+            // A live thumbnail (or a spinner until the first frame), a
+            // title strip with the engine's color dot, and the favicon.
+            ItemNodeKind::Tab => {
+                let Some((title, url, engine_kind)) =
+                    self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.title.clone(), t.url.clone(), t.tab.kind))
+                else {
+                    return body;
+                };
+                // LOD: the thumbnail texture blit and the title/
+                // favicon text below are this card's two genuinely
+                // expensive parts (a real GPU texture sample, and
+                // glyph rasterization queued on `overlay_painter`) --
+                // skipped once `graph_lod_simplified` is set (see its
+                // own doc comment), leaving the frame's plain card
+                // and controls as the simplified card's whole
+                // appearance.
+                if !self.graph_lod_simplified {
+                    let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
+                    let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));
+                    if let Some(tex_id) = thumb_id {
+                        ui.painter().image(
+                            tex_id,
+                            thumb_rect,
+                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    } else {
+                        ui.put(
+                            egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                            egui::Spinner::new().size(24.0 * inv_zoom),
+                        );
+                    }
+
+                    {
+                        let label = if title.is_empty() { url.as_str() } else { title.as_str() };
+                        // A flat scrim behind the title strip so it stays
+                        // legible over a busy/light thumbnail — most real
+                        // pages are light-background, and plain text on top
+                        // of one was unreadable without this.
+                        let title_strip = egui::Rect::from_min_max(
+                            egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
+                            thumb_rect.right_bottom(),
+                        );
+                        ui.painter().rect_filled(
+                            title_strip,
+                            0.0,
+                            egui::Color32::from_black_alpha(160),
+                        );
+                        // Engine identity as a small colored dot rather than
+                        // repeating the "[Servo]"-style bracket text on every
+                        // single node — the dot alone is enough once you've
+                        // learned the color coding (also used in the tab
+                        // strip and engine picker), and reads faster at this
+                        // node's small size than another word would.
+                        ui.painter().circle_filled(
+                            egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
+                            4.0 * inv_zoom,
+                            engine_color(engine_kind),
+                        );
+                        // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                        // label entirely rather than truncating to a
+                        // near-illegible sliver -- the engine-color dot
+                        // above still conveys engine identity on its own.
+                        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                            let label_font = egui::FontId::proportional(14.0);
+                            // Available on-screen width for the label -- the
+                            // strip's own screen width (zoom shrinks the card,
+                            // but not this fixed-size text, so at low zoom the
+                            // label can be wider than the card it's on) minus
+                            // the fixed 16px left offset and a little breathing
+                            // room on the right.
+                            let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
+                            let label =
+                                truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
+                            let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(label_pos) + egui::vec2(16.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    label,
+                                    label_font,
+                                    egui::Color32::WHITE,
+                                );
+                            }));
+                        }
+                    }
+                    if let Some(tex_id) = self
+                        .cached_favicon_origin(&url)
+                        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+                    {
+                        let favicon_rect = egui::Rect::from_min_size(
+                            rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                            FAVICON_SIZE * inv_zoom,
+                        );
+                        ui.painter().image(
+                            tex_id,
+                            favicon_rect,
+                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
+            }
         }
         body
     }
@@ -10607,7 +10848,7 @@ impl App {
         // hit-test chain) that don't run every idle frame, so caching them
         // here would have added surface area without the same payoff.
         let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
-        let [tabs_at_level, _, _, _, _, _, groups_at_level] = &at_level;
+        let [_, _, _, _, _, _, groups_at_level] = &at_level;
 
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
@@ -11374,697 +11615,11 @@ impl App {
                 let drop_preview =
                     self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
 
-                for id in tabs_at_level.clone() {
-                    let Some(node) = self.nodes.get(&id) else {
-                        continue;
-                    };
-                    let rect = node_card_rect(node);
-                    // Viewport culling: skip every bit of interact/paint
-                    // work below for a node that isn't actually visible --
-                    // the single highest-leverage fix for a graph with many
-                    // more nodes than fit on screen at once. Never culls
-                    // the node currently being dragged, even once it's
-                    // moved outside the viewport -- `ui.interact`'s own
-                    // drag tracking is what keeps a drag alive frame to
-                    // frame, so skipping it mid-drag would freeze the node
-                    // in place the instant it crossed the visible edge.
-                    if self.dragging.as_deref() != Some(id.as_str())
-                        && !rect.intersects(self.graph_scene_rect)
-                    {
-                        continue;
-                    }
-                    let response = ui.interact(
-                        rect,
-                        egui::Id::new(("graph_node", id.as_str())),
-                        egui::Sense::click_and_drag(),
-                    );
-
-                    let is_focused = self.focused.as_deref() == Some(id.as_str());
-                    let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
-                    let is_selected = self.selected_tabs.contains(&id);
-                    // One lookup instead of the six separate `self.nodes.
-                    // get(&id)` calls this card's render used to make for
-                    // its own data (color, title, url, engine kind, muted,
-                    // audio-playing, pinned) -- **found on a general
-                    // performance audit**: each was a fresh hash + lookup
-                    // for the same key, paid every frame for every tab
-                    // regardless of graph size. `title`/`url` are cloned
-                    // once here since they're needed past this point (the
-                    // label text, the favicon origin) and can't borrow
-                    // from `self.nodes` across the `&mut self` mutations
-                    // (drag, hover bookkeeping) later in this same
-                    // iteration.
-                    let Some((tag_color, title, url, engine_kind, node_muted, node_audio_playing, node_pinned)) =
-                        self.nodes.get(&id).and_then(|n| {
-                            let tab = n.as_tab()?;
-                            Some((
-                                n.color,
-                                tab.title.clone(),
-                                tab.url.clone(),
-                                tab.tab.kind,
-                                tab.muted,
-                                tab.audio_playing,
-                                tab.pinned,
-                            ))
-                        })
-                    else {
-                        continue;
-                    };
-
-                    // Shared by the fill/border/glow eases below -- one
-                    // hover transition, not three separately-timed ones.
-                    let hover_t = ui.ctx().animate_bool_responsive(
-                        egui::Id::new(("graph_node_hover", id.as_str())),
-                        is_hovered,
-                    );
-                    let card_fill = ui.visuals().extreme_bg_color.gamma_multiply(1.0 + hover_t * 0.35);
-                    // A tag color only shows through in the resting state --
-                    // focused stays its own established color so "this is
-                    // the open tab" remains the strongest, least ambiguous
-                    // signal (not eased -- a hard override regardless of
-                    // whichever hover state it happens to be transitioning
-                    // through). The resting<->hovered width/color themselves
-                    // now ease via `hover_t` instead of snapping.
-                    let resting_color = tag_color.unwrap_or(ui.visuals().weak_text_color());
-                    let (border_width, border_color) = if is_focused {
-                        (2.5, ACCENT)
-                    } else {
-                        (
-                            1.0 + hover_t * 0.5,
-                            lerp_color32(resting_color, ui.visuals().text_color(), hover_t),
-                        )
-                    };
-                    draw_card_glow(ui.painter(), rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8);
-                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, card_fill);
-                    ui.painter().rect_stroke(
-                        rect,
-                        2.0 * inv_zoom,
-                        egui::Stroke::new(border_width * inv_zoom, border_color),
-                        egui::StrokeKind::Inside,
-                    );
-                    // Rectangle-select's own highlight: a translucent accent
-                    // wash on top of everything painted so far, distinct
-                    // from the focus border above (solid outline only) so a
-                    // multi-selected node still reads differently from the
-                    // single keyboard-focused one when both apply at once.
-                    if is_selected {
-                        ui.painter().rect_filled(
-                            rect,
-                            2.0 * inv_zoom,
-                            egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
-                        );
-                    }
-
-                    // LOD: the thumbnail texture blit and the title/
-                    // favicon text below are this card's two genuinely
-                    // expensive parts (a real GPU texture sample, and
-                    // glyph rasterization queued on `overlay_painter`) --
-                    // skipped once `graph_lod_simplified` is set (see its
-                    // own doc comment), leaving the plain background/
-                    // border/color-swatch painted above and below as the
-                    // simplified card's whole appearance.
-                    if !self.graph_lod_simplified {
-                        let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
-                        let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&id));
-                        if let Some(tex_id) = thumb_id {
-                            ui.painter().image(
-                                tex_id,
-                                thumb_rect,
-                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        } else {
-                            ui.put(
-                                egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                                egui::Spinner::new().size(24.0 * inv_zoom),
-                            );
-                        }
-
-                        {
-                            let label = if title.is_empty() { url.as_str() } else { title.as_str() };
-                            // A flat scrim behind the title strip so it stays
-                            // legible over a busy/light thumbnail — most real
-                            // pages are light-background, and plain text on top
-                            // of one was unreadable without this.
-                            let title_strip = egui::Rect::from_min_max(
-                                egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
-                                thumb_rect.right_bottom(),
-                            );
-                            ui.painter().rect_filled(
-                                title_strip,
-                                0.0,
-                                egui::Color32::from_black_alpha(160),
-                            );
-                            // Engine identity as a small colored dot rather than
-                            // repeating the "[Servo]"-style bracket text on every
-                            // single node — the dot alone is enough once you've
-                            // learned the color coding (also used in the tab
-                            // strip and engine picker), and reads faster at this
-                            // node's small size than another word would.
-                            ui.painter().circle_filled(
-                                egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
-                                4.0 * inv_zoom,
-                                engine_color(engine_kind),
-                            );
-                            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
-                            // label entirely rather than truncating to a
-                            // near-illegible sliver -- the engine-color dot
-                            // above still conveys engine identity on its own.
-                            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                                let label_font = egui::FontId::proportional(14.0);
-                                // Available on-screen width for the label -- the
-                                // strip's own screen width (zoom shrinks the card,
-                                // but not this fixed-size text, so at low zoom the
-                                // label can be wider than the card it's on) minus
-                                // the fixed 16px left offset and a little breathing
-                                // room on the right.
-                                let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
-                                let label =
-                                    truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
-                                let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
-                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                    overlay_painter.text(
-                                        project(label_pos) + egui::vec2(16.0, 0.0),
-                                        egui::Align2::LEFT_CENTER,
-                                        label,
-                                        label_font,
-                                        egui::Color32::WHITE,
-                                    );
-                                }));
-                            }
-                        }
-                        if let Some(tex_id) = self
-                            .cached_favicon_origin(&url)
-                            .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
-                        {
-                            let favicon_rect = egui::Rect::from_min_size(
-                                rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
-                                FAVICON_SIZE * inv_zoom,
-                            );
-                            ui.painter().image(
-                                tex_id,
-                                favicon_rect,
-                                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                    }
-                    // Audio-playing/muted indicator: a plain colored dot
-                    // (like the engine-identity one below the thumbnail),
-                    // not a speaker glyph — confirmed elsewhere in this
-                    // project that several Unicode symbol glyphs render as
-                    // empty boxes in this app's font, so a painter-drawn
-                    // shape is the reliable choice, not text. `audio_playing`
-                    // is only ever true for WebView2/WebKit tabs — see
-                    // `TabPayload::audio_playing`'s doc comment — but the dot
-                    // also shows (and stays clickable) whenever `muted` is
-                    // set, even after audio stops, so there's always a way
-                    // to see and undo a mute from Graph view without first
-                    // switching to Tab view.
-                    let mut audio_clicked = false;
-                    if node_audio_playing || node_muted {
-                        let audio_rect = egui::Rect::from_center_size(
-                            rect.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom,
-                            egui::vec2(16.0, 16.0) * inv_zoom,
-                        );
-                        let audio_response = ui
-                            .interact(
-                                audio_rect,
-                                egui::Id::new(("graph_node_audio", id.as_str())),
-                                egui::Sense::click(),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        if node_muted {
-                            // Muted stays static -- nothing is actually
-                            // playing to animate. A real `SPEAKER_X` icon
-                            // rather than a plain red dot (migrated
-                            // alongside the pin/eject icons): a bare dot
-                            // only meant "muted" once you'd learned the
-                            // convention, where the icon states it. Text,
-                            // so drawn on `overlay_painter` like the pin/
-                            // eject icons, not `ui.painter()` like the
-                            // waveform's own vector bars below.
-                            if !self.graph_lod_simplified {
-                                let icon_pos = audio_rect.center();
-                                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                    overlay_painter.text(
-                                        project(icon_pos),
-                                        egui::Align2::CENTER_CENTER,
-                                        egui_phosphor::light::SPEAKER_X,
-                                        egui::FontId::proportional(12.0),
-                                        DANGER_COLOR,
-                                    );
-                                }));
-                            }
-                        } else {
-                            // Actually playing: a tiny 3-bar waveform
-                            // instead of a static dot -- painter-drawn
-                            // rects, not a speaker/equalizer glyph, same
-                            // "this app's font can't be trusted with
-                            // symbol glyphs" reasoning as everywhere else.
-                            // Animated off the real OS clock (`SystemTime`)
-                            // rather than `ui.input(|i| i.time)` — found
-                            // live that the latter reads as frozen across
-                            // separate headless `SCREENSHOT`-triggered
-                            // redraws despite each one genuinely re-running
-                            // this code (confirmed via the also-fresh
-                            // `audio_playing` state each time), while
-                            // `SystemTime::now()` reliably ticks between
-                            // them. Three bars on staggered sine phases so
-                            // they don't all move in lockstep. This app
-                            // already requests a redraw unconditionally at
-                            // the end of every frame (see `RedrawRequested`'s
-                            // own handling), so nothing further is needed
-                            // to keep it animating on its own.
-                            // A warm sage rather than a minty green -- still
-                            // unambiguously "active/live" (the universal
-                            // recording-light color family), just shifted to
-                            // sit with the rest of this app's warm palette
-                            // instead of against it.
-                            let waveform_color = egui::Color32::from_rgb(150, 190, 90);
-                            let t = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs_f64())
-                                .unwrap_or(0.0);
-                            let bar_w = 2.5 * inv_zoom;
-                            let gap = 1.5 * inv_zoom;
-                            let max_h = 10.0 * inv_zoom;
-                            let min_h = 3.0 * inv_zoom;
-                            let total_w = bar_w * 3.0 + gap * 2.0;
-                            let base_x = audio_rect.center().x - total_w / 2.0;
-                            let base_y = audio_rect.center().y + max_h / 2.0;
-                            for i in 0..3 {
-                                let phase = i as f64 * 1.7;
-                                let h = min_h
-                                    + (max_h - min_h) * 0.5 * (1.0 + (t * 6.0 + phase).sin() as f32);
-                                let x = base_x + i as f32 * (bar_w + gap);
-                                let bar_rect = egui::Rect::from_min_max(
-                                    egui::Pos2::new(x, base_y - h),
-                                    egui::Pos2::new(x + bar_w, base_y),
-                                );
-                                ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
-                            }
-                        }
-                        if audio_response.clicked() {
-                            audio_clicked = true;
-                            actions.push(GraphAction::Node(id.clone(), NodeAction::ToggleMute));
-                        }
-                    }
-
-                    // Pin toggle: bottom-left corner, always visible (not
-                    // hover-only like the close button) so a pinned node's
-                    // state stays legible at a glance. A pinned node is
-                    // excluded from the force-directed layout entirely —
-                    // see `TabPayload::pinned`'s own doc comment. A real
-                    // `PUSH_PIN` icon (accent-colored when pinned, weak gray
-                    // otherwise) rather than a plain dot -- migrated once
-                    // `egui_phosphor` was already wired in for the Graph
-                    // toolbar's own icons, since a pin glyph reads its own
-                    // meaning at a glance where a dot only did once you'd
-                    // learned "filled = pinned" as a convention. Same corner
-                    // decoration as the title-strip text/eject/close "x",
-                    // so drawn on the untransformed `overlay_painter` layer
-                    // for crisp text at any zoom rather than `ui.painter()`
-                    // (see that layer's own doc comment for why). This
-                    // hit-rect is centered exactly on the card's corner (so
-                    // it overlaps `rect` below) — the `response.clicked()`
-                    // check further down excludes `pin_response.clicked()`
-                    // so a pin click doesn't also focus the node into Tab
-                    // view.
-                    let pin_rect =
-                        egui::Rect::from_center_size(rect.left_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
-                    let pin_response = ui
-                        .interact(
-                            pin_rect,
-                            egui::Id::new(("graph_node_pin", id.as_str())),
-                            egui::Sense::click(),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let pin_color = if node_pinned {
-                        ACCENT
-                    } else {
-                        ui.visuals().weak_text_color()
-                    };
-                    if !self.graph_lod_simplified {
-                        let pin_icon_pos = pin_rect.center();
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.text(
-                                project(pin_icon_pos),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::light::PUSH_PIN,
-                                egui::FontId::proportional(14.0),
-                                pin_color,
-                            );
-                        }));
-                    }
-                    if pin_response.clicked() {
-                        actions.push(GraphAction::Node(id.clone(), NodeAction::TogglePin));
-                    }
-
-                    // Close button: a small square just outside the node's own
-                    // top-right corner, given its own interact() id so it doesn't
-                    // compete with the node's own click/drag sense over the same
-                    // pixels. Only shown while the node is hovered — decluttering
-                    // the graph at a glance was worth the tiny risk of "hover,
-                    // then move a few px to reach the button" (same tradeoff
-                    // real browser tab strips make for their own close buttons).
-                    // Its "x" glyph (here, and on the group/download node's
-                    // identical close button further down) is `egui_phosphor::
-                    // regular::X` now, not the plain ASCII letter it used to be
-                    // — cosmetic polish once the icon font was already wired
-                    // in for the pin/eject/mute icons above.
-                    if is_hovered {
-                        let close_rect =
-                            egui::Rect::from_center_size(rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-                        let close_response = ui
-                            .interact(
-                                close_rect,
-                                egui::Id::new(("graph_node_close", id.as_str())),
-                                egui::Sense::click(),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        let close_fill = if close_response.hovered() {
-                            DANGER_COLOR
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
-                        ui.painter().rect_stroke(
-                            close_rect,
-                            2.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                            egui::StrokeKind::Inside,
-                        );
-                        let close_icon_pos = close_rect.center();
-                        let close_icon_color = ui.visuals().text_color();
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.text(
-                                project(close_icon_pos),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::light::X,
-                                egui::FontId::proportional(14.0),
-                                close_icon_color,
-                            );
-                        }));
-                        if close_response.clicked() {
-                            actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
-                        }
-                    }
-                    // Middle-click anywhere on the card closes it too, same
-                    // convention a real browser's tab strip already has --
-                    // an alternative to the small "x" rather than a
-                    // replacement for it.
-                    if response.clicked_by(egui::PointerButton::Middle) {
-                        actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
-                    }
-
-                    // Remove-from-group ("eject"): only shown while
-                    // actually viewing a group's own subgraph -- pops just
-                    // this one tab back to the top level without dissolving
-                    // the whole group, which used to be the only way out
-                    // (the group's own "x" returns every member at once).
-                    // Opposite corner from the close button above so the
-                    // two hover-revealed buttons never overlap each other.
-                    let mut eject_clicked = false;
-                    if is_hovered && self.current_group.is_some() {
-                        let eject_rect =
-                            egui::Rect::from_center_size(rect.left_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-                        let eject_response = ui
-                            .interact(
-                                eject_rect,
-                                egui::Id::new(("graph_node_eject", id.as_str())),
-                                egui::Sense::click(),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        let eject_fill = if eject_response.hovered() {
-                            ACCENT
-                        } else {
-                            ui.visuals().extreme_bg_color
-                        };
-                        ui.painter().rect_filled(eject_rect, 2.0 * inv_zoom, eject_fill);
-                        ui.painter().rect_stroke(
-                            eject_rect,
-                            2.0 * inv_zoom,
-                            egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                            egui::StrokeKind::Inside,
-                        );
-                        // `SIGN_OUT` rather than the bare "^" this used to
-                        // be -- migrated for the same reason the pin dot
-                        // was: a caret is genuinely ambiguous here (reads
-                        // as "expand" as easily as "leave"), where a real
-                        // "step out" icon states its own meaning.
-                        let eject_icon_pos = eject_rect.center();
-                        let eject_icon_color = ui.visuals().text_color();
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.text(
-                                project(eject_icon_pos),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::light::SIGN_OUT,
-                                egui::FontId::proportional(14.0),
-                                eject_icon_color,
-                            );
-                        }));
-                        if eject_response.clicked() {
-                            eject_clicked = true;
-                            actions.push(GraphAction::Node(id.clone(), NodeAction::RemoveFromGroup));
-                        }
-                    }
-
-                    // Color swatch: the one corner not already claimed by
-                    // the pin dot, close "x", or (inside a group) the eject
-                    // button. Always shown, not hover-gated, same
-                    // "glanceable identifier" reasoning as a group's own
-                    // swatch.
-                    let swatch_rect =
-                        egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0) * inv_zoom);
-                    let swatch_response = ui
-                        .interact(
-                            swatch_rect,
-                            egui::Id::new(("graph_node_swatch", id.as_str())),
-                            egui::Sense::click(),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let mut swatch_clicked = false;
-                    match tag_color {
-                        Some(c) => {
-                            ui.painter().circle_filled(swatch_rect.center(), 6.0 * inv_zoom, c);
-                        }
-                        None => {
-                            ui.painter().circle_stroke(
-                                swatch_rect.center(),
-                                6.0 * inv_zoom,
-                                egui::Stroke::new(1.5 * inv_zoom, ui.visuals().weak_text_color()),
-                            );
-                        }
-                    }
-                    if swatch_response.clicked() {
-                        swatch_clicked = true;
-                        actions.push(GraphAction::Node(id.clone(), NodeAction::CycleColor));
-                    }
-
-                    if response.dragged() {
-                        self.dragging = Some(id.clone());
-                        let delta = response.drag_delta();
-                        // Dragging one member of an active rectangle-
-                        // selection moves the *whole* selection together,
-                        // not just the card the pointer happened to grab --
-                        // same "selection acts as one unit" reasoning the
-                        // drop-onto-a-group-card handling just below
-                        // already has for joining a group; found live that
-                        // plain repositioning didn't have this yet (the
-                        // other selected cards stayed put, breaking the
-                        // visual selection's cohesion mid-drag).
-                        if self.selected_tabs.contains(&id) {
-                            for tab_id in self.selected_tabs.clone() {
-                                if let Some(node) = self.nodes.get_mut(&tab_id) {
-                                    node.pos += delta;
-                                }
-                            }
-                        } else if let Some(node) = self.nodes.get_mut(&id) {
-                            node.pos += delta;
-                        }
-                    } else if self.dragging.as_deref() == Some(id.as_str()) {
-                        self.dragging = None;
-                        // Dropping a tab onto a group's card joins that
-                        // group, or (dropped on a plain tab instead) starts
-                        // a new one with both -- kept top-level-only for
-                        // now even though groups can nest (see
-                        // `GroupPayload`'s own doc comment): inside a
-                        // group's own subgraph, dropping onto a sibling tab
-                        // already means something else (re-parent, the
-                        // `else if` below), and resolving that overlap
-                        // wasn't part of this pass. A nested group still
-                        // gains members today via "+ New Tab"/"Group
-                        // Selected" while viewing its own subgraph, or by
-                        // dragging a tab already inside it onto a sibling
-                        // to reorganize -- just not by dragging one in from
-                        // a different branch of the tree.
-                        if self.current_group.is_none() {
-                            if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                                let dropped_on_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
-                                    self.nodes.get(gid).is_some_and(|g| {
-                                        egui::Rect::from_center_size(
-                                            egui::Pos2::new(g.pos.x, g.pos.y),
-                                            GROUP_NODE_SIZE,
-                                        )
-                                        .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
-                                    })
-                                });
-                                if let Some(group_id) = dropped_on_group {
-                                    // Dragging one member of an active
-                                    // rectangle-selection joins the *whole*
-                                    // selection, not just the node the
-                                    // pointer happened to grab -- matches
-                                    // "Group Selected"/"Close Selected"
-                                    // already treating the selection as one
-                                    // unit. A plain (unselected) drag keeps
-                                    // the original single-tab behavior.
-                                    if self.selected_tabs.contains(&id) {
-                                        for tab_id in self.selected_tabs.drain() {
-                                            if let Some(node) = self.nodes.get_mut(&tab_id) {
-                                                node.group = Some(group_id.clone());
-                                            }
-                                        }
-                                    } else if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.group = Some(group_id);
-                                    }
-                                } else {
-                                    // Not dropped on a group -- check
-                                    // another ungrouped tab's card instead,
-                                    // creating a new group with both.
-                                    // `nodes_at_current_level(Tab)` only ever
-                                    // returns ungrouped tabs at the top
-                                    // level (its own filter is `n.group ==
-                                    // self.current_group`, i.e. `None`
-                                    // here), so anything it finds is
-                                    // already a valid drop target with no
-                                    // extra check needed.
-                                    let dropped_on_tab =
-                                        self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|other_id| {
-                                            other_id != &id
-                                                && self.nodes.get(other_id).is_some_and(|other| {
-                                                    egui::Rect::from_center_size(
-                                                        egui::Pos2::new(other.pos.x, other.pos.y),
-                                                        GRAPH_NODE_SIZE,
-                                                    )
-                                                    .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
-                                                })
-                                        });
-                                    if let Some(other_id) = dropped_on_tab {
-                                        let group_id = self.alloc_group_id();
-                                        let pos =
-                                            self.nodes.get(&other_id).map(|n| n.pos).unwrap_or(tab_pos);
-                                        let name = Self::default_group_name(&group_id);
-                                        self.nodes.insert(
-                                            group_id.clone(),
-                                            GraphNode {
-                                                parent: None,
-                                                group: None,
-                                                pos,
-                                                vel: egui::Vec2::ZERO,
-                                                color: None,
-                                                payload: NodePayload::Group(GroupPayload { name }),
-                                            },
-                                        );
-                                        self.node_order.push(group_id.clone());
-                                        if let Some(node) = self.nodes.get_mut(&other_id) {
-                                            node.group = Some(group_id.clone());
-                                        }
-                                        // Same "whole selection joins, not
-                                        // just the dragged node" rule the
-                                        // drop-onto-an-existing-group branch
-                                        // above already applies -- this
-                                        // sibling gesture (drop onto a plain
-                                        // tab instead) was missing it.
-                                        if self.selected_tabs.contains(&id) {
-                                            for tab_id in self.selected_tabs.drain() {
-                                                if let Some(node) = self.nodes.get_mut(&tab_id) {
-                                                    node.group = Some(group_id.clone());
-                                                }
-                                            }
-                                        } else if let Some(node) = self.nodes.get_mut(&id) {
-                                            node.group = Some(group_id);
-                                        }
-                                    }
-                                }
-                            }
-                        } else if leave_group_button_rect
-                            .is_some_and(|rect| ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p)))
-                        {
-                            // Dragging a group member onto the "◀" back
-                            // button ejects it one level up (to the
-                            // group's own parent -- the top level, if the
-                            // group itself isn't nested) -- the button's
-                            // rect is screen-space (it's a toolbar widget),
-                            // so this checks the raw pointer position
-                            // directly rather than the node's world-space
-                            // `pos` the top-level group-card/tab-card drop
-                            // targets above use. Same effect as the
-                            // hover-revealed eject button, just reached by
-                            // dragging the card itself out through the way
-                            // back instead.
-                            actions.push(GraphAction::Node(id.clone(), NodeAction::RemoveFromGroup));
-                        } else if let Some(tab_pos) = self.nodes.get(&id).map(|n| n.pos) {
-                            // Dropping one member of a group's own subgraph
-                            // onto a sibling tab's card re-parents it there
-                            // -- the top-level equivalent gesture (drop tab
-                            // onto tab) already means "create a new group
-                            // with both," so this only applies once inside
-                            // a group's own subgraph, where that meaning
-                            // doesn't apply and no drop gesture existed at
-                            // all yet. `nodes_at_current_level(Tab)` already only
-                            // returns this group's own members here (its
-                            // filter is `n.group == self.current_group`),
-                            // so any match is a valid sibling to reparent
-                            // onto. Guarded against creating a cycle (e.g.
-                            // dropping a tab onto its own descendant).
-                            let dropped_on_sibling =
-                                self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().find(|other_id| {
-                                    other_id != &id
-                                        && self.nodes.get(other_id).is_some_and(|other| {
-                                            egui::Rect::from_center_size(
-                                                egui::Pos2::new(other.pos.x, other.pos.y),
-                                                GRAPH_NODE_SIZE,
-                                            )
-                                            .contains(egui::Pos2::new(tab_pos.x, tab_pos.y))
-                                        })
-                                });
-                            if let Some(new_parent_id) = dropped_on_sibling {
-                                if !self.would_create_cycle(&id, &new_parent_id) {
-                                    if let Some(node) = self.nodes.get_mut(&id) {
-                                        node.parent = Some(new_parent_id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if response.hovered() {
-                        self.hovered = Some(id.clone());
-                    } else if self.hovered.as_deref() == Some(id.as_str()) {
-                        self.hovered = None;
-                    }
-                    // Excludes a click on the pin dot, eject button, or
-                    // color swatch, or audio dot -- all their hit-rects
-                    // overlap this card's corners, and without this guard
-                    // any of them also focuses the node into Tab view (see
-                    // `pin_response`'s own doc comment).
-                    if response.clicked()
-                        && !pin_response.clicked()
-                        && !eject_clicked
-                        && !swatch_clicked
-                        && !audio_clicked
-                    {
-                        actions.push(GraphAction::Node(id.clone(), NodeAction::Open));
-                    }
-
-                    dim_if_filtered_out(&mut deferred_overlays, &self.graph_filter, &[&title, &url], rect, 6.0);
-                }
-
-                // Every kind but Tab: one shared frame each
-                // (`draw_graph_card`), kind by kind in `GRAPH_DRAW_ORDER`
-                // (Group last), which is also their stacking order: a later
-                // kind draws, and takes the pointer, on top of an earlier
-                // one. Each kind's own click action is applied here.
+                // Every card: one shared frame each (`draw_graph_card`),
+                // kind by kind in `GRAPH_DRAW_ORDER` (Group last), which is
+                // also their stacking order: a later kind draws, and takes
+                // the pointer, on top of an earlier one. Each kind's own
+                // click action is applied here.
                 let mut pass = CardPass {
                     deferred_overlays: &mut deferred_overlays,
                     actions: &mut actions,
@@ -12072,8 +11627,7 @@ impl App {
                     zoom_scale,
                     drop_preview: &drop_preview,
                 };
-                // Tab cards still have their own loop, above.
-                for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()).skip(1) {
+                for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
                     for id in ids.iter() {
                         // Read before the frame: a Note's `TextEdit` can lose
                         // focus to a click on its own header this very frame,
@@ -12103,6 +11657,10 @@ impl App {
                                 if card.response.clicked() {
                                     pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
                                 }
+                            }
+                            // Opens the tab into Tab view.
+                            ItemNodeKind::Tab if card.response.clicked() => {
+                                pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
                             }
                             // Click (not drag -- egui doesn't report
                             // `clicked()` for a drag) reveals the file.
@@ -14094,11 +13652,22 @@ mod tests {
     // before the tab and group menus joined them.
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
-        CardView { kind, color: None, in_group: false, overloaded: false, members: Vec::new() }
+        CardView {
+            kind,
+            color: None,
+            in_group: false,
+            overloaded: false,
+            members: Vec::new(),
+            focused: false,
+            pinned: false,
+            muted: false,
+            audio_playing: false,
+            selected: false,
+        }
     }
 
     #[test]
-    fn card_border_resolves_tag_overload_idle_and_hover() {
+    fn card_border_resolves_focus_tag_overload_idle_and_hover() {
         // Opaque colors, so `lerp_color32` lands exactly on either end.
         let style = CardStyle {
             border_idle: egui::Color32::GRAY,
@@ -14116,18 +13685,38 @@ mod tests {
         assert_eq!(card_border(&overloaded(Some(red)), &style, 0.0), (1.0, red));
         // Fully hovered: the hover color at 1.5, whatever the resting color.
         assert_eq!(card_border(&view(Some(red)), &style, 1.0), (1.5, egui::Color32::WHITE));
+        // The open tab: ACCENT at 2.5 over everything, not eased.
+        let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
+        assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
+        assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
     }
 
     #[test]
     fn card_controls_list_each_cards_buttons_in_pointer_order() {
         use CardControl::*;
-        for kind in GRAPH_DRAW_ORDER {
+        for kind in GRAPH_DRAW_ORDER.into_iter().filter(|&k| k != ItemNodeKind::Tab) {
             assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
             let grouped = CardView { in_group: true, ..test_view(kind) };
             assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
             let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
             assert_eq!(Close.action(kind), close, "{kind:?}");
         }
+        // A tab always shows its pin; its audio indicator while playing or
+        // muted. Close still registers last: it overlaps the indicator.
+        let tab = |f: fn(&mut CardView)| {
+            let mut view = test_view(ItemNodeKind::Tab);
+            f(&mut view);
+            card_controls(&view)
+        };
+        assert_eq!(tab(|_| {}), vec![Swatch, Pin, Close]);
+        assert_eq!(tab(|v| v.pinned = true), vec![Swatch, Pin, Close]);
+        assert_eq!(tab(|v| v.audio_playing = true), vec![Swatch, Pin, Audio, Close]);
+        assert_eq!(tab(|v| v.muted = true), vec![Swatch, Pin, Audio, Close]);
+        assert_eq!(tab(|v| { v.muted = true; v.in_group = true; }), vec![Swatch, Pin, Audio, Eject, Close]);
+        assert_eq!(Close.action(ItemNodeKind::Tab), NodeAction::Delete);
+        assert_eq!(Pin.action(ItemNodeKind::Tab), NodeAction::TogglePin);
+        assert_eq!(Audio.action(ItemNodeKind::Tab), NodeAction::ToggleMute);
+        assert!(!Pin.hover_only() && !Audio.hover_only());
         assert_eq!(Eject.action(ItemNodeKind::Note), NodeAction::RemoveFromGroup);
         assert_eq!(Swatch.action(ItemNodeKind::Note), NodeAction::CycleColor);
         assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());

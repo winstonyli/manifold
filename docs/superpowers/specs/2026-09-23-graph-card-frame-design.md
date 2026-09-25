@@ -147,7 +147,8 @@ card kinds between them flip to top-first.
 ## Non-goals
 
 - The Tab and Group card loops (drop-onto-tab reparenting, drill-in,
-  glow, thumbnails). They only pick up `node_card_size`.
+  glow, thumbnails). They only pick up `node_card_size`. Done since, in
+  `2026-09-24-tab-group-card-frame-design.md`.
 - Sticky hover itself (`self.hovered` feeding `is_hovered`) — recorded
   follow-up in the node-menu spec; unchanged.
 - One-pass creation-order drawing (declined).
