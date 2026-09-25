@@ -379,6 +379,20 @@ fn load_app_icon() -> Option<Icon> {
 /// separate monotonic counter field (a distinct id space per node kind, so
 /// e.g. a tab and a note can both be "id 3" without colliding) and only
 /// ever differed in which counter and which string prefix it used.
+/// The next id `next_id` hands out for each node kind (`tab-3`, `grp-0`, ...).
+/// `apply_session` restores the kinds a session saves; groups and downloads
+/// aren't saved, so theirs keep counting across a session load.
+#[derive(Default)]
+struct NodeIds {
+    tab: u64,
+    download: u64,
+    group: u64,
+    note: u64,
+    image: u64,
+    pdf: u64,
+    json: u64,
+}
+
 fn next_id(counter: &mut u64, prefix: &str) -> String {
     let id = format!("{prefix}-{counter}");
     *counter += 1;
@@ -1403,8 +1417,8 @@ struct App {
     /// closes out from under the split -- see `close_split`.
     split_tab: Option<String>,
     view_mode: ViewMode,
-    next_tab_id: u64,
-    next_download_id: u64,
+    /// Counters for new node ids, one per kind.
+    ids: NodeIds,
     /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
     /// hasn't been handled yet. Read by the headless `WAITTABS` command,
     /// whose waiting senders sit in `tabs_spawned_waiters` until this
@@ -1418,11 +1432,6 @@ struct App {
     /// session uses (both count from `tab-0`), replace that tab's node and
     /// leave two engine hosts fighting over one id.
     session_generation: u64,
-    next_group_id: u64,
-    next_note_id: u64,
-    next_image_id: u64,
-    next_pdf_id: u64,
-    next_json_id: u64,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
@@ -1756,16 +1765,10 @@ impl Default for App {
             image_view: ImageViewState::default(),
             split_tab: None,
             view_mode: ViewMode::Item,
-            next_tab_id: 0,
-            next_download_id: 0,
+            ids: NodeIds::default(),
             tab_spawns_in_flight: 0,
             tabs_spawned_waiters: Vec::new(),
             session_generation: 0,
-            next_group_id: 0,
-            next_note_id: 0,
-            next_image_id: 0,
-            next_pdf_id: 0,
-            next_json_id: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
@@ -2323,11 +2326,11 @@ impl App {
             // corrections), so a snapshot taken from Settings must not
             // write a `viewed_image` alongside `view_mode_tab: false`.
             viewed_image: self.viewed_image.clone().filter(|_| self.view_mode == ViewMode::Item),
-            next_tab_id: self.next_tab_id,
-            next_note_id: self.next_note_id,
-            next_image_id: self.next_image_id,
-            next_pdf_id: self.next_pdf_id,
-            next_json_id: self.next_json_id,
+            next_tab_id: self.ids.tab,
+            next_note_id: self.ids.note,
+            next_image_id: self.ids.image,
+            next_pdf_id: self.ids.pdf,
+            next_json_id: self.ids.json,
         }
     }
 
@@ -2377,27 +2380,27 @@ impl App {
     /// runtime load, for tearing down whatever was open before calling
     /// this.
     fn apply_session(&mut self, session: session::Session) {
-        self.next_tab_id = session.next_tab_id;
-        self.next_note_id = session.next_note_id;
-        self.next_image_id = session.next_image_id;
-        self.next_pdf_id = session.next_pdf_id;
-        self.next_json_id = session.next_json_id;
+        self.ids.tab = session.next_tab_id;
+        self.ids.note = session.next_note_id;
+        self.ids.image = session.next_image_id;
+        self.ids.pdf = session.next_pdf_id;
+        self.ids.json = session.next_json_id;
         // A file with a counter missing (they all default to 0) or behind
         // its own ids would otherwise let the next new node reuse an id.
         for tab in &session.tabs {
-            bump_past_id(&mut self.next_tab_id, &tab.id, "tab");
+            bump_past_id(&mut self.ids.tab, &tab.id, "tab");
         }
         for note in &session.notes {
-            bump_past_id(&mut self.next_note_id, &note.id, "note");
+            bump_past_id(&mut self.ids.note, &note.id, "note");
         }
         for image in &session.images {
-            bump_past_id(&mut self.next_image_id, &image.id, "img");
+            bump_past_id(&mut self.ids.image, &image.id, "img");
         }
         for pdf in &session.pdfs {
-            bump_past_id(&mut self.next_pdf_id, &pdf.id, "pdf");
+            bump_past_id(&mut self.ids.pdf, &pdf.id, "pdf");
         }
         for json in &session.jsons {
-            bump_past_id(&mut self.next_json_id, &json.id, "json");
+            bump_past_id(&mut self.ids.json, &json.id, "json");
         }
         for note in session.notes {
             self.nodes.insert(
@@ -2834,7 +2837,7 @@ impl App {
     }
 
     fn alloc_tab_id(&mut self) -> String {
-        next_id(&mut self.next_tab_id, "tab")
+        next_id(&mut self.ids.tab, "tab")
     }
 
     /// Removes a download or note node from the graph -- a download's file
@@ -2908,7 +2911,7 @@ impl App {
     /// group ids share the same flat id space at the top level
     /// (`graph_layout::step` again sees ids only, not node kinds).
     fn alloc_group_id(&mut self) -> String {
-        next_id(&mut self.next_group_id, "grp")
+        next_id(&mut self.ids.group, "grp")
     }
 
     /// Memoized `favicon_fetch::url_origin(url)` -- that function is a
@@ -2936,25 +2939,25 @@ impl App {
     /// Same reasoning as `alloc_group_id` -- a distinct `"note-"` prefix in
     /// the same flat id space.
     fn alloc_note_id(&mut self) -> String {
-        next_id(&mut self.next_note_id, "note")
+        next_id(&mut self.ids.note, "note")
     }
 
     /// Same reasoning as `alloc_note_id` -- a distinct `"img-"` prefix in
     /// the same flat id space.
     fn alloc_image_id(&mut self) -> String {
-        next_id(&mut self.next_image_id, "img")
+        next_id(&mut self.ids.image, "img")
     }
 
     /// Same reasoning as `alloc_image_id` -- a distinct `"pdf-"` prefix in
     /// the same flat id space.
     fn alloc_pdf_id(&mut self) -> String {
-        next_id(&mut self.next_pdf_id, "pdf")
+        next_id(&mut self.ids.pdf, "pdf")
     }
 
     /// Same reasoning as `alloc_pdf_id` -- a distinct `"json-"` prefix in
     /// the same flat id space.
     fn alloc_json_id(&mut self) -> String {
-        next_id(&mut self.next_json_id, "json")
+        next_id(&mut self.ids.json, "json")
     }
 
     /// A fresh group's default display name -- derived from its own id's
@@ -4135,8 +4138,7 @@ impl App {
         let Some((node_pos, node_group)) = self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone())) else {
             return;
         };
-        let id = format!("dl-{}", self.next_download_id);
-        self.next_download_id += 1;
+        let id = next_id(&mut self.ids.download, "dl");
         let pos = node_pos + graph_layout::spawn_jitter(&id);
         self.nodes.insert(
             id.clone(),
