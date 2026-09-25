@@ -113,6 +113,109 @@ pub(crate) struct GraphToolbar {
     pub(crate) leave_group_button_rect: Option<egui::Rect>,
 }
 
+/// Graph view's camera: the visible world rect and what moves it on its
+/// own. At most one animation owns `rect` at a time, so starting one or
+/// jumping cancels the others; a leftover one would carry on from where it
+/// was and undo the move.
+pub(crate) struct GraphCamera {
+    /// The graph view's current pan/zoom state (visible world-space rect),
+    /// persisted across frames per `egui::Scene::show`'s own contract —
+    /// mutated by the user dragging (pan) or scrolling (zoom).
+    pub(crate) rect: egui::Rect,
+    /// Graph view's own camera zoom, as a percentage for the toolbar's
+    /// readout -- `100.0` means `graph_world_to_screen_transform`'s scale
+    /// is `1.0` (one world unit per screen point), same "100% = no
+    /// scaling" meaning Tab view's own zoom already uses. Updated once
+    /// `build_graph_ui` recomputes the real transform later in the same
+    /// frame the toolbar (which needs it before that point) is built, so
+    /// the toolbar always shows the *previous* frame's value -- one frame
+    /// of lag, imperceptible at any real frame rate, and far simpler than
+    /// restructuring draw order to compute the transform before the
+    /// toolbar panel has even reserved its own screen space.
+    pub(crate) zoom_pct: f32,
+    /// `Some` while entering/leaving a group is easing the camera toward
+    /// the new level's framing instead of having already snapped there --
+    /// see `GraphCameraTween`'s own doc comment.
+    pub(crate) tween: Option<GraphCameraTween>,
+    /// `Some` while a released background-pan drag is still gliding --
+    /// see `PanMomentum`'s own doc comment.
+    pub(crate) momentum: Option<PanMomentum>,
+    /// Recent `(when, camera-center)` samples, recorded only while a
+    /// background pan drag is actually being held down (not a node drag,
+    /// not a `GraphCameraTween` in progress, not this same momentum
+    /// re-applying itself) -- deliberately the *camera's* own tracked
+    /// world-space position, not the raw pointer's screen-space velocity,
+    /// since that's the value `PanMomentum` actually needs, in the units
+    /// it already needs it in, with no zoom-scale conversion or sign
+    /// reasoning to get right. Cleared the instant the drag isn't a plain
+    /// background pan for any reason, so a stale sample from an unrelated
+    /// earlier gesture can never leak into a later release's velocity
+    /// estimate.
+    pub(crate) drag_history: std::collections::VecDeque<(std::time::Instant, egui::Pos2)>,
+}
+
+impl GraphCamera {
+    pub(crate) fn new() -> Self {
+        Self {
+            rect: default_graph_scene_rect(),
+            zoom_pct: 100.0,
+            tween: None,
+            momentum: None,
+            drag_history: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Moves straight to `rect`.
+    pub(crate) fn jump_to(&mut self, rect: egui::Rect) {
+        self.rect = rect;
+        self.tween = None;
+        self.momentum = None;
+    }
+
+    /// Eases from the current rect to `to` over `TRANSITION_DURATION`.
+    pub(crate) fn ease_to(&mut self, to: egui::Rect) {
+        self.tween = Some(GraphCameraTween { from: self.rect, to, start: std::time::Instant::now() });
+        self.momentum = None;
+    }
+
+    /// Eased camera move into/out of a group -- see `GraphCameraTween`'s
+    /// doc comment for why this is a separate mechanism from
+    /// `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
+    /// every frame (not derived from `rect`, which
+    /// `build_graph_ui`'s `Scene::show` may also nudge from user pan/zoom input this
+    /// same frame) so an in-progress user pan can't throw off where the
+    /// animation is actually headed.
+    pub(crate) fn advance(&mut self) {
+        if let Some(tween) = self.tween {
+            let elapsed = tween.start.elapsed();
+            let t = (elapsed.as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+            let eased = t * t * (3.0 - 2.0 * t);
+            self.rect = egui::Rect::from_min_max(
+                tween.from.min + (tween.to.min - tween.from.min) * eased,
+                tween.from.max + (tween.to.max - tween.from.max) * eased,
+            );
+            if elapsed >= TRANSITION_DURATION {
+                self.tween = None;
+            }
+        } else if let Some(momentum) = self.momentum {
+            // Pan momentum -- see `PanMomentum`'s own doc comment.
+            // Mutually exclusive with the tween above (both would
+            // otherwise fight over `camera.rect` the same frame).
+            let elapsed = momentum.start.elapsed();
+            let t = elapsed.as_secs_f32();
+            let decay = (-PAN_MOMENTUM_DECAY * t).exp();
+            let displacement =
+                momentum.initial_velocity * ((1.0 - decay) / PAN_MOMENTUM_DECAY);
+            let size = self.rect.size();
+            self.rect =
+                egui::Rect::from_center_size(momentum.start_center + displacement, size);
+            if elapsed >= PAN_MOMENTUM_MAX_DURATION {
+                self.momentum = None;
+            }
+        }
+    }
+}
+
 impl App {
     /// Replicates `egui::Scene`'s own internal `fit_to_rect_in_scene`
     /// (private to egui, not part of its public API) — needed to compute
@@ -122,16 +225,16 @@ impl App {
     /// `screen = translation + scale * world`, matching `Scene`'s own
     /// "fit the visible scene rect into the available screen area,
     /// preserving aspect ratio, clamped to the configured zoom range"
-    /// behavior exactly (using the *same* `self.graph_scene_rect` `Scene`
+    /// behavior exactly (using the *same* `self.camera.rect` `Scene`
     /// itself reads/writes) — verified live by screenshotting a
     /// mid-animation frame and confirming the content quad visually lines
     /// up with the target node's real on-screen position.
     pub(crate) fn graph_world_to_screen_transform(&self, scene_outer_rect: egui::Rect) -> (f32, egui::Vec2) {
-        let scale = (scene_outer_rect.size() / self.graph_scene_rect.size())
+        let scale = (scene_outer_rect.size() / self.camera.rect.size())
             .min_elem()
             .clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
         let translation =
-            scene_outer_rect.center().to_vec2() - scale * self.graph_scene_rect.center().to_vec2();
+            scene_outer_rect.center().to_vec2() - scale * self.camera.rect.center().to_vec2();
         (scale, translation)
     }
 
@@ -257,6 +360,17 @@ impl App {
         }
     }
 
+    /// Switches to `id`'s level, as `switch_group_level` does, unless it is
+    /// already the one shown. For jumps straight to a tab (quick switcher,
+    /// the view toggle): the camera would otherwise keep the old level's
+    /// framing and show the new one's nodes off screen.
+    pub(crate) fn show_level_of(&mut self, id: &str) {
+        let group = self.nodes.get(id).and_then(|n| n.group.clone());
+        if group != self.current_group {
+            self.switch_group_level(group);
+        }
+    }
+
     /// Shows `group`'s level (`None` for the top), easing the camera to fit
     /// it, and drops everything tied to the old level: the rectangle
     /// selection (the toolbar's "Group Selected"/"Close Selected" would
@@ -266,11 +380,7 @@ impl App {
         self.current_group = group;
         self.settle_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
-        self.graph_camera_tween = Some(GraphCameraTween {
-            from: self.graph_scene_rect,
-            to: self.fit_all_nodes_scene_rect(),
-            start: std::time::Instant::now(),
-        });
+        self.camera.ease_to(self.fit_all_nodes_scene_rect());
         self.selected_tabs.clear();
         self.rect_select_start = None;
         self.pending_new_node = None;
@@ -307,12 +417,12 @@ impl App {
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
         // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
-        // why. Uses this frame's not-yet-updated `graph_scene_rect`, the
+        // why. Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
         let lod_visible_count: usize = at_level
         .iter()
-        .map(|ids| count_visible_nodes(&self.nodes, ids, self.graph_scene_rect))
+        .map(|ids| count_visible_nodes(&self.nodes, ids, self.camera.rect))
         .sum();
         if self.graph_lod_simplified {
             if lod_visible_count < LOD_RESTORE_COUNT {
@@ -339,7 +449,7 @@ impl App {
         // `overlay_painter`'s own comment for why its layer is
         // `Order::Middle`.
         if reset_view {
-            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            self.camera.jump_to(self.fit_all_nodes_scene_rect());
             self.pending_new_node = None;
         }
 
@@ -394,7 +504,7 @@ impl App {
         // of that logic needs to know pan/zoom exists at all. `scene_rect`
         // must live outside `self` while the closure below also borrows
         // `self` mutably, so it's round-tripped through a local instead of
-        // borrowed from `self.graph_scene_rect` directly.
+        // borrowed from `self.camera.rect` directly.
         // Everything painted inside `Scene`'s closure lives in world-space
         // coordinates that `Scene` itself then scales uniformly by the
         // current zoom factor — a *shape* (rect/circle/stroke/image) sized
@@ -424,16 +534,16 @@ impl App {
         if reset_zoom {
             // Keeps the current pan (unlike "Reset View", which re-fits
             // everything) -- `graph_world_to_screen_transform` derives
-            // `zoom_scale` as `screen_size / graph_scene_rect.size()`
+            // `zoom_scale` as `screen_size / camera.rect.size()`
             // (`.min_elem()` of the two axis ratios), so matching the world
             // rect's size to the screen's own size on both axes makes that
             // ratio exactly 1.0, the definition of "100%" this readout uses.
-            let center = self.graph_scene_rect.center();
-            self.graph_scene_rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
+            let center = self.camera.rect.center();
+            self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
         }
         if let Some(factor) = graph_zoom_step {
-            self.graph_scene_rect = step_scene_rect(
-                self.graph_scene_rect,
+            self.camera.rect = step_scene_rect(
+                self.camera.rect,
                 factor,
                 scene_outer_rect.size(),
                 GRAPH_ZOOM_MIN,
@@ -441,7 +551,7 @@ impl App {
             );
         }
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-        self.graph_zoom_pct = zoom_scale * 100.0;
+        self.camera.zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
         let project = move |world: egui::Pos2| -> egui::Pos2 {
             (translation + zoom_scale * world.to_vec2()).to_pos2()
@@ -462,7 +572,7 @@ impl App {
 
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
 
-        self.advance_graph_camera();
+        self.camera.advance();
 
         let (minimap_rect, world_bounds, minimap_scale) =
             self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
@@ -470,8 +580,8 @@ impl App {
         // an actual pan drag or scroll-wheel zoom this frame changes this,
         // and dismisses `pending_new_node` the same as every other camera
         // move already does (see that field's own doc comment).
-        let scene_rect_before_pan_zoom = self.graph_scene_rect;
-        let mut scene_rect = self.graph_scene_rect;
+        let scene_rect_before_pan_zoom = self.camera.rect;
+        let mut scene_rect = self.camera.rect;
         let scene_response = egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
@@ -500,8 +610,8 @@ impl App {
                 self.draw_peek_preview(ui);
                 deferred_overlays
             });
-        self.graph_scene_rect = scene_rect;
-        // Now that `self.graph_scene_rect` reflects this frame's actual
+        self.camera.rect = scene_rect;
+        // Now that `self.camera.rect` reflects this frame's actual
         // pan/zoom (not the stale value `project`/`overlay_painter` calls
         // inside the closure above had to work with -- see
         // `DeferredOverlays`'s own doc comment), recompute the transform
@@ -763,10 +873,10 @@ impl App {
                     // with Image view). Fit is the old "Reset View"
                     // (re-fit every node at this level); the `%` readout
                     // keeps the current pan and only resets the scale.
-                    let zoom = self.graph_zoom_pct / 100.0;
+                    let zoom = self.camera.zoom_pct / 100.0;
                     if let Some(action) = render_zoom_chip(
                         ui,
-                        self.graph_zoom_pct,
+                        self.camera.zoom_pct,
                         zoom > GRAPH_ZOOM_MIN + 1e-3,
                         zoom < GRAPH_ZOOM_MAX - 1e-3,
                         "Reset View (fit all)",
@@ -1002,43 +1112,6 @@ impl App {
         }
     }
 
-    /// Eased camera move into/out of a group -- see `GraphCameraTween`'s
-    /// doc comment for why this is a separate mechanism from
-    /// `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
-    /// every frame (not derived from `self.graph_scene_rect`, which
-    /// `build_graph_ui`'s `Scene::show` may also nudge from user pan/zoom input this
-    /// same frame) so an in-progress user pan can't throw off where the
-    /// animation is actually headed.
-    pub(crate) fn advance_graph_camera(&mut self) {
-        if let Some(tween) = self.graph_camera_tween {
-            let elapsed = tween.start.elapsed();
-            let t = (elapsed.as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-            let eased = t * t * (3.0 - 2.0 * t);
-            self.graph_scene_rect = egui::Rect::from_min_max(
-                tween.from.min + (tween.to.min - tween.from.min) * eased,
-                tween.from.max + (tween.to.max - tween.from.max) * eased,
-            );
-            if elapsed >= TRANSITION_DURATION {
-                self.graph_camera_tween = None;
-            }
-        } else if let Some(momentum) = self.pan_momentum {
-            // Pan momentum -- see `PanMomentum`'s own doc comment.
-            // Mutually exclusive with the tween above (both would
-            // otherwise fight over `graph_scene_rect` the same frame).
-            let elapsed = momentum.start.elapsed();
-            let t = elapsed.as_secs_f32();
-            let decay = (-PAN_MOMENTUM_DECAY * t).exp();
-            let displacement =
-                momentum.initial_velocity * ((1.0 - decay) / PAN_MOMENTUM_DECAY);
-            let size = self.graph_scene_rect.size();
-            self.graph_scene_rect =
-                egui::Rect::from_center_size(momentum.start_center + displacement, size);
-            if elapsed >= PAN_MOMENTUM_MAX_DURATION {
-                self.pan_momentum = None;
-            }
-        }
-    }
-
     /// Minimap: a small fixed overview in the graph panel's bottom-right
     /// corner, screen-space (drawn via `overlay_painter`, so it's
     /// unaffected by Scene's own pan/zoom the same way node labels are)
@@ -1087,8 +1160,8 @@ impl App {
             }
         }
         let viewport_rect = egui::Rect::from_two_pos(
-            world_to_minimap(self.graph_scene_rect.min),
-            world_to_minimap(self.graph_scene_rect.max),
+            world_to_minimap(self.camera.rect.min),
+            world_to_minimap(self.camera.rect.max),
         )
         .intersect(minimap_rect);
         overlay_painter.rect_stroke(
@@ -1114,29 +1187,29 @@ impl App {
     /// the node, not the camera, so it'd contribute a bogus near-zero
     /// sample anyway, but this is the explicit, intended guard), and
     /// no `GraphCameraTween` in progress (that already owns
-    /// `graph_scene_rect` this frame).
+    /// `camera.rect` this frame).
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let actively_panning =
-            pointer_down && self.dragging.is_none() && self.graph_camera_tween.is_none();
+            pointer_down && self.dragging.is_none() && self.camera.tween.is_none();
         if actively_panning {
             // A fresh grab of the background cancels any momentum still
             // gliding from an earlier release -- "grab it to stop it".
-            self.pan_momentum = None;
-            self.pan_drag_history.push_back((std::time::Instant::now(), scene_rect.center()));
-            while self.pan_drag_history.len() > PAN_HISTORY_LEN {
-                self.pan_drag_history.pop_front();
+            self.camera.momentum = None;
+            self.camera.drag_history.push_back((std::time::Instant::now(), scene_rect.center()));
+            while self.camera.drag_history.len() > PAN_HISTORY_LEN {
+                self.camera.drag_history.pop_front();
             }
         } else {
-            if self.pan_momentum.is_none() && ui.input(|i| i.pointer.primary_released()) {
+            if self.camera.momentum.is_none() && ui.input(|i| i.pointer.primary_released()) {
                 if let (Some(&(t0, p0)), Some(&(t1, p1))) =
-                    (self.pan_drag_history.front(), self.pan_drag_history.back())
+                    (self.camera.drag_history.front(), self.camera.drag_history.back())
                 {
                     let dt = (t1 - t0).as_secs_f32();
                     if dt > 0.01 {
                         let velocity = (p1 - p0) / dt;
                         if velocity.length() >= PAN_MOMENTUM_MIN_SPEED {
-                            self.pan_momentum = Some(PanMomentum {
+                            self.camera.momentum = Some(PanMomentum {
                                 initial_velocity: velocity,
                                 start: std::time::Instant::now(),
                                 start_center: scene_rect.center(),
@@ -1149,7 +1222,7 @@ impl App {
             // never pressed, grabbed a node, mid-tween) -- clear so a
             // stale sample from an unrelated earlier gesture can never
             // leak into a later release's velocity estimate.
-            self.pan_drag_history.clear();
+            self.camera.drag_history.clear();
         }
     }
 
@@ -1185,8 +1258,7 @@ impl App {
             if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let world_click =
                     world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
-                self.graph_scene_rect =
-                    egui::Rect::from_center_size(world_click, self.graph_scene_rect.size());
+                self.camera.jump_to(egui::Rect::from_center_size(world_click, self.camera.rect.size()));
                 self.pending_new_node = None;
             }
         }
@@ -1200,12 +1272,12 @@ impl App {
     /// when zoomed in, closer together zoomed out -- the
     /// intended feel), while the dot's own radius is scaled by
     /// `inv_zoom` so it stays a constant ~1.5 screen px
-    /// regardless of zoom. Reads `self.graph_scene_rect` (the
+    /// regardless of zoom. Reads `self.camera.rect` (the
     /// previous frame's visible world rect) rather than the
     /// `build_graph_ui`'s local `scene_rect` -- that one is already mutably
     /// borrowed for the whole `show` call, including this
     /// closure, so it can't also be read from in here. One frame
-    /// of lag, same as `graph_zoom_pct`'s own toolbar readout --
+    /// of lag, same as `camera.zoom_pct`'s own toolbar readout --
     /// imperceptible at any real frame rate.
     ///
     /// Spacing is adaptive (doubled/halved in world units, never
@@ -1226,7 +1298,7 @@ impl App {
             grid_spacing /= 2.0;
         }
         let dot_color = ui.visuals().weak_text_color().gamma_multiply(0.35);
-        let visible = self.graph_scene_rect;
+        let visible = self.camera.rect;
         let start_x = (visible.min.x / grid_spacing).floor() as i32;
         let end_x = (visible.max.x / grid_spacing).ceil() as i32;
         let start_y = (visible.min.y / grid_spacing).floor() as i32;
@@ -1270,7 +1342,7 @@ impl App {
             // without actually crossing the viewport, but that's a
             // rare, cheap-to-tolerate false negative, not a
             // visible edge going missing.
-            if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
+            if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.camera.rect) {
                 draw_graph_edge(
                     ui.painter(),
                     parent_pos,
@@ -1549,5 +1621,29 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn easing_the_camera_stops_a_glide() {
+        let mut camera = GraphCamera::new();
+        let start = std::time::Instant::now() - std::time::Duration::from_millis(50);
+        camera.momentum = Some(PanMomentum {
+            initial_velocity: egui::vec2(2000.0, 0.0),
+            start,
+            start_center: camera.rect.center(),
+        });
+        let to = egui::Rect::from_center_size(egui::pos2(5000.0, 5000.0), egui::vec2(400.0, 300.0));
+        camera.ease_to(to);
+        // Once the ease ends, the glide it replaced must not take over again.
+        camera.tween.as_mut().unwrap().start -= TRANSITION_DURATION;
+        camera.advance();
+        camera.advance();
+        assert_eq!(camera.rect, to);
+        assert!(camera.tween.is_none() && camera.momentum.is_none());
     }
 }

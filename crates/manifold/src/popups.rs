@@ -832,8 +832,7 @@ impl App {
         let Some(switcher) = &self.quick_switcher else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
         if let Some(id) = matches.get(switcher.selected).cloned() {
-            let group = self.nodes.get(&id).and_then(|n| n.group.clone());
-            self.current_group = group;
+            self.show_level_of(&id);
             self.focus_tab(&id);
         }
         self.quick_switcher = None;
@@ -952,8 +951,7 @@ impl App {
             });
 
         if let Some(id) = jump_to {
-            let group = self.nodes.get(&id).and_then(|n| n.group.clone());
-            self.current_group = group;
+            self.show_level_of(&id);
             self.focus_tab(&id);
             self.quick_switcher = None;
         }

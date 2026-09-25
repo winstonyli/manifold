@@ -579,7 +579,7 @@ impl App {
         // drag tracking is what keeps a drag alive frame to
         // frame, so skipping it mid-drag would freeze the node
         // in place the instant it crossed the visible edge.
-        if self.dragging.as_deref() != Some(id) && !rect.intersects(self.graph_scene_rect) {
+        if self.dragging.as_deref() != Some(id) && !rect.intersects(self.camera.rect) {
             return None;
         }
         let view = self.card_view(id)?;

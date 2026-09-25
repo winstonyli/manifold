@@ -410,7 +410,7 @@ type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egu
 /// comment for why -- crisp text at any zoom, not blurry rescaled glyphs),
 /// so anything painted on it has to convert its own world position to
 /// screen space manually via `project`. But `project` is built from
-/// `self.graph_scene_rect`, which -- confirmed by reading `egui::Scene::
+/// `self.camera.rect`, which -- confirmed by reading `egui::Scene::
 /// show`'s actual source (0.36.2) -- is only updated *after* the whole
 /// content closure returns for the frame; a live pan/zoom drag is applied
 /// to `Scene`'s own *internal* transform before the closure runs, which is
@@ -426,7 +426,7 @@ type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egu
 /// Fix: instead of painting through `overlay_painter` immediately (using
 /// the stale `project` captured before `Scene::show`), every such call
 /// queues a closure capturing its own world position and paint parameters.
-/// Once `Scene::show` returns and `self.graph_scene_rect` has been updated
+/// Once `Scene::show` returns and `self.camera.rect` has been updated
 /// to reflect this frame's actual pan/zoom, `project` is recomputed fresh
 /// and every queued closure is invoked with it -- so overlay decorations
 /// are painted using the *same* up-to-date transform the card content
@@ -725,7 +725,7 @@ const ZOOM_STEP: f32 = 1.25;
 
 /// What a click on `render_zoom_chip` asked for. The chip holds no zoom
 /// state of its own -- each caller applies this to whatever "zoom" means
-/// in its own view (Graph: the camera's `graph_scene_rect`; Image view:
+/// in its own view (Graph: the camera's `camera.rect`; Image view:
 /// `ImageViewState`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ZoomChipAction {
@@ -735,7 +735,7 @@ enum ZoomChipAction {
     Fit,
 }
 
-/// `rect` (a Graph camera's world-space `graph_scene_rect`) resized about
+/// `rect` (a Graph camera's world-space `camera.rect`) resized about
 /// its own center so the zoom scale `graph_world_to_screen_transform`
 /// derives from it (`screen / rect.size()`, min axis) is multiplied by
 /// `factor`, clamped to `min..=max`. The ratio is computed from the raw,
@@ -940,11 +940,11 @@ fn transition_eased_rect(transition: &Transition, item_rect: egui::Rect, graph_r
     egui::Rect::from_min_max(from.min + (to.min - from.min) * eased, from.max + (to.max - from.max) * eased)
 }
 
-/// An in-progress eased pan/zoom from one `graph_scene_rect` to another --
+/// An in-progress eased pan/zoom from one `camera.rect` to another --
 /// entering/leaving a group used to snap the camera to the new level's
 /// `fit_all_nodes_scene_rect()` instantly; this animates the same jump over
 /// `TRANSITION_DURATION` instead, same smoothstep easing as `Transition`
-/// above (see `App::eased_graph_scene_rect`). Deliberately a separate,
+/// above (see `GraphCamera::advance`). Deliberately a separate,
 /// simpler mechanism rather than reusing `Transition` itself: `Transition`
 /// morphs *one tab's* rendered content quad between two rects, but entering
 /// a group swaps the whole visible node set, not one tab's content -- there
@@ -966,7 +966,7 @@ struct GraphCameraTween {
 /// gliding and decelerating instead of stopping dead the instant the
 /// mouse button lifts -- the same "flick to scroll" feel most pan/zoom
 /// canvases (Figma, Google Maps, Miro) already have. `initial_velocity`
-/// is world-space units/second, sampled from `App::pan_drag_history`'s
+/// is world-space units/second, sampled from `GraphCamera::drag_history`'s
 /// own recent camera-center movement (not the raw pointer's own screen
 /// velocity) -- see that field's own doc comment for why. Recomputed
 /// fresh from `start`/`start_center`/`initial_velocity` every frame
@@ -987,8 +987,8 @@ struct PanMomentum {
 /// `PanMomentum` -- tuned for a glide that's clearly perceptible but
 /// settles well under a second, not a floaty drift.
 const PAN_MOMENTUM_DECAY: f32 = 3.5;
-/// Minimum release speed (world-space units/second, from `pan_drag_
-/// history`) for a released pan drag to start gliding at all -- below
+/// Minimum release speed (world-space units/second, from `GraphCamera::
+/// drag_history`) for a released pan drag to start gliding at all -- below
 /// this, an ordinary slow drag-and-let-go just stops, matching what a
 /// user who wasn't trying to "flick" the canvas would expect.
 const PAN_MOMENTUM_MIN_SPEED: f32 = 500.0;
@@ -997,7 +997,7 @@ const PAN_MOMENTUM_MIN_SPEED: f32 = 500.0;
 /// the initial speed well before this, so this is just a bound on the
 /// `Option` field's own lifetime, not a value that shapes the motion.
 const PAN_MOMENTUM_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(2000);
-/// How many recent camera-center samples `App::pan_drag_history` keeps
+/// How many recent camera-center samples `GraphCamera::drag_history` keeps
 /// while a background pan drag is held down -- spans roughly 100ms at a
 /// steady frame rate, matching the same window egui's own `PointerState::
 /// velocity()` uses internally for its analogous smoothing.
@@ -1320,7 +1320,7 @@ struct App {
     /// comment) — only meaningful when `view_mode == Graph`, but not reset
     /// on leaving Graph view, so returning to Graph resumes wherever the
     /// user last drilled into, same "graph view remembers its own state"
-    /// treatment `graph_scene_rect`'s pan/zoom already gets.
+    /// treatment `camera.rect`'s pan/zoom already gets.
     current_group: Option<String>,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
@@ -1380,17 +1380,6 @@ struct App {
     /// than making the graph reflow the way actually removing non-matches
     /// would. Empty means no filtering. See `App::graph_node_dimmed`.
     graph_filter: String,
-    /// Graph view's own camera zoom, as a percentage for the toolbar's
-    /// readout -- `100.0` means `graph_world_to_screen_transform`'s scale
-    /// is `1.0` (one world unit per screen point), same "100% = no
-    /// scaling" meaning Tab view's own zoom already uses. Updated once
-    /// `build_graph_ui` recomputes the real transform later in the same
-    /// frame the toolbar (which needs it before that point) is built, so
-    /// the toolbar always shows the *previous* frame's value -- one frame
-    /// of lag, imperceptible at any real frame rate, and far simpler than
-    /// restructuring draw order to compute the transform before the
-    /// toolbar panel has even reserved its own screen space.
-    graph_zoom_pct: f32,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -1523,10 +1512,8 @@ struct App {
     /// letting it silently drift out of sync with a moved camera would be
     /// the wrong feel for it).
     pending_new_node: Option<egui::Vec2>,
-    /// The graph view's current pan/zoom state (visible world-space rect),
-    /// persisted across frames per `egui::Scene::show`'s own contract —
-    /// mutated by the user dragging (pan) or scrolling (zoom).
-    graph_scene_rect: egui::Rect,
+    /// Graph view's pan/zoom and its animations.
+    camera: GraphCamera,
     /// Level-of-detail: true once a frame's own count of viewport-visible
     /// nodes (post-cull, see `build_graph_ui`'s own pre-pass) crossed
     /// `LOD_SIMPLIFY_COUNT`, gating the per-kind render loops' thumbnail/
@@ -1539,25 +1526,6 @@ struct App {
     truncate_cache: HashMap<TruncateCacheKey, String>,
     /// See `App::cached_favicon_origin`'s own doc comment.
     favicon_origin_cache: HashMap<String, Option<String>>,
-    /// `Some` while entering/leaving a group is easing the camera toward
-    /// the new level's framing instead of having already snapped there --
-    /// see `GraphCameraTween`'s own doc comment.
-    graph_camera_tween: Option<GraphCameraTween>,
-    /// `Some` while a released background-pan drag is still gliding --
-    /// see `PanMomentum`'s own doc comment.
-    pan_momentum: Option<PanMomentum>,
-    /// Recent `(when, camera-center)` samples, recorded only while a
-    /// background pan drag is actually being held down (not a node drag,
-    /// not a `GraphCameraTween` in progress, not this same momentum
-    /// re-applying itself) -- deliberately the *camera's* own tracked
-    /// world-space position, not the raw pointer's screen-space velocity,
-    /// since that's the value `PanMomentum` actually needs, in the units
-    /// it already needs it in, with no zoom-scale conversion or sign
-    /// reasoning to get right. Cleared the instant the drag isn't a plain
-    /// background pan for any reason, so a stale sample from an unrelated
-    /// earlier gesture can never leak into a later release's velocity
-    /// estimate.
-    pan_drag_history: std::collections::VecDeque<(std::time::Instant, egui::Pos2)>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
     /// last ran a settle burst for -- `build_graph_ui` compares this
     /// against the current level/count every frame and only re-settles
@@ -1783,7 +1751,6 @@ impl Default for App {
             pending_import: None,
             session_name_draft: String::new(),
             graph_filter: String::new(),
-            graph_zoom_pct: 100.0,
             focused: None,
             viewed_image: None,
             image_view: ImageViewState::default(),
@@ -1816,13 +1783,10 @@ impl Default for App {
             rect_select_start: None,
             selected_tabs: HashSet::new(),
             pending_new_node: None,
-            graph_scene_rect: default_graph_scene_rect(),
+            camera: GraphCamera::new(),
             graph_lod_simplified: false,
             truncate_cache: HashMap::new(),
             favicon_origin_cache: HashMap::new(),
-            graph_camera_tween: None,
-            pan_momentum: None,
-            pan_drag_history: std::collections::VecDeque::new(),
             graph_settled_key: None,
             headless: false,
             debug_input_events: Vec::new(),
@@ -3027,7 +2991,7 @@ impl App {
         self.nodes.remove(id);
         self.node_order.retain(|g| g != id);
         if self.current_group.as_deref() == Some(id) {
-            self.current_group = parent;
+            self.switch_group_level(parent);
         }
         self.forget_removed_group(id);
     }
@@ -4640,7 +4604,7 @@ impl App {
             ViewMode::Graph => {
                 let Some(id) = self.focused.clone() else { return };
                 if self.nodes.contains_key(&id) {
-                    self.current_group = self.nodes.get(&id).and_then(|n| n.group.clone());
+                    self.show_level_of(&id);
                     self.focus_tab(&id);
                 }
             }
@@ -5189,7 +5153,7 @@ impl App {
                 }
             }
             NodeAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
-            NodeAction::FitSubtree => self.graph_scene_rect = self.fit_subtree_scene_rect(id),
+            NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
                 self.renaming_group = Some((id.to_string(), name));
