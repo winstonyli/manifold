@@ -215,7 +215,7 @@ impl App {
         // widget immediately to the *left* of the previous one.
         let tab_actions_response = trailing_ui.button("Tab actions");
         if tab_actions_response.clicked() {
-            self.tab_actions_open = !self.tab_actions_open;
+            toggle_popup(&mut self.open_popup, AnchoredPopup::TabActions);
         }
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
@@ -238,7 +238,7 @@ impl App {
         let split_engine_response =
             trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
         if split_engine_response.clicked() {
-            self.split_engine_picker_open = !self.split_engine_picker_open;
+            toggle_popup(&mut self.open_popup, AnchoredPopup::SplitEngine);
         }
         actions.split_engine_button_rect = Some(split_engine_response.rect);
         let has_json = self.nodes.get(focused_id).and_then(|n| n.as_tab()).is_some_and(|n| n.json_body.is_some());
@@ -634,46 +634,19 @@ impl App {
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
         }
-        // Each dropdown fades in/out (`ui.set_opacity` inside the popup's
-        // own Area) off `ctx.animate_bool` on its own open flag -- read
-        // every frame regardless of open state (not just while open), since
-        // egui's animation manager needs continuous polling to track real
-        // elapsed time; polling only while open made it jump straight to
-        // its target the instant re-opened instead of visibly easing, the
-        // gap while closed having gone untracked.
-        let tab_actions_fade =
-            ui.ctx().animate_bool(egui::Id::new("tab_actions_popup_fade"), self.tab_actions_open);
-        if tab_actions_fade > 0.0 {
-            if let Some(rect) = tab_actions_button_rect {
-                self.build_tab_actions_popup(ui, rect, &focused_id, tab_actions_fade);
-            }
+        let ctx = ui.ctx().clone();
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::TabActions, tab_actions_button_rect) {
+            self.build_tab_actions_popup(ui, rect, &focused_id, fade);
         }
-        // Same tier/pros/cons popup Settings' own two engine pickers use --
-        // see `build_engine_picker_popup`'s doc comment. Highlights the
-        // split's own current engine (if one is already open) rather than
-        // nothing, so re-opening this shows what's already showing.
-        let split_engine_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("split_engine_popup_fade"), self.split_engine_picker_open);
-        if split_engine_fade > 0.0 {
-            if let Some(rect) = split_engine_button_rect {
-                let split_kind =
-                    self.split_tab.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
-                let (area_rect, picked) = build_engine_picker_popup(
-                    ui.ctx(),
-                    "split_engine_popup",
-                    rect,
-                    split_kind,
-                    split_engine_fade,
-                    self.split_engine_picker_open,
-                );
-                if let Some(kind) = picked {
-                    self.start_split(kind);
-                    self.split_engine_picker_open = false;
-                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
-                    self.split_engine_picker_open = false;
-                }
-            }
+        // Highlights the split's own current engine (if one is already
+        // open) rather than nothing, so re-opening this shows what's
+        // already showing.
+        let split_kind =
+            self.split_tab.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+        if let Some(kind) =
+            self.build_anchored_engine_picker(ui, AnchoredPopup::SplitEngine, split_engine_button_rect, split_kind)
+        {
+            self.start_split(kind);
         }
         if let Some(text) = navigate {
             let url = resolve_navigation_url(&text, self.settings.default_search_engine);

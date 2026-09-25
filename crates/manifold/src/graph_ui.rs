@@ -533,13 +533,11 @@ impl App {
         // by `shortcuts_help_button_rect`/`recently_closed_button_rect` for
         // why these can't be built back where those rects are computed.
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
-        let recently_closed_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
-        if recently_closed_fade > 0.0 {
-            if let Some(rect) = recently_closed_button_rect {
-                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
-            }
+        let ctx = ui.ctx().clone();
+        if let Some((rect, fade)) =
+            self.anchored_popup_fade(&ctx, AnchoredPopup::RecentlyClosed, recently_closed_button_rect)
+        {
+            self.build_recently_closed_popup(ui, rect, fade);
         }
         self.build_node_menu(ui);
     }
@@ -798,7 +796,7 @@ impl App {
                         let label = format!("Recently Closed ({})", self.closed.len());
                         let response = ui.button(label);
                         if response.clicked() {
-                            self.recently_closed_open = !self.recently_closed_open;
+                            toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
                         }
                         recently_closed_button_rect = Some(response.rect);
                     }

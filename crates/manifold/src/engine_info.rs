@@ -176,12 +176,13 @@ pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected:
 /// The shared engine-picker popup -- see `draw_engine_card`'s own doc
 /// comment for each card's content. Used by all three places this app lets
 /// you choose an engine (Settings' "Default starting engine," Settings'
-/// "Current Tab" swap, and the Tab toolbar's "Split" picker), replacing
-/// what used to be three separate plain `egui::ComboBox`es with no tier/
-/// tradeoff information at all. Returns the popup's own drawn rect (for
-/// the caller's `clicked_outside_popup` check) and whichever engine was
-/// clicked this frame, if any. `interactable` is the caller's open flag,
-/// same as `build_list_popup_frame`'s.
+/// "Current Tab" swap, and the Tab toolbar's "Split" picker), each through
+/// `App::build_anchored_engine_picker`, replacing what used to be three
+/// separate plain `egui::ComboBox`es with no tier/tradeoff information at
+/// all. Returns the popup's own drawn rect (for the caller's
+/// `clicked_outside_popup` check) and whichever engine was clicked this
+/// frame, if any. `interactable` is whether the popup is open, same as
+/// `build_list_popup_frame`'s.
 pub(crate) fn build_engine_picker_popup(
     ctx: &egui::Context,
     id: &str,

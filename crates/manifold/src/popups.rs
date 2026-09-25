@@ -27,12 +27,11 @@ pub(crate) fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor
 /// A free function (not a method) so callers can still freely capture
 /// `&mut self` in `add_contents` -- an `&mut self` method here would
 /// conflict with that same borrow. Returns the drawn area's own rect, for
-/// the caller's own `clicked_outside_popup` check. `fade` (0.0-1.0, from the
-/// caller's own `ctx.animate_bool` on its own open flag) sets the whole
-/// popup's opacity, so it fades in/out instead of popping instantly.
-/// `interactable` is the caller's open flag: while fading out the popup is
-/// click-through, so the rest of a double-click on an item can't run it
-/// twice.
+/// the caller's own `clicked_outside_popup` check. `fade` (0.0-1.0, from
+/// `App::anchored_popup_fade`) sets the whole popup's opacity, so it fades
+/// in/out instead of popping instantly. `interactable` is whether the popup
+/// is open: while fading out it is click-through, so the rest of a
+/// double-click on an item can't run it twice.
 pub(crate) fn build_list_popup_frame(
     ctx: &egui::Context,
     id: &str,
@@ -94,14 +93,82 @@ pub(crate) fn fade_popup_state<T: Clone>(
     cache.clone().map(|value| (value, fade))
 }
 
+/// The popups anchored below a toolbar or Settings button. At most one is
+/// open (`App::open_popup`), so opening one closes whichever was open,
+/// whether a button, a headless click or a shortcut opened it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum AnchoredPopup {
+    RecentlyClosed,
+    Bookmarks,
+    History,
+    Downloads,
+    TabActions,
+    DefaultEngine,
+    CurrentEngine,
+    SplitEngine,
+}
+
+/// Opens `which`, or closes it if it's the one open.
+pub(crate) fn toggle_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup) {
+    *open = if *open == Some(which) { None } else { Some(which) };
+}
+
+/// Closes `which` if it's the one open. A popup still fading out runs its
+/// own close checks (a click outside it, say), and those mustn't close the
+/// popup that replaced it.
+pub(crate) fn close_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup) {
+    if *open == Some(which) {
+        *open = None;
+    }
+}
+
 impl App {
+    /// `which`'s anchor rect and fade (0.0-1.0), or `None` once it has
+    /// faded out or while its button isn't drawn. Call it every frame,
+    /// open or not: egui's animation manager needs continuous polling to
+    /// track real elapsed time, and polling only while open made a
+    /// re-open jump straight to visible instead of easing in.
+    pub(crate) fn anchored_popup_fade(
+        &self,
+        ctx: &egui::Context,
+        which: AnchoredPopup,
+        anchor: Option<egui::Rect>,
+    ) -> Option<(egui::Rect, f32)> {
+        let open = self.open_popup == Some(which);
+        let fade = ctx.animate_bool(egui::Id::new(("anchored_popup_fade", which)), open);
+        if fade > 0.0 { anchor.map(|rect| (rect, fade)) } else { None }
+    }
+
+    /// One of the three engine pickers (Settings' default and current-tab
+    /// engines, the Tab toolbar's Split): the tier/pros/cons cards of
+    /// `build_engine_picker_popup` below `anchor`, with `highlighted`
+    /// marked. Closes on a pick or a click outside, and returns the engine
+    /// picked; what picking does is the caller's.
+    pub(crate) fn build_anchored_engine_picker(
+        &mut self,
+        ui: &egui::Ui,
+        which: AnchoredPopup,
+        anchor: Option<egui::Rect>,
+        highlighted: Option<EngineKind>,
+    ) -> Option<EngineKind> {
+        let (rect, fade) = self.anchored_popup_fade(ui.ctx(), which, anchor)?;
+        let open = self.open_popup == Some(which);
+        let (area_rect, picked) =
+            build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, fade, open);
+        if picked.is_some() || clicked_outside_popup(ui, area_rect, Some(rect)) {
+            close_popup(&mut self.open_popup, which);
+        }
+        picked
+    }
+
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
     /// every entry, newest first; click one to reopen it where it was.
     pub(crate) fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut reopen_index: Option<usize> = None;
+        let open = self.open_popup == Some(AnchoredPopup::RecentlyClosed);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, self.recently_closed_open, |ui| {
+            build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
             for (index, entry) in self.closed.iter().enumerate().rev() {
                 ui.horizontal(|ui| {
                     let label = match &entry.nodes[0].piece {
@@ -151,7 +218,7 @@ impl App {
             close = true;
         }
         if close || self.closed.is_empty() {
-            self.recently_closed_open = false;
+            close_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
         }
     }
 
@@ -168,8 +235,9 @@ impl App {
         let mut folder_rename_start: Option<(String, String)> = None;
         let mut folder_rename_commit: Option<String> = None;
         let mut folder_rename_cancel = false;
+        let open = self.open_popup == Some(AnchoredPopup::Bookmarks);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, self.bookmarks_open, |ui| {
+            build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.bookmarks_filter)
                     .desired_width(f32::INFINITY)
@@ -305,7 +373,7 @@ impl App {
         // own "Lists" section can open this popup with an empty list, and
         // that used to close it again the very next frame.
         if close {
-            self.bookmarks_open = false;
+            close_popup(&mut self.open_popup, AnchoredPopup::Bookmarks);
             self.renaming_bookmark_folder = None;
         }
     }
@@ -319,8 +387,9 @@ impl App {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
+        let open = self.open_popup == Some(AnchoredPopup::History);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, self.history_open, |ui| {
+            build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.history_filter)
                     .desired_width(f32::INFINITY)
@@ -367,7 +436,7 @@ impl App {
         // Not `|| self.history.is_empty()` any more -- see the matching
         // comment in `build_bookmarks_popup`.
         if close {
-            self.history_open = false;
+            close_popup(&mut self.open_popup, AnchoredPopup::History);
         }
     }
 
@@ -382,8 +451,9 @@ impl App {
         let mut close = false;
         let mut reveal_id: Option<String> = None;
         let mut remove_id: Option<String> = None;
+        let open = self.open_popup == Some(AnchoredPopup::Downloads);
         let area_rect =
-            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, self.downloads_open, |ui| {
+            build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
             if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
                 ui.label(egui::RichText::new("No downloads yet.").weak());
             }
@@ -464,7 +534,7 @@ impl App {
         // longer a reason to self-close at all now that the "Lists" menu can
         // open this popup while empty.
         if close {
-            self.downloads_open = false;
+            close_popup(&mut self.open_popup, AnchoredPopup::Downloads);
         }
     }
 
@@ -485,7 +555,7 @@ impl App {
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
             .order(egui::Order::Foreground)
-            .interactable(self.tab_actions_open)
+            .interactable(self.open_popup == Some(AnchoredPopup::TabActions))
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 popup_frame(ui)
@@ -524,7 +594,7 @@ impl App {
             close = true;
         }
         if close {
-            self.tab_actions_open = false;
+            close_popup(&mut self.open_popup, AnchoredPopup::TabActions);
         }
     }
 
@@ -1117,5 +1187,31 @@ impl App {
             self.save_session();
             self.queue_toast("Saved as JSON node".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_a_popup_replaces_the_open_one() {
+        let mut open = None;
+        toggle_popup(&mut open, AnchoredPopup::Bookmarks);
+        assert_eq!(open, Some(AnchoredPopup::Bookmarks));
+        toggle_popup(&mut open, AnchoredPopup::History);
+        assert_eq!(open, Some(AnchoredPopup::History));
+        toggle_popup(&mut open, AnchoredPopup::History);
+        assert_eq!(open, None);
+    }
+
+    #[test]
+    fn a_fading_popup_cannot_close_its_replacement() {
+        let mut open = Some(AnchoredPopup::History);
+        // Bookmarks is still fading out and sees the click outside it.
+        close_popup(&mut open, AnchoredPopup::Bookmarks);
+        assert_eq!(open, Some(AnchoredPopup::History));
+        close_popup(&mut open, AnchoredPopup::History);
+        assert_eq!(open, None);
     }
 }

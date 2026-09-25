@@ -1704,19 +1704,8 @@ struct App {
     settings_return_view: ViewMode,
     /// Flat `(title, url)` list, loaded once at startup and persisted to
     /// `%APPDATA%\manifold\bookmarks.json` on every change — see
-    /// `bookmarks.rs`. `bookmarks_open` is the Tab-view toolbar dropdown's
-    /// own visibility, see `App::build_bookmarks_popup`.
+    /// `bookmarks.rs`. Listed by `App::build_bookmarks_popup`.
     bookmarks: Vec<bookmarks::Bookmark>,
-    bookmarks_open: bool,
-    /// The three places this app lets you choose an engine (Settings'
-    /// "Default starting engine," Settings' "Current Tab" swap, and the
-    /// Tab toolbar's "Split" picker) each get their own open flag, same
-    /// "one bool per popup" shape as `bookmarks_open` -- see
-    /// `build_engine_picker_popup`'s own doc comment for the shared popup
-    /// itself.
-    default_engine_picker_open: bool,
-    current_engine_picker_open: bool,
-    split_engine_picker_open: bool,
     /// The bookmarks popup's own filter box text -- cleared each time the
     /// popup is opened, same "fresh state each open" reasoning
     /// `find_match_case` resetting on a new find session already has.
@@ -1740,24 +1729,13 @@ struct App {
     /// not just the latter. Session-only, cleared on restart -- unlike
     /// bookmarks, nothing here is ever written to disk.
     history: Vec<HistoryEntry>,
-    history_open: bool,
     /// The history popup's own filter box text -- same "cleared on each
     /// open" reasoning as `bookmarks_filter`.
     history_filter: String,
-    /// Whether the Tab-view toolbar's "Downloads (N)" dropdown is open --
-    /// lists `self.downloads` (the same data the graph view's own download
-    /// nodes/context menu already show) so a completed download can be
-    /// found without first switching to Graph view. See `App::
-    /// build_downloads_popup`.
-    downloads_open: bool,
-    /// Whether the Tab-view toolbar's "Tab actions" dropdown is open --
-    /// consolidates "Mute Others"/"Close Others"/the "Pin All"/"Unpin All"
-    /// toggle into one popup instead of three always-visible buttons. See
-    /// `App::build_tab_actions_popup`.
-    tab_actions_open: bool,
-    /// Whether the "Recently Closed" toolbar dropdown (Graph view only) is
-    /// currently open -- see `App::build_recently_closed_popup`.
-    recently_closed_open: bool,
+    /// Which popup anchored below a toolbar or Settings button is open, if
+    /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
+    /// `close_popup`.
+    open_popup: Option<AnchoredPopup>,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -1902,19 +1880,12 @@ impl Default for App {
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
-            bookmarks_open: false,
-            default_engine_picker_open: false,
-            current_engine_picker_open: false,
-            split_engine_picker_open: false,
             bookmarks_filter: String::new(),
             renaming_bookmark_folder: None,
             pending_focus_bookmark_folder: false,
             history: Vec::new(),
-            history_open: false,
             history_filter: String::new(),
-            downloads_open: false,
-            tab_actions_open: false,
-            recently_closed_open: false,
+            open_popup: None,
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,

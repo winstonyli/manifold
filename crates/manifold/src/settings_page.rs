@@ -119,7 +119,7 @@ impl App {
                 .color(engine_color(self.settings.default_starting_engine));
         let default_engine_response = ui.button(combo_text);
         if default_engine_response.clicked() {
-            self.default_engine_picker_open = !self.default_engine_picker_open;
+            toggle_popup(&mut self.open_popup, AnchoredPopup::DefaultEngine);
         }
         req.default_engine_button_rect = Some(default_engine_response.rect);
 
@@ -177,7 +177,7 @@ impl App {
                     let combo_text = egui::RichText::new(engine_label(kind)).color(engine_color(kind));
                     let current_engine_response = ui.button(combo_text);
                     if current_engine_response.clicked() {
-                        self.current_engine_picker_open = !self.current_engine_picker_open;
+                        toggle_popup(&mut self.open_popup, AnchoredPopup::CurrentEngine);
                     }
                     req.current_engine_button_rect = Some(current_engine_response.rect);
                 });
@@ -223,16 +223,16 @@ impl App {
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
             if bookmarks_response.clicked() {
-                self.bookmarks_open = !self.bookmarks_open;
-                if self.bookmarks_open {
+                toggle_popup(&mut self.open_popup, AnchoredPopup::Bookmarks);
+                if self.open_popup == Some(AnchoredPopup::Bookmarks) {
                     self.bookmarks_filter.clear();
                 }
             }
             req.bookmarks_button_rect = Some(bookmarks_response.rect);
             let history_response = ui.button(format!("History ({})", self.history.len()));
             if history_response.clicked() {
-                self.history_open = !self.history_open;
-                if self.history_open {
+                toggle_popup(&mut self.open_popup, AnchoredPopup::History);
+                if self.open_popup == Some(AnchoredPopup::History) {
                     self.history_filter.clear();
                 }
             }
@@ -244,7 +244,7 @@ impl App {
             let download_count = self.nodes.values().filter(|n| n.as_download().is_some()).count();
             let downloads_response = ui.button(format!("Downloads ({download_count})"));
             if downloads_response.clicked() {
-                self.downloads_open = !self.downloads_open;
+                toggle_popup(&mut self.open_popup, AnchoredPopup::Downloads);
             }
             req.downloads_button_rect = Some(downloads_response.rect);
         });
@@ -434,82 +434,37 @@ impl App {
     /// The popups the Settings page anchors to its buttons: the three
     /// lists and the two engine pickers.
     pub(crate) fn build_settings_popups(&mut self, ui: &mut egui::Ui, req: &SettingsRequests) {
-        // Same fade-in/out-off-`ctx.animate_bool` popup pattern the old
-        // toolbar "Lists" dropdown used, just anchored to these buttons
-        // instead -- `build_bookmarks_popup`/`build_history_popup`/
-        // `build_downloads_popup` themselves are unchanged either way.
-        let bookmarks_fade =
-            ui.ctx().animate_bool(egui::Id::new("bookmarks_popup_fade"), self.bookmarks_open);
-        if bookmarks_fade > 0.0 {
-            if let Some(rect) = req.bookmarks_button_rect {
-                self.build_bookmarks_popup(ui, rect, bookmarks_fade);
-            }
+        let ctx = ui.ctx().clone();
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Bookmarks, req.bookmarks_button_rect) {
+            self.build_bookmarks_popup(ui, rect, fade);
         }
-        let history_fade = ui.ctx().animate_bool(egui::Id::new("history_popup_fade"), self.history_open);
-        if history_fade > 0.0 {
-            if let Some(rect) = req.history_button_rect {
-                self.build_history_popup(ui, rect, history_fade);
-            }
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::History, req.history_button_rect) {
+            self.build_history_popup(ui, rect, fade);
         }
-        let downloads_fade =
-            ui.ctx().animate_bool(egui::Id::new("downloads_popup_fade"), self.downloads_open);
-        if downloads_fade > 0.0 {
-            if let Some(rect) = req.downloads_button_rect {
-                self.build_downloads_popup(ui, rect, downloads_fade);
-            }
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Downloads, req.downloads_button_rect) {
+            self.build_downloads_popup(ui, rect, fade);
         }
-        // Same fade pattern as the three list popups above, but drawing
-        // `build_engine_picker_popup` (tier/pros/cons cards) instead of a
-        // plain list -- see that function's own doc comment.
-        let default_engine_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("default_engine_popup_fade"), self.default_engine_picker_open);
-        if default_engine_fade > 0.0 {
-            if let Some(rect) = req.default_engine_button_rect {
-                let (area_rect, picked) = build_engine_picker_popup(
-                    ui.ctx(),
-                    "default_engine_popup",
-                    rect,
-                    Some(self.settings.default_starting_engine),
-                    default_engine_fade,
-                    self.default_engine_picker_open,
-                );
-                if let Some(kind) = picked {
-                    self.settings.default_starting_engine = kind;
-                    self.save_settings();
-                    self.default_engine_picker_open = false;
-                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
-                    self.default_engine_picker_open = false;
-                }
-            }
+        let default_engine = Some(self.settings.default_starting_engine);
+        if let Some(kind) = self.build_anchored_engine_picker(
+            ui,
+            AnchoredPopup::DefaultEngine,
+            req.default_engine_button_rect,
+            default_engine,
+        ) {
+            self.settings.default_starting_engine = kind;
+            self.save_settings();
         }
-        let current_engine_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("current_engine_popup_fade"), self.current_engine_picker_open);
-        if current_engine_fade > 0.0 {
-            if let Some(rect) = req.current_engine_button_rect {
-                let current_kind = req.current_tab_id
-                    .as_ref()
-                    .and_then(|id| self.nodes.get(id))
-                    .and_then(|n| n.as_tab())
-                    .map(|t| t.tab.kind);
-                let (area_rect, picked) = build_engine_picker_popup(
-                    ui.ctx(),
-                    "current_engine_popup",
-                    rect,
-                    current_kind,
-                    current_engine_fade,
-                    self.current_engine_picker_open,
-                );
-                if let Some(kind) = picked {
-                    if let Some(id) = &req.current_tab_id {
-                        if Some(kind) != current_kind {
-                            self.start_swap_to(id, kind);
-                        }
-                    }
-                    self.current_engine_picker_open = false;
-                } else if clicked_outside_popup(ui, area_rect, Some(rect)) {
-                    self.current_engine_picker_open = false;
+        let current_kind =
+            req.current_tab_id.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+        if let Some(kind) = self.build_anchored_engine_picker(
+            ui,
+            AnchoredPopup::CurrentEngine,
+            req.current_engine_button_rect,
+            current_kind,
+        ) {
+            if let Some(id) = &req.current_tab_id {
+                if Some(kind) != current_kind {
+                    self.start_swap_to(id, kind);
                 }
             }
         }
