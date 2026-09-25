@@ -73,8 +73,10 @@ and Import Session create a new document id; only sync shares one.
 
 `Hlc { ms: u64, logical: u32 }`. A local event takes
 `max(now_ms, last.ms)`; if that equals `last.ms`, `logical + 1`, else 0.
-Receiving an op advances the clock past its timestamp. Ops are totally
-ordered by `(hlc, actor)`.
+Receiving an op advances the clock past its timestamp. On open, the
+clock starts past the highest timestamp in the file, so a clock that
+went backwards (a reboot, a manual change) still orders new ops after
+old ones. Ops are totally ordered by `(hlc, actor)`.
 
 ### The shared document
 
@@ -85,27 +87,38 @@ A set of nodes. Each node has:
 - **Kind**, fixed at creation: `Tab`, `Group`, `Note`, `Image`, `Pdf`,
   `Json`, `JsonLeaf`, `Download`.
 - **Fields**, each a last-writer-wins register holding the value and the
-  `(hlc, actor)` that wrote it:
+  `(hlc, actor)` that wrote it. A field is either **diffed** (only the
+  user changes it, so comparing live state with the document finds
+  every change) or **explicit** (the engine or the layout also changes
+  it, so only named user actions emit a `Set`; see "Local edits become
+  ops"):
 
-| Field | Kinds | Notes |
-|---|---|---|
-| `pos` | all | `Set` only on drag end or explicit placement (see Positions) |
-| `color` | all | `None` = untagged |
-| `group` | all | the tree edge; changed only by `Move` |
-| `parent` | Tab | "opened from" link, a plain register |
-| `url`, `engine`, `title`, `pinned`, `zoom` | Tab | `url` is set only by user-started navigation (typed, clicked, back/forward), never by redirects or script navigation, so replicas whose logins redirect differently don't bounce each other's tabs. `title` is written by whichever replica's engine loaded the page |
-| `name`, `from_json` | Group | |
-| `text` | Note | whole string, LWW (sub-project 4 replaces it) |
-| `path` | Image, Pdf, Json, JsonLeaf, Download | |
-| `key`, `value` | JsonLeaf | `value` is its JSON text |
+| Field | Kinds | Emitted | Notes |
+|---|---|---|---|
+| `pos` | all | explicit | drag end, placement of a new node, drop, import (see Positions) |
+| `color` | all | diffed | `None` = untagged |
+| `group` | all | diffed, as `Move` | the tree edge |
+| `parent` | Tab | diffed | "opened from" link, a plain register |
+| `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation never set it, so replicas whose logins redirect differently don't bounce each other's tabs. The page a tab actually shows is personal state. |
+| `engine`, `pinned` | Tab | diffed | |
+| `name`, `from_json` | Group | diffed | |
+| `text` | Note | diffed | whole string, LWW (sub-project 4 replaces it) |
+| `path` | Image, Pdf, Json, JsonLeaf, Download | diffed | machine-local; see the sub-project 2 notes |
+| `key`, `value` | JsonLeaf | diffed | `value` is its JSON text |
+
+  Tab `title` and `zoom` are personal, not shared: each replica's own
+  engine produces the title, and zoom is a viewing preference like mute.
 
 - **Unknown fields** (a field number this build does not know, written
   by a newer build) are kept on the node as raw bytes with their
   timestamp and written back at compaction.
+- **Unknown kinds** (a kind a newer build added) are kept whole: the
+  node exists in the document, is not shown, and is written back at
+  compaction.
 
 A failed tab is saved as a `Tab`; it is retried on load. A download is
-created in the document only once it completes; an in-progress download
-cannot resume and is not saved.
+created in the document only once it completes; the diff skips
+in-progress downloads, which cannot resume.
 
 ### Personal state
 
@@ -114,9 +127,17 @@ Kept per profile, never merged, stored in `Local` frames:
 - view: `focused`, view mode, `current_group`, `viewed_image`,
   `split_tab`, `groups_collapsed`, camera rect per level (key: group id,
   or none for the top level);
-- per node: a note's `editing`, a tab's `muted`;
+- per node: a note's `editing`; a tab's `muted`, `zoom`, `title` and
+  current url (the page it actually shows, which restore reopens);
+- the last settled position of every node, so the graph reopens exactly
+  as it was left rather than re-settling from the shared `pos`;
 - Recently Closed: up to 20 entries, newest first, each a list of node
   snapshots (the node model with its fields, no timestamps).
+
+Two instances on one profile each keep their own personal state while
+running; `Local` frames are never merged live. On open, the latest
+`Local` frame wins, so one instance's Recently Closed list is replaced
+by the other's; accepted.
 
 ### Not saved
 
@@ -130,8 +151,12 @@ an engine swap already drops it).
 - **Delete wins** over a concurrent `Set` or `Move` on the same node.
 - **Deleting a group** deletes the nodes the deleting replica saw inside
   it (one `Delete` each, in one op batch). A node another replica moved
-  in concurrently, which therefore has no `Delete`, is re-homed to the
-  deleted group's nearest live ancestor level.
+  in concurrently, which therefore has no `Delete`, is shown at the
+  deleted group's nearest live ancestor level. This re-homing is
+  computed when the document is materialized, not emitted as an op, so
+  replicas never race to emit it. The node's `group` register still
+  names the tombstone; the diff compares against the effective group, so
+  re-homing does not read as a user `Move`.
 - **Reopening** a Recently Closed entry or **importing** a group export
   creates new nodes with fresh ids (tombstones are final), remapping
   `group` and `parent` inside the entry. This is today's `reopen_closed`
@@ -156,7 +181,12 @@ body = Create { node, kind, fields }
 - **Move**: the replicated tree-move algorithm (Kleppmann et al., "A
   highly-available move operation for replicated trees"). The Move log
   is kept sorted by `(hlc, actor)`. Applying a move that would put a node
-  inside itself (or its descendant) is a no-op. A move arriving earlier
+  inside itself (or its descendant) is a no-op. Tombstoned nodes keep
+  their `group` edges in the tree the cycle check walks, so the check
+  gives the same answer on every replica whatever it has deleted; only
+  display skips them. A `Move` of a tombstoned node is ignored; a `Move`
+  of a live node into a tombstoned group applies, and display re-homes
+  it. A move arriving earlier
   than already-applied ones undoes those, applies, and redoes them, so
   every replica ends with the same acyclic tree. Single-player and
   in-order, the undo path is never taken.
@@ -165,7 +195,15 @@ body = Create { node, kind, fields }
 
 At each existing `save_session()` call, `session_sync` diffs the live
 `App::nodes` against the materialized document and emits `Create`,
-`Set`, `Move` and `Delete` ops. The ~30 call sites do not change.
+`Move`, `Delete`, and `Set` for **diffed** fields. The ~30 call sites do
+not change. **Explicit** fields (`pos`, `url`) are never diffed:
+comparing them would turn every physics step and every redirect into a
+shared edit, and two replicas whose engines disagree would overwrite
+each other forever. Instead the sites of the named user actions (drag
+end, placement, drop, import, a typed or clicked navigation, back or
+forward) mark the node, and the next save emits a `Set` for marked
+fields only. Personal fields (settled positions, current url, title,
+zoom, mute, note editing) are written to `Local`.
 
 ### Positions
 
@@ -205,16 +243,23 @@ A message is a sequence of fields. Each field is a key varint
 | Wire type | Value |
 |---|---|
 | 0 | varint (bools, enums, counters, zigzag signed) |
-| 1 | fixed 8 bytes little-endian (actor ids) |
+| 1 | fixed 8 bytes little-endian (actor ids, `f64`) |
 | 2 | varint length + bytes (strings, bytes, nested messages) |
 | 5 | fixed 4 bytes little-endian (`f32`) |
 
 Unknown fields are skipped by wire type; missing fields take their
-default. Field numbers are never reused; retired ones go in a `RESERVED`
+default. Writers emit fields in ascending field number, each at most
+once, and omit fields holding their default, so one value has one
+encoding (what hashing and signing ops in sub-project 2 rely on).
+Readers accept any order and keep the last occurrence. `f32`/`f64`
+values are written with `-0.0` normalized to `0.0`; NaN is never
+stored (a NaN position is not saved). Field numbers are never reused; retired ones go in a `RESERVED`
 list checked by a test. Encodings of shared values:
 
-- node id: nested `{1: actor index, 2: counter}` (actor index into the
-  file's actor table);
+- node id: nested `{1: actor index, 2: counter}`. The actor index is
+  local to the file (into its `Actors` table) and is renumbered at
+  compaction; anything leaving the file (JSON, and sync later) uses the
+  full 64-bit actor id.
 - `pos`: two `f32`; `color`: varint `0xRRGGBB`, absent when untagged;
 - `engine`, kind: enum varints.
 
@@ -234,9 +279,19 @@ frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
   vector, and a reserved field for a retained Move-log tail),
   `Ops` (a batch from one actor; counters and HLCs delta-encoded within
   the batch), `Local` (personal state).
-- Reading stops at the first frame that overruns the file or fails its
-  CRC or type check; that offset is remembered and the file is truncated
-  to it before the next append.
+- Reading stops at the first frame that overruns the file, fails its
+  CRC, or has `len = 0` or type 0; that offset is remembered and the
+  file is truncated to it before the next append.
+- A frame with a valid CRC and a **type this build does not know**
+  (written by a newer build) is skipped and kept, never treated as a
+  torn tail, so an older build cannot truncate a newer build's data. An
+  `Ops` frame holding an op kind this build does not know is kept the
+  same way.
+- A build that opened a file containing unknown frame types or op kinds,
+  or a `format_version` newer than its own, **never compacts** that
+  file (compaction would drop what it cannot represent). It still
+  appends its own ops. With a newer `format_version` it opens the file
+  read-only and says so.
 
 CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
 `std::arch` checked against the table path by a test.
@@ -249,16 +304,23 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   changes → one `Local` frame. `fsync` is debounced to ~1 s and forced on
   exit; a crash loses at most that second and never leaves an
   unreadable file.
-- **Compact** when the ops since the last snapshot exceed twice its size,
-  and on a clean exit: write `magic, Actors, Snapshot, Local` to a temp
+- **Compact** when the ops since the last snapshot exceed twice its size
+  and at least 64 KB, and on a clean exit (unless a rule above forbids
+  it): write `magic, Actors, Snapshot, Local` to a temp
   file, fsync, rename over the journal (atomic on Windows). Unknown raw
   fields and tombstones carry over; the Move-log tail field stays empty
   single-player.
-- **Two instances on one profile**: each append takes an exclusive file
-  lock (`std::fs::File::lock`), reads and merges frames other processes
-  appended since its last offset, appends its own, then unlocks. If the
-  file was replaced by a compaction (its file id changed), it reopens
-  from scratch. Merged remote ops update the live graph through
+- **Two instances on one profile**: each append takes an exclusive lock
+  on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
+  the journal itself would be lost when compaction renames a new file
+  over it). Under the lock it opens `session.mnf` by path; if its file
+  id differs from the one it read last (another instance compacted), it
+  re-reads the file from scratch, otherwise it reads only the frames
+  appended since its last offset. It merges them, appends its own frame,
+  then unlocks. Compaction also runs under the lock. The rename must
+  succeed while the other instance holds the old file open; the
+  headless two-instance test covers a compaction during the other's
+  run. Merged remote ops update the live graph through
   `session_sync`: a remote `Create` of a tab spawns it, a remote `Delete`
   closes a node without adding it to Recently Closed, a remote `Set`
   updates the card. This replaces `session::fingerprint`,
@@ -323,10 +385,27 @@ Headless:
 - The smoke test passes, with its fixtures rewritten as JSON snapshots.
 - Two instances on one `APPDATA`: A creates a group, B moves a tab into
   it; both `EXPORTSESSION` outputs match.
-- Crash: kill the process after edits and past the fsync debounce;
-  reopening loses nothing.
+- Two instances, one compacting while the other stays open and keeps
+  editing: both converge and nothing is lost.
+- Kill: kill the process after edits; reopening has them. (A killed
+  process loses nothing the OS already accepted; the fsync debounce
+  matters only for power loss or an OS crash, which a headless test
+  cannot produce. The torn-tail unit test covers partial frames.)
 
 ## Notes for sub-project 2
+
+- Clock skew: a replica whose clock runs far ahead would win every LWW
+  register. Receivers should clamp or reject remote timestamps more than
+  a set drift (say, a minute) ahead of their own clock.
+- `path` fields are machine-local: an Image, PDF, JSON or Download card
+  from another machine points at a file this machine does not have.
+  Sharing file contents (blobs) needs its own design; until then those
+  cards show their missing-file state.
+- A shared tab whose `engine` is not installed here falls back to a
+  local engine without changing the shared field.
+- Tombstones and the version vector grow with every delete and every
+  launch; pruning them needs causal stability (every peer has seen
+  them), which only sync can establish.
 
 - Invite links carry the document key after `#` (`manifold://join/<doc-id>#<key>`
   or the https equivalent): the fragment is never sent to a server, so a
