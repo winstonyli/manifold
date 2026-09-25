@@ -312,6 +312,9 @@ enum GraphAction {
     /// A group card dropped onto another: `source`'s members move into
     /// `target`, and `source` goes.
     MergeGroups { source: String, target: String },
+    /// A card released after a drag, with where it landed
+    /// (`App::drop_target`), if anywhere.
+    Drop { id: String, target: Option<(DropEffect, Option<String>)> },
     GroupSelected,
     CloseSelected,
     UngroupAll,
@@ -794,6 +797,55 @@ fn card_controls(view: &CardView) -> Vec<CardControl> {
     }
     controls.push(CardControl::Close);
     controls
+}
+
+/// What a dragged card was released over (see `App::drop_target`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DropTarget {
+    /// The toolbar's back button, inside a group.
+    BackButton,
+    Card(ItemNodeKind),
+}
+
+/// What a drop does (`App::apply_drop`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DropEffect {
+    /// Out of its group, one level up.
+    Eject,
+    /// A group onto a group: its members move into the target, and it goes.
+    Merge,
+    /// Into the target group.
+    Join,
+    /// A tab onto a tab at the top level: a new group of both.
+    GroupWith,
+    /// A tab onto a sibling tab inside a group: the target becomes its
+    /// parent.
+    Reparent,
+}
+
+/// Every drag-and-drop rule in Graph view, for every kind.
+fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
+    use ItemNodeKind::{Group, Tab};
+    match (dragged, target, inside_group) {
+        (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
+        (Group, DropTarget::Card(Group), _) => Some(DropEffect::Merge),
+        (_, DropTarget::Card(Group), _) => Some(DropEffect::Join),
+        (Tab, DropTarget::Card(Tab), false) => Some(DropEffect::GroupWith),
+        (Tab, DropTarget::Card(Tab), true) => Some(DropEffect::Reparent),
+        _ => None,
+    }
+}
+
+/// What every card in one Graph-view card pass shares
+/// (`App::draw_graph_card`).
+struct CardPass<'a> {
+    deferred_overlays: &'a mut DeferredOverlays,
+    actions: &'a mut Vec<GraphAction>,
+    inv_zoom: f32,
+    zoom_scale: f32,
+    /// Where the card being dragged would drop right now
+    /// (`App::drop_target`), computed once before the pass.
+    drop_preview: &'a Option<(DropEffect, Option<String>)>,
 }
 
 /// One of a card's `card_controls`, hit-tested and drawn at its corner.
@@ -5276,53 +5328,6 @@ impl App {
         }
     }
 
-    /// Applies a Graph-view card's own drag delta, and on drag-release,
-    /// drops it onto whichever group card (if any) it's now sitting on top
-    /// of -- plus the `self.hovered`/`self.dragging` bookkeeping every card
-    /// needs regardless. Shared by the five card kinds (Download, Note,
-    /// Image, Pdf, Json) through `draw_graph_card` -- previously hand-
-    /// copied once per kind (bar Download), byte-identical apart from which
-    /// field's `id`/`.pos` it read. Tab/Group each have their own reasons to
-    /// stay separate (a tab can also drop onto another *tab* to form a new
-    /// group, and a group itself can't be dropped onto another group), so
-    /// this only covers the five kinds whose drop behavior is genuinely
-    /// identical.
-    fn finish_draggable_node(&mut self, id: &str, response: &egui::Response, is_hovered: bool) {
-        if response.dragged() {
-            self.dragging = Some(id.to_string());
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.pos += response.drag_delta();
-            }
-        } else if self.dragging.as_deref() == Some(id) {
-            self.dragging = None;
-            // Unlike a tab (see the tab loop's own drop-onto-group logic),
-            // a card kind has no competing "drop onto a sibling" gesture of
-            // its own to conflict with, so this works at any level, not
-            // just the top -- letting an existing item join a nested
-            // subgroup by dragging it onto that subgroup's own card while
-            // both are visible in the same subgraph.
-            if let Some(pos) = self.nodes.get(id).map(|n| n.pos) {
-                let dropped_on_group = self.nodes_at_current_level(ItemNodeKind::Group).into_iter().find(|gid| {
-                    self.nodes.get(gid).is_some_and(|g| {
-                        egui::Rect::from_center_size(egui::Pos2::new(g.pos.x, g.pos.y), GROUP_NODE_SIZE)
-                            .contains(egui::Pos2::new(pos.x, pos.y))
-                    })
-                });
-                if let Some(group_id) = dropped_on_group {
-                    if let Some(node) = self.nodes.get_mut(id) {
-                        node.group = Some(group_id);
-                    }
-                }
-            }
-            self.save_session();
-        }
-        if is_hovered {
-            self.hovered = Some(id.to_string());
-        } else if self.hovered.as_deref() == Some(id) {
-            self.hovered = None;
-        }
-    }
-
     /// `id`'s `CardView`, or `None` when the node is gone.
     fn card_view(&self, id: &str) -> Option<CardView> {
         let node = self.nodes.get(id)?;
@@ -5331,19 +5336,14 @@ impl App {
 
     /// One Download/Note/Image/Pdf/Json card on the graph: everything the
     /// five kinds share (cull, click/drag and hover interacts, border,
-    /// hover ✕, drag and drop-onto-group, filter dim), with the per-kind
-    /// content painted by `paint_card_body`, plus the frame's own
+    /// hover ✕, drag and drop through `drop_target`, filter dim), with the
+    /// per-kind content painted by `paint_card_body`, plus the frame's own
     /// background, glow and eased hover. `None` when the node is gone or
     /// culled. The caller applies the kind's own click action from the
     /// returned response. Tab and Group cards keep their own loops.
-    fn draw_graph_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
-        id: &str,
-        inv_zoom: f32,
-        zoom_scale: f32,
-    ) -> Option<CardOutput> {
+    fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let rect = node_card_rect(self.nodes.get(id)?);
         // Viewport culling -- see the tab loop's own comment. Never culls
         // the node being dragged, so a drag off-screen keeps tracking.
@@ -5396,6 +5396,18 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
+        // The card the dragged one would drop onto: a bold ring, expanded
+        // well past this card so it still shows around a larger dragged
+        // card on top of it. Tracks the pointer directly, not eased.
+        if pass.drop_preview.as_ref().and_then(|(_, target)| target.as_deref()) == Some(id) {
+            ui.painter().rect_stroke(
+                rect.expand(16.0 * inv_zoom),
+                10.0 * inv_zoom,
+                egui::Stroke::new(4.0 * inv_zoom, ACCENT),
+                egui::StrokeKind::Outside,
+            );
+        }
+
         // Registered after both interacts above, so they take the pointer.
         let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
         let mut control_hovered = false;
@@ -5414,7 +5426,22 @@ impl App {
         // `self.hovered`) made a card stay hovered, ✕ and all, after the
         // pointer left it, until another card was hovered.
         let still_hovered = pointer_on_card || control_hovered;
-        self.finish_draggable_node(id, &response, still_hovered);
+        if response.dragged() {
+            self.dragging = Some(id.to_string());
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.pos += response.drag_delta();
+            }
+        } else if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+            // `drop_preview` was computed this frame for this card, and
+            // nothing moved it since (no drag delta on a release frame).
+            pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
+        }
+        if still_hovered {
+            self.hovered = Some(id.to_string());
+        } else if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
 
         if let Some(node) = self.nodes.get(id) {
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &[card_filter_text(&node.payload)], rect, style.dim_rounding);
@@ -5992,6 +6019,105 @@ impl App {
             })
             .cloned()
             .collect()
+    }
+
+    /// Where the dragged card `id` would drop right now, and what that
+    /// would do (`drop_action`). The back button is tested first, by
+    /// pointer, since it's a screen-space toolbar widget. Then the card at
+    /// this level containing the dragged card's center, a group card before
+    /// a tab card. Feeds both the live ring and the release, so the two
+    /// can't disagree.
+    fn drop_target(
+        &self,
+        id: &str,
+        pointer: Option<egui::Pos2>,
+        leave_button: Option<egui::Rect>,
+    ) -> Option<(DropEffect, Option<String>)> {
+        let node = self.nodes.get(id)?;
+        let dragged = item_node_kind(&node.payload);
+        let inside_group = self.current_group.is_some();
+        if leave_button.zip(pointer).is_some_and(|(button, pointer)| button.contains(pointer)) {
+            return drop_action(dragged, DropTarget::BackButton, inside_group).map(|effect| (effect, None));
+        }
+        let center = egui::Pos2::new(node.pos.x, node.pos.y);
+        [ItemNodeKind::Group, ItemNodeKind::Tab].into_iter().find_map(|kind| {
+            let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
+            let target = self.nodes_at_current_level(kind).into_iter().find(|other| {
+                other != id && self.nodes.get(other).is_some_and(|n| node_card_rect(n).contains(center))
+            })?;
+            Some((effect, Some(target)))
+        })
+    }
+
+    /// What a drop moves along with `id`: the whole rectangle selection
+    /// when `id` is in it (it acts as one unit, as "Group Selected" does),
+    /// which it empties, else just `id`.
+    fn take_drag_unit(&mut self, id: &str) -> Vec<String> {
+        if self.selected_tabs.contains(id) {
+            self.selected_tabs.drain().collect()
+        } else {
+            vec![id.to_string()]
+        }
+    }
+
+    /// A card released after a drag (`GraphAction::Drop`), with where it
+    /// landed, if anywhere. Saves the session on every release, since the
+    /// drag itself moved the card.
+    fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
+        match target {
+            Some((DropEffect::Eject, _)) => remove_from_group(&mut self.nodes, id),
+            Some((DropEffect::Join, Some(group))) => {
+                for member in self.take_drag_unit(id) {
+                    if let Some(node) = self.nodes.get_mut(&member) {
+                        node.group = Some(group.clone());
+                    }
+                }
+            }
+            Some((DropEffect::GroupWith, Some(other))) => {
+                let group = self.alloc_group_id();
+                let pos = self.nodes.get(&other).map_or(egui::Vec2::ZERO, |n| n.pos);
+                self.insert_group_at(group.clone(), pos);
+                let unit = self.take_drag_unit(id);
+                for member in std::iter::once(other).chain(unit) {
+                    if let Some(node) = self.nodes.get_mut(&member) {
+                        node.group = Some(group.clone());
+                    }
+                }
+            }
+            Some((DropEffect::Reparent, Some(parent))) => {
+                if !self.would_create_cycle(id, &parent) {
+                    if let Some(node) = self.nodes.get_mut(id) {
+                        node.parent = Some(parent);
+                    }
+                }
+            }
+            Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, &target),
+            _ => {}
+        }
+        self.save_session();
+    }
+
+    /// `source`'s members move into `target`, and `source` goes: a group
+    /// card dropped onto another. Refused if `target` is nested inside
+    /// `source` (directly or transitively, walking the same `.group` chain
+    /// `group_breadcrumb` does): reassigning source's own members to target
+    /// while target is one of them would leave it (or a group between them)
+    /// pointing at itself once source is removed, a self-reference cycle.
+    fn merge_groups(&mut self, source: &str, target: &str) {
+        let mut ancestor = Some(target.to_string());
+        while let Some(cur) = ancestor {
+            if cur == source {
+                return;
+            }
+            ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
+        }
+        for node in self.nodes.values_mut() {
+            if node.group.as_deref() == Some(source) {
+                node.group = Some(target.to_string());
+            }
+        }
+        self.nodes.remove(source);
+        self.node_order.retain(|g| g != source);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
@@ -10259,29 +10385,8 @@ impl App {
                 self.switch_group_level(parent);
                 self.renaming_group = None;
             }
-            GraphAction::MergeGroups { source, target } => {
-                // Refuse if `target` is nested inside `source` (directly
-                // or transitively, walking the same `.group` chain
-                // `group_breadcrumb` does) -- reassigning source's own members
-                // to target while target is one of them would leave it (or a
-                // group between them) pointing at itself once source is
-                // removed below, a self-reference cycle the tab-reparent drag
-                // path already guards against via `would_create_cycle`.
-                let mut ancestor = Some(target.clone());
-                while let Some(cur) = ancestor {
-                    if cur == source {
-                        return;
-                    }
-                    ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
-                }
-                for node in self.nodes.values_mut() {
-                    if node.group.as_deref() == Some(source.as_str()) {
-                        node.group = Some(target.clone());
-                    }
-                }
-                self.nodes.remove(&source);
-                self.node_order.retain(|g| g != &source);
-            }
+            GraphAction::MergeGroups { source, target } => self.merge_groups(&source, &target),
+            GraphAction::Drop { id, target } => self.apply_drop(&id, target),
         }
     }
 
@@ -11099,6 +11204,12 @@ impl App {
                     }
                 }
 
+                // One drop target per frame, shared by the ring and the
+                // release (see `drop_target`).
+                let pointer = ui.input(|i| i.pointer.interact_pos());
+                let drop_preview =
+                    self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
+
                 for id in tabs_at_level.clone() {
                     let Some(node) = self.nodes.get(&id) else {
                         continue;
@@ -11790,6 +11901,13 @@ impl App {
                 // order, which is also their stacking order: a later kind
                 // draws, and takes the pointer, on top of an earlier one.
                 // Each kind's own click action is applied here.
+                let mut pass = CardPass {
+                    deferred_overlays: &mut deferred_overlays,
+                    actions: &mut actions,
+                    inv_zoom,
+                    zoom_scale,
+                    drop_preview: &drop_preview,
+                };
                 for (kind, ids) in [
                     (ItemNodeKind::Download, downloads_at_level),
                     (ItemNodeKind::Note, notes_at_level),
@@ -11804,16 +11922,14 @@ impl App {
                         // immediately re-enter editing.
                         let note_was_editing = kind == ItemNodeKind::Note
                             && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
-                        let Some(card) =
-                            self.draw_graph_card(ui, &mut deferred_overlays, id, inv_zoom, zoom_scale)
-                        else {
+                        let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
                             continue;
                         };
                         if let Some(action) = card.control {
                             // A control consumed this frame's click, so
                             // the kind's own click action below (e.g.
                             // Image maximize) is skipped.
-                            actions.push(GraphAction::Node(id.clone(), action));
+                            pass.actions.push(GraphAction::Node(id.clone(), action));
                             continue;
                         }
                         // A placeholder (see `ImagePayload::error`) has nothing
@@ -11826,12 +11942,12 @@ impl App {
                         match kind {
                             _ if missing_file => {
                                 if card.response.clicked() {
-                                    actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
+                                    pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
                                 }
                             }
                             // Click (not drag -- egui doesn't report
                             // `clicked()` for a drag) reveals the file.
-                            ItemNodeKind::Download if card.response.clicked() => actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
+                            ItemNodeKind::Download if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
                             // Click on the rendered note enters editing in place.
                             ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
                                 if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
@@ -11840,7 +11956,7 @@ impl App {
                             }
                             // Maximizes the image into Item view, the same
                             // gesture a Tab card uses.
-                            ItemNodeKind::Image if card.response.clicked() => actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
+                            ItemNodeKind::Image if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
                             // Opens the full tree in `build_json_viewer`.
                             ItemNodeKind::Json if card.response.double_clicked() => {
                                 self.json_viewer_node = Some(id.clone())
@@ -11849,6 +11965,7 @@ impl App {
                         }
                     }
                 }
+                drop(pass);
 
                 // Group nodes: rendered at whichever level `self.current_group`
                 // is (groups nest -- see `GroupPayload`'s own doc comment).
@@ -11873,30 +11990,9 @@ impl App {
                         );
 
                         let is_hovered = self.hovered.as_deref() == Some(id.as_str()) || response.hovered();
-                        // Whether the currently-dragged node (if any) is
-                        // positioned over this group right now -- the same
-                        // rect-containment check `finish_draggable_node`'s
-                        // own drop-release logic uses, just evaluated live
-                        // during the drag itself so there's some signal
-                        // *before* letting go, confirmed missing entirely
-                        // live (dragging a tab toward a group showed no
-                        // feedback at all until release). Not tied to
-                        // `hover_t`'s own eased transition below -- real-time
-                        // drag feedback should track the cursor immediately,
-                        // not ease in -- and drawn as a separate, much
-                        // bolder ring (not just a stronger version of the
-                        // ordinary hover glow) since the dragged card itself
-                        // is larger than a group's own footprint
-                        // (`GRAPH_NODE_SIZE` vs `GROUP_NODE_SIZE`) and would
-                        // otherwise cover a same-style highlight almost
-                        // entirely.
-                        let is_drag_target = self.dragging.as_deref().is_some_and(|dragging_id| {
-                            dragging_id != id.as_str()
-                                && self
-                                    .nodes
-                                    .get(dragging_id)
-                                    .is_some_and(|n| rect.contains(egui::Pos2::new(n.pos.x, n.pos.y)))
-                        });
+                        // See the frame's own drop ring.
+                        let is_drag_target =
+                            drop_preview.as_ref().and_then(|(_, target)| target.as_deref()) == Some(id.as_str());
                         let tag_color = self.nodes.get(&id).and_then(|n| n.color);
                         let member_ids: Vec<String> = self
                             .nodes
@@ -14201,6 +14297,28 @@ mod tests {
         assert_eq!(Eject.action(ItemNodeKind::Note), NodeAction::RemoveFromGroup);
         assert_eq!(Swatch.action(ItemNodeKind::Note), NodeAction::CycleColor);
         assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
+    }
+
+    #[test]
+    fn drop_action_matches_the_drop_table() {
+        use ItemNodeKind as K;
+        let card = DropTarget::Card;
+        for kind in GRAPH_DRAW_ORDER {
+            // The back button only exists inside a group.
+            assert_eq!(drop_action(kind, DropTarget::BackButton, true), Some(DropEffect::Eject), "{kind:?}");
+            assert_eq!(drop_action(kind, DropTarget::BackButton, false), None, "{kind:?}");
+            let onto_group = if kind == K::Group { DropEffect::Merge } else { DropEffect::Join };
+            for inside_group in [false, true] {
+                assert_eq!(drop_action(kind, card(K::Group), inside_group), Some(onto_group), "{kind:?}");
+            }
+        }
+        assert_eq!(drop_action(K::Tab, card(K::Tab), false), Some(DropEffect::GroupWith));
+        assert_eq!(drop_action(K::Tab, card(K::Tab), true), Some(DropEffect::Reparent));
+        // Only a tab drops onto a tab, and nothing drops onto the file kinds.
+        assert_eq!(drop_action(K::Note, card(K::Tab), false), None);
+        assert_eq!(drop_action(K::Group, card(K::Tab), true), None);
+        assert_eq!(drop_action(K::Tab, card(K::Note), false), None);
+        assert_eq!(drop_action(K::Image, card(K::Json), true), None);
     }
 
     #[test]
