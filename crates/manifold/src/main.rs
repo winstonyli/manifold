@@ -3674,7 +3674,7 @@ struct App {
     headless: bool,
     /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
     /// added to the next frame's egui input exactly like real key presses
-    /// (see `RedrawRequested`), so they take the same code paths and, like
+    /// (see `run_egui_frame`), so they take the same code paths and, like
     /// a real key, last one frame whether or not anything reads them.
     debug_input_events: Vec<egui::Event>,
     /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
@@ -3698,12 +3698,12 @@ struct App {
     /// immediately in that case could drop the pending command/screenshot
     /// before any frame ever consumed it (`event_loop.exit()` gives no
     /// guarantee a `RedrawRequested` runs first). Holds how many more frames
-    /// to wait: `RedrawRequested` exits once nothing is pending, or when
+    /// to wait: `headless_end_of_frame` exits once nothing is pending, or when
     /// this runs out (an `ADDRESSBAR` needs two frames, focus then typing;
     /// a screenshot on a stalled surface might never land).
     quit_after_redraws: Option<u8>,
     /// Set by a headless `SCREENSHOT` command; consumed on the next
-    /// `RedrawRequested` and passed into `gpu::GpuState::render`.
+    /// `RedrawRequested` and passed into `gpu::GpuState::render` (`render_frame`).
     pending_screenshot: Option<String>,
     /// The stdin reader waiting on `pending_screenshot` (see
     /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
@@ -3711,8 +3711,7 @@ struct App {
     /// "Print to PDF": the target `.pdf` path, set alongside
     /// `pending_screenshot` (a temp PNG) so the underlying GPU capture
     /// mechanism doesn't need to know PDF exists at all -- once that
-    /// screenshot actually completes (see `RedrawRequested`'s handling of
-    /// `RenderOutcome::screenshot_result`), the temp PNG is converted via
+    /// screenshot actually completes (see `handle_screenshot_result`), the temp PNG is converted via
     /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
     /// including for an ordinary "Screenshot" button click.
     pending_print_to_pdf: Option<String>,
@@ -4607,8 +4606,7 @@ impl App {
         if req.screenshot_requested {
             // No toast here -- the save hasn't happened yet. `save_toast`
             // is only set once `RenderOutcome::screenshot_result` actually
-            // confirms success (see `WindowEvent::RedrawRequested`'s
-            // handling of `pending_screenshot`).
+            // confirms success (see `handle_screenshot_result`).
             let path = screenshot_default_path();
             self.pending_screenshot = Some(path.to_string_lossy().to_string());
             if let Some(window) = &self.window {
@@ -7394,6 +7392,220 @@ impl App {
         });
     }
 
+    /// `RedrawRequested`: builds this frame's UI (`build_ui`), with the
+    /// raw input adjusted first. `None` without a window or egui state yet.
+    fn run_egui_frame(&mut self) -> Option<egui::FullOutput> {
+        match (self.egui_state.take(), self.window.clone()) {
+            (Some(mut state), Some(window)) => {
+                let mut raw_input = state.take_egui_input(window.as_ref());
+                // `egui::Scene` (the graph view's pan/zoom container)
+                // hardcodes ctrl+scroll as its zoom gesture and plain
+                // scroll as pan -- not configurable via its builder,
+                // since `register_pan_and_zoom` reads
+                // `zoom_delta()`/`smooth_scroll_delta()` straight off
+                // `InputState`. Forcing every `MouseWheel` event's
+                // modifiers to ctrl+command here, before egui ever
+                // computes those derived deltas, makes plain scroll
+                // register as the zoom gesture instead -- the graph
+                // already has a separate pan gesture (dragging empty
+                // background), so losing scroll-as-pan costs nothing.
+                // Tab view's own page-content scroll is untouched:
+                // that's a distinct `InputEvent::Scroll` forwarded to
+                // the focused tab's engine-host, not egui's Scene.
+                // `egui` treats "is this scroll a zoom gesture" as a
+                // single frame-wide flag (`InputState::begin_pass`
+                // computes it once from the whole event list, not
+                // per-widget or per-hover-region) -- forcing it
+                // unconditionally would silently zero out
+                // `smooth_scroll_delta` for *any* `ScrollArea` shown
+                // over Graph view, not just `Scene`. Scoped to
+                // `ViewMode::Graph` specifically, so the Settings
+                // page's own `ScrollArea` (a separate `ViewMode` now)
+                // always keeps normal scroll.
+                if self.view_mode == ViewMode::Graph {
+                    for event in &mut raw_input.events {
+                        if let egui::Event::MouseWheel { modifiers, .. } = event {
+                            modifiers.ctrl = true;
+                            modifiers.command = true;
+                        }
+                    }
+                }
+                // The hidden headless window never has OS focus, and egui
+                // reports no widget focus (`Response::has_focus`) in an
+                // unfocused window, so the address bar could never take
+                // the typed text.
+                if self.headless {
+                    raw_input.focused = true;
+                }
+                raw_input.events.append(&mut self.debug_input_events);
+                if self.address_bar_focused {
+                    if let Some(text) = self.debug_address_bar_typing.take() {
+                        raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
+                        raw_input.events.push(egui::Event::Text(text));
+                    }
+                }
+                self.update_window_title();
+                let ctx = self.egui_ctx.clone();
+                let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
+                state.handle_platform_output(window.as_ref(), output.platform_output.clone());
+                self.egui_state = Some(state);
+                Some(output)
+            }
+            (state, _) => {
+                self.egui_state = state;
+                None
+            }
+        }
+    }
+
+    /// The content quad's rect(s) (points, screen space) and
+    /// which tab's texture to draw at each — a `Transition`
+    /// overrides this to one entry, the animated in-between rect
+    /// and that tab's id, regardless of `view_mode`; otherwise
+    /// the normal Tab-view rule, which is two entries (primary +
+    /// secondary, side by side) while a split is open, one
+    /// otherwise, none in Graph view.
+    fn content_panes_points(&self, ppp: f32) -> Vec<(egui::Rect, String)> {
+        if let Some(transition) = &self.transition {
+            // Only a Tab has a GPU pane; an Image's transition is
+            // painted through egui instead (see `build_ui`).
+            if self.nodes.get(&transition.node_id).is_some_and(|n| n.as_tab().is_some()) {
+                vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
+            } else {
+                vec![]
+            }
+        } else if self.showing_tab_view() {
+            let screen = self
+                .window
+                .as_ref()
+                .map(|w| w.inner_size())
+                .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let top = self.chrome_height_points();
+            let full_rect = egui::Rect::from_min_size(
+                egui::pos2(0.0, top),
+                egui::vec2(screen.width as f32 / ppp, (screen.height as f32 / ppp - top).max(0.0)),
+            );
+            match (&self.focused, &self.split_tab) {
+                (Some(focused_id), Some(split_id)) => {
+                    let mid_x = full_rect.center().x;
+                    let left = egui::Rect::from_min_max(full_rect.min, egui::pos2(mid_x, full_rect.max.y));
+                    let right = egui::Rect::from_min_max(egui::pos2(mid_x, full_rect.min.y), full_rect.max);
+                    vec![(left, focused_id.clone()), (right, split_id.clone())]
+                }
+                (Some(focused_id), None) => vec![(full_rect, focused_id.clone())],
+                (None, _) => vec![],
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    /// `RedrawRequested`: draws the content panes and the egui output,
+    /// taking a pending screenshot (and print-to-PDF) along the way.
+    fn render_frame(&mut self, egui_output: Option<egui::FullOutput>) {
+        let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+        let content_panes_pts = self.content_panes_points(ppp);
+        let content_panes_px: Vec<((f32, f32, f32, f32), &str)> = content_panes_pts
+            .iter()
+            .map(|(rect, id)| {
+                (
+                    (rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp),
+                    id.as_str(),
+                )
+            })
+            .collect();
+
+        let content_on_top = self.transition.is_some();
+        // Not taken yet -- a transient surface-acquire failure
+        // (Outdated/Occluded/...) means the screenshot was never
+        // attempted this frame, and the request must survive to
+        // retry on a later one instead of being silently dropped.
+        let screenshot_path = self.pending_screenshot.clone();
+        if let Some(gpu) = &mut self.gpu {
+            let outcome = match egui_output {
+                Some(output) => gpu.render(
+                    &content_panes_px,
+                    content_on_top,
+                    Some((&self.egui_ctx, output)),
+                    screenshot_path.as_deref(),
+                ),
+                None => gpu.render(
+                    &content_panes_px,
+                    content_on_top,
+                    None,
+                    screenshot_path.as_deref(),
+                ),
+            };
+            if outcome.surface_ok {
+                self.pending_screenshot = None;
+                // The PNG is written by now (`render` saves it).
+                if outcome.screenshot_result.is_some() {
+                    if let Some(waiter) = self.screenshot_waiter.take() {
+                        let _ = waiter.send(());
+                    }
+                }
+                self.handle_screenshot_result(screenshot_path, outcome.screenshot_result);
+            }
+        }
+    }
+
+    /// A screenshot `render_frame` just took: toasts where it went, or
+    /// turns it into the pending PDF.
+    fn handle_screenshot_result(&mut self, screenshot_path: Option<String>, result: Option<Result<(), String>>) {
+        match result {
+            Some(Ok(())) => {
+                if let Some(path) = screenshot_path {
+                    if let Some(pdf_path) = self.pending_print_to_pdf.take() {
+                        match pdf::write_image_as_pdf(
+                            std::path::Path::new(&path),
+                            std::path::Path::new(&pdf_path),
+                        ) {
+                            Ok(()) => {
+                                self.queue_toast(format!("Saved {pdf_path}"));
+                            }
+                            Err(err) => eprintln!("print to pdf: {err}"),
+                        }
+                        let _ = std::fs::remove_file(&path);
+                    } else {
+                        self.queue_toast(format!("Saved {path}"));
+                    }
+                }
+            }
+            Some(Err(err)) => eprintln!("screenshot: {err}"),
+            None => {}
+        }
+    }
+
+    /// `RedrawRequested`'s headless bookkeeping: keeps frames coming for
+    /// pending debug input, and quits once `QUIT`'s frames have run.
+    fn headless_end_of_frame(&mut self, event_loop: &ActiveEventLoop) {
+        // `ADDRESSBAR` text is typed in the first frame the address
+        // bar has focus; keep frames coming until then. Dropped if
+        // Tab view went away, since the bar won't be built again.
+        if self.debug_address_bar_typing.is_some() {
+            if self.showing_tab_view() || self.transition.is_some() {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            } else {
+                eprintln!("ADDRESSBAR: left Tab view before the address bar took focus; text dropped");
+                self.debug_address_bar_typing = None;
+            }
+        }
+
+        // See `quit_after_redraws`'s doc comment.
+        if let Some(left) = self.quit_after_redraws {
+            if !self.debug_input_pending() || left == 0 {
+                event_loop.exit();
+            } else {
+                self.quit_after_redraws = Some(left - 1);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
     /// Checked once per frame, before rendering: once a `Transition`'s
     /// duration has elapsed, applies whatever `focus_tab`/`leave_to_graph`
     /// would have done instantly (the view-mode switch, and — for
@@ -8500,8 +8712,7 @@ impl App {
     /// "Print to PDF": routes through the exact same GPU screenshot
     /// capture `pending_screenshot` already drives (a temp PNG, cleaned up
     /// once converted), rather than teaching `gpu::GpuState` anything
-    /// about PDF -- `RedrawRequested`'s handling of `RenderOutcome::
-    /// screenshot_result` checks `pending_print_to_pdf` once that capture
+    /// about PDF -- `handle_screenshot_result` checks `pending_print_to_pdf` once that capture
     /// actually completes and does the PNG-to-PDF conversion there. Called
     /// by both the real toolbar button (after a real file-picker chooses
     /// `pdf_path`) and the headless `PRINTTOPDF` debug command (which
@@ -9869,7 +10080,7 @@ impl App {
         // shrinking-away Tab view and an expanding-toward Tab view have a
         // coherent shared position in (the target/source node). The actual
         // animated content quad itself is drawn separately, in
-        // `RedrawRequested` — see `transition_content_rect_points`.
+        // `render_frame` — see `transition_content_rect_points`.
         if self.transition.is_some() {
             self.build_graph_ui(ui);
             // A Tab's transition quad is a GPU pane (`content_panes_pts`);
@@ -12676,200 +12887,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // stale transitioning frame.
                 self.finish_transition_if_done();
 
-                let egui_output = match (self.egui_state.take(), self.window.clone()) {
-                    (Some(mut state), Some(window)) => {
-                        let mut raw_input = state.take_egui_input(window.as_ref());
-                        // `egui::Scene` (the graph view's pan/zoom container)
-                        // hardcodes ctrl+scroll as its zoom gesture and plain
-                        // scroll as pan -- not configurable via its builder,
-                        // since `register_pan_and_zoom` reads
-                        // `zoom_delta()`/`smooth_scroll_delta()` straight off
-                        // `InputState`. Forcing every `MouseWheel` event's
-                        // modifiers to ctrl+command here, before egui ever
-                        // computes those derived deltas, makes plain scroll
-                        // register as the zoom gesture instead -- the graph
-                        // already has a separate pan gesture (dragging empty
-                        // background), so losing scroll-as-pan costs nothing.
-                        // Tab view's own page-content scroll is untouched:
-                        // that's a distinct `InputEvent::Scroll` forwarded to
-                        // the focused tab's engine-host, not egui's Scene.
-                        // `egui` treats "is this scroll a zoom gesture" as a
-                        // single frame-wide flag (`InputState::begin_pass`
-                        // computes it once from the whole event list, not
-                        // per-widget or per-hover-region) -- forcing it
-                        // unconditionally would silently zero out
-                        // `smooth_scroll_delta` for *any* `ScrollArea` shown
-                        // over Graph view, not just `Scene`. Scoped to
-                        // `ViewMode::Graph` specifically, so the Settings
-                        // page's own `ScrollArea` (a separate `ViewMode` now)
-                        // always keeps normal scroll.
-                        if self.view_mode == ViewMode::Graph {
-                            for event in &mut raw_input.events {
-                                if let egui::Event::MouseWheel { modifiers, .. } = event {
-                                    modifiers.ctrl = true;
-                                    modifiers.command = true;
-                                }
-                            }
-                        }
-                        // The hidden headless window never has OS focus, and egui
-                        // reports no widget focus (`Response::has_focus`) in an
-                        // unfocused window, so the address bar could never take
-                        // the typed text.
-                        if self.headless {
-                            raw_input.focused = true;
-                        }
-                        raw_input.events.append(&mut self.debug_input_events);
-                        if self.address_bar_focused {
-                            if let Some(text) = self.debug_address_bar_typing.take() {
-                                raw_input.events.push(debug_key_event(egui::Key::A, egui::Modifiers::COMMAND));
-                                raw_input.events.push(egui::Event::Text(text));
-                            }
-                        }
-                        self.update_window_title();
-                        let ctx = self.egui_ctx.clone();
-                        let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
-                        state.handle_platform_output(window.as_ref(), output.platform_output.clone());
-                        self.egui_state = Some(state);
-                        Some(output)
-                    }
-                    (state, _) => {
-                        self.egui_state = state;
-                        None
-                    }
-                };
+                let egui_output = self.run_egui_frame();
 
-                // The content quad's rect(s) (points, screen space) and
-                // which tab's texture to draw at each — a `Transition`
-                // overrides this to one entry, the animated in-between rect
-                // and that tab's id, regardless of `view_mode`; otherwise
-                // the normal Tab-view rule, which is two entries (primary +
-                // secondary, side by side) while a split is open, one
-                // otherwise, none in Graph view.
-                let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-                let content_panes_pts: Vec<(egui::Rect, String)> = if let Some(transition) = &self.transition {
-                    // Only a Tab has a GPU pane; an Image's transition is
-                    // painted through egui instead (see `build_ui`).
-                    if self.nodes.get(&transition.node_id).is_some_and(|n| n.as_tab().is_some()) {
-                        vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
-                    } else {
-                        vec![]
-                    }
-                } else if self.showing_tab_view() {
-                    let screen = self
-                        .window
-                        .as_ref()
-                        .map(|w| w.inner_size())
-                        .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
-                    let top = self.chrome_height_points();
-                    let full_rect = egui::Rect::from_min_size(
-                        egui::pos2(0.0, top),
-                        egui::vec2(screen.width as f32 / ppp, (screen.height as f32 / ppp - top).max(0.0)),
-                    );
-                    match (&self.focused, &self.split_tab) {
-                        (Some(focused_id), Some(split_id)) => {
-                            let mid_x = full_rect.center().x;
-                            let left = egui::Rect::from_min_max(full_rect.min, egui::pos2(mid_x, full_rect.max.y));
-                            let right = egui::Rect::from_min_max(egui::pos2(mid_x, full_rect.min.y), full_rect.max);
-                            vec![(left, focused_id.clone()), (right, split_id.clone())]
-                        }
-                        (Some(focused_id), None) => vec![(full_rect, focused_id.clone())],
-                        (None, _) => vec![],
-                    }
-                } else {
-                    vec![]
-                };
-                let content_panes_px: Vec<((f32, f32, f32, f32), &str)> = content_panes_pts
-                    .iter()
-                    .map(|(rect, id)| {
-                        (
-                            (rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp),
-                            id.as_str(),
-                        )
-                    })
-                    .collect();
-
-                let content_on_top = self.transition.is_some();
-                // Not taken yet -- a transient surface-acquire failure
-                // (Outdated/Occluded/...) means the screenshot was never
-                // attempted this frame, and the request must survive to
-                // retry on a later one instead of being silently dropped.
-                let screenshot_path = self.pending_screenshot.clone();
-                if let Some(gpu) = &mut self.gpu {
-                    let outcome = match egui_output {
-                        Some(output) => gpu.render(
-                            &content_panes_px,
-                            content_on_top,
-                            Some((&self.egui_ctx, output)),
-                            screenshot_path.as_deref(),
-                        ),
-                        None => gpu.render(
-                            &content_panes_px,
-                            content_on_top,
-                            None,
-                            screenshot_path.as_deref(),
-                        ),
-                    };
-                    if outcome.surface_ok {
-                        self.pending_screenshot = None;
-                        // The PNG is written by now (`render` saves it).
-                        if outcome.screenshot_result.is_some() {
-                            if let Some(waiter) = self.screenshot_waiter.take() {
-                                let _ = waiter.send(());
-                            }
-                        }
-                        match outcome.screenshot_result {
-                            Some(Ok(())) => {
-                                if let Some(path) = screenshot_path {
-                                    if let Some(pdf_path) = self.pending_print_to_pdf.take() {
-                                        match pdf::write_image_as_pdf(
-                                            std::path::Path::new(&path),
-                                            std::path::Path::new(&pdf_path),
-                                        ) {
-                                            Ok(()) => {
-                                                self.queue_toast(format!("Saved {pdf_path}"));
-                                            }
-                                            Err(err) => eprintln!("print to pdf: {err}"),
-                                        }
-                                        let _ = std::fs::remove_file(&path);
-                                    } else {
-                                        self.queue_toast(format!("Saved {path}"));
-                                    }
-                                }
-                            }
-                            Some(Err(err)) => eprintln!("screenshot: {err}"),
-                            None => {}
-                        }
-                    }
-                }
+                self.render_frame(egui_output);
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
 
-                // `ADDRESSBAR` text is typed in the first frame the address
-                // bar has focus; keep frames coming until then. Dropped if
-                // Tab view went away, since the bar won't be built again.
-                if self.debug_address_bar_typing.is_some() {
-                    if self.showing_tab_view() || self.transition.is_some() {
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    } else {
-                        eprintln!("ADDRESSBAR: left Tab view before the address bar took focus; text dropped");
-                        self.debug_address_bar_typing = None;
-                    }
-                }
-
-                // See `quit_after_redraws`'s doc comment.
-                if let Some(left) = self.quit_after_redraws {
-                    if !self.debug_input_pending() || left == 0 {
-                        event_loop.exit();
-                    } else {
-                        self.quit_after_redraws = Some(left - 1);
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                }
+                self.headless_end_of_frame(event_loop);
             }
             _ => {}
         }
