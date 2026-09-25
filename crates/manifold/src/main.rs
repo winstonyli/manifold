@@ -2077,7 +2077,7 @@ impl App {
                     self.spawn_tab_async(TabSpawn { parent, group, carry, ..spawn });
                     continue;
                 }
-                ClosedPiece::Group { name } => Some(NodePayload::Group(GroupPayload { name })),
+                ClosedPiece::Group { name } => Some(NodePayload::Group(GroupPayload { name, from_json: false })),
                 ClosedPiece::Note(text) => Some(NodePayload::Note(NotePayload { text, editing: false })),
                 ClosedPiece::JsonLeaf { path, key, value } => {
                     Some(NodePayload::Json(JsonPayload { path, value, key, error: None }))
@@ -2246,21 +2246,44 @@ impl App {
     /// Shared body for the Note/Image/Pdf/Json cases of
     /// `build_session_snapshot` below -- each of those four kinds' own
     /// snapshot is just `(id, one string field, position)`, differing only
-    /// in which node accessor supplies the string. Returns id/field/pos_x/
-    /// pos_y tuples; the caller maps each into its own concrete `Session*`
-    /// struct.
+    /// in which node accessor supplies the string. Returns id/field/place
+    /// tuples; the caller maps each into its own concrete `Session*` struct.
     fn collect_session_field<'a>(
         &'a self,
         extract: impl Fn(&'a GraphNode) -> Option<&'a str>,
-    ) -> Vec<(String, String, f32, f32)> {
+    ) -> Vec<(String, String, session::SessionPlace)> {
         self.node_order
             .iter()
             .filter_map(|id| {
                 let node = self.nodes.get(id)?;
                 let field = extract(node)?;
-                Some((id.clone(), field.to_string(), node.pos.x, node.pos.y))
+                Some((id.clone(), field.to_string(), self.session_place(node)))
             })
             .collect()
+    }
+
+    /// `node`'s saved position, group and color.
+    fn session_place(&self, node: &GraphNode) -> session::SessionPlace {
+        session::SessionPlace {
+            pos_x: node.pos.x,
+            pos_y: node.pos.y,
+            group: self.saved_group(node.group.as_deref()),
+            color: node.color.map(|c| (c.r(), c.g(), c.b())),
+        }
+    }
+
+    /// `group`, or its nearest saved ancestor when it's an "Expand as Graph"
+    /// group (`GroupPayload::from_json`), which isn't saved. `None` for the
+    /// top level.
+    fn saved_group<'a>(&'a self, mut group: Option<&'a str>) -> Option<String> {
+        while let Some(id) = group {
+            let node = self.nodes.get(id)?;
+            match node.as_group() {
+                Some(g) if !g.from_json => return Some(id.to_string()),
+                _ => group = node.group.as_deref(),
+            }
+        }
+        None
     }
 
     /// The `session::Session` value both the auto-restore `save_session`
@@ -2278,8 +2301,8 @@ impl App {
                     parent: node.parent.clone(),
                     url: url.to_string(),
                     engine,
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
+                    place: self.session_place(node),
+                    pinned: node.as_tab().map(|t| t.pinned).or_else(|| node.as_failed_tab().map(|t| t.pinned)).unwrap_or(false),
                 })
             })
             .collect();
@@ -2293,22 +2316,31 @@ impl App {
         let notes = self
             .collect_session_field(|n| n.as_note().map(|note| note.text.as_str()))
             .into_iter()
-            .map(|(id, text, pos_x, pos_y)| session::SessionNote { id, text, pos_x, pos_y })
+            .map(|(id, text, place)| session::SessionNote { id, text, place })
             .collect();
         let images = self
             .collect_session_field(|n| n.as_image().map(|image| image.path.as_str()))
             .into_iter()
-            .map(|(id, path, pos_x, pos_y)| session::SessionImage { id, path, pos_x, pos_y })
+            .map(|(id, path, place)| session::SessionImage { id, path, place })
             .collect();
         let pdfs = self
             .collect_session_field(|n| n.as_pdf().map(|pdf| pdf.path.as_str()))
             .into_iter()
-            .map(|(id, path, pos_x, pos_y)| session::SessionPdf { id, path, pos_x, pos_y })
+            .map(|(id, path, place)| session::SessionPdf { id, path, place })
             .collect();
         let jsons = self
             .collect_session_field(|n| n.as_json().filter(|json| json.key.is_none()).map(|json| json.path.as_str()))
             .into_iter()
-            .map(|(id, path, pos_x, pos_y)| session::SessionJson { id, path, pos_x, pos_y })
+            .map(|(id, path, place)| session::SessionJson { id, path, place })
+            .collect();
+        let groups = self
+            .node_order
+            .iter()
+            .filter_map(|id| {
+                let node = self.nodes.get(id)?;
+                let group = node.as_group().filter(|g| !g.from_json)?;
+                Some(session::SessionGroup { id: id.clone(), name: group.name.clone(), place: self.session_place(node) })
+            })
             .collect();
         session::Session {
             tabs,
@@ -2316,6 +2348,8 @@ impl App {
             images,
             pdfs,
             jsons,
+            groups,
+            current_group: self.saved_group(self.current_group.as_deref()),
             focused: self.focused.clone(),
             view_mode_tab: matches!(self.view_mode, ViewMode::Item),
             // `viewed_image` stays `Some` while Settings is open on top of
@@ -2331,6 +2365,7 @@ impl App {
             next_image_id: self.ids.image,
             next_pdf_id: self.ids.pdf,
             next_json_id: self.ids.json,
+            next_group_id: self.ids.group,
         }
     }
 
@@ -2385,6 +2420,7 @@ impl App {
         self.ids.image = session.next_image_id;
         self.ids.pdf = session.next_pdf_id;
         self.ids.json = session.next_json_id;
+        self.ids.group = session.next_group_id;
         // A file with a counter missing (they all default to 0) or behind
         // its own ids would otherwise let the next new node reuse an id.
         for tab in &session.tabs {
@@ -2402,15 +2438,36 @@ impl App {
         for json in &session.jsons {
             bump_past_id(&mut self.ids.json, &json.id, "json");
         }
+        for group in &session.groups {
+            bump_past_id(&mut self.ids.group, &group.id, "grp");
+        }
+        // A node naming a group the file doesn't have lands at the top level.
+        let saved_groups: HashSet<String> = session.groups.iter().map(|g| g.id.clone()).collect();
+        let place = |p: &session::SessionPlace| {
+            (
+                egui::vec2(p.pos_x, p.pos_y),
+                p.group.clone().filter(|g| saved_groups.contains(g)),
+                p.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)),
+            )
+        };
+        for group in session.groups {
+            let (pos, parent_group, color) = place(&group.place);
+            let payload = NodePayload::Group(GroupPayload { name: group.name, from_json: false });
+            let node = GraphNode { parent: None, group: parent_group, pos, vel: egui::Vec2::ZERO, color, payload };
+            self.nodes.insert(group.id.clone(), node);
+            self.node_order.push(group.id);
+        }
+        self.current_group = session.current_group.clone().filter(|g| saved_groups.contains(g));
         for note in session.notes {
+            let (pos, group, color) = place(&note.place);
             self.nodes.insert(
                 note.id.clone(),
                 GraphNode {
                     parent: None,
-                    group: None,
-                    pos: egui::vec2(note.pos_x, note.pos_y),
+                    group,
+                    pos,
                     vel: egui::Vec2::ZERO,
-                    color: None,
+                    color,
                     payload: NodePayload::Note(NotePayload { text: note.text, editing: false }),
                 },
             );
@@ -2419,23 +2476,26 @@ impl App {
         // A card whose file is gone stays as a placeholder (`error`), so
         // the next save doesn't forget it.
         for image in session.images {
-            let pos = egui::vec2(image.pos_x, image.pos_y);
+            let (pos, group, color) = place(&image.place);
             if let Err(error) = self.insert_image_node_with_id(image.id.clone(), image.path.clone(), pos, None) {
                 let payload = ImagePayload { path: image.path, width: 0, height: 0, error: Some(error) };
-                self.insert_placeholder_node(image.id, pos, NodePayload::Image(payload));
+                self.insert_placeholder_node(image.id.clone(), pos, NodePayload::Image(payload));
             }
+            self.restore_group_and_color(&image.id, group, color);
         }
         for pdf in session.pdfs {
-            let pos = egui::vec2(pdf.pos_x, pdf.pos_y);
-            self.insert_pdf_node_with_id(pdf.id, pdf.path, pos, None);
+            let (pos, group, color) = place(&pdf.place);
+            self.insert_pdf_node_with_id(pdf.id.clone(), pdf.path, pos, None);
+            self.restore_group_and_color(&pdf.id, group, color);
         }
         for json in session.jsons {
-            let pos = egui::vec2(json.pos_x, json.pos_y);
+            let (pos, group, color) = place(&json.place);
             if let Err(error) = self.insert_json_node_with_id(json.id.clone(), json.path.clone(), pos, None) {
                 let value = serde_json::Value::Null;
                 let payload = JsonPayload { path: json.path, value, key: None, error: Some(error) };
-                self.insert_placeholder_node(json.id, pos, NodePayload::Json(payload));
+                self.insert_placeholder_node(json.id.clone(), pos, NodePayload::Json(payload));
             }
+            self.restore_group_and_color(&json.id, group, color);
         }
         let valid_focus = session
             .focused
@@ -2463,11 +2523,21 @@ impl App {
             self.pending_respawn_focus = self.focused.clone();
         }
         for tab in session.tabs {
-            let pos = egui::vec2(tab.pos_x, tab.pos_y);
+            let (pos, group, color) = place(&tab.place);
             let spawn = TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
-            self.spawn_tab_async(TabSpawn { parent: tab.parent, ..spawn });
+            let carry = TabCarry { pinned: tab.pinned, color, ..spawn.carry };
+            self.spawn_tab_async(TabSpawn { parent: tab.parent, group, carry, ..spawn });
         }
         self.camera.frame_restored = true;
+    }
+
+    /// `apply_session`'s last step for an Image/PDF/JSON node, whose insert
+    /// helpers place it at the top level with no color.
+    fn restore_group_and_color(&mut self, id: &str, group: Option<String>, color: Option<egui::Color32>) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.group = group;
+            node.color = color;
+        }
     }
 
     /// "Open Session" (settings popup): loads a named save and replaces the
@@ -2574,7 +2644,7 @@ impl App {
                 pos: group_pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Group(GroupPayload { name: "Try grouping".to_string() }),
+                payload: NodePayload::Group(GroupPayload { name: "Try grouping".to_string(), from_json: false }),
             },
         );
         self.node_order.push(group_id.clone());
@@ -4066,6 +4136,7 @@ impl App {
         let id = self.alloc_group_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_group_at(id, pos);
+        self.save_session();
     }
 
     /// Shared by `new_group_shortcut` (fresh id/jittered position) and the
@@ -4081,7 +4152,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Group(GroupPayload { name }),
+                payload: NodePayload::Group(GroupPayload { name, from_json: false }),
             },
         );
         self.node_order.push(id);
@@ -4437,7 +4508,7 @@ impl App {
     /// `session.json`. The original node is converted in place (`payload`
     /// is swapped, not the node removed and reinserted) so its existing
     /// `pos`/`group`/`color` (all on the shared `GraphNode`) carry over
-    /// untouched -- but since a `Group` is never persisted, this also means
+    /// untouched -- but since a group made here isn't saved (`GroupPayload::from_json`), this also means
     /// the *source file itself* drops out of `session.json` entirely the
     /// next time it saves, not just the exploded subtree: after a restart
     /// there's no compact card left to click back to, only "Add File..."
@@ -4459,7 +4530,7 @@ impl App {
         if has_entries {
             let root_name = download_filename(&path).to_string();
             if let Some(node) = self.nodes.get_mut(json_node_id) {
-                node.payload = NodePayload::Group(GroupPayload { name: root_name });
+                node.payload = NodePayload::Group(GroupPayload { name: root_name, from_json: true });
             }
             self.expand_json_entries(json_node_id, &value, &path);
         }
@@ -4493,7 +4564,7 @@ impl App {
                         pos,
                         vel: egui::Vec2::ZERO,
                         color: None,
-                        payload: NodePayload::Group(GroupPayload { name: key }),
+                        payload: NodePayload::Group(GroupPayload { name: key, from_json: true }),
                     },
                 );
                 self.node_order.push(id.clone());
@@ -5039,7 +5110,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color,
-                payload: NodePayload::Group(GroupPayload { name: export.name }),
+                payload: NodePayload::Group(GroupPayload { name: export.name, from_json: false }),
             },
         );
         self.node_order.push(group_id.clone());
@@ -5094,6 +5165,7 @@ impl App {
         };
         if let Some(action) = action {
             self.apply_node_action(ui.ctx(), &id, action);
+            self.save_session();
         }
         if close {
             self.node_menu = None;
@@ -5554,7 +5626,7 @@ mod tests {
             payload,
         };
         let note = |text: &str| NodePayload::Note(NotePayload { text: text.into(), editing: false });
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into() });
+        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
         let leaf = || NodePayload::Json(JsonPayload { path: "d.json".into(), value: 1.into(), key: Some("k".into()), error: None });
         let image = NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         let mut nodes = NodeMap::default();
@@ -5672,7 +5744,7 @@ mod tests {
             color: None,
             payload,
         };
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into() });
+        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
         let mut nodes = NodeMap::default();
         nodes.insert("outer".into(), node(None, group("outer")));

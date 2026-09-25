@@ -24,22 +24,46 @@ pub struct SessionTab {
     pub url: String,
     #[serde(with = "engine_kind_serde")]
     pub engine: EngineKind,
-    /// Graph-view layout position — restoring it keeps a familiar-looking
-    /// layout across a restart instead of every tab re-jittering from the
-    /// same spawn point and re-settling from scratch.
+    #[serde(flatten)]
+    pub place: SessionPlace,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// Where a saved node sits, flattened into its own entry (so `pos_x`/`pos_y`
+/// stay where files have always had them). The position keeps a familiar
+/// layout across a restart instead of every node re-jittering from the same
+/// spawn point. `group` and `color` are `#[serde(default)]` so files from
+/// before groups were saved still load.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionPlace {
     pub pos_x: f32,
     pub pos_y: f32,
+    /// The saved group this node is in; `None` for the top level.
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub color: Option<(u8, u8, u8)>,
+}
+
+/// A group card. Its members name it in their own `place.group`, and a
+/// nested group names its parent the same way.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(flatten)]
+    pub place: SessionPlace,
 }
 
 /// A sticky note's own saved data -- see `crate::NotePayload`'s own doc
-/// comment for why a note is persisted at all (unlike most other per-node
-/// display state, which is session-only).
+/// comment for why a note is persisted at all.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionNote {
     pub id: String,
     pub text: String,
-    pub pos_x: f32,
-    pub pos_y: f32,
+    #[serde(flatten)]
+    pub place: SessionPlace,
 }
 
 /// An image node's own saved data -- see `crate::ImagePayload`'s own doc
@@ -51,8 +75,8 @@ pub struct SessionNote {
 pub struct SessionImage {
     pub id: String,
     pub path: String,
-    pub pos_x: f32,
-    pub pos_y: f32,
+    #[serde(flatten)]
+    pub place: SessionPlace,
 }
 
 /// A PDF node's own saved data -- same "just the file path" posture
@@ -63,8 +87,8 @@ pub struct SessionImage {
 pub struct SessionPdf {
     pub id: String,
     pub path: String,
-    pub pos_x: f32,
-    pub pos_y: f32,
+    #[serde(flatten)]
+    pub place: SessionPlace,
 }
 
 /// A JSON node's own saved data -- same "just the file path" posture
@@ -75,8 +99,8 @@ pub struct SessionPdf {
 pub struct SessionJson {
     pub id: String,
     pub path: String,
-    pub pos_x: f32,
-    pub pos_y: f32,
+    #[serde(flatten)]
+    pub place: SessionPlace,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -92,6 +116,11 @@ pub struct Session {
     pub pdfs: Vec<SessionPdf>,
     #[serde(default)]
     pub jsons: Vec<SessionJson>,
+    #[serde(default)]
+    pub groups: Vec<SessionGroup>,
+    /// The level Graph view was showing (`App::current_group`).
+    #[serde(default)]
+    pub current_group: Option<String>,
     pub focused: Option<String>,
     /// `true` = `ViewMode::Item` (named before that variant was renamed
     /// from `Tab`; kept so existing `session.json` files still load).
@@ -114,6 +143,8 @@ pub struct Session {
     pub next_pdf_id: u64,
     #[serde(default)]
     pub next_json_id: u64,
+    #[serde(default)]
+    pub next_group_id: u64,
 }
 
 /// Cheap, process-local "did this file's bytes change" check -- not a
@@ -267,5 +298,20 @@ mod tests {
         let json = r#"{"tabs":[{"id":"tab-10","parent":null,"url":"about:blank","engine":"webview2","pos_x":0,"pos_y":0}],"focused":null,"view_mode_tab":false}"#;
         let session: Session = serde_json::from_str(json).unwrap();
         assert_eq!(session.next_tab_id, 0);
+        assert!(session.groups.is_empty() && session.tabs[0].place.group.is_none());
+    }
+
+    #[test]
+    fn a_node_keeps_its_group_and_color_through_a_save() {
+        let json = r#"{"tabs":[{"id":"tab-0","parent":null,"url":"about:blank","engine":"webview2","pos_x":1.5,"pos_y":-2,"group":"grp-3","color":[1,2,3],"pinned":true}],
+            "groups":[{"id":"grp-3","name":"Reading","pos_x":0,"pos_y":0,"group":null}],"focused":null,"view_mode_tab":false}"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        let again: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        let tab = &again.tabs[0];
+        assert_eq!((tab.place.pos_x, tab.place.pos_y), (1.5, -2.0));
+        assert_eq!(tab.place.group.as_deref(), Some("grp-3"));
+        assert_eq!(tab.place.color, Some((1, 2, 3)));
+        assert!(tab.pinned);
+        assert_eq!(again.groups[0].name, "Reading");
     }
 }

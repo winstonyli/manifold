@@ -185,9 +185,8 @@ pub(crate) struct NotePayload {
     /// read-only, with the whole card (not just its header strip) clickable
     /// to switch back to editing -- the same "click to edit, blur to
     /// render" split Obsidian/Notion use, since a rendered view has no
-    /// natural place to put a text cursor. Session-only, like `TabPayload::
-    /// pinned` -- not persisted (`session::SessionNote` still only holds
-    /// `text`), so a restored note always starts rendered regardless of
+    /// natural place to put a text cursor. Session-only -- not persisted (`session::SessionNote` has no
+    /// `editing`), so a restored note always starts rendered regardless of
     /// what it was showing when the app last closed. A freshly created
     /// note starts `true` instead, so typing into it works immediately
     /// with no extra click.
@@ -277,8 +276,8 @@ pub(crate) struct JsonPayload {
     /// card just shows the value's own shape), `Some(k)` for a leaf created
     /// by "Expand as Graph" (see `App::expand_json_entries`), whose card
     /// shows `"{k}: {value}"` instead so it's clear which field this is.
-    /// Never persisted -- exploded leaves are session-only, matching
-    /// `GroupPayload`'s own doc comment for the containers they live in.
+    /// Never persisted -- exploded leaves are session-only, like the
+    /// groups around them (`GroupPayload::from_json`).
     pub(crate) key: Option<String>,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
@@ -336,18 +335,16 @@ pub(crate) struct TabPayload {
     /// from `Settings::zoom_factor` at spawn time (a fresh tab still
     /// picks up "whatever the default is right now", unchanged), then
     /// tracked per-tab from there -- carried through a respawn/engine
-    /// swap/crash recovery the same way `pinned`/`color` already are, not
-    /// persisted to `session.json`, same smaller-scope reasoning
-    /// `pinned`'s own doc comment gives.
+    /// swap/crash recovery the same way `pinned`/`color` already are. Not
+    /// persisted to `session.json`: a restored tab starts at
+    /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
     /// Graph view's pin toggle — a pinned node is excluded from the
     /// force-directed layout entirely (same `pinned` exclusion
     /// `graph_layout::step` already gives a node currently being dragged),
     /// so it stays exactly where the user put it instead of drifting under
-    /// repulsion/centering forces as siblings come and go. Not persisted to
-    /// `session.json` (unlike `pos`, which is) — resets to unpinned on
-    /// every restart, a smaller scope than plumbing a new field through
-    /// `SessionTab` warranted for a graph-view display preference.
+    /// repulsion/centering forces as siblings come and go. Saved as
+    /// `SessionTab::pinned`.
     pub(crate) pinned: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
@@ -509,11 +506,15 @@ impl GraphNode {
 /// already-shipped drag gesture does.
 ///
 /// Entering/leaving eases the camera via `GraphCameraTween` rather than
-/// `Transition` — see that type's own doc comment for why. Groups (and
-/// membership, including nesting) are session-only, same scope decision as
-/// `TabPayload::pinned` — not written to `session.json`.
+/// `Transition` — see that type's own doc comment for why. Groups, their
+/// members and nesting are saved in `session.json` (`session::SessionGroup`,
+/// `SessionPlace::group`), except the ones `from_json` marks.
 pub(crate) struct GroupPayload {
     pub(crate) name: String,
+    /// Made by "Expand as Graph" (`App::expand_json_as_graph`). Not saved,
+    /// like the JSON leaves inside it; a node the user moved into one is
+    /// saved under the nearest saved group around it (`App::saved_group`).
+    pub(crate) from_json: bool,
 }
 
 #[cfg(test)]
@@ -525,7 +526,7 @@ mod tests {
     #[test]
     fn maps_each_constructible_payload_variant_to_its_own_kind() {
         assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into() })), ItemNodeKind::Group);
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })), ItemNodeKind::Group);
         assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
         assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100, error: None })), ItemNodeKind::Image);
         assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
@@ -543,6 +544,6 @@ mod tests {
         zoom_factor: 1.5,
         retrying: false,
     })).saved_tab(), Some(("https://example.org/", EngineKind::Cef)));
-        assert_eq!(NodePayload::Group(GroupPayload { name: "g".into() }).saved_tab(), None);
+        assert_eq!(NodePayload::Group(GroupPayload { name: "g".into(), from_json: false }).saved_tab(), None);
     }
 }

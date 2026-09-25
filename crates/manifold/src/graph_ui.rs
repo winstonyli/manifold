@@ -306,7 +306,7 @@ impl App {
                         pos,
                         vel: egui::Vec2::ZERO,
                         color: None,
-                        payload: NodePayload::Group(GroupPayload { name }),
+                        payload: NodePayload::Group(GroupPayload { name, from_json: false }),
                     },
                 );
                 self.node_order.push(id.clone());
@@ -364,6 +364,9 @@ impl App {
             }
             GraphAction::Drop { id, target } => self.apply_drop(&id, target),
         }
+        // Group edits, drops and moves change nothing else that saves; the
+        // node menu's actions save the same way.
+        self.save_session();
     }
 
     /// Switches to `id`'s level, as `switch_group_level` does, unless it is

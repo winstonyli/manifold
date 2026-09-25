@@ -1621,7 +1621,7 @@ mod tests {
         let download = NodePayload::Download(DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: false });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
-        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into() })), GROUP_NODE_SIZE);
+        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })), GROUP_NODE_SIZE);
         let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None, error: None });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
         assert_eq!(node_card_size(&NodePayload::FailedTab(FailedTabPayload {
@@ -1659,7 +1659,7 @@ mod tests {
         assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1, error: None })), ["cat.png"]);
         assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), ["paper.pdf"]);
         assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None, error: None })), ["x.json"]);
-        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into() })), ["Reading"]);
+        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })), ["Reading"]);
         assert_eq!(card_filter_text(&NodePayload::FailedTab(FailedTabPayload {
             url: "https://example.org/".into(),
             kind: EngineKind::Cef,
