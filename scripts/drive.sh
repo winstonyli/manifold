@@ -34,6 +34,10 @@
 #     mid-ease.
 #   - blank lines are skipped.
 #
+# Exit status: a failed command's own status, or the app's. Git Bash
+# reports a death by signal N as N<<8 to a Windows parent, so 3840
+# means this script got SIGTERM from outside (README, Known limitations).
+#
 # Build first: cargo build -p manifold
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
