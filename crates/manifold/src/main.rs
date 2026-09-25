@@ -329,13 +329,12 @@ enum NodeMenuItem {
 
 /// A node's right-click menu: its items, in order. `area_id` is the
 /// popup's egui `Area` id, distinct per kind so egui's per-area memory
-/// never bleeds between kinds. The file menus have a fixed width; the tab
-/// and group menus have no maximum, so they grow to fit the swatch row.
+/// never bleeds between kinds. Every menu has a minimum width and no
+/// maximum, so it grows to fit the swatch row.
 #[derive(Debug, PartialEq)]
 struct NodeMenuConfig {
     area_id: &'static str,
     min_width: f32,
-    max_width: f32,
     items: Vec<NodeMenuItem>,
 }
 
@@ -359,7 +358,7 @@ fn build_node_context_menu(
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect =
-        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.min_width, config.max_width, fade, interactable, |ui| {
+        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.min_width, f32::INFINITY, fade, interactable, |ui| {
             if let Some((draft, focus)) = rename {
                 let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
                 if focus {
@@ -442,24 +441,27 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     use NodeAction as A;
     use NodeMenuItem::{Button, Colors, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
-    // Every menu but the group's ends in Remove from Group (when the node
-    // is grouped) and the kind's delete item.
-    let with_group_and_delete = |area_id, min_width, max_width, mut items: Vec<NodeMenuItem>, delete_label| {
+    // Every menu ends in the Colors row, Remove from Group (when the node
+    // is grouped), then the kind's delete items.
+    let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
+        items.push(Colors);
         if view.has_group {
             items.extend([Separator, Button("Remove from Group", A::RemoveFromGroup)]);
         }
-        items.extend([Separator, Button(delete_label, A::Delete)]);
-        NodeMenuConfig { area_id, min_width, max_width, items }
+        items.push(Separator);
+        items.extend(delete_items);
+        NodeMenuConfig { area_id, min_width, items }
     };
-    let (area_id, width, items, delete_label) = match view.kind {
-        ItemNodeKind::Download => ("download_context_menu", 170.0, file_items(), "Remove from List"),
-        ItemNodeKind::Note => ("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], "Delete"),
-        ItemNodeKind::Image => ("image_context_menu", 170.0, file_items(), "Delete"),
-        ItemNodeKind::Pdf => ("pdf_context_menu", 170.0, file_items(), "Delete"),
+    let delete = |label| vec![Button(label, A::Delete)];
+    match view.kind {
+        ItemNodeKind::Download => finish("download_context_menu", 170.0, file_items(), delete("Remove from List")),
+        ItemNodeKind::Note => finish("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], delete("Delete")),
+        ItemNodeKind::Image => finish("image_context_menu", 170.0, file_items(), delete("Delete")),
+        ItemNodeKind::Pdf => finish("pdf_context_menu", 170.0, file_items(), delete("Delete")),
         ItemNodeKind::Json => {
             let mut items = file_items();
             items.push(Button("Expand as Graph", A::ExpandAsGraph));
-            ("json_context_menu", 170.0, items, "Delete")
+            finish("json_context_menu", 170.0, items, delete("Delete"))
         }
         ItemNodeKind::Tab => {
             let mut items = vec![
@@ -470,19 +472,17 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
             if view.has_json {
                 items.push(Button("View as JSON", A::ViewJson));
             }
-            items.extend([Button("Fit Subtree", A::FitSubtree), Colors]);
-            return with_group_and_delete("tab_context_menu", 150.0, f32::INFINITY, items, "Close");
+            items.push(Button("Fit Subtree", A::FitSubtree));
+            finish("tab_context_menu", 150.0, items, delete("Close"))
         }
         ItemNodeKind::Group => {
-            let mut items =
-                vec![Button("Rename", A::Rename), Colors, Separator, Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
+            let mut delete_items = vec![Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
             if !headless {
-                items.push(Button("Export Group...", A::ExportGroup));
+                delete_items.push(Button("Export Group...", A::ExportGroup));
             }
-            return NodeMenuConfig { area_id: "group_context_menu", min_width: 150.0, max_width: f32::INFINITY, items };
+            finish("group_context_menu", 150.0, vec![Button("Rename", A::Rename)], delete_items)
         }
-    };
-    with_group_and_delete(area_id, width, width, items, delete_label)
+    }
 }
 
 /// Everything a node's right-click menu shows that its own actions can
@@ -615,7 +615,7 @@ type DeferredOverlays = Vec<DeferredOverlay>;
 /// this specific menu illegible/overflowing at low zoom (every other
 /// right-click menu in this app is a plain screen-space `Area`, so this was
 /// the only one with the problem at all). Same world-space-hit-rect-plus-
-/// fixed-screen-text split `draw_node_close_button` above already uses, for
+/// fixed-screen-text split `paint_card_control` above already uses, for
 /// the same reason. The label paint itself is deferred -- see
 /// `DeferredOverlays`'s own doc comment -- so `overlay_painter`/`project`
 /// are no longer parameters here at all. Returns whether it was clicked.
@@ -722,10 +722,12 @@ struct CardBody {
 }
 
 /// What `App::draw_graph_card` hands back to `build_graph_ui`, which
-/// applies each kind's own click action.
+/// applies each kind's own click action unless a control took the click.
 struct CardOutput {
     response: egui::Response,
-    close_clicked: bool,
+    /// The action of the control clicked this frame (a middle-click on
+    /// the card counts as its ✕).
+    control: Option<NodeAction>,
 }
 
 /// What a graph card's frame (`App::draw_graph_card`) reads from its
@@ -734,6 +736,8 @@ struct CardOutput {
 struct CardView {
     kind: ItemNodeKind,
     color: Option<egui::Color32>,
+    /// In a group: its cards show the eject button.
+    in_group: bool,
 }
 
 /// A card's border width and color at hover progress `hover_t` (0 at
@@ -744,50 +748,122 @@ fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::
     (1.0 + 0.5 * hover_t, lerp_color32(resting, style.border_hover, hover_t))
 }
 
-/// Small hover-revealed "X" close button at a Graph-view card's top-right
-/// corner -- called from `App::draw_graph_card` for all five card kinds
-/// (Download/Note/Image/Pdf/Json), previously hand-copied once per kind.
-/// Colors are parameters rather than hardcoded, coming from `card_style`:
-/// Note's card deliberately uses a different (warm, black-alpha-based)
-/// palette than the rest's shared themed one, so the button needs to
-/// match whichever card it's drawn on. The icon's own paint is deferred
-/// -- see `DeferredOverlays`'s own doc comment -- so
-/// `overlay_painter`/`project` are no longer parameters here at all.
-/// Returns the button's response: the caller decides what a click means
-/// for its own kind, and counts the button's hover as the card's.
-fn draw_node_close_button(
+/// An on-card button of a graph card's frame. `card_controls` lists them
+/// in registration order, so where two overlap the later one takes the
+/// pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CardControl {
+    Swatch,
+    Eject,
+    Close,
+}
+
+impl CardControl {
+    /// Revealed on hover, rather than always shown.
+    fn hover_only(self) -> bool {
+        matches!(self, CardControl::Eject | CardControl::Close)
+    }
+
+    fn action(self, kind: ItemNodeKind) -> NodeAction {
+        match self {
+            CardControl::Swatch => NodeAction::CycleColor,
+            CardControl::Eject => NodeAction::RemoveFromGroup,
+            CardControl::Close if kind == ItemNodeKind::Group => NodeAction::Dissolve,
+            CardControl::Close => NodeAction::Delete,
+        }
+    }
+
+    /// Its hit and paint rect, centered on one of the card's corners.
+    fn rect(self, card: egui::Rect, inv_zoom: f32) -> egui::Rect {
+        let (anchor, size) = match self {
+            CardControl::Swatch => (card.right_bottom(), 16.0),
+            CardControl::Eject => (card.left_top(), 18.0),
+            CardControl::Close => (card.right_top(), 18.0),
+        };
+        egui::Rect::from_center_size(anchor, egui::Vec2::splat(size) * inv_zoom)
+    }
+}
+
+/// The buttons `view`'s card shows, in registration order (see
+/// `CardControl`): the swatch on every card, eject on a grouped one, and
+/// the ✕ last, so it wins over anything under it.
+fn card_controls(view: &CardView) -> Vec<CardControl> {
+    let mut controls = vec![CardControl::Swatch];
+    if view.in_group {
+        controls.push(CardControl::Eject);
+    }
+    controls.push(CardControl::Close);
+    controls
+}
+
+/// One of a card's `card_controls`, hit-tested and drawn at its corner.
+/// Returns its response: the frame turns a click into
+/// `control.action(kind)` and counts its hover as the card's. Icons are
+/// painted on the overlay layer (see `DeferredOverlays`), like card text.
+#[allow(clippy::too_many_arguments)]
+fn paint_card_control(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
+    control: CardControl,
     card_rect: egui::Rect,
-    close_id_salt: (&str, &str),
+    id: &str,
+    view: &CardView,
+    style: &CardStyle,
     inv_zoom: f32,
-    base_fill: egui::Color32,
-    border_color: egui::Color32,
-    icon_color: egui::Color32,
 ) -> egui::Response {
-    let close_rect = egui::Rect::from_center_size(card_rect.right_top(), egui::vec2(18.0, 18.0) * inv_zoom);
-    let close_response = ui
-        .interact(close_rect, egui::Id::new(close_id_salt), egui::Sense::click())
+    let rect = control.rect(card_rect, inv_zoom);
+    let response = ui
+        .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let close_fill = if close_response.hovered() { DANGER_COLOR } else { base_fill };
-    ui.painter().rect_filled(close_rect, 2.0 * inv_zoom, close_fill);
+    match control {
+        CardControl::Swatch => {
+            match view.color {
+                Some(color) => {
+                    ui.painter().circle_filled(rect.center(), 6.0 * inv_zoom, color);
+                }
+                // A faint ring, so an uncolored card still shows where to
+                // click.
+                None => {
+                    ui.painter().circle_stroke(rect.center(), 6.0 * inv_zoom, egui::Stroke::new(1.5 * inv_zoom, style.border_idle));
+                }
+            }
+        }
+        CardControl::Eject => {
+            paint_control_square(ui, deferred_overlays, rect, response.hovered(), ACCENT, egui_phosphor::light::SIGN_OUT, style, inv_zoom);
+        }
+        CardControl::Close => {
+            paint_control_square(ui, deferred_overlays, rect, response.hovered(), DANGER_COLOR, egui_phosphor::light::X, style, inv_zoom);
+        }
+    }
+    response
+}
+
+/// The ✕ and eject buttons' look: a small square in the card's close
+/// colors (`card_style`, so it matches a Note's dark-on-yellow palette),
+/// filled `hover_fill` while hovered.
+#[allow(clippy::too_many_arguments)]
+fn paint_control_square(
+    ui: &egui::Ui,
+    deferred_overlays: &mut DeferredOverlays,
+    rect: egui::Rect,
+    hovered: bool,
+    hover_fill: egui::Color32,
+    icon: &'static str,
+    style: &CardStyle,
+    inv_zoom: f32,
+) {
+    ui.painter().rect_filled(rect, 2.0 * inv_zoom, if hovered { hover_fill } else { style.close_fill });
     ui.painter().rect_stroke(
-        close_rect,
+        rect,
         2.0 * inv_zoom,
-        egui::Stroke::new(1.0 * inv_zoom, border_color),
+        egui::Stroke::new(1.0 * inv_zoom, style.close_border),
         egui::StrokeKind::Inside,
     );
-    let icon_pos = close_rect.center();
+    let icon_pos = rect.center();
+    let icon_color = style.close_icon;
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(
-            project(icon_pos),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::light::X,
-            egui::FontId::proportional(14.0),
-            icon_color,
-        );
+        overlay_painter.text(project(icon_pos), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(14.0), icon_color);
     }));
-    close_response
 }
 
 /// Shows a native "Save As" dialog defaulting to `default_name`, filtered
@@ -5250,7 +5326,7 @@ impl App {
     /// `id`'s `CardView`, or `None` when the node is gone.
     fn card_view(&self, id: &str) -> Option<CardView> {
         let node = self.nodes.get(id)?;
-        Some(CardView { kind: item_node_kind(&node.payload), color: node.color })
+        Some(CardView { kind: item_node_kind(&node.payload), color: node.color, in_group: node.group.is_some() })
     }
 
     /// One Download/Note/Image/Pdf/Json card on the graph: everything the
@@ -5320,30 +5396,30 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
-        let close = is_hovered.then(|| {
-            draw_node_close_button(
-                ui,
-                deferred_overlays,
-                rect,
-                ("graph_card_close", id),
-                inv_zoom,
-                style.close_fill,
-                style.close_border,
-                style.close_icon,
-            )
-        });
-        let close_clicked = close.as_ref().is_some_and(|c| c.clicked());
+        // Registered after both interacts above, so they take the pointer.
+        let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
+        let mut control_hovered = false;
+        for card_control in card_controls(&view) {
+            if card_control.hover_only() && !is_hovered {
+                continue;
+            }
+            let control_response = paint_card_control(ui, deferred_overlays, card_control, rect, id, &view, &style, inv_zoom);
+            control_hovered |= control_response.hovered();
+            if control_response.clicked() && control.is_none() {
+                control = Some(card_control.action(view.kind));
+            }
+        }
 
         // This frame's hover only: passing `is_hovered` (which includes
         // `self.hovered`) made a card stay hovered, ✕ and all, after the
         // pointer left it, until another card was hovered.
-        let still_hovered = pointer_on_card || close.as_ref().is_some_and(|c| c.hovered());
+        let still_hovered = pointer_on_card || control_hovered;
         self.finish_draggable_node(id, &response, still_hovered);
 
         if let Some(node) = self.nodes.get(id) {
             dim_if_filtered_out(deferred_overlays, &self.graph_filter, &[card_filter_text(&node.payload)], rect, style.dim_rounding);
         }
-        Some(CardOutput { response, close_clicked })
+        Some(CardOutput { response, control })
     }
 
     /// A graph card's own content, per kind -- everything under the
@@ -11733,11 +11809,11 @@ impl App {
                         else {
                             continue;
                         };
-                        if card.close_clicked {
-                            // The ✕ consumed this frame's click, so the
-                            // kind's own click action below (e.g. Image
-                            // maximize) is skipped.
-                            actions.push(GraphAction::Node(id.clone(), NodeAction::Delete));
+                        if let Some(action) = card.control {
+                            // A control consumed this frame's click, so
+                            // the kind's own click action below (e.g.
+                            // Image maximize) is skipped.
+                            actions.push(GraphAction::Node(id.clone(), action));
                             continue;
                         }
                         // A placeholder (see `ImagePayload::error`) has nothing
@@ -12143,7 +12219,7 @@ impl App {
                     let row_count = if self.headless { 3.0 } else { 4.0 };
                     // `* inv_zoom`: the background box's own world-space
                     // size must grow as zoom shrinks, the same trick
-                    // `draw_node_close_button`'s own `close_rect` already
+                    // `paint_card_control`'s own control rect already
                     // uses, so it still renders at a constant on-screen size
                     // after Scene's transform scales it back down -- without
                     // this, the box shrinks with zoom exactly like ordinary
@@ -14092,7 +14168,7 @@ mod tests {
     // before the tab and group menus joined them.
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
-        CardView { kind, color: None }
+        CardView { kind, color: None, in_group: false }
     }
 
     #[test]
@@ -14113,8 +14189,23 @@ mod tests {
     }
 
     #[test]
+    fn card_controls_list_each_cards_buttons_in_pointer_order() {
+        use CardControl::*;
+        for kind in GRAPH_DRAW_ORDER {
+            assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
+            let grouped = CardView { in_group: true, ..test_view(kind) };
+            assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
+            let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
+            assert_eq!(Close.action(kind), close, "{kind:?}");
+        }
+        assert_eq!(Eject.action(ItemNodeKind::Note), NodeAction::RemoveFromGroup);
+        assert_eq!(Swatch.action(ItemNodeKind::Note), NodeAction::CycleColor);
+        assert!(Close.hover_only() && Eject.hover_only() && !Swatch.hover_only());
+    }
+
+    #[test]
     fn node_menu_config_matches_each_kinds_menu() {
-        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, f32, String) {
+        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, String) {
             let view = NodeMenuView { kind, has_group, color: None, pinned, has_json, renaming: None };
             let config = node_menu_config(&view, headless);
             let items: Vec<&str> = config
@@ -14126,47 +14217,46 @@ mod tests {
                     NodeMenuItem::Separator => "---",
                 })
                 .collect();
-            (config.area_id, config.min_width, config.max_width, items.join(" | "))
+            (config.area_id, config.min_width, items.join(" | "))
         }
         for has_group in [false, true] {
-            // A download can join a group like any card (drag onto it), so
-            // its menu offers "Remove from Group" when grouped.
+            // Every kind can join a group (drag onto it), so every menu
+            // offers "Remove from Group" when grouped.
             let g = if has_group { " | --- | Remove from Group" } else { "" };
             let menu = |kind, pinned, has_json| menu(kind, has_group, pinned, has_json, false);
             assert_eq!(
                 menu(ItemNodeKind::Download, false, false),
-                ("download_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Remove from List"))
+                ("download_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Remove from List"))
             );
-            assert_eq!(menu(ItemNodeKind::Note, false, false), ("note_context_menu", 150.0, 150.0, format!("Copy Text{g} | --- | Delete")));
+            assert_eq!(menu(ItemNodeKind::Note, false, false), ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete")));
             assert_eq!(
                 menu(ItemNodeKind::Image, false, false),
-                ("image_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Delete"))
+                ("image_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
                 menu(ItemNodeKind::Pdf, false, false),
-                ("pdf_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path{g} | --- | Delete"))
+                ("pdf_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
                 menu(ItemNodeKind::Json, false, false),
-                ("json_context_menu", 170.0, 170.0, format!("Open Containing Folder | Copy Path | Expand as Graph{g} | --- | Delete"))
+                ("json_context_menu", 170.0, format!("Open Containing Folder | Copy Path | Expand as Graph | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
                 menu(ItemNodeKind::Tab, false, false),
-                ("tab_context_menu", 150.0, f32::INFINITY, format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close"))
+                ("tab_context_menu", 150.0, format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close"))
             );
             assert_eq!(
-                menu(ItemNodeKind::Tab, true, true).3,
+                menu(ItemNodeKind::Tab, true, true).2,
                 format!("Unpin | Duplicate | Copy URL | View as JSON | Fit Subtree | <colors>{g} | --- | Close")
             );
-            // A group's menu has no Remove from Group row, grouped or not.
             assert_eq!(
                 menu(ItemNodeKind::Group, false, false),
-                ("group_context_menu", 150.0, f32::INFINITY, "Rename | <colors> | --- | Dissolve | Close Group | Export Group...".to_string())
+                ("group_context_menu", 150.0, format!("Rename | <colors>{g} | --- | Dissolve | Close Group | Export Group..."))
             );
         }
         // Export Group's file dialog can't run headless.
         assert_eq!(
-            menu(ItemNodeKind::Group, false, false, false, true).3,
+            menu(ItemNodeKind::Group, false, false, false, true).2,
             "Rename | <colors> | --- | Dissolve | Close Group"
         );
     }
