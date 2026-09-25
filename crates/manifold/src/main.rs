@@ -7640,10 +7640,10 @@ impl App {
         self.insert_image_node_with_id(id, path, pos, group).is_ok()
     }
 
-    /// Shared by `insert_image_node` (fresh id/jittered position/current
-    /// level) and session restore (the exact saved id/position -- and,
-    /// like a restored tab's `group` staying unset regardless of where it
-    /// was before restart, always `None` here too).
+    /// The insert every `image` card goes through: the caller picks the id,
+    /// position and group -- `insert_image_node` a fresh id at the current
+    /// level, session restore the saved id and position with no group,
+    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
     fn insert_image_node_with_id(
         &mut self,
         id: String,
@@ -7751,10 +7751,10 @@ impl App {
         self.insert_pdf_node_with_id(id, path, pos, group);
     }
 
-    /// Shared by `insert_pdf_node` (fresh id/jittered position/current
-    /// level) and session restore (the exact saved id/position -- and,
-    /// like a restored image's `group` staying unset regardless of where it
-    /// was before restart, always `None` here too).
+    /// The insert every `pdf` card goes through: the caller picks the id,
+    /// position and group -- `insert_pdf_node` a fresh id at the current
+    /// level, session restore the saved id and position with no group,
+    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
     fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_fetcher.request(id.clone(), path.clone());
         self.nodes.insert(
@@ -7788,10 +7788,10 @@ impl App {
         self.insert_json_node_with_id(id, path, pos, group).is_ok()
     }
 
-    /// Shared by `insert_json_node` (fresh id/jittered position/current
-    /// level) and session restore (the exact saved id/position -- and,
-    /// like a restored image's `group` staying unset regardless of where it
-    /// was before restart, always `None` here too).
+    /// The insert every `json` card goes through: the caller picks the id,
+    /// position and group -- `insert_json_node` a fresh id at the current
+    /// level, session restore the saved id and position with no group,
+    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
     fn insert_json_node_with_id(
         &mut self,
         id: String,
