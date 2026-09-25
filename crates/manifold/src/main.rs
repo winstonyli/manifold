@@ -276,6 +276,8 @@ enum NodeAction {
     CycleColor,
     ToggleMute,
     RetryMissingFile,
+    /// A failed tab's card: tries again on the default engine.
+    OpenInDefaultEngine,
     RemoveFromGroup,
     Dissolve,
     ExportGroup,
@@ -475,6 +477,14 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
             items.push(Button("Fit Subtree", A::FitSubtree));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
+        ItemNodeKind::FailedTab => {
+            let mut items = vec![Button("Retry", A::RetryMissingFile)];
+            if view.other_default_engine {
+                items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
+            }
+            items.push(Button("Copy URL", A::CopyUrl));
+            finish("failed_tab_context_menu", 170.0, items, delete("Close"))
+        }
         ItemNodeKind::Group => {
             let mut delete_items = vec![Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
             if !headless {
@@ -500,6 +510,9 @@ struct NodeMenuView {
     pinned: bool,
     /// Tab only.
     has_json: bool,
+    /// FailedTab only: the default engine isn't the one that failed, so
+    /// the menu offers it.
+    other_default_engine: bool,
     /// Group only: the rename draft, while this group is being renamed.
     renaming: Option<String>,
 }
@@ -706,7 +719,7 @@ fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardStyle {
             close_icon: egui::Color32::from_black_alpha(200),
             dim_rounding: 6.0,
         },
-        ItemNodeKind::Download | ItemNodeKind::Tab => CardStyle { dim_rounding: 6.0, ..themed },
+        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::FailedTab => CardStyle { dim_rounding: 6.0, ..themed },
         // ACCENT at rest, as group cards have always been.
         ItemNodeKind::Group => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
         _ => themed,
@@ -1190,7 +1203,7 @@ fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// their own per-kind copy, and the LOD count approximated Image/Pdf).
 fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
     match payload {
-        NodePayload::Tab(_) => GRAPH_NODE_SIZE,
+        NodePayload::Tab(_) | NodePayload::FailedTab(_) => GRAPH_NODE_SIZE,
         NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
         NodePayload::Note(_) => NOTE_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
@@ -1213,6 +1226,7 @@ fn node_card_rect(node: &GraphNode) -> egui::Rect {
 fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
     match payload {
         NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
+        NodePayload::FailedTab(tab) => vec![&tab.url],
         NodePayload::Download(download) => vec![&download.path],
         NodePayload::Note(note) => vec![&note.text],
         NodePayload::Image(image) => vec![download_filename(&image.path)],
@@ -2556,6 +2570,7 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 /// own `*Payload` doc comment.
 enum NodePayload {
     Tab(TabPayload),
+    FailedTab(FailedTabPayload),
     Download(DownloadPayload),
     Group(GroupPayload),
     Note(NotePayload),
@@ -2575,6 +2590,23 @@ impl NodePayload {
     fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
         match self {
             NodePayload::Tab(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    fn as_failed_tab(&self) -> Option<&FailedTabPayload> {
+        match self {
+            NodePayload::FailedTab(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The url and engine a live or failed tab is saved (and exported,
+    /// and copied) with.
+    fn saved_tab(&self) -> Option<(&str, EngineKind)> {
+        match self {
+            NodePayload::Tab(t) => Some((&t.url, t.tab.kind)),
+            NodePayload::FailedTab(t) => Some((&t.url, t.kind)),
             _ => None,
         }
     }
@@ -2660,6 +2692,7 @@ impl NodePayload {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ItemNodeKind {
     Tab,
+    FailedTab,
     Download,
     Group,
     Note,
@@ -2670,8 +2703,9 @@ enum ItemNodeKind {
 
 /// Every kind, in the order Graph view draws their cards: a later kind
 /// draws, and takes the pointer, on top of an earlier one.
-const GRAPH_DRAW_ORDER: [ItemNodeKind; 7] = [
+const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
     ItemNodeKind::Tab,
+    ItemNodeKind::FailedTab,
     ItemNodeKind::Download,
     ItemNodeKind::Note,
     ItemNodeKind::Image,
@@ -2683,6 +2717,7 @@ const GRAPH_DRAW_ORDER: [ItemNodeKind; 7] = [
 fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
     match payload {
         NodePayload::Tab(_) => ItemNodeKind::Tab,
+        NodePayload::FailedTab(_) => ItemNodeKind::FailedTab,
         NodePayload::Download(_) => ItemNodeKind::Download,
         NodePayload::Group(_) => ItemNodeKind::Group,
         NodePayload::Note(_) => ItemNodeKind::Note,
@@ -2806,6 +2841,25 @@ struct JsonPayload {
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     error: Option<String>,
+}
+
+/// A tab whose engine couldn't start: a crash restart, or a session or
+/// group restore, whose spawn failed (e.g. an engine whose binary isn't
+/// built). The card keeps the tab where it was, and in the saved session
+/// as a plain tab, instead of dropping it. A click retries on the same
+/// engine (`retry_failed_tab`), its menu can use the default engine
+/// instead, and a success replaces the card with the live tab under the
+/// same id. It can stay `App::focused`: Tab view shows only live tabs, so
+/// it falls back to Graph.
+struct FailedTabPayload {
+    url: String,
+    kind: EngineKind,
+    error: String,
+    pinned: bool,
+    zoom_factor: f64,
+    /// A retry's spawn is in flight: the card shows a spinner, and further
+    /// clicks wait for it.
+    retrying: bool,
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -2932,6 +2986,10 @@ impl GraphNode {
 
     fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
         self.payload.as_tab_mut()
+    }
+
+    fn as_failed_tab(&self) -> Option<&FailedTabPayload> {
+        self.payload.as_failed_tab()
     }
 
     fn as_download(&self) -> Option<&DownloadPayload> {
@@ -3061,6 +3119,12 @@ fn closed_piece(payload: &NodePayload) -> Option<ClosedPiece> {
         NodePayload::Tab(tab) => ClosedPiece::Tab {
             url: tab.url.clone(),
             kind: tab.tab.kind,
+            pinned: tab.pinned,
+            zoom_factor: tab.zoom_factor,
+        },
+        NodePayload::FailedTab(tab) => ClosedPiece::Tab {
+            url: tab.url.clone(),
+            kind: tab.kind,
             pinned: tab.pinned,
             zoom_factor: tab.zoom_factor,
         },
@@ -3786,6 +3850,14 @@ struct App {
     /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
     /// (`Ok` or `Err`) arrives.
     pending_respawn_focus: Option<String>,
+
+    /// Failed tabs' cards (`FailedTabPayload`) whose `retry_failed_tab`
+    /// spawn is in flight. Unlike a crash respawn, the card is still on
+    /// the graph meanwhile, so it can be moved or closed: the outcome takes
+    /// the card's placement as it is now, and is dropped if the card is
+    /// gone. Set in `retry_failed_tab`, cleared by that outcome in
+    /// `handle_tab_spawn_result`.
+    failed_tab_retries: HashSet<String>,
 }
 
 impl Default for App {
@@ -3914,6 +3986,7 @@ impl Default for App {
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,
+            failed_tab_retries: HashSet::new(),
         };
         for err in [settings_err, bookmarks_err].into_iter().flatten() {
             app.queue_toast(err);
@@ -4911,12 +4984,12 @@ impl App {
             .iter()
             .filter_map(|id| {
                 let node = self.nodes.get(id)?;
-                let tab = node.as_tab()?;
+                let (url, engine) = node.payload.saved_tab()?;
                 Some(session::SessionTab {
                     id: id.clone(),
                     parent: node.parent.clone(),
-                    url: tab.url.clone(),
-                    engine: tab.tab.kind,
+                    url: url.to_string(),
+                    engine,
                     pos_x: node.pos.x,
                     pos_y: node.pos.y,
                 })
@@ -5140,6 +5213,7 @@ impl App {
         self.selected_tabs.clear();
         self.rect_select_start = None;
         self.graph_settled_key = None;
+        self.failed_tab_retries.clear();
         self.session_generation += 1;
         self.apply_session(session);
         self.save_session();
@@ -5314,6 +5388,15 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
+        let (parent, group, pos, color) = if self.failed_tab_retries.remove(&id) {
+            match self.nodes.get(&id).filter(|n| n.as_failed_tab().is_some()) {
+                Some(card) => (card.parent.clone(), card.group.clone(), card.pos, card.color),
+                // Closed while retrying (see `failed_tab_retries`).
+                None => return,
+            }
+        } else {
+            (parent, group, pos, color)
+        };
         let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
@@ -5437,6 +5520,21 @@ impl App {
                     let carry = TabCarry { pinned, color, zoom_factor };
                     let spawn = TabSpawn { id, url, kind: fallback, parent, group, pos, vel, purpose, carry, fallback_kind: None };
                     self.respawn_tab(spawn);
+                    return;
+                }
+                // A tab that already existed (a crash restart, a restored
+                // session or group, a retry) keeps its place as a failed
+                // card rather than disappearing; see `FailedTabPayload`.
+                if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore) {
+                    self.queue_toast(format!("Couldn't start {} for {url}: {err}", engine_label(kind)));
+                    let error = err.to_string();
+                    let failed = FailedTabPayload { url, kind, error, pinned, zoom_factor, retrying: false };
+                    let payload = NodePayload::FailedTab(failed);
+                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
+                    if !self.node_order.iter().any(|t| t == &id) {
+                        self.node_order.push(id);
+                    }
+                    self.save_session();
                     return;
                 }
                 self.tab_spawn_error = Some(match purpose {
@@ -5655,7 +5753,70 @@ impl App {
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
             ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::FailedTab => self.paint_failed_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
         }
+    }
+
+    /// FailedTab (see `FailedTabPayload`): a warning icon, or a spinner
+    /// while a retry is in flight, and the url, with which engine failed
+    /// and why as the tooltip. LOD: skipped once simplified, as for
+    /// `paint_download_body`.
+    fn paint_failed_tab_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let Some(failed) = self.nodes.get(id).and_then(|n| n.as_failed_tab()) else {
+            return body;
+        };
+        let (url, retrying) = (failed.url.clone(), failed.retrying);
+        body.tooltip = Some(format!(
+            "Couldn't start {}: {}\nClick to try again.",
+            engine_label(failed.kind),
+            failed.error
+        ));
+        if self.graph_lod_simplified {
+            return body;
+        }
+        if retrying {
+            ui.put(
+                egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                egui::Spinner::new().size(24.0 * inv_zoom),
+            );
+        } else {
+            let icon_pos = rect.center();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(icon_pos),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::light::WARNING_CIRCLE,
+                    egui::FontId::proportional(24.0),
+                    DANGER_COLOR,
+                );
+            }));
+        }
+        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+            let url_font = egui::FontId::proportional(13.0);
+            let url_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+            let url = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &url_font, url_max_width);
+            let url_pos = rect.center_bottom();
+            let url_color = ui.visuals().weak_text_color();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(url_pos) + egui::vec2(0.0, -8.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    url,
+                    url_font,
+                    url_color,
+                );
+            }));
+        }
+        body
     }
 
     /// Download: no thumbnail/title-strip/audio-dot machinery (no
@@ -6390,7 +6551,7 @@ impl App {
             NodePayload::Image(image) => Some(image.path.clone()),
             NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
             NodePayload::Json(json) => Some(json.path.clone()),
-            NodePayload::Tab(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
+            NodePayload::Tab(_) | NodePayload::FailedTab(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
         }
     }
 
@@ -6851,7 +7012,14 @@ impl App {
     /// keyboard navigation, and the headless `GRAPHOPEN` command.
     fn open_focused_graph_node(&mut self) {
         if let Some(id) = self.focused.clone() {
-            if self.nodes.get(&id).is_some_and(|n| n.group == self.current_group) {
+            let Some(node) = self.nodes.get(&id).filter(|n| n.group == self.current_group) else {
+                return;
+            };
+            // A crashed focused tab stays focused as its failed card, which
+            // has no Item view: Enter retries it, as its click does.
+            if node.as_failed_tab().is_some() {
+                self.retry_missing_file(&id);
+            } else {
                 self.start_transition_to_item(&id);
             }
         }
@@ -7704,6 +7872,10 @@ impl App {
     /// new error, which the insert has already toasted. A failed PDF card
     /// just renders again (back to its spinner).
     fn retry_missing_file(&mut self, id: &str) {
+        if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_failed_tab()).map(|t| t.kind) {
+            self.retry_failed_tab(id, kind);
+            return;
+        }
         if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
             if matches!(pdf.outcome, Some(Err(_))) {
                 pdf.outcome = None;
@@ -7743,6 +7915,26 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    /// Spawns a failed tab's card (`FailedTabPayload`) again, on `kind`.
+    /// The card stays, showing a spinner, until the outcome replaces it:
+    /// the live tab under the same id, or a fresh failed card with the new
+    /// error.
+    fn retry_failed_tab(&mut self, id: &str, kind: EngineKind) {
+        let Some(node) = self.nodes.get_mut(id) else { return };
+        let (parent, group, pos, color) = (node.parent.clone(), node.group.clone(), node.pos, node.color);
+        let NodePayload::FailedTab(failed) = &mut node.payload else { return };
+        if failed.retrying {
+            return;
+        }
+        failed.retrying = true;
+        self.failed_tab_retries.insert(id.to_string());
+        let carry = TabCarry { pinned: failed.pinned, color, zoom_factor: failed.zoom_factor };
+        let url = failed.url.clone();
+        let vel = egui::Vec2::ZERO;
+        let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Respawn, None);
+        self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
     }
 
     fn insert_image_node(&mut self, path: String) -> bool {
@@ -9267,7 +9459,12 @@ impl App {
         match kind {
             ItemNodeKind::Group => self.destroy_group(id),
             ItemNodeKind::Tab => self.destroy_tab(id),
-            ItemNodeKind::Download | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => {
+            ItemNodeKind::FailedTab
+            | ItemNodeKind::Download
+            | ItemNodeKind::Note
+            | ItemNodeKind::Image
+            | ItemNodeKind::Pdf
+            | ItemNodeKind::Json => {
                 if matches!(kind, ItemNodeKind::Image | ItemNodeKind::Pdf) {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.free_image(id);
@@ -9290,7 +9487,7 @@ impl App {
         let persisted = self.nodes.get(id).is_some_and(|node| {
             matches!(
                 item_node_kind(&node.payload),
-                ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json
+                ItemNodeKind::FailedTab | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json
             )
         });
         self.close_node(id);
@@ -9319,12 +9516,12 @@ impl App {
             .iter()
             .filter(|(id, _)| member_ids.contains(id.as_str()))
             .filter_map(|(id, node)| {
-                let tab = node.as_tab()?;
+                let (url, engine) = node.payload.saved_tab()?;
                 Some(group_export::GroupExportTab {
                     id: id.clone(),
                     parent: node.parent.clone().filter(|p| member_ids.contains(p.as_str())),
-                    url: tab.url.clone(),
-                    engine: tab.tab.kind,
+                    url: url.to_string(),
+                    engine,
                     pos_x: node.pos.x,
                     pos_y: node.pos.y,
                 })
@@ -9427,6 +9624,10 @@ impl App {
             color: node.color,
             pinned: tab.is_some_and(|t| t.pinned),
             has_json: tab.is_some_and(|t| t.json_body.is_some()),
+            other_default_engine: node
+                .payload
+                .as_failed_tab()
+                .is_some_and(|t| t.kind != self.settings.default_starting_engine),
             renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
         })
     }
@@ -9464,8 +9665,8 @@ impl App {
             }
             NodeAction::Duplicate => self.duplicate_tab(id),
             NodeAction::CopyUrl => {
-                if let Some(url) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) {
-                    ctx.copy_text(url);
+                if let Some((url, _)) = self.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
+                    ctx.copy_text(url.to_string());
                 }
             }
             NodeAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
@@ -9497,6 +9698,7 @@ impl App {
             }
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
+            NodeAction::OpenInDefaultEngine => self.retry_failed_tab(id, self.settings.default_starting_engine),
             NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
@@ -9951,9 +10153,12 @@ impl App {
         match kind {
             ItemNodeKind::Tab => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
             ItemNodeKind::Image => self.render_image_toolbar_content(node_id, ui, trailing_ui),
-            ItemNodeKind::Download | ItemNodeKind::Group | ItemNodeKind::Note | ItemNodeKind::Pdf | ItemNodeKind::Json => {
-                ItemToolbarActions::default()
-            }
+            ItemNodeKind::FailedTab
+            | ItemNodeKind::Download
+            | ItemNodeKind::Group
+            | ItemNodeKind::Note
+            | ItemNodeKind::Pdf
+            | ItemNodeKind::Json => ItemToolbarActions::default(),
         }
     }
 
@@ -10357,7 +10562,8 @@ impl App {
             self.view_mode = ViewMode::Graph;
             return;
         };
-        if !self.nodes.contains_key(&focused_id) {
+        // Missing (mid-respawn), or a failed tab's card.
+        if !self.nodes.get(&focused_id).is_some_and(|n| n.as_tab().is_some()) {
             if self.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
                 // An engine swap or crash recovery is respawning the tab
                 // the user is currently looking at — stay in Tab view
@@ -10848,7 +11054,7 @@ impl App {
         // hit-test chain) that don't run every idle frame, so caching them
         // here would have added surface area without the same payoff.
         let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
-        let [_, _, _, _, _, _, groups_at_level] = &at_level;
+        let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
 
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
@@ -11620,6 +11826,7 @@ impl App {
         for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
             let (radius, color) = match kind {
                 ItemNodeKind::Tab => (2.0, ui.visuals().text_color()),
+                ItemNodeKind::FailedTab => (2.0, DANGER_COLOR),
                 ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
                 ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
                 ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
@@ -11881,6 +12088,7 @@ impl App {
                 // to open; a click tries its file again instead.
                 let missing_file = self.nodes.get(id).is_some_and(|n| {
                     n.as_image().is_some_and(|i| i.error.is_some())
+                        || n.as_failed_tab().is_some()
                         || n.as_json().is_some_and(|j| j.error.is_some())
                         || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
                 });
@@ -13663,6 +13871,33 @@ mod tests {
             completed: true,
         }))
         .is_none());
+        // A failed tab's card reopens as the tab it stands in for.
+        assert!(matches!(
+            closed_piece(&NodePayload::FailedTab(FailedTabPayload {
+            url: "https://example.org/".into(),
+            kind: EngineKind::Cef,
+            error: "no binary".into(),
+            pinned: true,
+            zoom_factor: 1.5,
+            retrying: false,
+        })),
+            Some(ClosedPiece::Tab { url, kind: EngineKind::Cef, pinned: true, zoom_factor })
+                if url == "https://example.org/" && zoom_factor == 1.5
+        ));
+    }
+
+    /// A failed tab's card is saved, exported and copied as its tab.
+    #[test]
+    fn saved_tab_keeps_a_failed_tab() {
+        assert_eq!((NodePayload::FailedTab(FailedTabPayload {
+        url: "https://example.org/".into(),
+        kind: EngineKind::Cef,
+        error: "no binary".into(),
+        pinned: true,
+        zoom_factor: 1.5,
+        retrying: false,
+    })).saved_tab(), Some(("https://example.org/", EngineKind::Cef)));
+        assert_eq!(NodePayload::Group(GroupPayload { name: "g".into() }).saved_tab(), None);
     }
 
     /// Closing a group records it and everything under it at any depth as
@@ -13838,9 +14073,8 @@ mod tests {
     // before the tab and group menus joined them.
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
-        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, String) {
-            let view = NodeMenuView { kind, has_group, color: None, pinned, has_json, renaming: None };
-            let config = node_menu_config(&view, headless);
+        fn menu_of(view: &NodeMenuView, headless: bool) -> (&'static str, f32, String) {
+            let config = node_menu_config(view, headless);
             let items: Vec<&str> = config
                 .items
                 .iter()
@@ -13851,6 +14085,10 @@ mod tests {
                 })
                 .collect();
             (config.area_id, config.min_width, items.join(" | "))
+        }
+        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, String) {
+            let view = NodeMenuView { kind, has_group, color: None, pinned, has_json, other_default_engine: false, renaming: None };
+            menu_of(&view, headless)
         }
         for has_group in [false, true] {
             // Every kind can join a group (drag onto it), so every menu
@@ -13886,7 +14124,23 @@ mod tests {
                 menu(ItemNodeKind::Group, false, false),
                 ("group_context_menu", 150.0, format!("Rename | <colors>{g} | --- | Dissolve | Close Group | Export Group..."))
             );
+            assert_eq!(
+                menu(ItemNodeKind::FailedTab, false, false),
+                ("failed_tab_context_menu", 170.0, format!("Retry | Copy URL | <colors>{g} | --- | Close"))
+            );
         }
+        // A failed tab offers the default engine only when it isn't the
+        // engine that failed.
+        let failed = NodeMenuView {
+            kind: ItemNodeKind::FailedTab,
+            has_group: false,
+            color: None,
+            pinned: false,
+            has_json: false,
+            other_default_engine: true,
+            renaming: None,
+        };
+        assert_eq!(menu_of(&failed, false).2, "Retry | Open in Default Engine | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, false, true).2,
@@ -13928,6 +14182,14 @@ mod tests {
         assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into() })), GROUP_NODE_SIZE);
         let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None, error: None });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&NodePayload::FailedTab(FailedTabPayload {
+            url: "https://example.org/".into(),
+            kind: EngineKind::Cef,
+            error: "no binary".into(),
+            pinned: true,
+            zoom_factor: 1.5,
+            retrying: false,
+        })), GRAPH_NODE_SIZE);
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
@@ -13956,6 +14218,14 @@ mod tests {
         assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), ["paper.pdf"]);
         assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None, error: None })), ["x.json"]);
         assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into() })), ["Reading"]);
+        assert_eq!(card_filter_text(&NodePayload::FailedTab(FailedTabPayload {
+            url: "https://example.org/".into(),
+            kind: EngineKind::Cef,
+            error: "no binary".into(),
+            pinned: true,
+            zoom_factor: 1.5,
+            retrying: false,
+        })), ["https://example.org/"]);
     }
 
     #[test]
