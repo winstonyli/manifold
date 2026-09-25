@@ -3149,28 +3149,72 @@ enum SpawnPurpose {
 /// whole app (redraw, input, headless stdin) for that entire duration if run
 /// on this thread.
 struct TabSpawnOutcome {
-    id: String,
-    parent: Option<String>,
-    group: Option<String>,
-    /// Carried through a respawn/engine-swap/crash-recovery so a pinned
-    /// tab stays pinned — see `TabPayload::pinned`'s own doc comment. Always
-    /// `false` for a genuinely new tab (`SpawnPurpose::New`/`Root`).
-    pinned: bool,
-    /// Same "carried through respawn, `None` for a genuinely new tab"
-    /// treatment as `pinned` above, but for `GraphNode::color`.
-    color: Option<egui::Color32>,
-    /// Same "carried through respawn" treatment as `pinned`/`color`, but
-    /// for `TabPayload::zoom_factor` -- see that field's own doc comment.
-    /// `Settings::zoom_factor` (the current default) for a genuinely new
-    /// tab, since there's no prior per-tab value to inherit.
-    zoom_factor: f64,
-    url: String,
-    pos: egui::Vec2,
-    vel: egui::Vec2,
-    purpose: SpawnPurpose,
+    spawn: TabSpawn,
     /// `App::session_generation` when the spawn started -- see that field.
     generation: u64,
     result: std::io::Result<EngineTab>,
+}
+
+/// What `spawn_tab_async` needs to start a tab and, once it's up, to
+/// insert its graph node: `TabSpawn::new` for a new tab (no parent or
+/// group, at rest, nothing carried), `TabSpawn::respawn` for one that
+/// already has a node.
+struct TabSpawn {
+    id: String,
+    url: String,
+    kind: EngineKind,
+    parent: Option<String>,
+    group: Option<String>,
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+    purpose: SpawnPurpose,
+    carry: TabCarry,
+}
+
+/// What a tab keeps across a respawn (engine swap, crash recovery). A new
+/// tab starts unpinned, untagged, at the default zoom. A new attribute
+/// that must survive a respawn is one more field here.
+struct TabCarry {
+    /// See `TabPayload::pinned`.
+    pinned: bool,
+    /// See `GraphNode::color`.
+    color: Option<egui::Color32>,
+    /// See `TabPayload::zoom_factor`. A new tab takes
+    /// `Settings::zoom_factor`, having no value of its own yet.
+    zoom_factor: f64,
+}
+
+impl TabSpawn {
+    fn new(id: String, url: String, kind: EngineKind, pos: egui::Vec2, purpose: SpawnPurpose, zoom_factor: f64) -> Self {
+        TabSpawn {
+            id,
+            url,
+            kind,
+            parent: None,
+            group: None,
+            pos,
+            vel: egui::Vec2::ZERO,
+            purpose,
+            carry: TabCarry { pinned: false, color: None, zoom_factor },
+        }
+    }
+
+    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
+    /// the graph and its `TabCarry`. `None` if `node` isn't a tab.
+    fn respawn(id: &str, node: &GraphNode, kind: EngineKind, url: String) -> Option<Self> {
+        let tab = node.as_tab()?;
+        Some(TabSpawn {
+            id: id.to_string(),
+            url,
+            kind,
+            parent: node.parent.clone(),
+            group: node.group.clone(),
+            pos: node.pos,
+            vel: node.vel,
+            purpose: SpawnPurpose::Respawn,
+            carry: TabCarry { pinned: tab.pinned, color: node.color, zoom_factor: tab.zoom_factor },
+        })
+    }
 }
 
 struct App {
@@ -5003,19 +5047,8 @@ impl App {
         }
         for tab in session.tabs {
             let pos = egui::vec2(tab.pos_x, tab.pos_y);
-            self.spawn_tab_async(
-                tab.id,
-                tab.parent,
-                None,
-                false,
-                None,
-                self.settings.zoom_factor,
-                tab.url,
-                pos,
-                egui::Vec2::ZERO,
-                SpawnPurpose::Restore,
-                tab.engine,
-            );
+            let spawn = TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
+            self.spawn_tab_async(TabSpawn { parent: tab.parent, ..spawn });
         }
     }
 
@@ -5064,19 +5097,8 @@ impl App {
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
-        self.spawn_tab_async(
-            id,
-            None,
-            None,
-            false,
-            None,
-            self.settings.zoom_factor,
-            home_page,
-            egui::Vec2::ZERO,
-            egui::Vec2::ZERO,
-            SpawnPurpose::Root,
-            kind,
-        );
+        let zoom = self.settings.zoom_factor;
+        self.spawn_tab_async(TabSpawn::new(id, home_page, kind, egui::Vec2::ZERO, SpawnPurpose::Root, zoom));
     }
 
     /// The one-time first-launch experience for a brand-new install -- see
@@ -5101,19 +5123,8 @@ impl App {
         let welcome_id = self.alloc_tab_id();
         self.focused = Some(welcome_id.clone());
         self.view_mode = ViewMode::Graph;
-        self.spawn_tab_async(
-            welcome_id,
-            None,
-            None,
-            false,
-            None,
-            zoom,
-            "manifold://welcome".to_string(),
-            egui::vec2(0.0, 0.0),
-            egui::Vec2::ZERO,
-            SpawnPurpose::Restore,
-            kind,
-        );
+        let welcome = "manifold://welcome".to_string();
+        self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
         let note_id = self.alloc_note_id();
         self.nodes.insert(
@@ -5161,19 +5172,8 @@ impl App {
         {
             let id = self.alloc_tab_id();
             let pos = group_pos + offset;
-            self.spawn_tab_async(
-                id,
-                None,
-                Some(group_id.clone()),
-                false,
-                None,
-                zoom,
-                url.to_string(),
-                pos,
-                egui::Vec2::ZERO,
-                SpawnPurpose::Restore,
-                kind,
-            );
+            let spawn = TabSpawn::new(id, url.to_string(), kind, pos, SpawnPurpose::Restore, zoom);
+            self.spawn_tab_async(TabSpawn { group: Some(group_id.clone()), ..spawn });
         }
 
         // Deliberately left un-expanded -- the welcome page's own "Try it"
@@ -5215,20 +5215,7 @@ impl App {
     /// main/event-loop thread. `handle_tab_spawn_result` does what the old
     /// synchronous `Ok`/`Err` branches used to do, once the result actually
     /// arrives.
-    fn spawn_tab_async(
-        &mut self,
-        id: String,
-        parent: Option<String>,
-        group: Option<String>,
-        pinned: bool,
-        color: Option<egui::Color32>,
-        zoom_factor: f64,
-        url: String,
-        pos: egui::Vec2,
-        vel: egui::Vec2,
-        purpose: SpawnPurpose,
-        kind: EngineKind,
-    ) {
+    fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         let proxy = self
             .event_proxy
             .clone()
@@ -5236,21 +5223,8 @@ impl App {
         self.tab_spawns_in_flight += 1;
         let generation = self.session_generation;
         std::thread::spawn(move || {
-            let result = process_manager::spawn_tab(kind, &id, &url);
-            let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome {
-                id,
-                parent,
-                group,
-                pinned,
-                color,
-                zoom_factor,
-                url,
-                pos,
-                vel,
-                purpose,
-                generation,
-                result,
-            }));
+            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
+            let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome { spawn, generation, result }));
         });
     }
 
@@ -5262,19 +5236,11 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome {
-            id,
-            parent,
-            group,
-            pinned,
-            color,
-            zoom_factor,
-            url,
-            pos,
-            vel,
-            purpose,
+            spawn: TabSpawn { id, url, kind: _, parent, group, pos, vel, purpose, carry },
             generation,
             result,
         } = outcome;
+        let TabCarry { pinned, color, zoom_factor } = carry;
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
         if self.tab_spawns_in_flight == 0 {
             for waiter in self.tabs_spawned_waiters.drain(..) {
@@ -6901,19 +6867,8 @@ impl App {
             .unwrap_or(egui::Vec2::ZERO);
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
-        self.spawn_tab_async(
-            id.clone(),
-            parent,
-            group,
-            false,
-            None,
-            self.settings.zoom_factor,
-            url.to_string(),
-            pos,
-            egui::Vec2::ZERO,
-            purpose,
-            kind,
-        );
+        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
+        self.spawn_tab_async(TabSpawn { parent, group, ..spawn });
         id
     }
 
@@ -7278,10 +7233,7 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some((parent, group, pinned, color, zoom_factor, pos, vel)) = self.nodes.get(tab_id).and_then(|n| {
-            n.as_tab()
-                .map(|t| (n.parent.clone(), n.group.clone(), t.pinned, n.color, t.zoom_factor, n.pos, n.vel))
-        }) else {
+        let Some(spawn) = self.nodes.get(tab_id).and_then(|n| TabSpawn::respawn(tab_id, n, target, url)) else {
             return;
         };
         // Must drop (and thus Shutdown + kill) the old tab before spawning
@@ -7299,42 +7251,18 @@ impl App {
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
         }
-        self.respawn_tab(tab_id, target, url, parent, group, pinned, color, zoom_factor, pos, vel);
+        self.respawn_tab(spawn);
     }
 
-    /// Shared by swap-finish and crash recovery: (re)spawn `kind` at `url`
-    /// for `tab_id`, preserving its place in the graph (`parent`/`group`/
-    /// `pinned`/`pos`/`vel`) and visibility (only the focused tab is ever
-    /// visible).
-    fn respawn_tab(
-        &mut self,
-        tab_id: &str,
-        kind: EngineKind,
-        url: String,
-        parent: Option<String>,
-        group: Option<String>,
-        pinned: bool,
-        color: Option<egui::Color32>,
-        zoom_factor: f64,
-        pos: egui::Vec2,
-        vel: egui::Vec2,
-    ) {
-        if self.focused.as_deref() == Some(tab_id) {
-            self.pending_respawn_focus = Some(tab_id.to_string());
+    /// Shared by swap-finish and crash recovery: starts `spawn` (from
+    /// `TabSpawn::respawn`, so the tab keeps its place in the graph and its
+    /// `TabCarry`) and, if it's the focused tab, shows a spinner until it's
+    /// back (only the focused tab is ever visible).
+    fn respawn_tab(&mut self, spawn: TabSpawn) {
+        if self.focused.as_deref() == Some(spawn.id.as_str()) {
+            self.pending_respawn_focus = Some(spawn.id.clone());
         }
-        self.spawn_tab_async(
-            tab_id.to_string(),
-            parent,
-            group,
-            pinned,
-            color,
-            zoom_factor,
-            url,
-            pos,
-            vel,
-            SpawnPurpose::Respawn,
-            kind,
-        );
+        self.spawn_tab_async(spawn);
     }
 
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
@@ -9364,19 +9292,8 @@ impl App {
             let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
             let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
             let pos = egui::vec2(tab.pos_x, tab.pos_y);
-            self.spawn_tab_async(
-                new_id,
-                parent,
-                Some(group_id.clone()),
-                false,
-                None,
-                self.settings.zoom_factor,
-                tab.url,
-                pos,
-                egui::Vec2::ZERO,
-                SpawnPurpose::Restore,
-                tab.engine,
-            );
+            let spawn = TabSpawn::new(new_id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
+            self.spawn_tab_async(TabSpawn { parent, group: Some(group_id.clone()), ..spawn });
         }
     }
 
@@ -13193,25 +13110,13 @@ impl App {
         }
 
         for (tab_id, reason) in crashes {
-            let Some((kind, url, parent, group, pinned, color, zoom_factor, pos, vel)) =
-                self.nodes.get(&tab_id).and_then(|n| {
-                    n.as_tab().map(|t| {
-                        (
-                            t.tab.kind,
-                            t.url.clone(),
-                            n.parent.clone(),
-                            n.group.clone(),
-                            t.pinned,
-                            n.color,
-                            t.zoom_factor,
-                            n.pos,
-                            n.vel,
-                        )
-                    })
-                })
-            else {
+            let Some(spawn) = self.nodes.get(&tab_id).and_then(|n| {
+                let t = n.as_tab()?;
+                TabSpawn::respawn(&tab_id, n, t.tab.kind, t.url.clone())
+            }) else {
                 continue;
             };
+            let url = &spawn.url;
             eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
             // Previously silent from the actual app's own UI -- this only
             // ever showed up in the console, so a user with no terminal
@@ -13231,7 +13136,7 @@ impl App {
             if self.hovered.as_deref() == Some(tab_id.as_str()) {
                 self.hovered = None;
             }
-            self.respawn_tab(&tab_id, kind, url, parent, group, pinned, color, zoom_factor, pos, vel);
+            self.respawn_tab(spawn);
         }
 
         for (tab_id, target, url) in swap_finishes {
