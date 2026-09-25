@@ -5521,6 +5521,17 @@ impl App {
         let (border_width, border_color) = card_border(&view, &style, hover_t);
         let mut background_shapes = card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8).to_vec();
         background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, style.fill.gamma_multiply(1.0 + hover_t * 0.35)));
+        // Rectangle-select's highlight: a translucent ACCENT wash, distinct
+        // from the focus border (an outline only), so a selected tab still
+        // reads differently from the focused one when both apply. In the
+        // background slot, so it tints the card but not its thumbnail.
+        if view.selected {
+            background_shapes.push(egui::Shape::rect_filled(
+                rect,
+                2.0 * inv_zoom,
+                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
+            ));
+        }
         ui.painter().set(background, egui::Shape::Vec(background_shapes));
         // An inside stroke painted over the body; every body keeps its
         // content inset from the edge.
@@ -5542,17 +5553,6 @@ impl App {
                 egui::StrokeKind::Outside,
             );
         }
-        // Rectangle-select's highlight: a translucent ACCENT wash, distinct
-        // from the focus border (an outline only), so a selected tab still
-        // reads differently from the focused one when both apply.
-        if view.selected {
-            ui.painter().rect_filled(
-                rect,
-                2.0 * inv_zoom,
-                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
-            );
-        }
-
         // Registered after both interacts above, so they take the pointer.
         let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
         let mut control_hovered = false;
@@ -6382,6 +6382,13 @@ impl App {
         if self.current_group.as_deref() == Some(id) {
             self.current_group = parent;
         }
+        self.forget_removed_group(id);
+    }
+
+    /// Drops the per-card state still naming a group card that's gone
+    /// (dissolved or merged away): the released drag, the hover latch the
+    /// peek fade polls, and a rename in progress.
+    fn forget_removed_group(&mut self, id: &str) {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
         }
@@ -6452,6 +6459,16 @@ impl App {
         })
     }
 
+    /// "Remove from Group" from any path (eject button, menu, a drop on
+    /// the way back). The card leaves this level, so it leaves the
+    /// rectangle selection too, which only ever holds this level's tabs
+    /// (`switch_group_level` clears it): a later multi-select drag would
+    /// otherwise move, or Join would pull back in, a tab no longer shown.
+    fn eject(&mut self, id: &str) {
+        remove_from_group(&mut self.nodes, id);
+        self.selected_tabs.remove(id);
+    }
+
     /// What a drop moves along with `id`: the whole rectangle selection
     /// when `id` is in it (it acts as one unit, as "Group Selected" does),
     /// which it empties, else just `id`.
@@ -6468,7 +6485,7 @@ impl App {
     /// drag itself moved the card.
     fn apply_drop(&mut self, id: &str, target: Option<(DropEffect, Option<String>)>) {
         match target {
-            Some((DropEffect::Eject, _)) => remove_from_group(&mut self.nodes, id),
+            Some((DropEffect::Eject, _)) => self.eject(id),
             Some((DropEffect::Join, Some(group))) => {
                 for member in self.take_drag_unit(id) {
                     if let Some(node) = self.nodes.get_mut(&member) {
@@ -6521,6 +6538,7 @@ impl App {
         }
         self.nodes.remove(source);
         self.node_order.retain(|g| g != source);
+        self.forget_removed_group(source);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
@@ -9486,7 +9504,7 @@ impl App {
             }
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
-            NodeAction::RemoveFromGroup => remove_from_group(&mut self.nodes, id),
+            NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
                 if let Some(export) = self.export_group(id) {
@@ -12751,6 +12769,8 @@ impl App {
                         }))
                     })
                     .collect();
+                let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
+                selected_tabs.sort();
                 let state = serde_json::json!({
                     "tab_view": self.showing_tab_view(),
                     "transition": self.transition.is_some(),
@@ -12760,6 +12780,7 @@ impl App {
                     "highlighted": self.dropdown_highlighted,
                     "current_group": self.current_group,
                     "cards": cards,
+                    "selected_tabs": selected_tabs,
                 });
                 if let Err(err) = std::fs::write(&path, state.to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");

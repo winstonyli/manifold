@@ -199,7 +199,8 @@ pub enum DebugCommand {
     /// draw order, each as `id`, `kind` (`"Tab"`, `"Note"`, ...), `group`,
     /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
     /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
-    /// which are pixels headless. Suggestions arriving from the network show up
+    /// which are pixels headless. `selected_tabs` is the rectangle
+    /// selection's ids, sorted. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
     ExportState(String),
