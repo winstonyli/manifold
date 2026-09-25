@@ -103,6 +103,9 @@ drop_preview) -> Option<CardOutput>`, for every kind:
    - otherwise the resting color is the tag color, else DANGER_COLOR
      for an overloaded group, else `style.border_idle`. It lerps toward
      `style.border_hover`, at width `1 + 0.5·t`.
+   Group's `border_idle` is ACCENT, its resting color today. A hovered
+   group now lerps toward `text_color` like every other kind. Today it
+   only thickens.
 9. **Overlays:** the selection wash (a tab in `selected_tabs`), and the
    drop ring when `drop_preview == Some(id)`.
 10. **Controls** (next section), registered after the interacts in step
@@ -184,14 +187,21 @@ fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) ->
     current `still_hovered` rule).
 
   `finish_draggable_node` is removed.
-- New `GraphAction`s: `JoinGroup { ids: Vec<String>, group: String }`
-  (the whole selection when the dragged tab is selected, as today;
-  `selected_tabs` is cleared), `GroupWith { a, b }` (today's inline
-  new-group code, moved) and `Reparent { child, parent }`, guarded by
-  `would_create_cycle`. Merge and Eject reuse `MergeGroups` and
-  `Node(id, RemoveFromGroup)`.
-- `apply_graph_action` saves the session after every drop effect, as
-  `finish_draggable_node` did.
+- One new `GraphAction::Drop { id, target: Option<(DropEffect,
+  Option<String>)> }`, pushed on every release. `App::apply_drop` applies
+  it, then saves the session (as `finish_draggable_node` saved on every
+  release):
+  - Join: the drag unit (the whole selection when the dragged tab is
+    selected, as today; applied members leave `selected_tabs`) moves into
+    the target group.
+  - GroupWith: today's inline new-group code, moved. The group is created
+    at the target tab's position, and the target and the drag unit join
+    it.
+  - Reparent: the target becomes the dragged tab's parent, unless
+    `would_create_cycle`.
+  - Merge: the body of today's `MergeGroups` apply arm, moved.
+    `GraphAction::MergeGroups` goes once groups are on the frame.
+  - Eject: `remove_from_group` on the dragged card.
 - Group's `is_drag_target` code is removed. Its ring now marks the
   `drop_preview` card, whatever the card's kind.
 
