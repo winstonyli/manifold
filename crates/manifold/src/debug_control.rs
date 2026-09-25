@@ -60,6 +60,10 @@ pub enum DebugCommand {
     /// A full click (move + press + release) in one command — the common
     /// case, and avoids needing three round-trips through stdin for it.
     Click { x: f64, y: f64, button: MouseButton },
+    /// A left double-click, both clicks in one frame. Two `CLICK`s only
+    /// count as one when their frames fall within egui's 0.3 s
+    /// double-click delay, which a slow headless frame can break.
+    DoubleClick { x: f64, y: f64 },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
     /// Focuses the address bar (Tab view only), then, once it has focus,
     /// types the text over its contents as egui `Ctrl+A` + `Text` events,
@@ -189,8 +193,9 @@ pub enum DebugCommand {
     /// hold (and shouldn't: it's the user's saved session) as JSON, for a
     /// test to check: `tab_view`, `transition`, `focused_url`,
     /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
-    /// query, or `tab:<id>` for an open tab) and `highlighted` (a row
-    /// index, or null). Suggestions arriving from the network show up
+    /// query, or `tab:<id>` for an open tab), `highlighted` (a row
+    /// index, or null) and `current_group` (the Graph view level's group
+    /// id, or null at the top). Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
     ExportState(String),
@@ -328,6 +333,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left"),
     ("MOUSEUP x y [button]", "Release a mouse button at (x, y)"),
     ("CLICK x y [button]", "Full click (move+press+release) at (x, y)"),
+    ("DOUBLECLICK x y", "Left double-click at (x, y), both clicks in one frame"),
     ("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)"),
     ("ADDRESSBAR text", "Set the address bar's text and focus"),
     ("ENTER", "Accept the address bar / confirm a dropdown row"),
@@ -522,6 +528,10 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             x: parts.next()?.parse().ok()?,
             y: parts.next()?.parse().ok()?,
             button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
+        }),
+        "DOUBLECLICK" => Some(DebugCommand::DoubleClick {
+            x: parts.next()?.parse().ok()?,
+            y: parts.next()?.parse().ok()?,
         }),
         "SCROLL" => Some(DebugCommand::Scroll {
             x: parts.next()?.parse().ok()?,

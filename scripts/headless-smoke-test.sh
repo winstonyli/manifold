@@ -10,7 +10,7 @@
 # node to enter Tab view, type a query, screenshot the suggestion dropdown,
 # click a suggestion, screenshot the result; arrow-key highlight +
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
-# quit.
+# entering and leaving a group in Graph view; quit.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
 # focuses another tab). That needs a second tab, which needs clicking a
@@ -222,6 +222,22 @@ send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
 check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
 ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays in Tab view, navigates nowhere" \
     's["tab_view"] and not s["suggestions"] and q == row'
+
+# Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
+# NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
+# button leaves it. The card's position is fixed: the root tab and the
+# group are the only nodes, and a node's spawn jitter comes from its id.
+# DOUBLECLICK rather than two CLICKs, which a slow frame can push past
+# egui's double-click delay.
+send "ESCAPE"
+send "NEWGROUP"
+sleep 1 # Tab-to-Graph transition, layout settle
+send "SCREENSHOT $out_dir_win\group_card.png"
+check_screenshot "$out_dir/group_card.png" "group card"
+send "DOUBLECLICK 250 125"
+check_state group_in "double-clicking the group card enters the group" 'not s["tab_view"] and s["current_group"]'
+send "CLICK 22 17"
+check_state group_out "the back button leaves the group" 's["current_group"] is None'
 
 send "QUIT"
 if wait "$browser_pid"; then

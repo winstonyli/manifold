@@ -12466,6 +12466,7 @@ impl ApplicationHandler<UserEvent> for App {
                         | DebugCommand::MouseDown { .. }
                         | DebugCommand::MouseUp { .. }
                         | DebugCommand::Click { .. }
+                        | DebugCommand::DoubleClick { .. }
                         | DebugCommand::Scroll { .. }
                 );
                 if self.headless && pointer {
@@ -12940,6 +12941,26 @@ impl App {
     /// comment for the overall design: mouse commands are real synthetic
     /// `WindowEvent`s, keyboard/text commands call the equivalent effect
     /// directly since `winit::event::KeyEvent` has no public constructor).
+    /// Moves the pointer to (x, y), then presses and releases `button`
+    /// `count` times. All of it lands in one egui frame, so for `count` 2
+    /// the second release is always within egui's double-click delay
+    /// (0.3 s between frame times). Two `CLICK`s are a frame or more apart,
+    /// and a slow headless frame pushes them past that.
+    fn debug_click(&mut self, event_loop: &ActiveEventLoop, x: f64, y: f64, button: WinitMouseButton, count: u8) {
+        self.dispatch_window_event(
+            event_loop,
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(x, y),
+            },
+        );
+        for _ in 0..count {
+            for state in [ElementState::Pressed, ElementState::Released] {
+                self.dispatch_window_event(event_loop, WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button });
+            }
+        }
+    }
+
     fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
         // A transition only ends in a frame, and frames can stall for
         // seconds on a busy GPU, so one that ran out long ago could still
@@ -12990,31 +13011,8 @@ impl App {
                     },
                 );
             }
-            DebugCommand::Click { x, y, button } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved {
-                        device_id: DeviceId::dummy(),
-                        position: PhysicalPosition::new(x, y),
-                    },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput {
-                        device_id: DeviceId::dummy(),
-                        state: ElementState::Pressed,
-                        button,
-                    },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput {
-                        device_id: DeviceId::dummy(),
-                        state: ElementState::Released,
-                        button,
-                    },
-                );
-            }
+            DebugCommand::Click { x, y, button } => self.debug_click(event_loop, x, y, button, 1),
+            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2),
             DebugCommand::Scroll { x, y, delta_x, delta_y } => {
                 self.dispatch_window_event(
                     event_loop,
@@ -13161,6 +13159,7 @@ impl App {
                     "address_bar_text": self.address_bar_text,
                     "suggestions": suggestions,
                     "highlighted": self.dropdown_highlighted,
+                    "current_group": self.current_group,
                 });
                 if let Err(err) = std::fs::write(&path, state.to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
