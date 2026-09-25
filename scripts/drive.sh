@@ -25,6 +25,13 @@
 #     once). To act after some command has run, wait for a file it writes,
 #     e.g. `!(while [ ! -f x ]; do sleep 0.2; done; cp a b) &` after an
 #     `EXPORTSESSION` to x.
+#   - a `!` line runs in the writer loop itself, so without `&` it blocks
+#     the writer, and whatever it prints goes to the app as commands. A
+#     probe can wait for an EXPORTSTATE file, then print gestures computed
+#     from the live layout. Poll until two exports agree before trusting
+#     positions: after entering a group the camera eases, and SLEEP draws
+#     no frames (each command draws one), so a fixed sleep can export
+#     mid-ease.
 #   - blank lines are skipped.
 #
 # Build first: cargo build -p manifold
