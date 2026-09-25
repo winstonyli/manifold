@@ -275,6 +275,7 @@ mod tests {
             for id in expected.nodes.keys() {
                 assert!(!expected.is_ancestor(*id, *id), "a cycle through {id}");
             }
+            let expected_bytes = crate::store::journal::snapshot_bytes(&expected);
             for _ in 0..20 {
                 let mut shuffled = ops.clone();
                 for i in (1..shuffled.len()).rev() {
@@ -285,6 +286,7 @@ mod tests {
                 let doc = apply_all(&[shuffled, again].concat());
                 assert_eq!(doc.nodes, expected.nodes);
                 assert_eq!(doc.version, expected.version);
+                assert_eq!(crate::store::journal::snapshot_bytes(&doc), expected_bytes);
             }
         }
     }
