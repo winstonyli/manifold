@@ -41,6 +41,19 @@ impl AddressBar {
         all
     }
 
+    /// Whether the user is mid-edit, so the text mustn't be resynced to the
+    /// tab's URL. Not just `focused`: found live that the moment the
+    /// suggestion dropdown's buttons first appear, egui's own keyboard-focus
+    /// tracking transiently moves off the `TextEdit` for a frame (a real,
+    /// reproducible bug, not a one-off) — `has_focus()` then reports false
+    /// for that one frame, which (without this) blew away whatever the user
+    /// had just typed by resyncing to the tab's real URL mid-keystroke.
+    /// Suggestions being non-empty is a good proxy for "still actively
+    /// editing" that survives that blip.
+    pub(crate) fn editing(&self) -> bool {
+        self.focused || !self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty()
+    }
+
     /// Closes the dropdown, and cancels the search fetch in flight: its
     /// response would otherwise reopen the dropdown after an Enter or
     /// Escape.
@@ -423,17 +436,7 @@ impl App {
             }
             return;
         }
-        // Not just `!self.address_bar.focused`: found live that the moment
-        // the suggestion dropdown's buttons first appear, egui's own
-        // keyboard-focus tracking transiently moves off the `TextEdit` for
-        // a frame (a real, reproducible bug, not a one-off) — `has_focus()`
-        // then reports false for that one frame, which (without this) blew
-        // away whatever the user had just typed by resyncing to the tab's
-        // real URL mid-keystroke. Suggestions being non-empty is a good
-        // proxy for "still actively editing" that survives that blip.
-        let editing_address = self.address_bar.focused
-            || !self.address_bar.open_tab_suggestions.is_empty()
-            || !self.address_bar.search_suggestions.is_empty();
+        let editing_address = self.address_bar.editing();
         // `focused` is tab-only (see `App::focused`), so this always finds
         // a Tab; `if let` rather than `.unwrap()` so a future path that
         // breaks that invariant degrades to a stale address bar, not a

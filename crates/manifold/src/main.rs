@@ -3656,7 +3656,6 @@ impl App {
                 self.save_session();
             }
         }
-        self.address_bar.highlighted = None;
     }
 
     /// Graph view's node-click equivalent of `focus_item` — starts an
@@ -5303,6 +5302,13 @@ impl App {
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
         self.handle_global_shortcuts(ui);
+        // The address bar is built only in Tab view, so leaving it by any
+        // path ends the edit, as Escape does. Otherwise the dropdown and
+        // typed text came back over whichever tab was shown next.
+        if !self.showing_tab_view() && self.address_bar.editing() {
+            self.address_bar.dismiss();
+            self.address_bar.focused = false;
+        }
         // Every view, so a toast queued in Graph view (a crash/respawn
         // notice, an unreadable session file) is seen where it happened.
         self.build_save_toast(ui);
