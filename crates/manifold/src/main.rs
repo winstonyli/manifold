@@ -1628,6 +1628,20 @@ struct ItemToolbarActions {
     address_bar_rect: Option<egui::Rect>,
 }
 
+/// What the Graph toolbar (`App::render_graph_toolbar`) hands back to
+/// `build_graph_ui`: the actions its buttons pushed, the zoom-chip
+/// requests, and the button rects that popups and drops anchor to.
+struct GraphToolbar {
+    actions: Vec<GraphAction>,
+    reset_view: bool,
+    reset_zoom: bool,
+    zoom_step: Option<f32>,
+    shortcuts_help_button_rect: Option<egui::Rect>,
+    recently_closed_button_rect: Option<egui::Rect>,
+    /// The breadcrumb's back button, also a drop target (see `drop_target`).
+    leave_group_button_rect: Option<egui::Rect>,
+}
+
 /// What `render_item_toolbar` (the Item toolbar's shared frame) hands back:
 /// the frame's own two results plus whatever the per-kind content reported.
 struct ItemToolbarFrame {
@@ -3302,7 +3316,7 @@ struct App {
     /// for that node's card -- one field for every kind, so at most one
     /// menu is ever open by construction. Right-click is otherwise the
     /// rectangle-select gesture over the graph panel (see that gesture's
-    /// own doc comment in `build_graph_ui`); a press landing on any card
+    /// own doc comment on `handle_rect_select`); a press landing on any card
     /// opens this instead of starting a marquee. Drawn by
     /// `App::build_node_menu`, which dispatches on the node's kind.
     node_menu: Option<(String, egui::Pos2)>,
@@ -6806,7 +6820,7 @@ impl App {
     /// `nearest_tab_in_direction`), or -- if nothing at this level is
     /// currently focused -- just picks a starting node so the first arrow
     /// press has something to move from next time. Shared by
-    /// `build_graph_ui`'s real-keyboard arrow handling and the headless
+    /// `handle_graph_keys`' real-keyboard arrow handling and the headless
     /// `GRAPHLEFT`/`GRAPHRIGHT`/`GRAPHUP`/`GRAPHDOWN` debug commands (a real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
     /// code -- see `debug_control`'s own doc comment -- so headless mode
@@ -10810,13 +10824,6 @@ impl App {
     }
 
     fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
-        let mut actions: Vec<GraphAction> = Vec::new();
-        let mut reset_view = false;
-        let mut reset_zoom = false;
-        let mut graph_zoom_step: Option<f32> = None;
-        let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
-        let mut recently_closed_button_rect: Option<egui::Rect> = None;
-        let mut leave_group_button_rect: Option<egui::Rect> = None;
 
         // Computed once per frame and reused everywhere below that only
         // needs "every node of kind X at this level" unconditionally --
@@ -10861,6 +10868,239 @@ impl App {
             self.graph_lod_simplified = true;
         }
 
+        let GraphToolbar {
+            mut actions,
+            reset_view,
+            reset_zoom,
+            zoom_step: graph_zoom_step,
+            shortcuts_help_button_rect,
+            recently_closed_button_rect,
+            leave_group_button_rect,
+        } = self.render_graph_toolbar(ui, groups_at_level);
+        // `build_shortcuts_help`/`build_recently_closed_popup`/the three
+        // context menus below are all deferred to the very end of this
+        // function (past the Scene/`overlay_painter` node-rendering block),
+        // not called here where their button rects are computed -- found
+        // live that a card's title/pin-icon decorations (painted via
+        // `overlay_painter`, a *separate* `Order::Foreground` layer created
+        // further down) rendered on top of these popups, since within one
+        // egui `Order` tier, layers paint in the order they're first
+        // touched each frame, and `overlay_painter` didn't exist yet at
+        // this point in the function.
+        if reset_view {
+            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
+            self.pending_new_node = None;
+        }
+
+        if self.nodes.is_empty() {
+            ui.centered_and_justified(|ui| {
+                match &self.tab_spawn_error {
+                    Some(err) => ui.colored_label(
+                        DANGER_COLOR,
+                        format!("{err}\nClick \"+ New Tab\" to try again."),
+                    ),
+                    None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
+                };
+            });
+            for action in actions {
+                self.apply_graph_action(ui.ctx(), action);
+            }
+            return;
+        }
+
+        // Static layout: the force-directed sim only runs as a one-shot
+        // settle burst (`settle_current_level`) when the visible node set
+        // at this level actually changes size, not continuously every
+        // frame -- see that method's own doc comment for why continuous
+        // physics was dropped (a drop target could flee the very drag
+        // aimed at it). While a drag is in progress, skip the check
+        // entirely: the dragged node's position already updates directly
+        // from `response.drag_delta()` in the per-node loop below,
+        // independent of this, and everything else should stay exactly
+        // where it is for the whole gesture.
+        if self.dragging.is_none() {
+            // Same formula `current_level_settle_key()` computes, just
+            // built from this frame's already-cached lists instead of
+            // redoing all seven scans a second time.
+            let current_key = (
+                self.current_group.clone(),
+                at_level.iter().map(Vec::len).sum(),
+            );
+            if self.graph_settled_key.as_ref() != Some(&current_key) {
+                self.settle_current_level();
+                self.graph_settled_key = Some(current_key);
+            }
+        }
+
+        self.handle_graph_keys(ui);
+
+        // Pan (drag empty background) + zoom (scroll wheel, centered on the
+        // cursor) via egui's built-in `Scene` container — everything drawn
+        // inside `add_contents` below is in the same world-space coordinates
+        // `node.pos` already uses; egui's transform layer handles converting
+        // to/from screen space (including for nested widgets' own
+        // hover/click/drag responses, e.g. a node's own drag below), so none
+        // of that logic needs to know pan/zoom exists at all. `scene_rect`
+        // must live outside `self` while the closure below also borrows
+        // `self` mutably, so it's round-tripped through a local instead of
+        // borrowed from `self.graph_scene_rect` directly.
+        // Everything painted inside `Scene`'s closure lives in world-space
+        // coordinates that `Scene` itself then scales uniformly by the
+        // current zoom factor — a *shape* (rect/circle/stroke/image) sized
+        // in world units would shrink to illegible at `GRAPH_ZOOM_MIN` and
+        // balloon at `GRAPH_ZOOM_MAX` right along with the card, so those
+        // are sized as `desired_screen_px * inv_zoom` below (vector
+        // geometry re-tessellates at any final scale with no quality
+        // loss, so this alone is enough for them). Text is different:
+        // egui rasterizes each glyph into its font atlas *at the
+        // requested world-space size*, and `Scene`'s transform then just
+        // scales that already-rasterized quad — so text sized the same
+        // `* inv_zoom` way rasterizes tiny (and blurs badly once
+        // magnified back up) at high zoom, since a small `inv_zoom` asks
+        // for a tiny atlas glyph. `overlay_painter`/`project` below paint
+        // text directly onto an *untransformed* foreground layer instead,
+        // at real fixed screen coordinates and a real fixed font size —
+        // this is the actual "achieve constant size directly" fix, not
+        // just another scale factor. `zoom_scale`/`translation` are the
+        // same pair `graph_world_to_screen_transform` already derives for
+        // the Tab<->Graph transition animation (`screen = translation +
+        // zoom_scale * world`). The node card itself (`GRAPH_NODE_SIZE`)
+        // and the hover peek preview (`GRAPH_PEEK_SIZE`) are deliberately
+        // excluded from all of this — those represent actual zoomable
+        // content, not chrome, so they're meant to scale (and blur like
+        // any other magnified image would, which is normal/expected).
+        let scene_outer_rect = ui.available_rect_before_wrap();
+        if reset_zoom {
+            // Keeps the current pan (unlike "Reset View", which re-fits
+            // everything) -- `graph_world_to_screen_transform` derives
+            // `zoom_scale` as `screen_size / graph_scene_rect.size()`
+            // (`.min_elem()` of the two axis ratios), so matching the world
+            // rect's size to the screen's own size on both axes makes that
+            // ratio exactly 1.0, the definition of "100%" this readout uses.
+            let center = self.graph_scene_rect.center();
+            self.graph_scene_rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
+        }
+        if let Some(factor) = graph_zoom_step {
+            self.graph_scene_rect = step_scene_rect(
+                self.graph_scene_rect,
+                factor,
+                scene_outer_rect.size(),
+                GRAPH_ZOOM_MIN,
+                GRAPH_ZOOM_MAX,
+            );
+        }
+        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        self.graph_zoom_pct = zoom_scale * 100.0;
+        let inv_zoom = 1.0 / zoom_scale;
+        let project = move |world: egui::Pos2| -> egui::Pos2 {
+            (translation + zoom_scale * world.to_vec2()).to_pos2()
+        };
+        // Clipped to the graph panel's own rect (not `layer_painter`'s
+        // default full-content-rect) so a node near the top edge can't
+        // paint its label over the toolbar above.
+        let overlay_painter = egui::Painter::new(
+            ui.ctx().clone(),
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("graph_decoration_text")),
+            scene_outer_rect,
+        );
+
+        self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
+
+        self.advance_graph_camera();
+
+        let (minimap_rect, world_bounds, minimap_scale) =
+            self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
+        // Compared against after `Scene`'s own closure runs, below --
+        // an actual pan drag or scroll-wheel zoom this frame changes this,
+        // and dismisses `pending_new_node` the same as every other camera
+        // move already does (see that field's own doc comment).
+        let scene_rect_before_pan_zoom = self.graph_scene_rect;
+        let mut scene_rect = self.graph_scene_rect;
+        let scene_response = egui::Scene::new()
+            .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
+            .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
+            .show(ui, &mut scene_rect, |ui| {
+                // Every `overlay_painter` decoration painted inside this
+                // closure is deferred rather than painted immediately -- see
+                // `DeferredOverlays`'s own doc comment for why (this frame's
+                // real pan/zoom isn't reflected in `project`, captured
+                // above, until after this whole closure returns).
+                let mut deferred_overlays: DeferredOverlays = Vec::new();
+                self.draw_graph_dot_grid(ui, zoom_scale, inv_zoom);
+
+                self.draw_graph_edges(ui, inv_zoom);
+
+                self.draw_graph_cards(
+                    ui,
+                    &mut deferred_overlays,
+                    &mut actions,
+                    &at_level,
+                    inv_zoom,
+                    zoom_scale,
+                    leave_group_button_rect,
+                );
+                self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
+
+                self.draw_peek_preview(ui);
+                deferred_overlays
+            });
+        self.graph_scene_rect = scene_rect;
+        // Now that `self.graph_scene_rect` reflects this frame's actual
+        // pan/zoom (not the stale value `project`/`overlay_painter` calls
+        // inside the closure above had to work with -- see
+        // `DeferredOverlays`'s own doc comment), recompute the transform
+        // fresh and paint every decoration queued during that closure with
+        // it, closing the one-frame gap between a card and its own
+        // overlay-painted label/icons that was otherwise most visible
+        // during a fast pan or zoom.
+        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let project = move |world: egui::Pos2| -> egui::Pos2 {
+            (translation + zoom_scale * world.to_vec2()).to_pos2()
+        };
+        for overlay in scene_response.inner {
+            overlay(&overlay_painter, &project);
+        }
+        if scene_rect != scene_rect_before_pan_zoom {
+            self.pending_new_node = None;
+        }
+
+        self.track_pan_momentum(ui, scene_rect);
+
+        self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
+
+        for action in actions {
+            self.apply_graph_action(ui.ctx(), action);
+        }
+
+        // Built last, now that `overlay_painter`'s node-decoration layer
+        // above already exists this frame -- see this function's own note
+        // by `shortcuts_help_button_rect`/`recently_closed_button_rect` for
+        // why these can't be built back where those rects are computed.
+        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
+        let recently_closed_fade = ui
+            .ctx()
+            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
+        if recently_closed_fade > 0.0 {
+            if let Some(rect) = recently_closed_button_rect {
+                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
+            }
+        }
+        self.build_node_menu(ui);
+    }
+
+    /// The Graph view's toolbar row: the group breadcrumb, "+ New Tab",
+    /// the group and zoom chips, the filter, Recently Closed, the
+    /// selection's actions, a spawn error and the universal chip. What its
+    /// buttons ask for comes back as a `GraphToolbar`, which
+    /// `build_graph_ui` applies at the same points it always did.
+    fn render_graph_toolbar(&mut self, ui: &mut egui::Ui, groups_at_level: &[String]) -> GraphToolbar {
+        let mut actions: Vec<GraphAction> = Vec::new();
+        let mut reset_view = false;
+        let mut reset_zoom = false;
+        let mut graph_zoom_step: Option<f32> = None;
+        let mut shortcuts_help_button_rect: Option<egui::Rect> = None;
+        let mut recently_closed_button_rect: Option<egui::Rect> = None;
+        let mut leave_group_button_rect: Option<egui::Rect> = None;
         // `toolbar_panel` already provides the compact spacing and the
         // horizontal-scroll overflow safety this row specifically needed
         // (a breadcrumb of arbitrary depth, a selection-actions cluster, a
@@ -10978,7 +11218,7 @@ impl App {
                     }
                     // "+ New Tab" is the only toolbar spawn action kept --
                     // it's also the sole recovery path when `self.nodes` is
-                    // completely empty (see the early-return branch below),
+                    // completely empty (see `build_graph_ui`'s early return),
                     // where the right-click empty-canvas card can't appear
                     // yet. New Note/Add File/New Group used to sit here too,
                     // but that card already offers all three identically
@@ -11107,8 +11347,8 @@ impl App {
                         recently_closed_button_rect = Some(response.rect);
                     }
                     // Rectangle-select's own action bar: only shown once a
-                    // right-drag has actually selected something (see the
-                    // gesture handling below, near `Scene::new()`).
+                    // right-drag has actually selected something (see
+                    // `handle_rect_select`).
                     if !self.selected_tabs.is_empty() {
                         // Matches "+ New Group" above: groups the selection
                         // into a new subgroup of whichever level is
@@ -11141,72 +11381,29 @@ impl App {
                     shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
                 });
             });
-        // `build_shortcuts_help`/`build_recently_closed_popup`/the three
-        // context menus below are all deferred to the very end of this
-        // function (past the Scene/`overlay_painter` node-rendering block),
-        // not called here where their button rects are computed -- found
-        // live that a card's title/pin-icon decorations (painted via
-        // `overlay_painter`, a *separate* `Order::Foreground` layer created
-        // further down) rendered on top of these popups, since within one
-        // egui `Order` tier, layers paint in the order they're first
-        // touched each frame, and `overlay_painter` didn't exist yet at
-        // this point in the function.
-        if reset_view {
-            self.graph_scene_rect = self.fit_all_nodes_scene_rect();
-            self.pending_new_node = None;
+        GraphToolbar {
+            actions,
+            reset_view,
+            reset_zoom,
+            zoom_step: graph_zoom_step,
+            shortcuts_help_button_rect,
+            recently_closed_button_rect,
+            leave_group_button_rect,
         }
+    }
 
-        if self.nodes.is_empty() {
-            ui.centered_and_justified(|ui| {
-                match &self.tab_spawn_error {
-                    Some(err) => ui.colored_label(
-                        DANGER_COLOR,
-                        format!("{err}\nClick \"+ New Tab\" to try again."),
-                    ),
-                    None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
-                };
-            });
-            for action in actions {
-                self.apply_graph_action(ui.ctx(), action);
-            }
-            return;
-        }
-
-        // Static layout: the force-directed sim only runs as a one-shot
-        // settle burst (`settle_current_level`) when the visible node set
-        // at this level actually changes size, not continuously every
-        // frame -- see that method's own doc comment for why continuous
-        // physics was dropped (a drop target could flee the very drag
-        // aimed at it). While a drag is in progress, skip the check
-        // entirely: the dragged node's position already updates directly
-        // from `response.drag_delta()` in the per-node loop below,
-        // independent of this, and everything else should stay exactly
-        // where it is for the whole gesture.
-        if self.dragging.is_none() {
-            // Same formula `current_level_settle_key()` computes, just
-            // built from this frame's already-cached lists instead of
-            // redoing all seven scans a second time.
-            let current_key = (
-                self.current_group.clone(),
-                at_level.iter().map(Vec::len).sum(),
-            );
-            if self.graph_settled_key.as_ref() != Some(&current_key) {
-                self.settle_current_level();
-                self.graph_settled_key = Some(current_key);
-            }
-        }
-
-        // Arrow-key graph navigation: moves `self.focused` to the nearest
-        // tab node in the pressed direction, reusing the same field the
-        // ACCENT border below already highlights and every other
-        // "act on the focused tab" path (Ctrl+W, "+ New Tab"'s parent,
-        // Enter/click-to-open) already reads -- so a keyboard-selected node
-        // behaves exactly like a clicked one, just without the view
-        // transition. Gated on the group-rename text field and quick-
-        // switcher both being closed so arrow keys still do their normal
-        // job there instead of hijacking focus underneath an open widget --
-        // the Settings page itself needs no such check here, since it's now
-        // a separate `ViewMode` this function never runs under at all.
+    /// Arrow-key graph navigation: moves `self.focused` to the nearest
+    /// tab node in the pressed direction, reusing the same field the
+    /// ACCENT card border already highlights and every other
+    /// "act on the focused tab" path (Ctrl+W, "+ New Tab"'s parent,
+    /// Enter/click-to-open) already reads -- so a keyboard-selected node
+    /// behaves exactly like a clicked one, just without the view
+    /// transition. Gated on the group-rename text field and quick-
+    /// switcher both being closed so arrow keys still do their normal
+    /// job there instead of hijacking focus underneath an open widget --
+    /// the Settings page itself needs no such check here, since it's now
+    /// a separate `ViewMode` `build_graph_ui` never runs under at all.
+    fn handle_graph_keys(&mut self, ui: &egui::Ui) {
         if self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
@@ -11233,9 +11430,9 @@ impl App {
             // node's context menu, and dismisses a hover-peek preview
             // early -- `self.hovered` itself is left alone (clearing it
             // here would just get overwritten later this same frame by the
-            // node loop below re-detecting the pointer still sitting over
+            // card loop (`draw_graph_cards`) re-detecting the pointer still sitting over
             // it) and `peek_suppressed` is set instead, checked by the peek
-            // drawing code further down so it skips rendering for this
+            // preview (`draw_peek_preview`) so it skips rendering for this
             // specific id without needing the pointer to actually move
             // away first. Graph view has no other use for Escape (unlike
             // Tab view, where it steps back to Graph), so this is a plain
@@ -11247,87 +11444,26 @@ impl App {
                 self.dismiss_hover_peek();
             }
         }
+    }
 
-        // Pan (drag empty background) + zoom (scroll wheel, centered on the
-        // cursor) via egui's built-in `Scene` container — everything drawn
-        // inside `add_contents` below is in the same world-space coordinates
-        // `node.pos` already uses; egui's transform layer handles converting
-        // to/from screen space (including for nested widgets' own
-        // hover/click/drag responses, e.g. a node's own drag below), so none
-        // of that logic needs to know pan/zoom exists at all. `scene_rect`
-        // must live outside `self` while the closure below also borrows
-        // `self` mutably, so it's round-tripped through a local instead of
-        // borrowed from `self.graph_scene_rect` directly.
-        // Everything painted inside `Scene`'s closure lives in world-space
-        // coordinates that `Scene` itself then scales uniformly by the
-        // current zoom factor — a *shape* (rect/circle/stroke/image) sized
-        // in world units would shrink to illegible at `GRAPH_ZOOM_MIN` and
-        // balloon at `GRAPH_ZOOM_MAX` right along with the card, so those
-        // are sized as `desired_screen_px * inv_zoom` below (vector
-        // geometry re-tessellates at any final scale with no quality
-        // loss, so this alone is enough for them). Text is different:
-        // egui rasterizes each glyph into its font atlas *at the
-        // requested world-space size*, and `Scene`'s transform then just
-        // scales that already-rasterized quad — so text sized the same
-        // `* inv_zoom` way rasterizes tiny (and blurs badly once
-        // magnified back up) at high zoom, since a small `inv_zoom` asks
-        // for a tiny atlas glyph. `overlay_painter`/`project` below paint
-        // text directly onto an *untransformed* foreground layer instead,
-        // at real fixed screen coordinates and a real fixed font size —
-        // this is the actual "achieve constant size directly" fix, not
-        // just another scale factor. `zoom_scale`/`translation` are the
-        // same pair `graph_world_to_screen_transform` already derives for
-        // the Tab<->Graph transition animation (`screen = translation +
-        // zoom_scale * world`). The node card itself (`GRAPH_NODE_SIZE`)
-        // and the hover peek preview (`GRAPH_PEEK_SIZE`) are deliberately
-        // excluded from all of this — those represent actual zoomable
-        // content, not chrome, so they're meant to scale (and blur like
-        // any other magnified image would, which is normal/expected).
-        let scene_outer_rect = ui.available_rect_before_wrap();
-        if reset_zoom {
-            // Keeps the current pan (unlike "Reset View", which re-fits
-            // everything) -- `graph_world_to_screen_transform` derives
-            // `zoom_scale` as `screen_size / graph_scene_rect.size()`
-            // (`.min_elem()` of the two axis ratios), so matching the world
-            // rect's size to the screen's own size on both axes makes that
-            // ratio exactly 1.0, the definition of "100%" this readout uses.
-            let center = self.graph_scene_rect.center();
-            self.graph_scene_rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
-        }
-        if let Some(factor) = graph_zoom_step {
-            self.graph_scene_rect = step_scene_rect(
-                self.graph_scene_rect,
-                factor,
-                scene_outer_rect.size(),
-                GRAPH_ZOOM_MIN,
-                GRAPH_ZOOM_MAX,
-            );
-        }
-        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-        self.graph_zoom_pct = zoom_scale * 100.0;
-        let inv_zoom = 1.0 / zoom_scale;
-        let project = move |world: egui::Pos2| -> egui::Pos2 {
-            (translation + zoom_scale * world.to_vec2()).to_pos2()
-        };
-        // Clipped to the graph panel's own rect (not `layer_painter`'s
-        // default full-content-rect) so a node near the top edge can't
-        // paint its label over the toolbar above.
-        let overlay_painter = egui::Painter::new(
-            ui.ctx().clone(),
-            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("graph_decoration_text")),
-            scene_outer_rect,
-        );
-
-        // Rectangle-select: a right-button drag over the graph panel
-        // selects every tab node its screen-space rectangle overlaps.
-        // Deliberately the secondary button, not primary -- primary is
-        // Scene's own pan gesture, and `.drag_pan_buttons(PRIMARY)` below
-        // restricts Scene to just that button so the two never compete for
-        // the same drag. Read directly off `ui.input`'s raw pointer state
-        // rather than through a `Response`: this needs to work anywhere
-        // over the panel, including empty space no widget claims, and
-        // egui's own hit-testing/consumption (which a `Response` reflects)
-        // is irrelevant to a plain "where is the mouse" query.
+    /// Rectangle-select: a right-button drag over the graph panel
+    /// selects every tab node its screen-space rectangle overlaps.
+    /// Deliberately the secondary button, not primary -- primary is
+    /// Scene's own pan gesture, and `.drag_pan_buttons(PRIMARY)` in `build_graph_ui`
+    /// restricts Scene to just that button so the two never compete for
+    /// the same drag. Read directly off `ui.input`'s raw pointer state
+    /// rather than through a `Response`: this needs to work anywhere
+    /// over the panel, including empty space no widget claims, and
+    /// egui's own hit-testing/consumption (which a `Response` reflects)
+    /// is irrelevant to a plain "where is the mouse" query.
+    fn handle_rect_select(
+        &mut self,
+        ui: &egui::Ui,
+        overlay_painter: &egui::Painter,
+        scene_outer_rect: egui::Rect,
+        zoom_scale: f32,
+        translation: egui::Vec2,
+    ) {
         let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
@@ -11410,14 +11546,16 @@ impl App {
                 }
             }
         }
+    }
 
-        // Eased camera move into/out of a group -- see `GraphCameraTween`'s
-        // doc comment for why this is a separate mechanism from
-        // `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
-        // every frame (not derived from `self.graph_scene_rect`, which
-        // `Scene::show` below may also nudge from user pan/zoom input this
-        // same frame) so an in-progress user pan can't throw off where the
-        // animation is actually headed.
+    /// Eased camera move into/out of a group -- see `GraphCameraTween`'s
+    /// doc comment for why this is a separate mechanism from
+    /// `Transition`. Recomputed fresh from the tween's fixed `from`/`to`
+    /// every frame (not derived from `self.graph_scene_rect`, which
+    /// `build_graph_ui`'s `Scene::show` may also nudge from user pan/zoom input this
+    /// same frame) so an in-progress user pan can't throw off where the
+    /// animation is actually headed.
+    fn advance_graph_camera(&mut self) {
         if let Some(tween) = self.graph_camera_tween {
             let elapsed = tween.start.elapsed();
             let t = (elapsed.as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
@@ -11445,16 +11583,26 @@ impl App {
                 self.pan_momentum = None;
             }
         }
+    }
 
-        // Minimap: a small fixed overview in the graph panel's bottom-right
-        // corner, screen-space (drawn via `overlay_painter`, so it's
-        // unaffected by Scene's own pan/zoom the same way node labels are)
-        // showing every current-level node as a dot and the main view's
-        // current viewport as an outlined rect. World bounds reuse
-        // `fit_all_nodes_scene_rect()` -- the same extent "Reset View" and
-        // entering/leaving a group already frame to, so the minimap and the
-        // main view always agree on "the whole graph". Clicking anywhere in
-        // it recenters the main viewport there without changing zoom.
+    /// Minimap: a small fixed overview in the graph panel's bottom-right
+    /// corner, screen-space (drawn via `overlay_painter`, so it's
+    /// unaffected by Scene's own pan/zoom the same way node labels are)
+    /// showing every current-level node as a dot and the main view's
+    /// current viewport as an outlined rect. World bounds reuse
+    /// `fit_all_nodes_scene_rect()` -- the same extent "Reset View" and
+    /// entering/leaving a group already frame to, so the minimap and the
+    /// main view always agree on "the whole graph". Clicking anywhere in
+    /// it recenters the main viewport there without changing zoom.
+    /// Returns the minimap's screen rect, the world bounds it shows and
+    /// its world-to-minimap scale, for `handle_minimap_click`.
+    fn draw_graph_minimap(
+        &self,
+        ui: &egui::Ui,
+        overlay_painter: &egui::Painter,
+        scene_outer_rect: egui::Rect,
+        at_level: &[Vec<String>],
+    ) -> (egui::Rect, egui::Rect, f32) {
         let minimap_size = egui::vec2(160.0, 110.0);
         let minimap_rect = egui::Rect::from_min_size(
             scene_outer_rect.right_bottom() - minimap_size - egui::Vec2::splat(12.0),
@@ -11469,7 +11617,7 @@ impl App {
             minimap_rect.center() + (p - world_bounds.center()) * minimap_scale
         };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
-        for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(&at_level) {
+        for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
             let (radius, color) = match kind {
                 ItemNodeKind::Tab => (2.0, ui.visuals().text_color()),
                 ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
@@ -11500,378 +11648,19 @@ impl App {
             egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
             egui::StrokeKind::Inside,
         );
-        // Compared against after `Scene`'s own closure runs, below --
-        // an actual pan drag or scroll-wheel zoom this frame changes this,
-        // and dismisses `pending_new_node` the same as every other camera
-        // move already does (see that field's own doc comment).
-        let scene_rect_before_pan_zoom = self.graph_scene_rect;
-        let mut scene_rect = self.graph_scene_rect;
-        let scene_response = egui::Scene::new()
-            .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
-            .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
-            .show(ui, &mut scene_rect, |ui| {
-                // Every `overlay_painter` decoration painted inside this
-                // closure is deferred rather than painted immediately -- see
-                // `DeferredOverlays`'s own doc comment for why (this frame's
-                // real pan/zoom isn't reflected in `project`, captured
-                // above, until after this whole closure returns).
-                let mut deferred_overlays: DeferredOverlays = Vec::new();
-                // Dot grid first, under everything -- a fixed-world-spacing
-                // reference so panning/zooming reads as moving through a
-                // real space rather than an empty void, the same idea every
-                // node-graph editor (Blender, Figma, ComfyUI) uses. Spacing
-                // is in *world* units (dots get farther apart on screen
-                // when zoomed in, closer together zoomed out -- the
-                // intended feel), while the dot's own radius is scaled by
-                // `inv_zoom` so it stays a constant ~1.5 screen px
-                // regardless of zoom. Reads `self.graph_scene_rect` (the
-                // previous frame's visible world rect) rather than the
-                // local `scene_rect` above -- that one is already mutably
-                // borrowed for the whole `show` call, including this
-                // closure, so it can't also be read from in here. One frame
-                // of lag, same as `graph_zoom_pct`'s own toolbar readout --
-                // imperceptible at any real frame rate.
-                //
-                // Spacing is adaptive (doubled/halved in world units, never
-                // below a 20 screen-px floor) rather than a fixed 40 world
-                // units -- a fixed spacing looks right near 100% zoom but
-                // turns into tens of thousands of `circle_filled` calls a
-                // frame at `GRAPH_ZOOM_MIN` (0.15x: a full-HD window's
-                // visible world rect alone would need ~57,000 dots at 40
-                // world units apart), a real per-frame cost this avoids by
-                // keeping on-screen density roughly constant regardless of
-                // zoom level instead.
-                let mut grid_spacing = 40.0_f32;
-                while grid_spacing * zoom_scale < 20.0 {
-                    grid_spacing *= 2.0;
-                }
-                while grid_spacing * zoom_scale > 80.0 {
-                    grid_spacing /= 2.0;
-                }
-                let dot_color = ui.visuals().weak_text_color().gamma_multiply(0.35);
-                let visible = self.graph_scene_rect;
-                let start_x = (visible.min.x / grid_spacing).floor() as i32;
-                let end_x = (visible.max.x / grid_spacing).ceil() as i32;
-                let start_y = (visible.min.y / grid_spacing).floor() as i32;
-                let end_y = (visible.max.y / grid_spacing).ceil() as i32;
-                for gx in start_x..=end_x {
-                    for gy in start_y..=end_y {
-                        ui.painter().circle_filled(
-                            egui::pos2(gx as f32 * grid_spacing, gy as f32 * grid_spacing),
-                            1.5 * inv_zoom,
-                            dot_color,
-                        );
-                    }
-                }
+        (minimap_rect, world_bounds, minimap_scale)
+    }
 
-                // Edges first so node cards paint on top of the lines feeding them.
-                // Both endpoints must share the currently-viewed level —
-                // see the physics block's own edge filter above for why.
-                // One pass over every node kind (tabs, downloads, ...), so
-                // each parent->child edge is drawn exactly once.
-                for node in self.nodes.values() {
-                    if node.group != self.current_group {
-                        continue;
-                    }
-                    let Some(parent_id) = &node.parent else {
-                        continue;
-                    };
-                    let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
-                        continue;
-                    };
-                    let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
-                    let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
-                    // Viewport culling: unlike a node's own rect, an edge
-                    // can have one endpoint off-screen and the other on --
-                    // or pass through the viewport with both endpoints
-                    // outside it -- so this checks the bounding box of the
-                    // whole segment against the viewport, not either
-                    // endpoint alone. Not pixel-exact for a steep diagonal
-                    // that grazes past a corner of its own bounding box
-                    // without actually crossing the viewport, but that's a
-                    // rare, cheap-to-tolerate false negative, not a
-                    // visible edge going missing.
-                    if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
-                        draw_graph_edge(
-                            ui.painter(),
-                            parent_pos,
-                            node_pos,
-                            egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
-                        );
-                    }
-                }
-
-                // One drop target per frame, shared by the ring and the
-                // release (see `drop_target`).
-                let pointer = ui.input(|i| i.pointer.interact_pos());
-                let drop_preview =
-                    self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
-
-                // Every card: one shared frame each (`draw_graph_card`),
-                // kind by kind in `GRAPH_DRAW_ORDER` (Group last), which is
-                // also their stacking order: a later kind draws, and takes
-                // the pointer, on top of an earlier one. Each kind's own
-                // click action is applied here.
-                let mut pass = CardPass {
-                    deferred_overlays: &mut deferred_overlays,
-                    actions: &mut actions,
-                    inv_zoom,
-                    zoom_scale,
-                    drop_preview: &drop_preview,
-                };
-                for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
-                    for id in ids.iter() {
-                        // Read before the frame: a Note's `TextEdit` can lose
-                        // focus to a click on its own header this very frame,
-                        // clearing `editing`, and that click must not
-                        // immediately re-enter editing.
-                        let note_was_editing = kind == ItemNodeKind::Note
-                            && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
-                        let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
-                            continue;
-                        };
-                        if let Some(action) = card.control {
-                            // A control consumed this frame's click, so
-                            // the kind's own click action below (e.g.
-                            // Image maximize) is skipped.
-                            pass.actions.push(GraphAction::Node(id.clone(), action));
-                            continue;
-                        }
-                        // A placeholder (see `ImagePayload::error`) has nothing
-                        // to open; a click tries its file again instead.
-                        let missing_file = self.nodes.get(id).is_some_and(|n| {
-                            n.as_image().is_some_and(|i| i.error.is_some())
-                                || n.as_json().is_some_and(|j| j.error.is_some())
-                                || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
-                        });
-                        match kind {
-                            _ if missing_file => {
-                                if card.response.clicked() {
-                                    pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
-                                }
-                            }
-                            // Opens the tab into Tab view.
-                            ItemNodeKind::Tab if card.response.clicked() => {
-                                pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
-                            }
-                            // Click (not drag -- egui doesn't report
-                            // `clicked()` for a drag) reveals the file.
-                            ItemNodeKind::Download if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
-                            // Click on the rendered note enters editing in place.
-                            ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
-                                if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
-                                    note.editing = true;
-                                }
-                            }
-                            // Maximizes the image into Item view, the same
-                            // gesture a Tab card uses.
-                            ItemNodeKind::Image if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
-                            // Opens the full tree in `build_json_viewer`.
-                            ItemNodeKind::Json if card.response.double_clicked() => {
-                                self.json_viewer_node = Some(id.clone())
-                            }
-                            // Drills into the group's own subgraph.
-                            ItemNodeKind::Group if card.response.double_clicked() => {
-                                pass.actions.push(GraphAction::EnterGroup(id.clone()))
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // The empty-canvas "New Tab/Note/Group/File" card -- see
-                // `pending_new_node`'s own doc comment for what spawns/
-                // dismisses it. A vertical text-label list, same visual
-                // language every other right-click menu in this app
-                // already uses (tab/group/note/image/pdf/json), rather
-                // than the icon-only horizontal row this started as --
-                // this was the one context menu here that didn't match.
-                // Drawn the same "real egui widgets embedded in the
-                // Scene's own transformed `Ui`" way a note's `TextEdit`
-                // already is, so it scales/repositions with zoom exactly
-                // like a real card's own contents would, without this
-                // needing to be a real node itself.
-                if let Some(pos) = self.pending_new_node {
-                    let center_pos = egui::Pos2::new(pos.x, pos.y);
-                    let row_count = if self.headless { 3.0 } else { 4.0 };
-                    // `* inv_zoom`: the background box's own world-space
-                    // size must grow as zoom shrinks, the same trick
-                    // `paint_card_control`'s own control rect already
-                    // uses, so it still renders at a constant on-screen size
-                    // after Scene's transform scales it back down -- without
-                    // this, the box shrinks with zoom exactly like ordinary
-                    // card content does, while the now-fixed-size row text
-                    // below stays constant, and would visibly overflow a
-                    // background that's shrunk out from under it.
-                    let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0) * inv_zoom;
-                    let rect = egui::Rect::from_center_size(center_pos, card_size);
-                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, TOOLBAR_FILL);
-                    ui.painter().rect_stroke(
-                        rect,
-                        2.0 * inv_zoom,
-                        egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
-                        egui::StrokeKind::Inside,
-                    );
-                    let row_height = 26.0 * inv_zoom;
-                    let mut row_top = rect.min.y + 6.0 * inv_zoom;
-                    let mut next_row_rect = || {
-                        let row_rect = egui::Rect::from_min_size(
-                            egui::pos2(rect.min.x + 6.0 * inv_zoom, row_top),
-                            egui::vec2(rect.width() - 12.0 * inv_zoom, row_height - 4.0 * inv_zoom),
-                        );
-                        row_top += row_height;
-                        row_rect
-                    };
-                    let clicked_tab = draw_new_node_menu_row(
-                        ui,
-                        &mut deferred_overlays,
-                        next_row_rect(),
-                        "pending_new_node_tab",
-                        inv_zoom,
-                        &format!("{} New Tab", egui_phosphor::light::PLUS),
-                    );
-                    let clicked_note = draw_new_node_menu_row(
-                        ui,
-                        &mut deferred_overlays,
-                        next_row_rect(),
-                        "pending_new_node_note",
-                        inv_zoom,
-                        &format!("{} New Note", egui_phosphor::light::NOTE_PENCIL),
-                    );
-                    let clicked_group = draw_new_node_menu_row(
-                        ui,
-                        &mut deferred_overlays,
-                        next_row_rect(),
-                        "pending_new_node_group",
-                        inv_zoom,
-                        &format!("{} New Group", egui_phosphor::light::FOLDER_PLUS),
-                    );
-                    // Same reasoning as every other file-dialog button in
-                    // this app -- a real picker blocks on OS/human input
-                    // neither exists in headless mode.
-                    let clicked_file = !self.headless
-                        && draw_new_node_menu_row(
-                            ui,
-                            &mut deferred_overlays,
-                            next_row_rect(),
-                            "pending_new_node_file",
-                            inv_zoom,
-                            &format!("{} Add File...", egui_phosphor::light::FILE_PLUS),
-                        );
-                    if clicked_tab {
-                        actions.push(GraphAction::NewTab(self.focused.clone()));
-                        self.pending_new_node = None;
-                    }
-                    if clicked_note {
-                        actions.push(GraphAction::NewNote(pos));
-                        self.pending_new_node = None;
-                    }
-                    if clicked_group {
-                        actions.push(GraphAction::NewGroup(pos));
-                        self.pending_new_node = None;
-                    }
-                    if clicked_file {
-                        actions.push(GraphAction::NewFile(pos));
-                        self.pending_new_node = None;
-                    }
-                    // Same dismiss-on-click-elsewhere mechanism every other
-                    // popup here uses, just projected to screen space first
-                    // -- this card's own rect is in world-space (Scene's
-                    // transformed coordinates), but `clicked_outside_popup`
-                    // reads the real screen-space pointer position.
-                    let screen_rect = egui::Rect::from_min_max(project(rect.min), project(rect.max));
-                    if clicked_outside_popup(ui, screen_rect, None) {
-                        self.pending_new_node = None;
-                    }
-                }
-
-                // Peek preview: an enlarged view of the hovered node's cached
-                // thumbnail, floating near it, without changing focus. Painted
-                // directly in this same world-space layer (not a separate
-                // `egui::Area`, which would paint in un-transformed screen
-                // space) so it pans/zooms together with its node and simply
-                // ends up on top by paint order, drawn after every node
-                // above. Skipped while `peek_suppressed` matches -- an
-                // Escape press dismissing this exact node's peek early,
-                // see that field's own doc comment.
-                if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
-                    self.peek_suppressed = None;
-                }
-                let peek_target =
-                    self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
-                // Polled every frame regardless of `peek_target`, same
-                // "continuous polling, not just while shown" reasoning the
-                // dropdown popups' own fade needs -- a plain `if let Some`
-                // gate here would only ever call `animate_bool` while a
-                // peek is actually showing, and the real-elapsed-time gap
-                // since the last poll (however long the pointer sat
-                // elsewhere) would make it jump straight to fully visible
-                // the instant it reappears instead of visibly fading in.
-                let peek_fade =
-                    ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
-                if peek_fade > 0.0 {
-                    if let Some(hovered_id) = peek_target {
-                        let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
-                        let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
-                        if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
-                            let rect = egui::Rect::from_min_size(
-                                egui::Pos2::new(
-                                    node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
-                                    node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
-                                ),
-                                GRAPH_PEEK_SIZE,
-                            );
-                            ui.set_opacity(peek_fade);
-                            ui.painter()
-                                .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-                            ui.painter().image(
-                                tex_id,
-                                rect,
-                                egui::Rect::from_min_max(
-                                    egui::Pos2::new(0.0, 0.0),
-                                    egui::Pos2::new(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
-                            );
-                            ui.painter().rect_stroke(
-                                rect,
-                                6.0,
-                                egui::Stroke::new(1.5, ACCENT),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                    }
-                }
-                deferred_overlays
-            });
-        self.graph_scene_rect = scene_rect;
-        // Now that `self.graph_scene_rect` reflects this frame's actual
-        // pan/zoom (not the stale value `project`/`overlay_painter` calls
-        // inside the closure above had to work with -- see
-        // `DeferredOverlays`'s own doc comment), recompute the transform
-        // fresh and paint every decoration queued during that closure with
-        // it, closing the one-frame gap between a card and its own
-        // overlay-painted label/icons that was otherwise most visible
-        // during a fast pan or zoom.
-        let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-        let project = move |world: egui::Pos2| -> egui::Pos2 {
-            (translation + zoom_scale * world.to_vec2()).to_pos2()
-        };
-        for overlay in scene_response.inner {
-            overlay(&overlay_painter, &project);
-        }
-        if scene_rect != scene_rect_before_pan_zoom {
-            self.pending_new_node = None;
-        }
-
-        // Pan momentum bookkeeping -- see `PanMomentum`'s own doc
-        // comment. `actively_panning` requires the pointer to still be
-        // held down (ruling out a single-frame minimap-click jump, which
-        // never has "held down across multiple frames" to sample a
-        // velocity from), no node currently grabbed (a node drag moves
-        // the node, not the camera, so it'd contribute a bogus near-zero
-        // sample anyway, but this is the explicit, intended guard), and
-        // no `GraphCameraTween` in progress (that already owns
-        // `graph_scene_rect` this frame).
+    /// Pan momentum bookkeeping -- see `PanMomentum`'s own doc
+    /// comment. `actively_panning` requires the pointer to still be
+    /// held down (ruling out a single-frame minimap-click jump, which
+    /// never has "held down across multiple frames" to sample a
+    /// velocity from), no node currently grabbed (a node drag moves
+    /// the node, not the camera, so it'd contribute a bogus near-zero
+    /// sample anyway, but this is the explicit, intended guard), and
+    /// no `GraphCameraTween` in progress (that already owns
+    /// `graph_scene_rect` this frame).
+    fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let actively_panning =
             pointer_down && self.dragging.is_none() && self.graph_camera_tween.is_none();
@@ -11907,25 +11696,33 @@ impl App {
             // leak into a later release's velocity estimate.
             self.pan_drag_history.clear();
         }
+    }
 
-        // Minimap click-to-recenter: deliberately registered *after*
-        // `Scene::show` above (not alongside the minimap's own drawing,
-        // which runs before it) -- egui resolves overlapping hit-testing in
-        // the same layer by allocation order, last-registered on top, so an
-        // `interact()` added before Scene's own background pan sense would
-        // lose the minimap's screen area to it. `world_bounds`/
-        // `minimap_rect`/`minimap_scale` are the same locals the drawing
-        // above already computed.
-        // Read raw pointer state rather than `ui.interact()`: Scene's own
-        // background pan sense already covers this whole panel (it's
-        // allocated over `scene_outer_rect`, which the minimap sits inside)
-        // and wins egui's hit-testing for any widget added here, so a
-        // normal `interact()`-based click never actually saw the pointer --
-        // confirmed live via temporary logging showing zero hover events
-        // even with the cursor sitting directly over the minimap. The same
-        // "read `ui.input` directly, ignore widget hit-testing entirely"
-        // fix the rectangle-select marquee already needed for an identical
-        // reason (see that code's own doc comment).
+    /// Minimap click-to-recenter: deliberately registered *after*
+    /// `build_graph_ui`'s `Scene::show` (not alongside the minimap's own drawing,
+    /// which runs before it) -- egui resolves overlapping hit-testing in
+    /// the same layer by allocation order, last-registered on top, so an
+    /// `interact()` added before Scene's own background pan sense would
+    /// lose the minimap's screen area to it. `world_bounds`/
+    /// `minimap_rect`/`minimap_scale` are what `draw_graph_minimap`
+    /// returned.
+    /// Read raw pointer state rather than `ui.interact()`: Scene's own
+    /// background pan sense already covers this whole panel (it's
+    /// allocated over `scene_outer_rect`, which the minimap sits inside)
+    /// and wins egui's hit-testing for any widget added here, so a
+    /// normal `interact()`-based click never actually saw the pointer --
+    /// confirmed live via temporary logging showing zero hover events
+    /// even with the cursor sitting directly over the minimap. The same
+    /// "read `ui.input` directly, ignore widget hit-testing entirely"
+    /// fix the rectangle-select marquee already needed for an identical
+    /// reason (see that code's own doc comment).
+    fn handle_minimap_click(
+        &mut self,
+        ui: &egui::Ui,
+        minimap_rect: egui::Rect,
+        world_bounds: egui::Rect,
+        minimap_scale: f32,
+    ) {
         let minimap_clicked = ui.input(|i| {
             i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| minimap_rect.contains(p))
         });
@@ -11938,25 +11735,364 @@ impl App {
                 self.pending_new_node = None;
             }
         }
+    }
 
-        for action in actions {
-            self.apply_graph_action(ui.ctx(), action);
+    /// Dot grid first, under everything -- a fixed-world-spacing
+    /// reference so panning/zooming reads as moving through a
+    /// real space rather than an empty void, the same idea every
+    /// node-graph editor (Blender, Figma, ComfyUI) uses. Spacing
+    /// is in *world* units (dots get farther apart on screen
+    /// when zoomed in, closer together zoomed out -- the
+    /// intended feel), while the dot's own radius is scaled by
+    /// `inv_zoom` so it stays a constant ~1.5 screen px
+    /// regardless of zoom. Reads `self.graph_scene_rect` (the
+    /// previous frame's visible world rect) rather than the
+    /// `build_graph_ui`'s local `scene_rect` -- that one is already mutably
+    /// borrowed for the whole `show` call, including this
+    /// closure, so it can't also be read from in here. One frame
+    /// of lag, same as `graph_zoom_pct`'s own toolbar readout --
+    /// imperceptible at any real frame rate.
+    ///
+    /// Spacing is adaptive (doubled/halved in world units, never
+    /// below a 20 screen-px floor) rather than a fixed 40 world
+    /// units -- a fixed spacing looks right near 100% zoom but
+    /// turns into tens of thousands of `circle_filled` calls a
+    /// frame at `GRAPH_ZOOM_MIN` (0.15x: a full-HD window's
+    /// visible world rect alone would need ~57,000 dots at 40
+    /// world units apart), a real per-frame cost this avoids by
+    /// keeping on-screen density roughly constant regardless of
+    /// zoom level instead.
+    fn draw_graph_dot_grid(&self, ui: &egui::Ui, zoom_scale: f32, inv_zoom: f32) {
+        let mut grid_spacing = 40.0_f32;
+        while grid_spacing * zoom_scale < 20.0 {
+            grid_spacing *= 2.0;
         }
-
-        // Built last, now that `overlay_painter`'s node-decoration layer
-        // above already exists this frame -- see this function's own note
-        // by `shortcuts_help_button_rect`/`recently_closed_button_rect` for
-        // why these can't be built back where those rects are computed.
-        self.build_shortcuts_help(ui, shortcuts_help_button_rect);
-        let recently_closed_fade = ui
-            .ctx()
-            .animate_bool(egui::Id::new("recently_closed_popup_fade"), self.recently_closed_open);
-        if recently_closed_fade > 0.0 {
-            if let Some(rect) = recently_closed_button_rect {
-                self.build_recently_closed_popup(ui, rect, recently_closed_fade);
+        while grid_spacing * zoom_scale > 80.0 {
+            grid_spacing /= 2.0;
+        }
+        let dot_color = ui.visuals().weak_text_color().gamma_multiply(0.35);
+        let visible = self.graph_scene_rect;
+        let start_x = (visible.min.x / grid_spacing).floor() as i32;
+        let end_x = (visible.max.x / grid_spacing).ceil() as i32;
+        let start_y = (visible.min.y / grid_spacing).floor() as i32;
+        let end_y = (visible.max.y / grid_spacing).ceil() as i32;
+        for gx in start_x..=end_x {
+            for gy in start_y..=end_y {
+                ui.painter().circle_filled(
+                    egui::pos2(gx as f32 * grid_spacing, gy as f32 * grid_spacing),
+                    1.5 * inv_zoom,
+                    dot_color,
+                );
             }
         }
-        self.build_node_menu(ui);
+    }
+
+    /// Edges first so node cards paint on top of the lines feeding them.
+    /// Both endpoints must share the currently-viewed level —
+    /// see the physics block's own edge filter above for why.
+    /// One pass over every node kind (tabs, downloads, ...), so
+    /// each parent->child edge is drawn exactly once.
+    fn draw_graph_edges(&self, ui: &egui::Ui, inv_zoom: f32) {
+        for node in self.nodes.values() {
+            if node.group != self.current_group {
+                continue;
+            }
+            let Some(parent_id) = &node.parent else {
+                continue;
+            };
+            let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
+                continue;
+            };
+            let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
+            let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
+            // Viewport culling: unlike a node's own rect, an edge
+            // can have one endpoint off-screen and the other on --
+            // or pass through the viewport with both endpoints
+            // outside it -- so this checks the bounding box of the
+            // whole segment against the viewport, not either
+            // endpoint alone. Not pixel-exact for a steep diagonal
+            // that grazes past a corner of its own bounding box
+            // without actually crossing the viewport, but that's a
+            // rare, cheap-to-tolerate false negative, not a
+            // visible edge going missing.
+            if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.graph_scene_rect) {
+                draw_graph_edge(
+                    ui.painter(),
+                    parent_pos,
+                    node_pos,
+                    egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
+                );
+            }
+        }
+    }
+
+    /// Every card at this level, through the shared frame
+    /// (`draw_graph_card`), plus each kind's own click action. Runs inside
+    /// `build_graph_ui`'s `Scene`, after the grid and edges, so cards paint
+    /// on top of them.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_graph_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        actions: &mut Vec<GraphAction>,
+        at_level: &[Vec<String>],
+        inv_zoom: f32,
+        zoom_scale: f32,
+        leave_group_button_rect: Option<egui::Rect>,
+    ) {
+        // One drop target per frame, shared by the ring and the
+        // release (see `drop_target`).
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let drop_preview =
+            self.dragging.clone().and_then(|dragged| self.drop_target(&dragged, pointer, leave_group_button_rect));
+
+        // Every card: one shared frame each (`draw_graph_card`),
+        // kind by kind in `GRAPH_DRAW_ORDER` (Group last), which is
+        // also their stacking order: a later kind draws, and takes
+        // the pointer, on top of an earlier one. Each kind's own
+        // click action is applied here.
+        let mut pass = CardPass {
+            deferred_overlays,
+            actions,
+            inv_zoom,
+            zoom_scale,
+            drop_preview: &drop_preview,
+        };
+        for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
+            for id in ids.iter() {
+                // Read before the frame: a Note's `TextEdit` can lose
+                // focus to a click on its own header this very frame,
+                // clearing `editing`, and that click must not
+                // immediately re-enter editing.
+                let note_was_editing = kind == ItemNodeKind::Note
+                    && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+                let Some(card) = self.draw_graph_card(ui, &mut pass, id) else {
+                    continue;
+                };
+                if let Some(action) = card.control {
+                    // A control consumed this frame's click, so
+                    // the kind's own click action below (e.g.
+                    // Image maximize) is skipped.
+                    pass.actions.push(GraphAction::Node(id.clone(), action));
+                    continue;
+                }
+                // A placeholder (see `ImagePayload::error`) has nothing
+                // to open; a click tries its file again instead.
+                let missing_file = self.nodes.get(id).is_some_and(|n| {
+                    n.as_image().is_some_and(|i| i.error.is_some())
+                        || n.as_json().is_some_and(|j| j.error.is_some())
+                        || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
+                });
+                match kind {
+                    _ if missing_file => {
+                        if card.response.clicked() {
+                            pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
+                        }
+                    }
+                    // Opens the tab into Tab view.
+                    ItemNodeKind::Tab if card.response.clicked() => {
+                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
+                    }
+                    // Click (not drag -- egui doesn't report
+                    // `clicked()` for a drag) reveals the file.
+                    ItemNodeKind::Download if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
+                    // Click on the rendered note enters editing in place.
+                    ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
+                        if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                            note.editing = true;
+                        }
+                    }
+                    // Maximizes the image into Item view, the same
+                    // gesture a Tab card uses.
+                    ItemNodeKind::Image if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
+                    // Opens the full tree in `build_json_viewer`.
+                    ItemNodeKind::Json if card.response.double_clicked() => {
+                        self.json_viewer_node = Some(id.clone())
+                    }
+                    // Drills into the group's own subgraph.
+                    ItemNodeKind::Group if card.response.double_clicked() => {
+                        pass.actions.push(GraphAction::EnterGroup(id.clone()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The empty-canvas "New Tab/Note/Group/File" card -- see
+    /// `pending_new_node`'s own doc comment for what spawns/
+    /// dismisses it. A vertical text-label list, same visual
+    /// language every other right-click menu in this app
+    /// already uses (tab/group/note/image/pdf/json), rather
+    /// than the icon-only horizontal row this started as --
+    /// this was the one context menu here that didn't match.
+    /// Drawn the same "real egui widgets embedded in the
+    /// Scene's own transformed `Ui`" way a note's `TextEdit`
+    /// already is, so it scales/repositions with zoom exactly
+    /// like a real card's own contents would, without this
+    /// needing to be a real node itself.
+    fn draw_pending_new_node_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        actions: &mut Vec<GraphAction>,
+        inv_zoom: f32,
+        project: &impl Fn(egui::Pos2) -> egui::Pos2,
+    ) {
+        if let Some(pos) = self.pending_new_node {
+            let center_pos = egui::Pos2::new(pos.x, pos.y);
+            let row_count = if self.headless { 3.0 } else { 4.0 };
+            // `* inv_zoom`: the background box's own world-space
+            // size must grow as zoom shrinks, the same trick
+            // `paint_card_control`'s own control rect already
+            // uses, so it still renders at a constant on-screen size
+            // after Scene's transform scales it back down -- without
+            // this, the box shrinks with zoom exactly like ordinary
+            // card content does, while the now-fixed-size row text
+            // below stays constant, and would visibly overflow a
+            // background that's shrunk out from under it.
+            let card_size = egui::vec2(150.0, 12.0 + row_count * 26.0) * inv_zoom;
+            let rect = egui::Rect::from_center_size(center_pos, card_size);
+            ui.painter().rect_filled(rect, 2.0 * inv_zoom, TOOLBAR_FILL);
+            ui.painter().rect_stroke(
+                rect,
+                2.0 * inv_zoom,
+                egui::Stroke::new(1.0 * inv_zoom, ui.visuals().weak_text_color()),
+                egui::StrokeKind::Inside,
+            );
+            let row_height = 26.0 * inv_zoom;
+            let mut row_top = rect.min.y + 6.0 * inv_zoom;
+            let mut next_row_rect = || {
+                let row_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x + 6.0 * inv_zoom, row_top),
+                    egui::vec2(rect.width() - 12.0 * inv_zoom, row_height - 4.0 * inv_zoom),
+                );
+                row_top += row_height;
+                row_rect
+            };
+            let clicked_tab = draw_new_node_menu_row(
+                ui,
+                deferred_overlays,
+                next_row_rect(),
+                "pending_new_node_tab",
+                inv_zoom,
+                &format!("{} New Tab", egui_phosphor::light::PLUS),
+            );
+            let clicked_note = draw_new_node_menu_row(
+                ui,
+                deferred_overlays,
+                next_row_rect(),
+                "pending_new_node_note",
+                inv_zoom,
+                &format!("{} New Note", egui_phosphor::light::NOTE_PENCIL),
+            );
+            let clicked_group = draw_new_node_menu_row(
+                ui,
+                deferred_overlays,
+                next_row_rect(),
+                "pending_new_node_group",
+                inv_zoom,
+                &format!("{} New Group", egui_phosphor::light::FOLDER_PLUS),
+            );
+            // Same reasoning as every other file-dialog button in
+            // this app -- a real picker blocks on OS/human input
+            // neither exists in headless mode.
+            let clicked_file = !self.headless
+                && draw_new_node_menu_row(
+                    ui,
+                    deferred_overlays,
+                    next_row_rect(),
+                    "pending_new_node_file",
+                    inv_zoom,
+                    &format!("{} Add File...", egui_phosphor::light::FILE_PLUS),
+                );
+            if clicked_tab {
+                actions.push(GraphAction::NewTab(self.focused.clone()));
+                self.pending_new_node = None;
+            }
+            if clicked_note {
+                actions.push(GraphAction::NewNote(pos));
+                self.pending_new_node = None;
+            }
+            if clicked_group {
+                actions.push(GraphAction::NewGroup(pos));
+                self.pending_new_node = None;
+            }
+            if clicked_file {
+                actions.push(GraphAction::NewFile(pos));
+                self.pending_new_node = None;
+            }
+            // Same dismiss-on-click-elsewhere mechanism every other
+            // popup here uses, just projected to screen space first
+            // -- this card's own rect is in world-space (Scene's
+            // transformed coordinates), but `clicked_outside_popup`
+            // reads the real screen-space pointer position.
+            let screen_rect = egui::Rect::from_min_max(project(rect.min), project(rect.max));
+            if clicked_outside_popup(ui, screen_rect, None) {
+                self.pending_new_node = None;
+            }
+        }
+    }
+
+    /// Peek preview: an enlarged view of the hovered node's cached
+    /// thumbnail, floating near it, without changing focus. Painted
+    /// directly in this same world-space layer (not a separate
+    /// `egui::Area`, which would paint in un-transformed screen
+    /// space) so it pans/zooms together with its node and simply
+    /// ends up on top by paint order, drawn after every card
+    /// (`draw_graph_cards`). Skipped while `peek_suppressed` matches -- an
+    /// Escape press dismissing this exact node's peek early,
+    /// see that field's own doc comment.
+    fn draw_peek_preview(&mut self, ui: &mut egui::Ui) {
+        if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
+            self.peek_suppressed = None;
+        }
+        let peek_target =
+            self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
+        // Polled every frame regardless of `peek_target`, same
+        // "continuous polling, not just while shown" reasoning the
+        // dropdown popups' own fade needs -- a plain `if let Some`
+        // gate here would only ever call `animate_bool` while a
+        // peek is actually showing, and the real-elapsed-time gap
+        // since the last poll (however long the pointer sat
+        // elsewhere) would make it jump straight to fully visible
+        // the instant it reappears instead of visibly fading in.
+        let peek_fade =
+            ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
+        if peek_fade > 0.0 {
+            if let Some(hovered_id) = peek_target {
+                let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
+                let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
+                if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
+                    let rect = egui::Rect::from_min_size(
+                        egui::Pos2::new(
+                            node_pos.x + GRAPH_NODE_SIZE.x / 2.0 + 12.0,
+                            node_pos.y - GRAPH_PEEK_SIZE.y / 2.0,
+                        ),
+                        GRAPH_PEEK_SIZE,
+                    );
+                    ui.set_opacity(peek_fade);
+                    ui.painter()
+                        .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                    ui.painter().image(
+                        tex_id,
+                        rect,
+                        egui::Rect::from_min_max(
+                            egui::Pos2::new(0.0, 0.0),
+                            egui::Pos2::new(1.0, 1.0),
+                        ),
+                        egui::Color32::WHITE,
+                    );
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0,
+                        egui::Stroke::new(1.5, ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
     }
 }
 
