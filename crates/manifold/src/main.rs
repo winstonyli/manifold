@@ -671,11 +671,13 @@ fn dim_if_filtered_out(
     }
 }
 
-/// The per-kind colors and filter-dim rounding a graph card's shared
-/// frame (`App::draw_graph_card`) paints with. Note is the one kind on a
-/// light (yellow) card, so its border and ✕ are dark instead of the
-/// theme's text colors.
+/// The per-kind background, colors and filter-dim rounding a graph
+/// card's shared frame (`App::draw_graph_card`) paints with. Note is the
+/// one kind on a light (yellow) card, so its border and ✕ are dark
+/// instead of the theme's text colors.
 struct CardStyle {
+    /// The card's background, under its body (bodies paint content only).
+    fill: egui::Color32,
     border_hover: egui::Color32,
     border_idle: egui::Color32,
     close_fill: egui::Color32,
@@ -686,6 +688,7 @@ struct CardStyle {
 
 fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardStyle {
     let themed = CardStyle {
+        fill: visuals.extreme_bg_color,
         border_hover: visuals.text_color(),
         border_idle: visuals.weak_text_color(),
         close_fill: visuals.extreme_bg_color,
@@ -695,6 +698,7 @@ fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardStyle {
     };
     match kind {
         ItemNodeKind::Note => CardStyle {
+            fill: NOTE_CARD_COLOR,
             border_hover: egui::Color32::from_black_alpha(200),
             border_idle: egui::Color32::from_black_alpha(120),
             close_fill: NOTE_CARD_COLOR,
@@ -722,6 +726,22 @@ struct CardBody {
 struct CardOutput {
     response: egui::Response,
     close_clicked: bool,
+}
+
+/// What a graph card's frame (`App::draw_graph_card`) reads from its
+/// node, snapshotted once up front (`App::card_view`) so nothing holds a
+/// node borrow across the frame's `&mut self` calls.
+struct CardView {
+    kind: ItemNodeKind,
+    color: Option<egui::Color32>,
+}
+
+/// A card's border width and color at hover progress `hover_t` (0 at
+/// rest, 1 hovered): the tag color at rest, else the kind's idle color,
+/// easing toward its hover color, from width 1 to 1.5.
+fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (f32, egui::Color32) {
+    let resting = view.color.unwrap_or(style.border_idle);
+    (1.0 + 0.5 * hover_t, lerp_color32(resting, style.border_hover, hover_t))
 }
 
 /// Small hover-revealed "X" close button at a Graph-view card's top-right
@@ -865,13 +885,10 @@ fn json_summary(value: &serde_json::Value) -> String {
 /// A restored image/JSON card whose file couldn't be loaded: the same
 /// `FILE_X` glyph a failed PDF card shows (see `ImagePayload::error`).
 fn paint_missing_file_card(
-    ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
     rect: egui::Rect,
-    inv_zoom: f32,
     lod_simplified: bool,
 ) {
-    ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
     if lod_simplified {
         return;
     }
@@ -5230,18 +5247,24 @@ impl App {
         }
     }
 
+    /// `id`'s `CardView`, or `None` when the node is gone.
+    fn card_view(&self, id: &str) -> Option<CardView> {
+        let node = self.nodes.get(id)?;
+        Some(CardView { kind: item_node_kind(&node.payload), color: node.color })
+    }
+
     /// One Download/Note/Image/Pdf/Json card on the graph: everything the
     /// five kinds share (cull, click/drag and hover interacts, border,
     /// hover ✕, drag and drop-onto-group, filter dim), with the per-kind
-    /// content painted by `paint_card_body`. `None` when the node is gone
-    /// or culled. The caller applies the kind's own click action from the
+    /// content painted by `paint_card_body`, plus the frame's own
+    /// background, glow and eased hover. `None` when the node is gone or
+    /// culled. The caller applies the kind's own click action from the
     /// returned response. Tab and Group cards keep their own loops.
     fn draw_graph_card(
         &mut self,
         ui: &mut egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
         id: &str,
-        kind: ItemNodeKind,
         inv_zoom: f32,
         zoom_scale: f32,
     ) -> Option<CardOutput> {
@@ -5251,7 +5274,12 @@ impl App {
         if self.dragging.as_deref() != Some(id) && !rect.intersects(self.graph_scene_rect) {
             return None;
         }
-        let body = self.paint_card_body(ui, deferred_overlays, id, kind, rect, inv_zoom, zoom_scale);
+        let view = self.card_view(id)?;
+        // Glow and fill go under the body, but hover is only known after
+        // the interacts, which must follow the body (below). This slot is
+        // filled in once it is.
+        let background = ui.painter().add(egui::Shape::Noop);
+        let body = self.paint_card_body(ui, deferred_overlays, id, view.kind, rect, inv_zoom, zoom_scale);
 
         // Both interacts are registered *after* the body, never before:
         // egui (0.36, `interaction.rs`) gives the pointer to the
@@ -5275,11 +5303,16 @@ impl App {
         // it takes the hover from both interacts above.
         let is_hovered = self.hovered.as_deref() == Some(id) || pointer_on_card;
 
+        // One eased hover drives the glow, the fill's brightening and the
+        // border, so the three move together.
+        let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", id)), is_hovered);
+        let style = card_style(view.kind, ui.visuals());
+        let (border_width, border_color) = card_border(&view, &style, hover_t);
+        let mut background_shapes = card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8).to_vec();
+        background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, style.fill.gamma_multiply(1.0 + hover_t * 0.35)));
+        ui.painter().set(background, egui::Shape::Vec(background_shapes));
         // An inside stroke painted over the body; every body keeps its
         // content inset from the edge.
-        let style = card_style(kind, ui.visuals());
-        let (border_width, border_color) =
-            if is_hovered { (1.5, style.border_hover) } else { (1.0, style.border_idle) };
         ui.painter().rect_stroke(
             rect,
             2.0 * inv_zoom,
@@ -5333,7 +5366,6 @@ impl App {
             // live content behind it), just the filename, an icon, and a
             // live progress bar while it's still downloading.
             ItemNodeKind::Download => {
-                ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                 let Some((download_path, completed, total_bytes, bytes_received)) = self
                     .nodes
                     .get(id)
@@ -5436,7 +5468,6 @@ impl App {
                     .shrink(6.0 * inv_zoom);
                 let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
-                ui.painter().rect_filled(rect, 2.0 * inv_zoom, NOTE_CARD_COLOR);
                 if !self.graph_lod_simplified {
                     let note_icon_pos = header_rect.left_center();
                     deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -5515,7 +5546,7 @@ impl App {
             ItemNodeKind::Image => {
                 let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
                 if let Some(error) = error {
-                    paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, self.graph_lod_simplified);
+                    paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
                     body.tooltip = Some(error);
                     return body;
                 }
@@ -5524,9 +5555,9 @@ impl App {
                 // glyph text) skipped once simplified -- see the tab
                 // loop's own doc comment. Unlike a tab card, an image
                 // node has no separate background fill of its own (the
-                // picture *is* the fill), so the simplified state gets
-                // a plain solid box instead of nothing, matching every
-                // other kind's "background + border" simplified look.
+                // picture *is* the fill). The simplified state shows the
+                // frame's plain fill, matching every other kind's
+                // "background + border" simplified look.
                 if !self.graph_lod_simplified {
                     match tex_id {
                         Some(tex_id) => {
@@ -5544,7 +5575,6 @@ impl App {
                         // placeholder uses, since this picture isn't *about*
                         // to arrive the way a first frame or fetch is.
                         None => {
-                            ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                             let broken_icon_pos = rect.center();
                             let broken_icon_color = ui.visuals().weak_text_color();
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -5558,8 +5588,6 @@ impl App {
                             }));
                         }
                     }
-                } else {
-                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                 }
             }
             // Pdf: same card shape as an image node (drag, hover-revealed
@@ -5626,7 +5654,6 @@ impl App {
                         // Reachable the same rare way an `Image` node's own
                         // `None` case is -- the node outlived its texture.
                         Some(Ok((None, _))) => {
-                            ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                             let broken_icon_pos = rect.center();
                             let broken_icon_color = ui.visuals().weak_text_color();
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -5640,7 +5667,6 @@ impl App {
                             }));
                         }
                         Some(Err(_)) => {
-                            ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                             let error_icon_pos = rect.center();
                             deferred_overlays.push(Box::new(move |overlay_painter, project| {
                                 overlay_painter.text(
@@ -5653,12 +5679,9 @@ impl App {
                             }));
                         }
                         None => {
-                            ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                             ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
                         }
                     }
-                } else {
-                    ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                 }
             }
             // Json: always the same fixed `JSON_NODE_SIZE` box (see its
@@ -5669,7 +5692,7 @@ impl App {
             ItemNodeKind::Json => {
                 let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
                 if let Some(error) = error {
-                    paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, self.graph_lod_simplified);
+                    paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
                     body.tooltip = Some(error);
                     return body;
                 }
@@ -5686,7 +5709,6 @@ impl App {
                 }) else {
                     return body;
                 };
-                ui.painter().rect_filled(rect, 2.0 * inv_zoom, ui.visuals().extreme_bg_color);
                 if !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
                     let json_center = rect.center();
                     let summary_color = ui.visuals().text_color();
@@ -11707,7 +11729,7 @@ impl App {
                         let note_was_editing = kind == ItemNodeKind::Note
                             && self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
                         let Some(card) =
-                            self.draw_graph_card(ui, &mut deferred_overlays, id, kind, inv_zoom, zoom_scale)
+                            self.draw_graph_card(ui, &mut deferred_overlays, id, inv_zoom, zoom_scale)
                         else {
                             continue;
                         };
@@ -13152,6 +13174,27 @@ impl App {
                         Suggestion::Search { query } => query,
                     })
                     .collect();
+                // The current level's cards, in draw order, with where each
+                // one's center is on screen: what a headless test needs to
+                // aim a click or drag at a card.
+                let cards: Vec<serde_json::Value> = GRAPH_DRAW_ORDER
+                    .iter()
+                    .flat_map(|&kind| self.nodes_at_current_level(kind))
+                    .filter_map(|id| {
+                        let node = self.nodes.get(&id)?;
+                        let screen = self.graph_world_rect_to_screen(node_card_rect(node));
+                        Some(serde_json::json!({
+                            "id": id,
+                            "kind": format!("{:?}", item_node_kind(&node.payload)),
+                            "group": node.group,
+                            "parent": node.parent,
+                            "color": node.color.is_some(),
+                            "pinned": node.as_tab().is_some_and(|t| t.pinned),
+                            "screen": [screen.center().x, screen.center().y],
+                            "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                        }))
+                    })
+                    .collect();
                 let state = serde_json::json!({
                     "tab_view": self.showing_tab_view(),
                     "transition": self.transition.is_some(),
@@ -13160,6 +13203,7 @@ impl App {
                     "suggestions": suggestions,
                     "highlighted": self.dropdown_highlighted,
                     "current_group": self.current_group,
+                    "cards": cards,
                 });
                 if let Err(err) = std::fs::write(&path, state.to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
@@ -14046,6 +14090,28 @@ mod tests {
     // One row per kind, pinned to the exact menus each kind showed before
     // the per-kind builders were merged (see the node-menu spec), and
     // before the tab and group menus joined them.
+    /// A `CardView` for `kind` with nothing set, for tests to override.
+    fn test_view(kind: ItemNodeKind) -> CardView {
+        CardView { kind, color: None }
+    }
+
+    #[test]
+    fn card_border_eases_from_resting_to_hover() {
+        // Opaque colors, so `lerp_color32` lands exactly on either end.
+        let style = CardStyle {
+            border_idle: egui::Color32::GRAY,
+            border_hover: egui::Color32::WHITE,
+            ..card_style(ItemNodeKind::Note, &egui::Visuals::dark())
+        };
+        let red = egui::Color32::RED;
+        let view = |color| CardView { color, ..test_view(ItemNodeKind::Note) };
+        // At rest: the tag color, else the kind's idle color.
+        assert_eq!(card_border(&view(None), &style, 0.0), (1.0, egui::Color32::GRAY));
+        assert_eq!(card_border(&view(Some(red)), &style, 0.0), (1.0, red));
+        // Fully hovered: the hover color at 1.5, whatever the resting color.
+        assert_eq!(card_border(&view(Some(red)), &style, 1.0), (1.5, egui::Color32::WHITE));
+    }
+
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
         fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, f32, String) {

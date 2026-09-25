@@ -195,7 +195,11 @@ pub enum DebugCommand {
     /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
     /// query, or `tab:<id>` for an open tab), `highlighted` (a row
     /// index, or null) and `current_group` (the Graph view level's group
-    /// id, or null at the top). Suggestions arriving from the network show up
+    /// id, or null at the top). `cards` lists the current level's cards in
+    /// draw order, each as `id`, `kind` (`"Tab"`, `"Note"`, ...), `group`,
+    /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
+    /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
+    /// which are pixels headless. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
     ExportState(String),
