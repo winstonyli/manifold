@@ -13,6 +13,8 @@
 # entering and leaving a group in Graph view; tab drops inside a group
 # (reparent, the cycle refusal) and ejecting a rectangle-selected tab;
 # the overloaded and empty groups' border colors (needs Pillow);
+# closing a group holding an image and a nested group, then reopening
+# it (REOPENTAB) nested as it was;
 # quit. The drop checks click cards where EXPORTSTATE's `cards` says they
 # are, after the layout stops moving (`settle`), not at fixed coordinates.
 #
@@ -386,6 +388,41 @@ else
     else failed "the 9-member group $nine's border isn't DANGER_COLOR (see borders.png)"; fi
     if border nine "$empty" "(215, 162, 74)" && ! border nine "$empty" "(196, 87, 58)"; then pass "an empty group has an ACCENT border"
     else failed "the empty group $empty's border isn't ACCENT (see borders.png)"; fi
+fi
+
+# Recently Closed keeps nesting: fill the empty group with an image and
+# the Pair group (so `$empty { image, group { tab, tab } }`), close it
+# from the top level, and REOPENTAB (Ctrl+Shift+T) brings the whole
+# subtree back as one entry, still nested.
+send "DOUBLECLICK $(query nine "xy('$empty')")"
+settle outer_in
+send "ADDIMAGE $(cygpath -w "$repo_root")\crates\manifold\assets\icon\icon-64.png"
+send "IMPORTGROUP $out_dir_win\pair.group.json"
+send "WAITTABS"
+settle outer_built
+check_query outer_built "a group can hold an image and a nested group" \
+    "s['current_group'] == '$empty' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+send "CLICK 22 17"
+settle outer_back
+send "CLOSEGROUP $empty"
+settle outer_closed
+check_query outer_closed "closing the outer group removes it" "'$empty' not in groups"
+send "REOPENTAB"
+send "WAITTABS"
+settle reopened
+outer=$(BEFORE="$(query outer_closed 'groups')" query reopened '([g for g in groups if g not in eval(env["BEFORE"])] or ["none"])[0]')
+if [ "$outer" = none ]; then
+    failed "REOPENTAB brought no group back"
+else
+    send "DOUBLECLICK $(query reopened "xy('$outer')")"
+    settle reopened_in
+    check_query reopened_in "the reopened group has its image and nested group back" \
+        "s['current_group'] == '$outer' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+    inner=$(query reopened_in '(groups or ["none"])[0]')
+    send "DOUBLECLICK $(query reopened_in "xy('$inner')")"
+    settle reopened_inner
+    check_query reopened_inner "the nested group comes back with both tabs" \
+        "s['current_group'] == '$inner' and len(tabs) == 2"
 fi
 
 send "QUIT"
