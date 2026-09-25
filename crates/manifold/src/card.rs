@@ -1,4 +1,6 @@
-//! The shared graph-card frame: card sizes and styles, the corner controls, drop rules and the per-card view/output types `draw_graph_card` works with.
+//! The shared graph-card frame: card sizes and styles, the corner controls,
+//! drop rules and the per-card view/output types `draw_graph_card` works
+//! with.
 
 use super::*;
 

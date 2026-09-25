@@ -1,4 +1,5 @@
-//! The Image item view's zoom and pan math: fit scale, anchored zoom, pan clamping and the zoom-chip actions.
+//! The Image item view's zoom and pan math: fit scale, anchored zoom, pan
+//! clamping and the zoom-chip actions.
 
 use super::*;
 

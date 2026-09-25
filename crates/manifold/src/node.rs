@@ -1,4 +1,5 @@
-//! The graph's node model: `GraphNode`, its `NodePayload` kinds and their payload structs.
+//! The graph's node model: `GraphNode`, its `NodePayload` kinds and their
+//! payload structs.
 
 use super::*;
 

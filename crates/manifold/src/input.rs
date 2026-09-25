@@ -1,4 +1,5 @@
-//! Translates winit input (mouse buttons, modifiers, key codes) into the engine IPC protocol's types.
+//! Translates winit input (mouse buttons, modifiers, key codes) into the
+//! engine IPC protocol's types.
 
 use super::*;
 

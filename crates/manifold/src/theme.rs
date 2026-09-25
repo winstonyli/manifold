@@ -1,4 +1,5 @@
-//! The app's look: palette, egui style and fonts, shared popup/dialog frames and the dark title bar.
+//! The app's look: palette, egui style and fonts, shared popup/dialog
+//! frames, the toolbar panel and chip widgets, and the dark title bar.
 
 use super::*;
 
@@ -320,4 +321,153 @@ pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::
         lerp_u8(a.b(), b.b()),
         lerp_u8(a.a(), b.a()),
     )
+}
+
+/// Every fixed-height toolbar-style row in this app (Tab view's own
+/// address-bar row, Graph view's own row, the Settings page's back-button
+/// row, and the tab-respawn placeholder) goes through this one function
+/// now, instead of each hand-rolling the same `Panel::top(id).exact_size
+/// (CHROME_HEIGHT_POINTS).frame(...)` shell separately. That duplication
+/// was never just repetition -- three of these four had already silently
+/// drifted out of sync with each other at least once: the Graph toolbar
+/// got a compact-spacing override during a later palette pass (`apply_
+/// style` bumped the app-wide default spacing airier, which this fixed
+/// row height was never resized for), but the Tab toolbar and the
+/// Settings page's own back-button row didn't get the same override --
+/// both later overflowed the fixed row height for it, found live on two
+/// separate occasions, each requiring its own investigation to notice.
+/// A single shared constructor makes that whole *class* of bug
+/// structurally impossible to reintroduce one toolbar at a time again:
+/// every future toolbar automatically gets the same compact spacing this
+/// row height needs, and the same horizontal-scroll overflow safety (see
+/// the Graph toolbar's own former comment on this, now here instead) --
+/// without a fresh author needing to already know why, or remembering to
+/// copy it from whichever toolbar they happened to look at first.
+///
+/// `content` still owns its own internal layout (`horizontal_centered`
+/// vs. `with_layout(.., Align::Min)`, etc.) -- callers differ there for
+/// reasons specific to each row (see the Tab toolbar's own `Align::Min`
+/// doc comment), so this only ever provides the shared *shell* around it.
+pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Panel::top(id)
+        .exact_size(CHROME_HEIGHT_POINTS)
+        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 3)))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
+        });
+}
+
+/// A toolbar icon button whose hover fill/text color eases in/out instead
+/// of snapping -- egui's stock `Button` picks its resting/hovered colors
+/// fresh every frame with no built-in transition of its own (same reason
+/// the graph cards needed their own `hover_t` easing earlier this
+/// session). `id` must be unique per button *concept*, not per call site --
+/// the same id reused across, say, the Tab and Graph toolbars' own gear
+/// buttons is fine, since only one of those toolbars is ever showing in a
+/// given frame to begin with. One frame of hover-state lag: this frame's
+/// color comes from *last* frame's hover (stashed in `ctx` memory), since
+/// a button's fill has to be picked before `ui.add` reveals whether the
+/// pointer is actually over its not-yet-laid-out rect -- imperceptible at
+/// any real frame rate, same "acceptable one-frame lag" the zoom-%
+/// toolbar readout and the dot-grid background already accept elsewhere.
+/// Deliberately scoped to every *icon-only* toolbar button (Reload/Home/
+/// Screenshot/Print-to-PDF/Settings/Keyboard-Shortcuts/Settings-page-Back/
+/// Close-Split/Import-Group/Ungroup-All/Collapse-Expand-Groups) rather than
+/// every `ui.button` call in the app -- see README.md's own "Toolbar
+/// icon-button hover easing" paragraph for why a full sweep
+/// wasn't attempted.
+pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
+    let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
+    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let bg = lerp_color32(
+        ui.visuals().widgets.inactive.weak_bg_fill,
+        ui.visuals().widgets.hovered.weak_bg_fill,
+        hover_t,
+    );
+    let fg = lerp_color32(
+        ui.visuals().widgets.inactive.fg_stroke.color,
+        ui.visuals().widgets.hovered.fg_stroke.color,
+        hover_t,
+    );
+    let response = ui.add(egui::Button::new(egui::RichText::new(label.into()).color(fg)).fill(bg));
+    ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
+    response
+}
+
+pub(crate) fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>) -> egui::Response {
+    chip_icon_button_enabled(ui, id, icon, true)
+}
+
+/// Same as `chip_icon_button`, but for icons that need a disabled state
+/// inside a chip (e.g. nav back/forward, dimmed when there's no history) --
+/// `chip_icon_button` alone can't express `ui.add_enabled`'s disabled
+/// styling since it always calls `ui.add`.
+///
+/// Same hover-eased feedback as `icon_button_eased`, but with no visible
+/// border ever (idle or hovered) and a transparent idle fill -- for icons
+/// already sitting inside a shared background chip (see `toolbar_chip`),
+/// where `icon_button_eased`'s own always-drawn box reads as a border
+/// nested inside the chip's own border. Deliberately still a real,
+/// fully-framed `egui::Button` (not `.frame(false)`, which shrinks the
+/// widget's own allocated size well below a normal button's and was
+/// found live to make a chip noticeably shorter than its "+ New Tab"/
+/// "Reset View" neighbors) -- keeping the frame but making it invisible
+/// at rest matches every sibling button's sizing exactly while still
+/// hiding the box until the icon is hovered, at which point a soft fill
+/// (no stroke) confirms the hit target.
+pub(crate) fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>, enabled: bool) -> egui::Response {
+    let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
+    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
+    let fg = lerp_color32(
+        ui.visuals().widgets.inactive.fg_stroke.color,
+        ui.visuals().widgets.hovered.fg_stroke.color,
+        hover_t,
+    );
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(icon.into()).color(fg))
+            .fill(bg)
+            .stroke(egui::Stroke::NONE),
+    );
+    ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
+    response
+}
+
+/// Paints a raised chip background behind `content` -- e.g. a cluster of
+/// `chip_icon_button`s that should read as one grouped control instead of
+/// a flat row of buttons. Uses egui's "reserve then backfill" idiom
+/// (`Shape::Noop` now, `Painter::set` once the real size is known) since
+/// the chip's own size depends on content not yet laid out.
+///
+/// `content` MUST run directly against the `ui` it's given -- never
+/// inside its own nested `ui.horizontal`/`ui.new_child`. A nested Ui
+/// becomes an independently-sized layout block that the OUTER row then
+/// centers (or top-aligns) using its own possibly-smaller reported
+/// height, which is exactly what caused a confirmed-live ~5px vertical
+/// misalignment in the `toolbar-chip-wip` prototype: the outer row
+/// centered the nested block within its own taller row height, and no
+/// amount of forcing the nested block's *height* fixed it, because the
+/// bug was the block's *existence*, not its size. `content` must instead
+/// call the SAME `ui` for every widget (making them direct siblings of
+/// whatever sits before/after the chip in the row) and return the union
+/// of its own widgets' rects -- exact by construction, since each
+/// widget's own returned `Response::rect` is real.
+pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
+    let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
+    let (lead_rect, _) =
+        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let content_rect = content(ui);
+    let (trail_rect, _) =
+        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let rect = lead_rect.union(content_rect).union(trail_rect);
+    // Content that renders nothing can leave `ui.cursor()`'s fallback
+    // infinite in one axis (`.max.x` for left-to-right layouts, `.min.x`
+    // for right-to-left) -- skip painting rather than filling an
+    // unbounded rect.
+    if rect.is_finite() {
+        ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+    }
 }

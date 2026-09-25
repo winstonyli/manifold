@@ -1,4 +1,5 @@
-//! Per-engine presentation: labels, colors, tiers, pros/cons and the engine picker popup.
+//! Per-engine presentation: labels, colors, tiers, pros/cons and the engine
+//! picker popup.
 
 use super::*;
 
