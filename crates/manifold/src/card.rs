@@ -1,6 +1,5 @@
-//! The shared graph-card frame: card sizes and styles, the corner controls,
-//! drop rules and the per-card view/output types `draw_graph_card` works
-//! with.
+//! Graph cards: the shared frame (`draw_graph_card`) with its sizes,
+//! styles, corner controls and drop rules, and each kind's body painter.
 
 use super::*;
 
@@ -532,6 +531,957 @@ pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
         NodePayload::Group(group) => vec![&group.name],
+    }
+}
+
+impl App {
+    /// `id`'s `CardView`, or `None` when the node is gone.
+    pub(crate) fn card_view(&self, id: &str) -> Option<CardView> {
+        let node = self.nodes.get(id)?;
+        let kind = item_node_kind(&node.payload);
+        let members: Vec<String> = if kind == ItemNodeKind::Group {
+            self.nodes.iter().filter(|(_, n)| n.group.as_deref() == Some(id)).map(|(member, _)| member.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let tab = node.as_tab();
+        Some(CardView {
+            kind,
+            color: node.color,
+            in_group: node.group.is_some(),
+            overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
+            members,
+            focused: self.focused.as_deref() == Some(id),
+            pinned: tab.is_some_and(|t| t.pinned),
+            muted: tab.is_some_and(|t| t.muted),
+            audio_playing: tab.is_some_and(|t| t.audio_playing),
+            selected: self.selected_tabs.contains(id),
+        })
+    }
+
+    /// One card of any kind on the graph: everything the kinds share
+    /// (cull, click/drag and hover interacts, border, controls, selection
+    /// wash, drag and drop through `drop_target`, filter dim), with the
+    /// per-kind content painted by `paint_card_body`, plus the frame's own
+    /// background, glow and eased hover. `None` when the node is gone or
+    /// culled. The caller applies the kind's own click action from the
+    /// returned response.
+    pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
+        let rect = node_card_rect(self.nodes.get(id)?);
+        // Viewport culling: skip every bit of interact/paint
+        // work below for a node that isn't actually visible --
+        // the single highest-leverage fix for a graph with many
+        // more nodes than fit on screen at once. Never culls
+        // the node currently being dragged, even once it's
+        // moved outside the viewport -- `ui.interact`'s own
+        // drag tracking is what keeps a drag alive frame to
+        // frame, so skipping it mid-drag would freeze the node
+        // in place the instant it crossed the visible edge.
+        if self.dragging.as_deref() != Some(id) && !rect.intersects(self.graph_scene_rect) {
+            return None;
+        }
+        let view = self.card_view(id)?;
+        // Glow and fill go under the body, but hover is only known after
+        // the interacts, which must follow the body (below). This slot is
+        // filled in once it is.
+        let background = ui.painter().add(egui::Shape::Noop);
+        let body = self.paint_card_body(ui, deferred_overlays, id, &view, rect, inv_zoom, zoom_scale);
+
+        // Both interacts are registered *after* the body, never before:
+        // egui (0.36, `interaction.rs`) gives the pointer to the
+        // last-registered interactive widget under it, and counts a
+        // hover-only widget as hovered only when it sits on top of that
+        // widget. Registered first, a body widget (a Note's markdown
+        // scope or `TextEdit`) outranked them: a Note card was never
+        // hovered at all, and a click on rendered markdown never reached
+        // the card. The hover-only one covers the whole card, so hovering
+        // a Note's text while editing (where `response` is only the
+        // header) still counts; being hover-only it takes no clicks.
+        let response = ui.interact(body.interact_rect, egui::Id::new(("graph_card", id)), egui::Sense::click_and_drag());
+        // Not while a card's menu is open: the pointer is usually still on
+        // the card it right-clicked, and the tooltip would cover the menu.
+        let response = match body.tooltip {
+            Some(tooltip) if self.node_menu.is_none() => response.on_hover_text(tooltip),
+            _ => response,
+        };
+        let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
+        let pointer_on_card = hover.hovered() || response.hovered();
+        // Last frame's hover too, which keeps the ✕ drawn while the
+        // pointer is on it: registered last, it takes the hover from both
+        // interacts above.
+        let is_hovered = self.hovered.as_deref() == Some(id) || pointer_on_card;
+
+        // One eased hover drives the glow, the fill's brightening and the
+        // border, so the three move together.
+        let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", id)), is_hovered);
+        let style = card_style(view.kind, ui.visuals());
+        let (border_width, border_color) = card_border(&view, &style, hover_t);
+        let mut background_shapes = card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8).to_vec();
+        background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, style.fill.gamma_multiply(1.0 + hover_t * 0.35)));
+        // Rectangle-select's highlight: a translucent ACCENT wash, distinct
+        // from the focus border (an outline only), so a selected tab still
+        // reads differently from the focused one when both apply. In the
+        // background slot, so it tints the card but not its thumbnail.
+        if view.selected {
+            background_shapes.push(egui::Shape::rect_filled(
+                rect,
+                2.0 * inv_zoom,
+                egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 45),
+            ));
+        }
+        ui.painter().set(background, egui::Shape::Vec(background_shapes));
+        // An inside stroke painted over the body; every body keeps its
+        // content inset from the edge.
+        ui.painter().rect_stroke(
+            rect,
+            2.0 * inv_zoom,
+            egui::Stroke::new(border_width * inv_zoom, border_color),
+            egui::StrokeKind::Inside,
+        );
+
+        // The card the dragged one would drop onto: a bold ring, expanded
+        // well past this card so it still shows around a larger dragged
+        // card on top of it. Tracks the pointer directly, not eased.
+        if pass.drop_preview.as_ref().and_then(|(_, target)| target.as_deref()) == Some(id) {
+            ui.painter().rect_stroke(
+                rect.expand(16.0 * inv_zoom),
+                10.0 * inv_zoom,
+                egui::Stroke::new(4.0 * inv_zoom, ACCENT),
+                egui::StrokeKind::Outside,
+            );
+        }
+        // Registered after both interacts above, so they take the pointer.
+        let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
+        let mut control_hovered = false;
+        for card_control in card_controls(&view) {
+            if card_control.hover_only() && !is_hovered {
+                continue;
+            }
+            let control_response = paint_card_control(ui, deferred_overlays, card_control, rect, id, &view, &style, inv_zoom, self.graph_lod_simplified);
+            control_hovered |= control_response.hovered();
+            if control_response.clicked() && control.is_none() {
+                control = Some(card_control.action(view.kind));
+            }
+        }
+
+        // This frame's hover only: passing `is_hovered` (which includes
+        // `self.hovered`) made a card stay hovered, ✕ and all, after the
+        // pointer left it, until another card was hovered.
+        let still_hovered = pointer_on_card || control_hovered;
+        if response.dragged() {
+            self.dragging = Some(id.to_string());
+            // Dragging one selected tab moves the whole selection, as one
+            // unit (see `take_drag_unit`).
+            let delta = response.drag_delta();
+            let moved = if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            for moved_id in moved {
+                if let Some(node) = self.nodes.get_mut(&moved_id) {
+                    node.pos += delta;
+                }
+            }
+        } else if self.dragging.as_deref() == Some(id) {
+            self.dragging = None;
+            // `drop_preview` was computed this frame for this card, and
+            // nothing moved it since (no drag delta on a release frame).
+            pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
+        }
+        if still_hovered {
+            self.hovered = Some(id.to_string());
+        } else if self.hovered.as_deref() == Some(id) {
+            self.hovered = None;
+        }
+
+        if let Some(node) = self.nodes.get(id) {
+            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &card_filter_text(&node.payload), rect, style.dim_rounding);
+        }
+        Some(CardOutput { response, control })
+    }
+
+    /// A graph card's own content, per kind -- everything under the
+    /// shared frame's border (see `draw_graph_card`). Returns which part
+    /// of the card is the click/drag handle and an optional tooltip.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_card_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        view: &CardView,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        match view.kind {
+            ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, zoom_scale),
+            ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom),
+            ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect),
+            ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
+            ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::FailedTab => self.paint_failed_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+        }
+    }
+
+    /// FailedTab (see `FailedTabPayload`): a warning icon, or a spinner
+    /// while a retry is in flight, and the url, with which engine failed
+    /// and why as the tooltip. LOD: skipped once simplified, as for
+    /// `paint_download_body`.
+    pub(crate) fn paint_failed_tab_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let Some(failed) = self.nodes.get(id).and_then(|n| n.as_failed_tab()) else {
+            return body;
+        };
+        let (url, retrying) = (failed.url.clone(), failed.retrying);
+        body.tooltip = Some(format!(
+            "Couldn't start {}: {}\nClick to try again.",
+            engine_label(failed.kind),
+            failed.error
+        ));
+        if self.graph_lod_simplified {
+            return body;
+        }
+        if retrying {
+            ui.put(
+                egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                egui::Spinner::new().size(24.0 * inv_zoom),
+            );
+        } else {
+            let icon_pos = rect.center();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(icon_pos),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::light::WARNING_CIRCLE,
+                    egui::FontId::proportional(24.0),
+                    DANGER_COLOR,
+                );
+            }));
+        }
+        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+            let url_font = egui::FontId::proportional(13.0);
+            let url_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+            let url = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &url_font, url_max_width);
+            let url_pos = rect.center_bottom();
+            let url_color = ui.visuals().weak_text_color();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(url_pos) + egui::vec2(0.0, -8.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    url,
+                    url_font,
+                    url_color,
+                );
+            }));
+        }
+        body
+    }
+
+    /// Download: no thumbnail/title-strip/audio-dot machinery (no
+    /// live content behind it), just the filename, an icon, and a
+    /// live progress bar while it's still downloading.
+    pub(crate) fn paint_download_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let body = CardBody { interact_rect: rect, tooltip: None };
+        let Some((download_path, completed, total_bytes, bytes_received)) = self
+            .nodes
+            .get(id)
+            .and_then(|n| n.as_download())
+            .map(|d| (d.path.clone(), d.completed, d.total_bytes, d.bytes_received))
+        else {
+            return body;
+        };
+        let filename = download_filename(&download_path);
+        // `egui_phosphor::DOWNLOAD_SIMPLE` -- was a raw
+        // Unicode arrow-to-bar glyph (`\u{2913}`) that
+        // happened to render, despite this comment's own
+        // claim of avoiding exactly that gamble; migrated
+        // to a real icon for consistency once the icon
+        // font was already in place for everything else.
+        // LOD: icon/filename text skipped once simplified
+        // -- see `paint_tab_body`'s own LOD comment.
+        if !self.graph_lod_simplified {
+            let download_icon_pos = rect.center_top();
+            let download_icon_color = ui.visuals().text_color();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(download_icon_pos) + egui::vec2(0.0, 10.0),
+                    egui::Align2::CENTER_TOP,
+                    egui_phosphor::light::DOWNLOAD_SIMPLE,
+                    egui::FontId::proportional(18.0),
+                    download_icon_color,
+                );
+            }));
+            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+            // filename entirely rather than truncating to a
+            // near-illegible sliver -- the download-icon glyph
+            // above still marks the node as a download on its
+            // own.
+            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                let filename_font = egui::FontId::proportional(14.0);
+                let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                let filename =
+                    truncate_to_width(&mut self.truncate_cache, ui.ctx(), filename, &filename_font, filename_max_width);
+                let filename_pos = rect.center_bottom();
+                let filename_color = ui.visuals().text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(filename_pos) + egui::vec2(0.0, -8.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        filename,
+                        filename_font,
+                        filename_color,
+                    );
+                }));
+            }
+        }
+        // Live progress bar, only while not yet complete
+        // and only when the server reported a real total
+        // (an unknown-total download still shows as a
+        // download via the icon/filename above; the
+        // Downloads popup's own byte-count-with-no-bar
+        // fallback is where that case gets a number). A
+        // plain `ui.painter()` world-space rect, same
+        // coordinate space `rect`/the card's own fill and
+        // border already draw in -- not `overlay_painter`
+        // (screen-space, used for text specifically to
+        // avoid blurring at non-100% zoom), and not scaled
+        // by `inv_zoom` for the same reason `GRAPH_THUMB_
+        // MARGIN` isn't: this is card-layout geometry
+        // already inside the zoom-scaled Scene transform,
+        // not chrome that needs a constant on-screen size.
+        if !completed {
+            if let Some(total) = total_bytes.filter(|t| *t > 0) {
+                let fraction = (bytes_received as f32 / total as f32).clamp(0.0, 1.0);
+                let track_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + 8.0, rect.bottom() - 26.0),
+                    egui::pos2(rect.right() - 8.0, rect.bottom() - 22.0),
+                );
+                ui.painter().rect_filled(track_rect, 2.0, ui.visuals().weak_text_color().gamma_multiply(0.4));
+                let fill_rect = egui::Rect::from_min_max(
+                    track_rect.min,
+                    egui::pos2(track_rect.min.x + track_rect.width() * fraction, track_rect.max.y),
+                );
+                ui.painter().rect_filled(fill_rect, 2.0, ACCENT);
+            }
+        }
+        body
+    }
+
+    /// Note: a plain user-authored text card, no engine process
+    /// behind it -- see `NotePayload`'s own doc comment. Unlike
+    /// every other kind, most of the card is a real editable
+    /// `TextEdit`, not overlay-painted static text -- editing
+    /// happens directly in place, on the graph. The header strip
+    /// (not the text body) is the drag handle only while editing,
+    /// via `CardBody::interact_rect`, so a click inside the text
+    /// placing a cursor/selecting text is never mistaken for the
+    /// start of a card drag; the frame's own hover-only interact
+    /// covers the whole card regardless, so hovering the text body
+    /// still counts even though it isn't the drag handle.
+    pub(crate) fn paint_note_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let header_h = 20.0 * inv_zoom;
+        let header_rect =
+            egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.min.y + header_h));
+        let text_rect = egui::Rect::from_min_max(egui::Pos2::new(rect.min.x, rect.min.y + header_h), rect.max)
+            .shrink(6.0 * inv_zoom);
+        let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
+
+        if !self.graph_lod_simplified {
+            let note_icon_pos = header_rect.left_center();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(note_icon_pos) + egui::vec2(8.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    egui_phosphor::light::NOTE_PENCIL,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_black_alpha(160),
+                );
+            }));
+        }
+
+        if is_editing {
+            body.interact_rect = header_rect;
+            let mut lost_focus = false;
+            if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                lost_focus = ui
+                    .put(
+                        text_rect,
+                        egui::TextEdit::multiline(&mut note.text)
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::proportional(13.0))
+                            .text_color(egui::Color32::from_black_alpha(220))
+                            .hint_text("Type a note..."),
+                    )
+                    .lost_focus();
+            }
+            // Committed on blur, not on every keystroke -- a note is
+            // persisted (unlike every other per-node display state
+            // in `session.json`, see `NotePayload`'s own doc
+            // comment), and `save_session` is real file I/O, so
+            // writing it once per edit *session* rather than once
+            // per character avoids hammering disk while typing.
+            if lost_focus {
+                if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
+                    note.editing = false;
+                }
+                self.save_session();
+            }
+        } else if !self.graph_lod_simplified {
+            // `text` is cloned out before the closure below --
+            // `ui.scope_builder`'s closure borrows `self.
+            // commonmark_cache` mutably, which the borrow
+            // checker only allows alongside a *finished*
+            // borrow of `self.nodes`, not one still live inside
+            // the same closure.
+            // LOD: skip the markdown render (real parsing +
+            // rich text layout, one of the pricier per-node
+            // widgets in this whole view) once simplified --
+            // see `paint_tab_body`'s own LOD comment. Never
+            // applies to the `is_editing` branch above: a
+            // note actively being typed into must never have
+            // its live `TextEdit` yanked out from under the
+            // user just because the rest of the graph got
+            // busy.
+            let text = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()).unwrap_or_default();
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
+                |ui| {
+                    ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_black_alpha(220));
+                    egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.commonmark_cache, &text);
+                },
+            );
+        }
+        body
+    }
+
+    /// Image: a locally-added picture, no engine/IPC behind it --
+    /// see `ImagePayload`'s own doc comment. Unlike a note, nothing
+    /// inside the card needs its own clicks (no embedded text
+    /// editor), so the whole card is drag-sensitive via one plain
+    /// `Sense::click_and_drag()`, same as a tab or download card.
+    /// The card's own footprint comes from `image_node_card_size`
+    /// (the decoded picture's real aspect ratio, capped at
+    /// `IMAGE_NODE_MAX_SIZE`), not a fixed size the way every other
+    /// kind's card is.
+    pub(crate) fn paint_image_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
+        if let Some(error) = error {
+            paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
+            body.tooltip = Some(error);
+            return body;
+        }
+        let tex_id = self.gpu.as_ref().and_then(|g| g.image_id(id));
+        // LOD: the real texture blit (and the broken-image
+        // glyph text) skipped once simplified -- see
+        // `paint_tab_body`'s own LOD comment. Unlike a tab card, an image
+        // node has no separate background fill of its own (the
+        // picture *is* the fill). The simplified state shows the
+        // frame's plain fill, matching every other kind's
+        // "background + border" simplified look.
+        if !self.graph_lod_simplified {
+            match tex_id {
+                Some(tex_id) => {
+                    ui.painter().image(
+                        tex_id,
+                        rect,
+                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                // Only reachable if the node somehow outlived its
+                // own texture (freed but not removed) -- a broken-
+                // image glyph is a more honest placeholder here
+                // than the loading `Spinner` a tab/download
+                // placeholder uses, since this picture isn't *about*
+                // to arrive the way a first frame or fetch is.
+                None => {
+                    let broken_icon_pos = rect.center();
+                    let broken_icon_color = ui.visuals().weak_text_color();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(broken_icon_pos),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::light::IMAGE_BROKEN,
+                            egui::FontId::proportional(24.0),
+                            broken_icon_color,
+                        );
+                    }));
+                }
+            }
+        }
+        body
+    }
+
+    /// Pdf: same card shape as an image node (drag, hover-revealed
+    /// close button, drop-onto-group), but with three visual states
+    /// instead of one -- still rendering in the background
+    /// (`outcome: None`, a plain spinner, same fixed
+    /// `PDF_PENDING_NODE_SIZE` box a tab respawn placeholder uses
+    /// `Spinner` for too), failed (`Some(Err(_))`, a real error
+    /// glyph plus the message as a hover tooltip -- unlike an
+    /// image's "somehow outlived its own texture" broken-image
+    /// case, this is an *expected*, real outcome worth explaining,
+    /// not a rare bug), or rendered (`Some(Ok(_))`, the page's own
+    /// texture in `GpuState::images` -- the exact same map an
+    /// `Image` node's texture lives in, since a rendered PDF page
+    /// is just another RGBA bitmap by the time it's on the GPU).
+    pub(crate) fn paint_pdf_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let Some(state) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|pdf| match &pdf.outcome {
+            None => None,
+            Some(Err(err)) => Some(Err(err.clone())),
+            Some(Ok(outcome)) => {
+                Some(Ok((self.gpu.as_ref().and_then(|g| g.image_id(id)), outcome.page_count)))
+            }
+        }) else {
+            return body;
+        };
+        // A failed render's error message shown as a hover
+        // tooltip on the card itself -- the only place there's
+        // room for real text without permanently occupying part
+        // of the card the way a label would.
+        if let Some(Err(err)) = &state {
+            body.tooltip = Some(err.clone());
+        }
+        // LOD: same "plain solid box instead of the real
+        // content" simplification as `paint_image_body` -- see
+        // `paint_tab_body`'s own LOD comment.
+        if !self.graph_lod_simplified {
+            match state {
+                Some(Ok((Some(tex_id), page_count))) => {
+                    ui.painter().image(
+                        tex_id,
+                        rect,
+                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                    // Shown even for a one-page PDF -- a glanceable
+                    // "this is a PDF, not a plain image" cue on top
+                    // of the file-type distinction the icon in the
+                    // context menu/toolbar already gives.
+                    if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                        let page_count_pos = rect.right_bottom();
+                        let page_count_text =
+                            format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(page_count_pos) + egui::vec2(-4.0, -4.0),
+                                egui::Align2::RIGHT_BOTTOM,
+                                page_count_text,
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+                        }));
+                    }
+                }
+                // Reachable the same rare way an `Image` node's own
+                // `None` case is -- the node outlived its texture.
+                Some(Ok((None, _))) => {
+                    let broken_icon_pos = rect.center();
+                    let broken_icon_color = ui.visuals().weak_text_color();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(broken_icon_pos),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::light::IMAGE_BROKEN,
+                            egui::FontId::proportional(24.0),
+                            broken_icon_color,
+                        );
+                    }));
+                }
+                Some(Err(_)) => {
+                    let error_icon_pos = rect.center();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(error_icon_pos),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::light::FILE_X,
+                            egui::FontId::proportional(24.0),
+                            DANGER_COLOR,
+                        );
+                    }));
+                }
+                None => {
+                    ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
+                }
+            }
+        }
+        body
+    }
+
+    /// Json: always the same fixed `JSON_NODE_SIZE` box (see its
+    /// own doc comment for why) -- no GPU texture, just an icon
+    /// plus `json_summary`'s own compact shape label. Double-click
+    /// opens the full tree in `build_json_viewer`, the same popup a
+    /// tab's own "View as JSON" already uses.
+    pub(crate) fn paint_json_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
+        let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
+        if let Some(error) = error {
+            paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
+            body.tooltip = Some(error);
+            return body;
+        }
+        let Some(summary) = self.nodes.get(id).and_then(|n| n.as_json()).map(|json| match &json.key {
+            Some(key) => {
+                let key_display = if key.chars().count() > 16 {
+                    format!("{}…", key.chars().take(15).collect::<String>())
+                } else {
+                    key.clone()
+                };
+                format!("{key_display}: {}", json_summary(&json.value))
+            }
+            None => json_summary(&json.value),
+        }) else {
+            return body;
+        };
+        if !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+            let json_center = rect.center();
+            let summary_color = ui.visuals().text_color();
+            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                overlay_painter.text(
+                    project(json_center) + egui::vec2(0.0, -12.0),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::light::BRACKETS_CURLY,
+                    egui::FontId::proportional(22.0),
+                    ACCENT,
+                );
+                overlay_painter.text(
+                    project(json_center) + egui::vec2(0.0, 14.0),
+                    egui::Align2::CENTER_CENTER,
+                    summary,
+                    egui::FontId::proportional(12.0),
+                    summary_color,
+                );
+            }));
+        }
+        body
+    }
+
+    /// A member thumbnail grid (or the name and member count, when
+    /// empty or with "Collapse Groups" on). LOD: skipped once
+    /// simplified, leaving the frame's plain card.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_group_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        view: &CardView,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let body = CardBody { interact_rect: rect, tooltip: None };
+        let member_ids = &view.members;
+        let member_count = member_ids.len();
+        if !self.graph_lod_simplified {
+        if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
+            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
+            // labels entirely rather than truncating to a
+            // near-illegible sliver -- a group card has no
+            // other decoration to fall back on, so it's just
+            // a small colored card (or thumbnail grid) at
+            // this size.
+            let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+            if member_count > 0 && !self.groups_collapsed {
+                // Member thumbnails: up to 4, a 2x2 grid
+                // filling the card above a bottom name strip
+                // -- like a folder icon previewing its own
+                // contents, using the exact same
+                // `GpuState::thumbnail_id` lookup a tab's
+                // own card already does. A cell with no
+                // thumbnail yet (still loading) falls back
+                // to a plain tinted square rather than
+                // leaving a hole.
+                let title_strip_h = 18.0 * inv_zoom;
+                let grid_rect = egui::Rect::from_min_max(
+                    rect.min,
+                    egui::Pos2::new(rect.max.x, rect.max.y - title_strip_h),
+                )
+                .shrink(4.0 * inv_zoom);
+                let gap = 3.0 * inv_zoom;
+                let cell_size = egui::vec2(
+                    (grid_rect.width() - gap) / 2.0,
+                    (grid_rect.height() - gap) / 2.0,
+                );
+                for (i, member_id) in member_ids.iter().take(4).enumerate() {
+                    let (col, row) = (i as f32 % 2.0, (i / 2) as f32);
+                    let cell_min = grid_rect.min
+                        + egui::vec2(col * (cell_size.x + gap), row * (cell_size.y + gap));
+                    let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
+                    match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
+                        Some(tex_id) => {
+                            ui.painter().image(
+                                tex_id,
+                                cell_rect,
+                                egui::Rect::from_min_max(
+                                    egui::Pos2::new(0.0, 0.0),
+                                    egui::Pos2::new(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        None => {
+                            ui.painter().rect_filled(
+                                cell_rect,
+                                2.0 * inv_zoom,
+                                ui.visuals().extreme_bg_color.gamma_multiply(1.2),
+                            );
+                        }
+                    }
+                }
+                if show_labels {
+                    if member_count > 4 {
+                        let overflow_pos = grid_rect.right_bottom();
+                        let overflow_text = format!("+{}", member_count - 4);
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(overflow_pos) + egui::vec2(-3.0, -3.0),
+                                egui::Align2::RIGHT_BOTTOM,
+                                overflow_text,
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::WHITE,
+                            );
+                        }));
+                    }
+                    let title_strip = egui::Rect::from_min_max(
+                        egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
+                        rect.right_bottom(),
+                    );
+                    ui.painter().rect_filled(
+                        title_strip,
+                        0.0,
+                        egui::Color32::from_black_alpha(160),
+                    );
+                    let name_font = egui::FontId::proportional(13.0);
+                    let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                    let name = truncate_to_width(
+                        &mut self.truncate_cache,
+                        ui.ctx(),
+                        &node.name,
+                        &name_font,
+                        name_max_width,
+                    );
+                    let name_pos = title_strip.center();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(name_pos),
+                            egui::Align2::CENTER_CENTER,
+                            name,
+                            name_font,
+                            egui::Color32::WHITE,
+                        );
+                    }));
+                }
+            } else if show_labels {
+                // Nothing to preview (empty group), or
+                // previews deliberately hidden by "Collapse
+                // Groups" -- the original plain centered
+                // name + tab-count layout, count included
+                // either way so a collapsed non-empty group
+                // doesn't read as empty.
+                let name_font = egui::FontId::proportional(16.0);
+                let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                let name = truncate_to_width(
+                    &mut self.truncate_cache,
+                    ui.ctx(),
+                    &node.name,
+                    &name_font,
+                    name_max_width,
+                );
+                let name_pos = rect.center_top();
+                let name_color = ui.visuals().text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(name_pos) + egui::vec2(0.0, 14.0),
+                        egui::Align2::CENTER_TOP,
+                        name,
+                        name_font,
+                        name_color,
+                    );
+                }));
+                let count_label = format!(
+                    "{} member{}",
+                    member_count,
+                    if member_count == 1 { "" } else { "s" }
+                );
+                let count_pos = rect.center_bottom();
+                let count_color = ui.visuals().weak_text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(count_pos) + egui::vec2(0.0, -10.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        count_label,
+                        egui::FontId::proportional(14.0),
+                        count_color,
+                    );
+                }));
+            }
+        }
+        }
+        body
+    }
+
+    /// A live thumbnail (or a spinner until the first frame), a
+    /// title strip with the engine's color dot, and the favicon.
+    pub(crate) fn paint_tab_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        id: &str,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+    ) -> CardBody {
+        let body = CardBody { interact_rect: rect, tooltip: None };
+        let Some((title, url, engine_kind)) =
+            self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.title.clone(), t.url.clone(), t.tab.kind))
+        else {
+            return body;
+        };
+        // LOD: the thumbnail texture blit and the title/
+        // favicon text below are this card's two genuinely
+        // expensive parts (a real GPU texture sample, and
+        // glyph rasterization queued on `overlay_painter`) --
+        // skipped once `graph_lod_simplified` is set (see its
+        // own doc comment), leaving the frame's plain card
+        // and controls as the simplified card's whole
+        // appearance.
+        if !self.graph_lod_simplified {
+            let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
+            let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));
+            if let Some(tex_id) = thumb_id {
+                ui.painter().image(
+                    tex_id,
+                    thumb_rect,
+                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                ui.put(
+                    egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                    egui::Spinner::new().size(24.0 * inv_zoom),
+                );
+            }
+
+            {
+                let label = if title.is_empty() { url.as_str() } else { title.as_str() };
+                // A flat scrim behind the title strip so it stays
+                // legible over a busy/light thumbnail — most real
+                // pages are light-background, and plain text on top
+                // of one was unreadable without this.
+                let title_strip = egui::Rect::from_min_max(
+                    egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
+                    thumb_rect.right_bottom(),
+                );
+                ui.painter().rect_filled(
+                    title_strip,
+                    0.0,
+                    egui::Color32::from_black_alpha(160),
+                );
+                // Engine identity as a small colored dot rather than
+                // repeating the "[Servo]"-style bracket text on every
+                // single node — the dot alone is enough once you've
+                // learned the color coding (also used in the tab
+                // strip and engine picker), and reads faster at this
+                // node's small size than another word would.
+                ui.painter().circle_filled(
+                    egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
+                    4.0 * inv_zoom,
+                    engine_color(engine_kind),
+                );
+                // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
+                // label entirely rather than truncating to a
+                // near-illegible sliver -- the engine-color dot
+                // above still conveys engine identity on its own.
+                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    let label_font = egui::FontId::proportional(14.0);
+                    // Available on-screen width for the label -- the
+                    // strip's own screen width (zoom shrinks the card,
+                    // but not this fixed-size text, so at low zoom the
+                    // label can be wider than the card it's on) minus
+                    // the fixed 16px left offset and a little breathing
+                    // room on the right.
+                    let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
+                    let label =
+                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
+                    let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(label_pos) + egui::vec2(16.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            label_font,
+                            egui::Color32::WHITE,
+                        );
+                    }));
+                }
+            }
+            if let Some(tex_id) = self
+                .cached_favicon_origin(&url)
+                .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+            {
+                let favicon_rect = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                    FAVICON_SIZE * inv_zoom,
+                );
+                ui.painter().image(
+                    tex_id,
+                    favicon_rect,
+                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+        body
     }
 }
 
