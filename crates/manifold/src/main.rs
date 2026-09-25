@@ -3203,6 +3203,9 @@ struct TabSpawn {
     vel: egui::Vec2,
     purpose: SpawnPurpose,
     carry: TabCarry,
+    /// The engine to respawn with if this spawn fails: a swap's old
+    /// engine, whose process `finish_swap` has already had to drop.
+    fallback_kind: Option<EngineKind>,
 }
 
 /// What a tab keeps across a respawn (engine swap, crash recovery). A new
@@ -3230,6 +3233,7 @@ impl TabSpawn {
             vel: egui::Vec2::ZERO,
             purpose,
             carry: TabCarry { pinned: false, color: None, zoom_factor },
+            fallback_kind: None,
         }
     }
 
@@ -3247,6 +3251,7 @@ impl TabSpawn {
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry { pinned: tab.pinned, color: node.color, zoom_factor: tab.zoom_factor },
+            fallback_kind: None,
         })
     }
 }
@@ -5273,7 +5278,7 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome {
-            spawn: TabSpawn { id, url, kind: _, parent, group, pos, vel, purpose, carry },
+            spawn: TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind },
             generation,
             result,
         } = outcome;
@@ -5409,6 +5414,17 @@ impl App {
             }
             Err(err) => {
                 eprintln!("spawn tab failed for {id}: {err}");
+                if let Some(fallback) = fallback_kind {
+                    self.queue_toast(format!(
+                        "Couldn't switch to {}: {err}. Kept {}.",
+                        engine_label(kind),
+                        engine_label(fallback)
+                    ));
+                    let carry = TabCarry { pinned, color, zoom_factor };
+                    let spawn = TabSpawn { id, url, kind: fallback, parent, group, pos, vel, purpose, carry, fallback_kind: None };
+                    self.respawn_tab(spawn);
+                    return;
+                }
                 self.tab_spawn_error = Some(match purpose {
                     SpawnPurpose::Root => format!("Couldn't start a browser tab: {err}"),
                     SpawnPurpose::New => format!("Couldn't start a new tab: {err}"),
@@ -7264,7 +7280,10 @@ impl App {
     }
 
     fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
-        let Some(spawn) = self.nodes.get(tab_id).and_then(|n| TabSpawn::respawn(tab_id, n, target, url)) else {
+        let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
+            let old = n.as_tab()?.tab.kind;
+            Some(TabSpawn { fallback_kind: Some(old), ..TabSpawn::respawn(tab_id, n, target, url)? })
+        }) else {
             return;
         };
         // Must drop (and thus Shutdown + kill) the old tab before spawning
