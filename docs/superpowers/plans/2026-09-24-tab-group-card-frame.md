@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - All code changes are in `crates/manifold/src/main.rs` (plus `crates/manifold/src/debug_control.rs` in Task 1, docs in Task 5). Line numbers below are at commit `42f3a62` and drift as you edit: find code by the quoted anchor text, not the number.
-- `main.rs` and `README.md` use **CRLF** line endings. Edit them with a Python script that reads with `newline=""`, converts each search/replace string's `\n` to `\r\n`, asserts the exact number of matches before replacing, and writes back with `newline=""`. The `Edit` tool silently fails to match CRLF text. `debug_control.rs`, the scripts and the docs under `docs/` are LF.
+- (Superseded 2026-09-25: the repo is LF everywhere via `.gitattributes`; ignore the CRLF handling below.) `main.rs` and `README.md` used **CRLF** line endings. Edit them with a Python script that reads with `newline=""`, converts each search/replace string's `\n` to `\r\n`, asserts the exact number of matches before replacing, and writes back with `newline=""`. The `Edit` tool silently fails to match CRLF text. `debug_control.rs`, the scripts and the docs under `docs/` are LF.
 - **Never run `cargo fmt`** (the file has hand-formatted regions).
 - Headless runs must never touch the real `%APPDATA%\manifold`: always go through `scripts/drive.sh` (isolated APPDATA) or `scripts/headless-smoke-test.sh`.
 - Every task ends with all three green:
