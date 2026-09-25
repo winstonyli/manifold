@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod crc32c;
+pub mod tlv;
 pub mod varint;
 
 #[cfg(test)]
