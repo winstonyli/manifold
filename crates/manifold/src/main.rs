@@ -4554,11 +4554,11 @@ impl App {
             }
         }
         if let Some(name) = &req.open_session_name {
-            self.load_named_session(&name);
+            self.load_named_session(name);
             self.close_settings_page();
         }
         if let Some(name) = &req.delete_session_name {
-            session::Session::delete_named(&name);
+            session::Session::delete_named(name);
         }
         if req.export_requested {
             if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {
