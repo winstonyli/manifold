@@ -623,7 +623,7 @@ impl App {
                                         let response = ui.add(
                                             egui::TextEdit::singleline(draft).desired_width(140.0),
                                         );
-                                        if std::mem::take(&mut self.pending_focus_rename) {
+                                        if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
                                             response.request_focus();
                                         }
                                         if response.lost_focus() {

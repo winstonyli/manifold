@@ -306,7 +306,7 @@ impl App {
                 // level toolbar.
                 .margin(egui::Margin::symmetric(8, 4)),
         );
-        if std::mem::take(&mut self.pending_focus_address_bar) {
+        if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
             response.request_focus();
         }
         self.address_bar_focused = response.has_focus();
@@ -423,7 +423,7 @@ impl App {
 
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
 
-        if self.find_bar_open {
+        if self.find.open {
             self.build_find_bar(ui);
         }
 
@@ -531,7 +531,7 @@ impl App {
         // or dismissing the address-bar dropdown) underneath it.
         let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none();
         if back_to_graph
-            || (!has_suggestions && !self.find_bar_open && self.context_menu.is_none() && escape_pressed)
+            || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed)
         {
             self.leave_to_graph();
             return;
@@ -545,7 +545,7 @@ impl App {
             // dropdown-vs-Graph-view case above already has.
             if self.context_menu.is_some() {
                 self.context_menu = None;
-            } else if self.find_bar_open {
+            } else if self.find.open {
                 self.close_find_bar();
             } else if has_suggestions {
                 self.open_tab_suggestions.clear();

@@ -122,6 +122,35 @@ pub(crate) fn close_popup(open: &mut Option<AnchoredPopup>, which: AnchoredPopup
     }
 }
 
+/// Find-in-page state: tied to the focused tab only, not persisted per-tab,
+/// and closed (with `FindStop`) on tab switch or close, the same "not a full
+/// session" scope as the address bar's suggestions. See
+/// `EngineToHost::FindResult`'s doc comment for why `active_index` is always
+/// 0 on a WebKit tab and Servo tabs never populate `result`.
+#[derive(Default)]
+pub(crate) struct FindState {
+    pub(crate) open: bool,
+    /// Mirrors the last `FindStart`. Kept across a close, so reopening
+    /// searches for it again, as a real browser's find bar does.
+    pub(crate) text: String,
+    pub(crate) match_case: bool,
+    /// `(count, active_index)`; `None` until the first `FindResult` for the
+    /// current search arrives, so the bar shows nothing rather than a stale
+    /// count while a fresh search is in flight.
+    pub(crate) result: Option<(u32, u32)>,
+}
+
+impl FindState {
+    /// The UI side of closing the bar: `App::close_find_bar` also sends
+    /// `FindStop`, which a destroyed tab can't receive. The next session
+    /// starts case-insensitive, as a real browser's find bar does.
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+        self.result = None;
+        self.match_case = false;
+    }
+}
+
 impl App {
     /// `which`'s anchor rect and fade (0.0-1.0), or `None` once it has
     /// faded out or while its button isn't drawn. Call it every frame,
@@ -304,7 +333,7 @@ impl App {
                                         .hint_text("Folder (blank for none)")
                                         .font(egui::TextStyle::Small),
                                 );
-                                if std::mem::take(&mut self.pending_focus_bookmark_folder) {
+                                if take_focus(&mut self.pending_focus, FocusTarget::BookmarkFolder) {
                                     response.request_focus();
                                 }
                                 if response.lost_focus() {
@@ -342,7 +371,7 @@ impl App {
 
         if let Some((url, draft)) = folder_rename_start {
             self.renaming_bookmark_folder = Some((url, draft));
-            self.pending_focus_bookmark_folder = true;
+            self.pending_focus = Some(FocusTarget::BookmarkFolder);
         }
         if folder_rename_cancel {
             self.renaming_bookmark_folder = None;
@@ -598,12 +627,12 @@ impl App {
         }
     }
 
-    /// Sends `FindStart` for `self.find_text` to the focused tab, or
+    /// Sends `FindStart` for `self.find.text` to the focused tab, or
     /// `FindStop` if it's empty (clearing any existing highlight) — shared
     /// by the find bar's own text-changed handling and `open_find_bar_shortcut`
     /// re-opening with a remembered term.
     pub(crate) fn send_find_start(&mut self) {
-        self.find_result = None;
+        self.find.result = None;
         // Tab view has no continuous redraw loop of its own (unlike Graph
         // view's physics) — without this, a headless `FINDTEXT` (or a
         // remembered-term re-open) can land with nothing scheduled to ever
@@ -614,28 +643,26 @@ impl App {
         }
         let Some(id) = self.focused.clone() else { return };
         let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return };
-        if self.find_text.is_empty() {
+        if self.find.text.is_empty() {
             node.tab.send(&HostToEngine::FindStop);
         } else {
             node.tab.send(&HostToEngine::FindStart {
-                text: self.find_text.clone(),
-                match_case: self.find_match_case,
+                text: self.find.text.clone(),
+                match_case: self.find.match_case,
             });
         }
     }
 
     /// Closes the find bar: sends `FindStop` (clears highlighted matches)
-    /// and resets its text/result — called on `Escape`, its own close
+    /// and resets its result and match case (`FindState::close`) — called on `Escape`, its own close
     /// button, headless `CLOSEFINDBAR`, and whenever focus leaves the tab
     /// it was searching (tab switch/close), so a stale search never keeps
     /// running silently in the background.
     pub(crate) fn close_find_bar(&mut self) {
-        if !self.find_bar_open {
+        if !self.find.open {
             return;
         }
-        self.find_bar_open = false;
-        self.find_result = None;
-        self.find_match_case = false;
+        self.find.close();
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -674,20 +701,18 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let response = ui.add(
-                                egui::TextEdit::singleline(&mut self.find_text)
+                                egui::TextEdit::singleline(&mut self.find.text)
                                     .desired_width(160.0)
                                     .hint_text("Find in page"),
                             );
-                            // Same "needs a frame to exist as a widget"
-                            // reason as `pending_focus_address_bar`.
-                            if std::mem::take(&mut self.pending_focus_find_bar) {
+                            if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {
                                 response.request_focus();
                             }
                             if response.changed() {
                                 text_changed = true;
                             }
                             if ui
-                                .toggle_value(&mut self.find_match_case, "Aa")
+                                .toggle_value(&mut self.find.match_case, "Aa")
                                 .on_hover_text("Match case")
                                 .changed()
                             {
@@ -701,7 +726,7 @@ impl App {
                                 }
                             }
 
-                            match self.find_result {
+                            match self.find.result {
                                 Some((0, _)) => {
                                     ui.label("No results");
                                 }
@@ -725,7 +750,7 @@ impl App {
                             // `egui_phosphor` alongside the close button
                             // below -- out of scope for the cosmetic-only
                             // "x"/"X" pass that touched everything else here.
-                            let has_matches = matches!(self.find_result, Some((count, _)) if count > 0);
+                            let has_matches = matches!(self.find.result, Some((count, _)) if count > 0);
                             if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
                                 go_prev = true;
                             }
@@ -882,7 +907,7 @@ impl App {
                                         .desired_width(f32::INFINITY)
                                         .hint_text("Search open tabs..."),
                                 );
-                                if std::mem::take(&mut self.pending_focus_quick_switcher) {
+                                if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {
                                     response.request_focus();
                                 }
                             }
@@ -1213,5 +1238,23 @@ mod tests {
         assert_eq!(open, Some(AnchoredPopup::History));
         close_popup(&mut open, AnchoredPopup::History);
         assert_eq!(open, None);
+    }
+
+    #[test]
+    fn closing_find_keeps_the_text_and_resets_the_rest() {
+        let mut find = FindState { open: true, text: "abc".into(), match_case: true, result: Some((3, 1)) };
+        find.close();
+        assert!(!find.open);
+        assert_eq!(find.text, "abc");
+        assert!(!find.match_case);
+        assert_eq!(find.result, None);
+    }
+
+    #[test]
+    fn a_focus_request_is_taken_once_by_its_own_widget() {
+        let mut pending = Some(FocusTarget::FindBar);
+        assert!(!take_focus(&mut pending, FocusTarget::AddressBar));
+        assert!(take_focus(&mut pending, FocusTarget::FindBar));
+        assert!(!take_focus(&mut pending, FocusTarget::FindBar));
     }
 }

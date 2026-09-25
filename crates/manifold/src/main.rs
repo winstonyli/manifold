@@ -1149,6 +1149,31 @@ struct QuickSwitcher {
     selected: usize,
 }
 
+/// A `TextEdit` that a shortcut or click wants focused. The widget may not
+/// exist until a later frame (a rename field replaces its button, the find
+/// bar opens), so the request waits in `App::pending_focus` until the
+/// widget is built and takes it with `take_focus`. One at a time, since
+/// only one widget can hold focus.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FocusTarget {
+    AddressBar,
+    FindBar,
+    QuickSwitcher,
+    GroupRename,
+    BookmarkFolder,
+}
+
+/// True, once, if `target` is the pending focus request: clears it so the
+/// caller can `request_focus()` its widget.
+fn take_focus(pending: &mut Option<FocusTarget>, target: FocusTarget) -> bool {
+    if *pending == Some(target) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
 /// The event loop's real user-event type: headless debug commands, plus
 /// `TabSpawned` — see its own doc comment for why engine-host spawning needs
 /// to be async in the first place.
@@ -1305,10 +1330,6 @@ struct App {
     /// it until Enter commits or Escape cancels. Transient UI state, not
     /// part of `GroupPayload` itself.
     renaming_group: Option<(String, String)>,
-    /// Set for exactly one frame when `renaming_group` is first set, same
-    /// one-shot `response.request_focus()` pattern as
-    /// `pending_focus_address_bar`.
-    pending_focus_rename: bool,
     /// `(node_id, screen_pos)` while a right-click context menu is showing
     /// for that node's card -- one field for every kind, so at most one
     /// menu is ever open by construction. Right-click is otherwise the
@@ -1370,10 +1391,6 @@ struct App {
     /// restructuring draw order to compute the transform before the
     /// toolbar panel has even reserved its own screen space.
     graph_zoom_pct: f32,
-    /// Set for exactly one frame when `quick_switcher` is first opened,
-    /// same one-shot `response.request_focus()` pattern as
-    /// `pending_focus_address_bar`/`pending_focus_find_bar`.
-    pending_focus_quick_switcher: bool,
     /// The tab shown in Tab view, and — even while in Graph view — the
     /// default parent for a newly created tab (last thing the user
     /// selected). `None` only when there are no tabs left at all.
@@ -1581,19 +1598,16 @@ struct App {
     debug_input_events: Vec<egui::Event>,
     /// Text from a headless `ADDRESSBAR`, typed (select-all, then the text)
     /// once the address bar actually has egui focus: the command requests
-    /// focus through `pending_focus_address_bar`, which only takes hold in
+    /// focus through `pending_focus`, which only takes hold in
     /// the frame after, so typing waits for a frame where
     /// `address_bar_focused` is true.
     debug_address_bar_typing: Option<String>,
-    /// Set by `Ctrl+L`/headless `FOCUSADDRESS` (see
-    /// `App::focus_address_bar_shortcut`), consumed the next time
-    /// `build_tab_view_ui` builds the address bar's `TextEdit` — unlike the
-    /// headless key commands above, this drives a *real* `request_focus()`
-    /// call on the real widget (this is the one shortcut where a real user
-    /// genuinely wants real, persistent egui focus; headless `ADDRESSBAR`
-    /// uses it too), so it needs a frame to actually exist as a widget to
-    /// focus.
-    pending_focus_address_bar: bool,
+    /// A focus request waiting for its `TextEdit` to be built (see
+    /// `FocusTarget`): set by `Ctrl+L`/`Ctrl+F`/`Ctrl+K`, starting a
+    /// rename, and headless `FOCUSADDRESS`/`ADDRESSBAR`/`OPENFINDBAR`.
+    /// Unlike the headless key events above, this drives a real
+    /// `request_focus()` on the real widget.
+    pending_focus: Option<FocusTarget>,
     /// Set by a headless `QUIT` that arrived while debug input above (or
     /// `pending_screenshot`) was still waiting for a frame — e.g. `ENTER`+`QUIT`,
     /// or `SCREENSHOT`+`QUIT`, sent back-to-back with no delay. Exiting
@@ -1638,7 +1652,7 @@ struct App {
     /// "latest wins" with no queue at all until this session, when a
     /// second toast (e.g. a crash notice) arriving while a download's own
     /// "Saved <path>" toast was still showing was confirmed to silently
-    /// replace it, unlike `find_result`'s own "latest wins" (correct
+    /// replace it, unlike `FindState::result`'s own "latest wins" (correct
     /// there -- a stale search count would be actively wrong, whereas a
     /// dropped one-time notification like "tab crashed" is just gone).
     save_toast: Option<(String, std::time::Instant)>,
@@ -1662,27 +1676,8 @@ struct App {
     session_fingerprint: Option<u64>,
     settings_fingerprint: Option<u64>,
 
-    /// Find-in-page: tied to the focused tab only, not persisted per-tab —
-    /// closes (and sends `FindStop`) on tab switch/close, same "don't try
-    /// to be a full session" scope as the address bar's own suggestion
-    /// state. `find_text` mirrors what's sent as the last `FindStart`;
-    /// `find_result` is `None` until the first `FindResult` for the current
-    /// search arrives (so the bar shows nothing rather than a stale count
-    /// while a fresh search is still in flight). See `EngineToHost::
-    /// FindResult`'s doc comment for why `active_index` is always 0 on a
-    /// WebKit tab and Servo tabs never populate this at all.
-    find_bar_open: bool,
-    find_text: String,
-    /// Resets to `false` on every `close_find_bar` — a fresh find session
-    /// (new tab, or reopening after closing) starts case-insensitive by
-    /// default, matching a real browser's find bar.
-    find_match_case: bool,
-    find_result: Option<(u32, u32)>,
-    /// Set by `Ctrl+F`/headless `OPENFINDBAR`, consumed the next time
-    /// `build_tab_view_ui` builds the find bar's `TextEdit` — same "needs a
-    /// frame to exist as a widget to focus" reason as
-    /// `pending_focus_address_bar`.
-    pending_focus_find_bar: bool,
+    /// Find-in-page, for the focused tab only. See `FindState`.
+    find: FindState,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1708,7 +1703,7 @@ struct App {
     bookmarks: Vec<bookmarks::Bookmark>,
     /// The bookmarks popup's own filter box text -- cleared each time the
     /// popup is opened, same "fresh state each open" reasoning
-    /// `find_match_case` resetting on a new find session already has.
+    /// `FindState::match_case` resetting on a new find session already has.
     bookmarks_filter: String,
     /// `(bookmark_url, draft)` while a bookmark's folder label in the
     /// popup is being renamed -- keyed by url (a bookmark's own natural
@@ -1717,10 +1712,6 @@ struct App {
     /// Same "real `TextEdit` replaces the label, Enter/blur commits,
     /// Escape cancels" shape `renaming_group` already has.
     renaming_bookmark_folder: Option<(String, String)>,
-    /// Set for exactly one frame when `renaming_bookmark_folder` is first
-    /// set, same one-shot `response.request_focus()` pattern as
-    /// `pending_focus_rename`.
-    pending_focus_bookmark_folder: bool,
     /// Every distinct `(title, url)` this session has actually navigated
     /// to, most-recent-last, capped at `MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
@@ -1798,7 +1789,6 @@ impl Default for App {
             groups_collapsed: false,
             current_group: None,
             renaming_group: None,
-            pending_focus_rename: false,
             node_menu: None,
             node_menu_cache: None,
             json_viewer_node: None,
@@ -1809,7 +1799,6 @@ impl Default for App {
             session_name_draft: String::new(),
             graph_filter: String::new(),
             graph_zoom_pct: 100.0,
-            pending_focus_quick_switcher: false,
             focused: None,
             viewed_image: None,
             image_view: ImageViewState::default(),
@@ -1858,7 +1847,7 @@ impl Default for App {
             headless: false,
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
-            pending_focus_address_bar: false,
+            pending_focus: None,
             quit_after_redraws: None,
             pending_screenshot: None,
             screenshot_waiter: None,
@@ -1871,18 +1860,13 @@ impl Default for App {
             last_session_save: None,
             session_fingerprint: None,
             settings_fingerprint,
-            find_bar_open: false,
-            find_text: String::new(),
-            find_match_case: false,
-            find_result: None,
-            pending_focus_find_bar: false,
+            find: FindState::default(),
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
             bookmarks,
             bookmarks_filter: String::new(),
             renaming_bookmark_folder: None,
-            pending_focus_bookmark_folder: false,
             history: Vec::new(),
             history_filter: String::new(),
             open_popup: None,
@@ -3906,10 +3890,8 @@ impl App {
                 self.view_mode = ViewMode::Graph;
             }
             // The tab (and its `EngineTab`) is already gone — nothing left
-            // to send `FindStop` to, just reset the UI-side state directly
-            // rather than going through `close_find_bar`'s normal send.
-            self.find_bar_open = false;
-            self.find_result = None;
+            // to send `FindStop` to, so only the UI side of the close.
+            self.find.close();
         }
         self.save_session();
     }
@@ -4071,7 +4053,7 @@ impl App {
         }
         if quick_switch {
             self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-            self.pending_focus_quick_switcher = true;
+            self.pending_focus = Some(FocusTarget::QuickSwitcher);
         }
         if new_group {
             self.new_group_shortcut();
@@ -4142,7 +4124,7 @@ impl App {
         }
         let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
         self.renaming_group = Some((group_id, name));
-        self.pending_focus_rename = true;
+        self.pending_focus = Some(FocusTarget::GroupRename);
     }
 
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
@@ -4416,8 +4398,7 @@ impl App {
             if self.showing_tab_view() {
                 self.view_mode = ViewMode::Graph;
             }
-            self.find_bar_open = false;
-            self.find_result = None;
+            self.find.close();
         }
         let id = self.alloc_image_id();
         // Failure is already toasted; the tab it replaces is gone either way.
@@ -4896,15 +4877,13 @@ impl App {
     }
 
     /// `Ctrl+L` / headless `FOCUSADDRESS` — only meaningful in Tab view,
-    /// since Graph view has no address bar to focus. Sets a pending flag
-    /// rather than `address_bar_focused` directly: the address bar's
-    /// `TextEdit` doesn't exist as a widget until `build_tab_view_ui` builds
-    /// it, so actually moving real egui focus onto it needs to happen there,
-    /// via `response.request_focus()` — see `pending_focus_address_bar`'s
-    /// own doc comment.
+    /// since Graph view has no address bar to focus. Queues a focus request
+    /// rather than setting `address_bar_focused` directly: real egui focus
+    /// can only be requested on the widget, when `build_tab_view_ui` builds
+    /// it (see `FocusTarget`).
     fn focus_address_bar_shortcut(&mut self) {
         if self.showing_tab_view() {
-            self.pending_focus_address_bar = true;
+            self.pending_focus = Some(FocusTarget::AddressBar);
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
             // already painted before `build_tab_view_ui` gets to call it) — a
@@ -4927,12 +4906,12 @@ impl App {
         if !self.showing_tab_view() {
             return;
         }
-        self.find_bar_open = true;
-        self.pending_focus_find_bar = true;
+        self.find.open = true;
+        self.pending_focus = Some(FocusTarget::FindBar);
         if let Some(window) = &self.window {
             window.request_redraw();
         }
-        if !self.find_text.is_empty() {
+        if !self.find.text.is_empty() {
             self.send_find_start();
         }
     }
@@ -5174,7 +5153,7 @@ impl App {
         let config = node_menu_config(&view, self.headless);
         let mut frozen_draft = view.renaming.clone();
         let rename = match &mut self.renaming_group {
-            Some((gid, draft)) if live && *gid == id => Some((draft, std::mem::take(&mut self.pending_focus_rename))),
+            Some((gid, draft)) if live && *gid == id => Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename))),
             _ => frozen_draft.as_mut().map(|draft| (draft, false)),
         };
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
@@ -5250,7 +5229,7 @@ impl App {
             NodeAction::Rename => {
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
                 self.renaming_group = Some((id.to_string(), name));
-                self.pending_focus_rename = true;
+                self.pending_focus = Some(FocusTarget::GroupRename);
             }
             NodeAction::CommitRename(name) => {
                 self.renaming_group = None;

@@ -579,7 +579,7 @@ impl App {
     pub(crate) fn debug_input_pending(&self) -> bool {
         !self.debug_input_events.is_empty()
             || self.debug_address_bar_typing.is_some()
-            || self.pending_focus_address_bar
+            || self.pending_focus == Some(FocusTarget::AddressBar)
             || self.pending_screenshot.is_some()
     }
 
@@ -680,7 +680,7 @@ impl App {
             // is requested now, and the text is typed as egui `Text` input in
             // the first frame the bar has it (see `debug_address_bar_typing`).
             DebugCommand::AddressBar(text) if self.showing_tab_view() => {
-                self.pending_focus_address_bar = true;
+                self.pending_focus = Some(FocusTarget::AddressBar);
                 self.debug_address_bar_typing = Some(text);
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -734,11 +734,11 @@ impl App {
             DebugCommand::PrevTab => self.cycle_focused_tab(false),
             DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
             DebugCommand::FindText(text) => {
-                self.find_text = text;
+                self.find.text = text;
                 self.send_find_start();
             }
             DebugCommand::FindMatchCase(match_case) => {
-                self.find_match_case = match_case;
+                self.find.match_case = match_case;
                 self.send_find_start();
             }
             DebugCommand::FindNext => self.send_find_navigate(true),
@@ -767,7 +767,7 @@ impl App {
             }
             DebugCommand::QuickSwitchOpen => {
                 self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-                self.pending_focus_quick_switcher = true;
+                self.pending_focus = Some(FocusTarget::QuickSwitcher);
             }
             DebugCommand::QuickSwitchText(text) => {
                 if let Some(switcher) = &mut self.quick_switcher {
@@ -1251,7 +1251,7 @@ impl App {
                 // but a stray late result from just before a switch is cheap
                 // to guard against.
                 if self.focused.as_deref() == Some(tab_id) {
-                    self.find_result = Some((count, active_index));
+                    self.find.result = Some((count, active_index));
                 }
             }
             EngineToHost::AudioPlayingChanged { playing } => {
