@@ -855,7 +855,8 @@ impl Journal {
         Ok(())
     }
 
-    /// Clean exit: catch up, then compact if the file changed since it was last compacted, or just fsync when this build must not compact this file.
+    /// Clean exit: catch up, then compact if the file changed since it was last
+    /// compacted, or just fsync when this build must not compact this file.
     pub fn close(&mut self) -> Result<(), JournalError> {
         if self.read_only {
             return Ok(());
