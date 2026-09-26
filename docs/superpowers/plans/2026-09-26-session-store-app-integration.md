@@ -1915,7 +1915,7 @@ git commit -m "Headless test: two instances on one profile, a compaction mid-run
   - remote `pos` easing;
   - per-level cameras;
   - the url cause from engines (needed before sync);
-  - `catch_up`'s whole-file read on every save, which is now on the UI thread at every save point: measure it at 300 tabs and record the number.
+  - the save loop's own cost (`shared_nodes` + `diff`) at 300 and 3000 tabs. The store side was measured before Task 5 (store-core plan, Deferred → Performance: a save's `begin` + commit is 0.14 ms at 300 tabs and 0.4–0.75 ms at 3000).
 - [ ] **Step 5: Commit.**
 ```bash
 cargo fmt --all

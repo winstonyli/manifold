@@ -2425,4 +2425,139 @@ mod tests {
             journal.close().unwrap();
         }
     }
+
+    // --- Save-path costs (Plan B measures these before wiring saves) ---
+
+    /// Best and median of `n` timings of `f`.
+    fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
+        let mut times: Vec<Duration> = (0..n)
+            .map(|_| {
+                let start = Instant::now();
+                f();
+                start.elapsed()
+            })
+            .collect();
+        times.sort();
+        (times[0], times[n / 2])
+    }
+
+    fn report(what: &str, (best, median): (Duration, Duration)) {
+        println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
+    }
+
+    /// What each save costs at realistic session sizes, with the file at
+    /// its largest (just below compaction), since `catch_up` reads the
+    /// whole file on every `begin`. Timing, not correctness, so ignored:
+    /// `cargo test --release -j 12 -p manifold -- --ignored --nocapture save_path_costs`
+    #[test]
+    #[ignore]
+    fn save_path_costs() {
+        const N: usize = 40;
+        for tabs in [300usize, 3000] {
+            let dir = temp_dir(&format!("cost-{tabs}"));
+            let path = dir.join("session.mnf");
+            let mut a = Journal::open(&path, ActorId::random()).unwrap();
+            let mut txn = a.begin().unwrap();
+            let groups: Vec<NodeId> = (0..tabs / 10).map(|_| txn.next_id()).collect();
+            let mut bodies: Vec<OpBody> = groups
+                .iter()
+                .enumerate()
+                .map(|(i, &node)| {
+                    let fields = encode_field(field::NAME, &FieldValue::Str(format!("Group {i}")));
+                    OpBody::Create { node, kind: Kind::Group, fields }
+                })
+                .collect();
+            let mut ids = Vec::new();
+            for i in 0..tabs {
+                let node = txn.next_id();
+                let url =
+                    format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
+                let mut fields = encode_field(field::URL, &FieldValue::Str(url));
+                fields.extend(encode_field(field::POS, &FieldValue::Pos(i as f32 * 3.5, i as f32 * -2.25)));
+                fields.extend(encode_field(field::ENGINE, &FieldValue::Engine(1 + (i % 4) as u64)));
+                fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(groups[i % groups.len()]))));
+                bodies.push(OpBody::Create { node, kind: Kind::Tab, fields });
+                ids.push(node);
+            }
+            txn.commit(bodies).unwrap();
+            let txn = a.begin().unwrap();
+            txn.journal.compact().unwrap();
+            drop(txn);
+            let snapshot = std::fs::metadata(&path).unwrap().len();
+
+            // Grow the tail with single-op saves (a drag end each) to just
+            // below the compaction threshold: the largest file `begin` reads.
+            let set_pos = |node: NodeId, x: f32| OpBody::Set {
+                node,
+                field: field::POS,
+                enc: encode_field(field::POS, &FieldValue::Pos(x, x)),
+            };
+            let margin = 8 * 1024;
+            let mut k = 0;
+            while a.since_snapshot + margin < (2 * a.snapshot_len).max(COMPACT_MIN) {
+                let txn = a.begin().unwrap();
+                txn.commit(vec![set_pos(ids[k % tabs], k as f32)]).unwrap();
+                k += 1;
+            }
+            let largest = std::fs::metadata(&path).unwrap().len();
+            println!("{tabs} tabs: snapshot {snapshot} B, largest file {largest} B ({k} saves in the tail)");
+
+            report("open (startup)", timed(10, || drop(Journal::open(&path, ActorId::random()).unwrap())));
+            report("changed_on_disk, unchanged (per frame)", timed(N, || assert!(!a.changed_on_disk())));
+            report("begin, nothing new (per save)", timed(N, || drop(a.begin().unwrap())));
+            // Stay below compaction: ~30 B per op against an 8 KB margin.
+            let mut x = 0.0;
+            report(
+                "begin + commit one Set, fsync debounced",
+                timed(N, || {
+                    x += 1.0;
+                    a.begin().unwrap().commit(vec![set_pos(ids[0], x)]).unwrap();
+                }),
+            );
+            let mut synced: Vec<Duration> = (0..5)
+                .map(|_| {
+                    std::thread::sleep(SYNC_DEBOUNCE); // the next append fsyncs
+                    x += 1.0;
+                    let start = Instant::now();
+                    a.begin().unwrap().commit(vec![set_pos(ids[1], x)]).unwrap();
+                    start.elapsed()
+                })
+                .collect();
+            synced.sort();
+            report("begin + commit one Set, with fsync", (synced[0], synced[2]));
+
+            // Another instance's edits: B appends one op, A catches up.
+            let mut b = Journal::open(&path, ActorId::random()).unwrap();
+            let mut incremental = Vec::new();
+            let mut reload = Vec::new();
+            let mut compact = Vec::new();
+            for i in 0..10 {
+                x += 1.0;
+                b.begin().unwrap().commit(vec![set_pos(ids[2], x)]).unwrap();
+                let start = Instant::now();
+                let txn = a.begin().unwrap();
+                incremental.push(start.elapsed());
+                assert_eq!(txn.remote, vec![ids[2]], "sample {i}");
+                drop(txn);
+
+                // B compacts: A reloads the whole file.
+                let txn = b.begin().unwrap();
+                let start = Instant::now();
+                txn.journal.compact().unwrap();
+                compact.push(start.elapsed());
+                drop(txn);
+                let start = Instant::now();
+                drop(a.begin().unwrap());
+                reload.push(start.elapsed());
+            }
+            for (what, mut v) in [
+                ("begin after another appended one op", incremental),
+                ("compact (under the lock)", compact),
+                ("begin after another compacted (reload)", reload),
+            ] {
+                v.sort();
+                report(what, (v[0], v[v.len() / 2]));
+            }
+        }
+    }
 }

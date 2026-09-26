@@ -3354,7 +3354,7 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
 - **Unknown op kinds.** When skipped, the clock doesn't observe them. The file never compacts in that case, so only last-writer-wins ties are affected.
 - **`Clock::tick` can overflow** at `ms + 1` when a crafted file holds `u64::MAX` ms.
 - **Performance.**
-  - `catch_up` reads the whole file on every save (incremental parsing, but a whole-file read).
+  - `catch_up` reads the whole file on every save (incremental parsing, but a whole-file read). Measured 2026-09-26 (`save_path_costs`, release, file at its largest before compaction, best of 40, CPU 17–47% busy with another session's job): 300 tabs (139 KB) `begin` 0.1 ms, a one-op save 0.14 ms (1.0 ms with its fsync); 3000 tabs (1.5 MB) 0.75 ms and 0.38 ms (1.6 ms). Other costs at 300 / 3000 tabs: reload after another instance compacts 1.8 / 15 ms, compaction 4.6 / 24 ms, `open` 3 / 59 ms, `changed_on_disk` 16 / 26 µs. All fit on the UI thread; no change needed before Plan B.
   - The fsync debounce is leading-edge, so the first save after a quiet second fsyncs on the caller's thread.
 - **Durability.** There's no directory fsync or `MOVEFILE_WRITE_THROUGH` after compaction's rename.
 - **Test gaps.**
