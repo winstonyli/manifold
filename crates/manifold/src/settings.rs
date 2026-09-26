@@ -139,8 +139,7 @@ impl Default for Settings {
 }
 
 fn settings_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join("settings.json"))
+    Some(crate::profile::dir()?.join("settings.json"))
 }
 
 /// Cheap, process-local "did this file's bytes change" check -- not a
@@ -169,8 +168,7 @@ pub fn fingerprint() -> Option<u64> {
 /// later in the same run can't overwrite the first one's unreviewed data.
 pub fn conflict_path() -> Option<PathBuf> {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join(format!("settings.conflict-{secs}.json")))
+    Some(crate::profile::dir()?.join(format!("settings.conflict-{secs}.json")))
 }
 
 impl Settings {

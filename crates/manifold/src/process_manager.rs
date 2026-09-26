@@ -283,7 +283,7 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// manual post-build step (see project memory), not automated — a real
 /// install/packaging step should do this, not a person running `cp`.
 ///
-/// Falls back to `engine_data_dir()` when the sibling binary isn't there —
+/// Falls back to `profile::engine_data_dir()` when the sibling binary isn't there —
 /// for an engine fetched on demand after install rather than bundled next
 /// to `manifold.exe`. No download step writes there yet; the fallback
 /// just means adding one later won't require touching this lookup.
@@ -308,7 +308,7 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
     if sibling.exists() {
         return sibling;
     }
-    let mut fallback = engine_data_dir();
+    let Some(mut fallback) = crate::profile::engine_data_dir() else { return sibling };
     fallback.push("engine-hosts");
     // Same isolation as the sibling-dir case above: CEF's own ANGLE DLLs
     // would collide with Servo's if both engines' fallback files ever
@@ -318,20 +318,6 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
     }
     fallback.push(file_name);
     fallback
-}
-
-/// Cross-platform per-user data directory (XDG on Linux, Known Folders on
-/// Windows, Application Support on macOS) via `etcetera` — see
-/// `engine_binary_path`'s own doc comment for what this is for.
-fn engine_data_dir() -> PathBuf {
-    use etcetera::{app_strategy::AppStrategyArgs, choose_app_strategy, AppStrategy};
-    choose_app_strategy(AppStrategyArgs {
-        top_level_domain: "io".into(),
-        author: "manifold".into(),
-        app_name: "manifold".into(),
-    })
-    .expect("home directory")
-    .data_dir()
 }
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)

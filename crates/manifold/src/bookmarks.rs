@@ -21,8 +21,7 @@ pub struct Bookmark {
 }
 
 fn bookmarks_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join("bookmarks.json"))
+    Some(crate::profile::dir()?.join("bookmarks.json"))
 }
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just

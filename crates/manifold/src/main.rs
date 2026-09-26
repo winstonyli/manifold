@@ -19,6 +19,7 @@ mod pdf;
 mod pdf_fetch;
 mod popups;
 mod process_manager;
+mod profile;
 mod redirect_fetch;
 mod session;
 mod session_sync;

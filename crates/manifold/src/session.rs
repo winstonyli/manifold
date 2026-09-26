@@ -12,14 +12,9 @@
 
 use std::path::PathBuf;
 
-fn session_dir() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold"))
-}
-
 /// Where the session store (spec "Journal") lives.
 pub fn store_path() -> Option<PathBuf> {
-    Some(session_dir()?.join("session.mnf"))
+    Some(crate::profile::dir()?.join("session.mnf"))
 }
 
 /// Where a named "Save Session As..." save lands — a subdirectory of the
@@ -31,7 +26,7 @@ pub fn store_path() -> Option<PathBuf> {
 /// same `.mnf`/`.mnf.local`/`.mnf.prev` layout as the running session's
 /// own `session.mnf`, just under a name instead of the fixed one.
 fn named_sessions_dir() -> Option<PathBuf> {
-    Some(session_dir()?.join("sessions"))
+    Some(crate::profile::dir()?.join("sessions"))
 }
 
 pub(crate) fn named_session_path(name: &str) -> Option<PathBuf> {

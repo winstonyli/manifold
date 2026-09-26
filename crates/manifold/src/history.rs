@@ -15,17 +15,7 @@ pub struct HistoryEntry {
 pub const MAX_HISTORY_ENTRIES: usize = 200;
 
 fn history_path() -> Option<PathBuf> {
-    #[cfg(not(test))]
-    {
-        let appdata = std::env::var_os("APPDATA")?;
-        Some(PathBuf::from(appdata).join("manifold").join("history.json"))
-    }
-    #[cfg(test)]
-    {
-        // Tests must not read or write the real %APPDATA%\manifold\history.json.
-        // Callers use round-trip tests on JSON strings, not the file path.
-        None
-    }
+    Some(crate::profile::dir()?.join("history.json"))
 }
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
