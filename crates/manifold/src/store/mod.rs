@@ -18,6 +18,10 @@ pub mod varint;
 pub(crate) mod testutil {
     use std::path::PathBuf;
 
+    use std::collections::BTreeMap;
+
+    use super::model::{Doc, NodeId, Reg};
+
     /// Seeded xorshift64*, so randomized tests repeat without a dependency.
     pub struct XorShift(pub u64);
 
@@ -42,5 +46,11 @@ pub(crate) mod testutil {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// What a document shows: its live nodes, with their fields and the
+    /// group each is shown in.
+    pub fn shown(doc: &Doc) -> Vec<(NodeId, BTreeMap<u32, Reg>, Option<NodeId>)> {
+        doc.live().map(|(id, node)| (id, node.fields.clone(), doc.effective_group(id))).collect()
     }
 }

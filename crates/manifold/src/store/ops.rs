@@ -2,6 +2,8 @@
 //! set of ops applied in any order, any number of times, gives the same
 //! document.
 
+use std::collections::BTreeSet;
+
 use super::model::{decode_field, field, field_def, Doc, FieldValue, Hlc, Kind, Node, NodeId, Reg, Stamp};
 use super::tlv::Reader;
 
@@ -140,6 +142,32 @@ impl Doc {
     pub fn forget_moves(&mut self) {
         self.moves.clear();
     }
+
+    /// Drops what no later op can need while the document has never been
+    /// shared (spec "Compact"). First, deleted nodes and placeholders that
+    /// no group edge names; this repeats, since dropping a child can free
+    /// its group. Then the version entries of actors nothing names any
+    /// more. What is shown doesn't change; a later op naming a dropped
+    /// node makes a placeholder, which isn't shown. Call after
+    /// `forget_moves`: the move log names nodes too.
+    pub fn prune(&mut self) {
+        debug_assert!(self.moves.is_empty(), "prune after forget_moves");
+        loop {
+            let named: BTreeSet<NodeId> = self.nodes.values().filter_map(|n| n.group).collect();
+            let before = self.nodes.len();
+            self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || matches!(n.kind, Kind::Unknown(0))));
+            if self.nodes.len() == before {
+                break;
+            }
+        }
+        let mut used = BTreeSet::new();
+        for (id, node) in &self.nodes {
+            used.insert(id.actor);
+            used.extend(node.group.map(|g| g.actor));
+            used.extend(node.fields.values().map(|reg| reg.stamp.actor));
+        }
+        self.version.retain(|actor, _| used.contains(actor));
+    }
 }
 
 fn set_reg(node: &mut Node, no: u32, stamp: Stamp, enc: Vec<u8>) {
@@ -152,7 +180,7 @@ fn set_reg(node: &mut Node, no: u32, stamp: Stamp, enc: Vec<u8>) {
 mod tests {
     use super::*;
     use crate::store::model::{encode_field, ActorId, DocId};
-    use crate::store::testutil::XorShift;
+    use crate::store::testutil::{shown, XorShift};
 
     fn id(actor: u64, counter: u64) -> NodeId {
         NodeId { actor: ActorId(actor), counter }
@@ -270,6 +298,57 @@ mod tests {
             ops.push(next(actor, ms, body));
         }
         ops
+    }
+
+    #[test]
+    fn prune_drops_what_no_later_op_can_need() {
+        let (outer, g, t, u) = (id(1, 0), id(1, 1), id(1, 2), id(1, 3));
+        let (v, w) = (id(2, 0), id(4, 0));
+        let mut doc = apply_all(&[
+            op(1, 0, 1, create(outer, Kind::Group, None)),
+            op(1, 1, 1, create(g, Kind::Group, Some(outer))),
+            op(1, 2, 1, create(t, Kind::Tab, Some(g))),
+            op(1, 3, 1, create(u, Kind::Tab, Some(g))),
+            op(2, 0, 2, create(v, Kind::Tab, None)),
+            op(3, 0, 3, name(t, "t")),
+            op(4, 1, 3, name(w, "never created")),
+            op(1, 4, 4, OpBody::Delete { node: u }),
+            op(2, 1, 4, OpBody::Delete { node: v }),
+            op(1, 5, 4, OpBody::Delete { node: g }),
+        ]);
+        doc.forget_moves();
+        let before = shown(&doc);
+        doc.prune();
+        assert_eq!(shown(&doc), before);
+        assert!(![u, v, w].iter().any(|n| doc.nodes.contains_key(n)));
+        assert!(doc.nodes[&g].deleted); // kept: t is shown through it, at outer
+        assert_eq!(doc.effective_group(t), Some(outer));
+        assert_eq!(doc.version.keys().copied().collect::<Vec<_>>(), [ActorId(1), ActorId(3)]);
+
+        // Once t goes, nothing names g.
+        doc.apply(&op(1, 6, 5, OpBody::Delete { node: t }));
+        doc.prune();
+        assert!(!doc.nodes.contains_key(&t) && !doc.nodes.contains_key(&g));
+        assert_eq!(doc.live().map(|(id, _)| id).collect::<Vec<_>>(), [outer]);
+    }
+
+    #[test]
+    fn pruning_never_changes_what_is_shown() {
+        let mut rng = XorShift(0x5EED_CAFE);
+        for _ in 0..200 {
+            let mut doc = apply_all(&random_ops(&mut rng));
+            doc.forget_moves();
+            let before = shown(&doc);
+            doc.prune();
+            assert_eq!(shown(&doc), before);
+            assert!(
+                doc.nodes.values().filter_map(|n| n.group).all(|g| doc.nodes.contains_key(&g)),
+                "an edge lost its group"
+            );
+            let once = (doc.nodes.clone(), doc.version.clone());
+            doc.prune();
+            assert_eq!((doc.nodes, doc.version), once);
+        }
     }
 
     #[test]

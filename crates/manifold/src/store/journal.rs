@@ -842,9 +842,10 @@ impl Journal {
         !self.keep_unknown && !self.compaction_failed && self.since_snapshot > (2 * self.snapshot_len).max(COMPACT_MIN)
     }
 
-    /// Rewrites the file as one snapshot (spec "Compact"). Holds the lock.
+    /// Rewrites the file as one pruned snapshot (spec "Compact"). Holds the lock.
     fn compact(&mut self) -> Result<(), JournalError> {
         self.doc.forget_moves();
+        self.doc.prune();
         let bytes = write_compacted(&self.path, &self.doc)?;
         let doc = std::mem::replace(&mut self.doc, Doc::new(DocId([0; 16])));
         self.load(&bytes)?;
@@ -895,6 +896,7 @@ impl Journal {
         let mut doc = self.doc.clone();
         doc.id = DocId::random();
         doc.forget_moves();
+        doc.prune();
         write_compacted(path, &doc)?;
         if let Some(state) = local {
             local::write(path, doc.id, state)?;
@@ -1316,6 +1318,27 @@ mod tests {
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(url(&doc, tab), FieldValue::Str("https://kept.example/".into()));
         assert_eq!(journal.doc().nodes, doc.nodes);
+    }
+
+    #[test]
+    fn compaction_prunes_and_other_replicas_hear_of_it() {
+        let dir = temp_dir("prune");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = a.begin().unwrap();
+        let (gone, create_gone) = create_tab(&mut txn, "https://gone.example/");
+        let (kept, create_kept) = create_tab(&mut txn, "https://kept.example/");
+        txn.commit(vec![create_gone, create_kept]).unwrap();
+        let txn = a.begin().unwrap();
+        txn.commit(vec![OpBody::Delete { node: gone }]).unwrap();
+        drop(b.begin().unwrap()); // b holds the tombstone
+        a.close().unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(!doc.nodes.contains_key(&gone) && doc.nodes[&kept].is_live());
+        let txn = b.begin().unwrap();
+        assert!(txn.remote.contains(&gone)); // missing from the document: deleted
+        assert!(!txn.doc().nodes.contains_key(&gone));
     }
 
     /// A session file holding every frame type, op kind and field type:
