@@ -21,10 +21,12 @@ pub const FORMAT_VERSION: u64 = 1;
 
 /// Frame types. 0 is invalid, so a zeroed region never parses.
 pub mod frame {
-    pub const ACTORS: u64 = 1;
     pub const SNAPSHOT: u64 = 2;
     pub const OPS: u64 = 3;
     pub const LOCAL: u64 = 4;
+    /// Never reused: 1 was a file-wide actor table (each frame now
+    /// carries its own).
+    pub const RETIRED: [u64; 1] = [1];
 }
 
 /// How long an append may wait for its fsync (spec "Journal").
@@ -186,7 +188,7 @@ fn header_bytes(generation: u64) -> Vec<u8> {
 
 // ---- Messages -------------------------------------------------------------
 
-/// The file's actor table: frames name actors by their index here.
+/// A frame's actor table: the frame names actors by their index here.
 #[derive(Debug, Clone, Default)]
 pub struct Actors {
     list: Vec<ActorId>,
@@ -211,20 +213,25 @@ impl Actors {
     }
 }
 
-fn actors_message(actors: &[ActorId]) -> Vec<u8> {
-    let mut w = Writer::new();
-    for actor in actors {
-        w.fixed64(1, actor.0);
+/// Writes `actors` as repeated fixed64 field `no`, in table order.
+fn write_table(w: &mut Writer, no: u32, actors: &Actors) {
+    for actor in &actors.list {
+        w.fixed64(no, actor.0);
     }
-    w.into_bytes()
 }
 
-fn decode_actors(buf: &[u8]) -> Result<Vec<ActorId>, JournalError> {
-    let mut actors = Vec::new();
+/// The table in repeated field `no`, in file order. A repeated actor keeps
+/// its first index; the frame then doesn't re-encode to itself, which
+/// blocks compaction.
+fn read_table(buf: &[u8], no: u32) -> Result<Actors, JournalError> {
+    let mut actors = Actors::default();
     for field in Reader::new(buf) {
         let field = field?;
-        if field.no == 1 {
-            actors.push(ActorId(field.value.fixed64()?));
+        if field.no == no {
+            let actor = ActorId(field.value.fixed64()?);
+            let at = actors.list.len() as u64;
+            actors.index.entry(actor).or_insert(at);
+            actors.list.push(actor);
         }
     }
     Ok(actors)
@@ -319,11 +326,14 @@ fn doc_actors(doc: &Doc) -> Actors {
 }
 
 /// Snapshot: `{1: doc id, 2: node*, 3: version*, 4: reserved for a
-/// retained Move-log tail, 5: clock}`. A node is `{1: id, 2: kind,
-/// 3: deleted, 4: group, 5: register*}` and a register `{1: field,
-/// 2: stamp, 3: value encoding}`. Nodes and registers are in id and
-/// field order, so equal documents encode to equal bytes.
-fn snapshot_message(doc: &Doc, actors: &Actors) -> Vec<u8> {
+/// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 2:
+/// kind, 3: deleted, 4: group, 5: register*}` and a register `{1: field,
+/// 2: stamp, 3: value encoding}`. The actor table is sorted, and nodes and
+/// registers are in id and field order, so equal documents encode to
+/// equal bytes.
+fn snapshot_message(doc: &Doc) -> Vec<u8> {
+    let actors = doc_actors(doc);
+    let actors = &actors;
     let mut w = Writer::new();
     w.bytes(1, &doc.id.0);
     for (id, node) in &doc.nodes {
@@ -364,10 +374,13 @@ fn snapshot_message(doc: &Doc, actors: &Actors) -> Vec<u8> {
     if !clock.is_empty() {
         w.message(5, &clock);
     }
+    write_table(&mut w, 6, actors);
     w.into_bytes()
 }
 
-fn decode_snapshot(buf: &[u8], actors: &Actors) -> Result<Doc, JournalError> {
+fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
+    let actors = read_table(buf, 6)?;
+    let actors = &actors;
     let mut doc = Doc::new(DocId([0; 16]));
     for field in Reader::new(buf) {
         let field = field?;
@@ -426,13 +439,11 @@ fn decode_snapshot(buf: &[u8], actors: &Actors) -> Result<Doc, JournalError> {
     Ok(doc)
 }
 
-/// Actors and snapshot frames for `doc`, as a compacted file holds them.
-/// Equal documents give equal bytes.
+/// The snapshot frame for `doc`, as a compacted file holds it. Equal
+/// documents give equal bytes.
 pub fn snapshot_bytes(doc: &Doc) -> Vec<u8> {
-    let actors = doc_actors(doc);
     let mut out = Vec::new();
-    encode_frame(&mut out, frame::ACTORS, &actors_message(&actors.list));
-    encode_frame(&mut out, frame::SNAPSHOT, &snapshot_message(doc, &actors));
+    encode_frame(&mut out, frame::SNAPSHOT, &snapshot_message(doc));
     out
 }
 
@@ -449,18 +460,21 @@ fn op_actors(op: &Op) -> Vec<ActorId> {
     actors
 }
 
-/// Ops: `{1: author's actor index, 2: op*}`. An op is `{1: counter delta,
-/// 2: ms delta (both zigzag, from the previous op in the frame), 3:
-/// logical, then one body field: 4 Create {1: node, 2: kind, 3: fields},
-/// 5 Set {1: node, 2: field, 3: value encoding}, 6 Move {1: node, 2:
-/// group}, 7 Delete {1: node}}`.
-fn ops_message(ops: &[Op], actors: &Actors) -> Vec<u8> {
+/// Ops: `{1: actor*, 2: op*}`, the frame's table with the author first
+/// (index 0) and then every other actor its ops name, in first-use order.
+/// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
+/// previous op in the frame), 3: logical, then one body field: 4 Create
+/// {1: node, 2: kind, 3: fields}, 5 Set {1: node, 2: field, 3: value
+/// encoding}, 6 Move {1: node, 2: group}, 7 Delete {1: node}}`.
+fn ops_message(ops: &[Op]) -> Vec<u8> {
     let author = ops[0].id.actor;
-    let mut w = Writer::new();
-    let index = actors.index(author);
-    if index != 0 {
-        w.varint(1, index);
+    let mut table = Actors::default();
+    for actor in ops.iter().flat_map(op_actors) {
+        table.push(actor); // `op_actors` starts with the op's author
     }
+    let actors = &table;
+    let mut w = Writer::new();
+    write_table(&mut w, 1, actors);
     let (mut counter, mut ms) = (0u64, 0u64);
     for op in ops {
         assert_eq!(op.id.actor, author, "one author per ops frame");
@@ -514,15 +528,10 @@ fn ops_message(ops: &[Op], actors: &Actors) -> Vec<u8> {
 
 /// The ops in an ops frame. Op kinds this build doesn't know are skipped
 /// (`take` notices: the frame then doesn't re-encode to itself).
-fn decode_ops(buf: &[u8], actors: &Actors) -> Result<Vec<Op>, JournalError> {
-    let mut author = 0;
-    for field in Reader::new(buf) {
-        let field = field?;
-        if field.no == 1 {
-            author = field.value.u64()?;
-        }
-    }
-    let author = actors.get(author)?;
+fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
+    let actors = read_table(buf, 1)?;
+    let actors = &actors;
+    let author = actors.get(0)?;
     let mut ops = Vec::new();
     let (mut counter, mut ms) = (0u64, 0u64);
     for field in Reader::new(buf) {
@@ -589,7 +598,6 @@ pub struct Journal {
     generation: u64,
     /// End of the last whole frame read: where the next append goes.
     end: u64,
-    actors: Actors,
     doc: Doc,
     local: Option<Vec<u8>>,
     /// Size of the latest snapshot frame, and of the frames after it.
@@ -627,7 +635,6 @@ impl Journal {
             counter: 0,
             generation: 0,
             end: 0,
-            actors: Actors::default(),
             doc: Doc::new(DocId([0; 16])),
             local: None,
             snapshot_len: 0,
@@ -715,7 +722,6 @@ impl Journal {
         self.read_only = header.version > FORMAT_VERSION;
         self.keep_unknown = self.read_only;
         self.stale = false;
-        self.actors = Actors::default();
         self.doc = Doc::new(DocId([0; 16]));
         self.local = None;
         self.snapshot_len = 0;
@@ -728,52 +734,41 @@ impl Journal {
         Ok(())
     }
 
-    /// Applies one frame read from the file.
+    /// Applies one frame read from the file. A frame that doesn't decode
+    /// changes nothing.
     fn take(&mut self, frame: &RawFrame) -> Result<Vec<NodeId>, JournalError> {
-        let size = frame.size as u64;
-        match frame.ty {
+        let touched = match frame.ty {
             frame::SNAPSHOT => {
-                (self.snapshot_len, self.since_snapshot) = (size, 0);
-            }
-            _ => self.since_snapshot += size,
-        }
-        match frame.ty {
-            frame::ACTORS => {
-                let actors = decode_actors(frame.message)?;
-                self.keep_unknown |= actors_message(&actors) != frame.message;
-                for actor in actors {
-                    self.actors.push(actor);
-                }
-                Ok(Vec::new())
-            }
-            frame::SNAPSHOT => {
-                let before: Vec<NodeId> = self.doc.nodes.keys().copied().collect();
-                self.doc = decode_snapshot(frame.message, &self.actors)?;
-                self.keep_unknown |= snapshot_message(&self.doc, &self.actors) != frame.message;
-                self.clock.observe(self.doc.clock);
-                Ok(before.into_iter().chain(self.doc.nodes.keys().copied()).collect())
+                let doc = decode_snapshot(frame.message)?;
+                self.keep_unknown |= snapshot_message(&doc) != frame.message;
+                self.clock.observe(doc.clock);
+                let before = std::mem::replace(&mut self.doc, doc);
+                (self.snapshot_len, self.since_snapshot) = (frame.size as u64, 0);
+                return Ok(before.nodes.into_keys().chain(self.doc.nodes.keys().copied()).collect());
             }
             frame::OPS => {
                 // Encodings are canonical, so a frame that doesn't re-encode
                 // to itself held a field or op kind this build skipped.
-                let ops = decode_ops(frame.message, &self.actors)?;
-                self.keep_unknown |= ops.is_empty() || ops_message(&ops, &self.actors) != frame.message;
+                let ops = decode_ops(frame.message)?;
+                self.keep_unknown |= ops.is_empty() || ops_message(&ops) != frame.message;
                 let mut touched = Vec::new();
                 for op in &ops {
                     self.clock.observe(op.hlc);
                     touched.extend(self.doc.apply(op));
                 }
-                Ok(touched)
+                touched
             }
             frame::LOCAL => {
                 self.local = Some(frame.message.to_vec());
-                Ok(Vec::new())
+                Vec::new()
             }
             _ => {
                 self.keep_unknown = true; // a newer build's frame: kept, not read
-                Ok(Vec::new())
+                Vec::new()
             }
-        }
+        };
+        self.since_snapshot += frame.size as u64;
+        Ok(touched)
     }
 
     /// Reads the frames other processes appended, or the whole file again
@@ -924,20 +919,8 @@ impl Journal {
             })
             .collect();
         let mut out = Vec::new();
-        let mut new_actors: Vec<ActorId> = Vec::new();
-        for actor in ops.iter().flat_map(op_actors) {
-            if !j.actors.index.contains_key(&actor) && !new_actors.contains(&actor) {
-                new_actors.push(actor);
-            }
-        }
-        if !new_actors.is_empty() {
-            encode_frame(&mut out, frame::ACTORS, &actors_message(&new_actors));
-            for actor in new_actors {
-                j.actors.push(actor);
-            }
-        }
         if !ops.is_empty() {
-            encode_frame(&mut out, frame::OPS, &ops_message(&ops, &j.actors));
+            encode_frame(&mut out, frame::OPS, &ops_message(&ops));
         }
         if let Some(local) = &local {
             encode_frame(&mut out, frame::LOCAL, local);
@@ -1262,14 +1245,12 @@ mod tests {
         drop(journal);
 
         // An ops frame whose top level carries a field this build doesn't know.
-        let mut actors = Actors::default();
-        actors.push(ActorId(1));
         let op = Op {
             id: NodeId { actor: ActorId(1), counter: 100 },
             hlc: Hlc { ms: now_ms() + 1000, logical: 0 },
             body: OpBody::Delete { node: tab },
         };
-        let mut message = ops_message(&[op], &actors);
+        let mut message = ops_message(&[op]);
         let mut extra = Writer::new();
         extra.varint(9, 1);
         message.extend(extra.into_bytes());
@@ -1283,10 +1264,8 @@ mod tests {
 
         // A snapshot with the reserved Move-log tail (field 4) filled in.
         let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
-        let actors = doc_actors(&doc);
         let mut bytes = header_bytes(7);
-        encode_frame(&mut bytes, frame::ACTORS, &actors_message(&actors.list));
-        let mut snapshot = snapshot_message(&doc, &actors);
+        let mut snapshot = snapshot_message(&doc);
         let mut tail = Writer::new();
         tail.bytes(4, b"tail");
         snapshot.extend(tail.into_bytes());
@@ -1310,7 +1289,7 @@ mod tests {
         set_readonly(true);
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://lost.example/");
-        assert!(txn.commit(vec![create], None).is_err()); // the actor table grew in memory only
+        assert!(txn.commit(vec![create], None).is_err()); // the file is read-only
         assert!(matches!(journal.save_copy(&dir.join("copy.mnf")), Err(JournalError::Stale)));
         set_readonly(false);
         let mut txn = journal.begin().unwrap();
@@ -1483,6 +1462,37 @@ mod tests {
     }
 
     #[test]
+    fn every_frame_reads_on_its_own() {
+        // Each frame carries its own actor table, author first, so any
+        // frame decodes without the frames before it.
+        let dir = temp_dir("self-contained");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = a.begin().unwrap();
+        let group = txn.next_id();
+        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }], None).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://f.example/");
+        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }], None).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        let header = read_header(&bytes).unwrap();
+        let frames = scan(&bytes[header.len..], header.len).frames;
+        assert_eq!(frames.iter().map(|f| f.ty).collect::<Vec<_>>(), [frame::SNAPSHOT, frame::OPS, frame::OPS]);
+        assert!(decode_snapshot(frames[0].message).is_ok());
+        let theirs = frames[2].message;
+        assert_eq!(read_table(theirs, 1).unwrap().list, [ActorId(2), ActorId(1)]);
+        let ops = decode_ops(theirs).unwrap();
+        assert!(ops.iter().all(|op| op.id.actor == ActorId(2)));
+        assert!(ops.iter().any(|op| op.body == OpBody::Move { node: tab, group: Some(group) }));
+
+        // A frame with no table has no author.
+        assert!(decode_ops(&[]).is_err());
+        assert!(![frame::SNAPSHOT, frame::OPS].iter().any(|ty| frame::RETIRED.contains(ty)));
+    }
+
+    #[test]
     fn inspect_reports_frames_and_the_torn_tail() {
         let dir = temp_dir("inspect");
         let path = dir.join("session.mnf");
@@ -1491,7 +1501,7 @@ mod tests {
         let clean = bytes.len();
         bytes.extend_from_slice(&[0; 16]);
         let report = inspect(&bytes).unwrap();
-        assert_eq!(report.frames.iter().map(|f| f.1).collect::<Vec<_>>(), [frame::ACTORS, frame::SNAPSHOT]);
+        assert_eq!(report.frames.iter().map(|f| f.1).collect::<Vec<_>>(), [frame::SNAPSHOT]);
         assert_eq!(report.torn, Some((clean, Stop::ZeroLength)));
     }
 }
