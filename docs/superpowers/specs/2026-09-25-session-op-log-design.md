@@ -83,7 +83,8 @@ character: its extra symbols `* ~ $ =` break file names (`*`), QR
 alphanumeric mode (`~ $ =`) and double-click selection. Not nanoid or
 base64url: those are case-sensitive, and two ids differing only in case
 would collide as file names. Save As
-and Import Session create a new document id; only sync shares one.
+creates a new document id. Import Session and Open replace the live
+document's nodes and keep its id (Plan B). Only sync shares one.
 
 ### Actors and ids
 
@@ -131,7 +132,7 @@ A set of nodes. Each node has:
 | `color` | all | diffed | `None` = untagged; black is `Some(0)` and is encoded |
 | `group` | all | diffed, as `Move` | the tree edge |
 | `parent` | Tab | diffed | "opened from" link, a plain register |
-| `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation never set it, so replicas whose logins redirect differently don't bounce each other's tabs. The page a tab actually shows is personal state. |
+| `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation should never set it, so replicas whose logins redirect differently don't bounce each other's tabs. **Plan B sets it on every url change the engine reports, redirects included**, because no engine reports a navigation's cause; instances on one profile share logins, so nothing bounces in sub-project 1. Sub-project 2 must narrow it to user-started navigations before sync. |
 | `engine`, `pinned` | Tab | diffed | |
 | `name`, `from_json` | Group | diffed | |
 | `text` | Note | diffed | whole string, LWW (sub-project 4 replaces it) |
@@ -158,14 +159,18 @@ Kept per profile, never merged, in `session.mnf.local` beside the
 journal (see "Personal-state file"):
 
 - view: `focused`, view mode, `current_group`, `viewed_image`,
-  `split_tab`, `groups_collapsed`, camera rect per level (key: group id,
-  or none for the top level);
-- per node: a note's `editing`; a tab's `muted`, `zoom`, `title` and
-  current url (the page it actually shows, which restore reopens);
+  `split_tab`, `groups_collapsed`, and the camera rect with the level it
+  was saved at (the app has one camera; per-level cameras are later);
+- per node: a note's `editing`; a tab's `muted`, `zoom` and `title`.
+  The current url equals the shared `url` while Plan B sets `url` on
+  every change, so it isn't stored; sub-project 2 adds it back;
 - the last settled position of every node, so the graph reopens exactly
   as it was left rather than re-settling from the shared `pos`;
-- Recently Closed: up to 20 entries, newest first, each a list of node
-  snapshots (the node model with its fields, no timestamps).
+- Recently Closed: up to 20 entries, oldest first, each a JSON snapshot
+  (root first, then its subtree; `local` carries tab zoom).
+
+Encoded as JSON (`local_state::LocalState`) inside the personal-state
+file's state bytes.
 
 Two instances on one profile each keep their own personal state while
 running, and the last write wins. So on the next launch one instance's
@@ -252,15 +257,17 @@ comparing them would turn every physics step and every redirect into a
 shared edit, and two replicas whose engines disagree would overwrite
 each other forever. Instead the sites of the named user actions (drag
 end, placement, drop, import, a typed or clicked navigation, back or
-forward) mark the node, and the next save emits a `Set` for marked
-fields only. Personal fields (settled positions, current url, title,
+forward; in Plan B every reported url change, see the `url` row) mark the
+node, and the next save emits a `Set` for marked
+fields only. Personal fields (settled positions, title,
 zoom, mute, note editing) are written to the personal-state file.
 
 ### Positions
 
 Physics settling and layout motion stay local. Only drag ends and
 explicit placements (new node, drop, import) emit `Set pos`. A remote
-`pos` arrives as a target the local layout eases toward, not a jump.
+`pos` should arrive as a target the local layout eases toward; Plan B
+sets it directly (a jump), and easing is left for later.
 
 ## Byte format
 
@@ -455,7 +462,11 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   updates the card. This replaces `session::fingerprint`,
   `conflict_path` and the conflict toast.
 - **Named sessions**: each is its own `.mnf` in `sessions/`. Save As
-  writes a compacted copy (no `.prev`) and the copy's personal-state file; Open switches the live file.
+  writes a compacted copy (no `.prev`) under a new document id, with the
+  copy's personal-state file. Open replaces the running session's
+  contents: it deletes every live node and recreates the file's nodes
+  under fresh ids, remapping its personal state. `session.mnf` stays the
+  one live file.
 
 ## JSON snapshots
 
