@@ -6,11 +6,6 @@ description.workspace = true
 
 [dependencies]
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
-# Only used by the Phase-2 capture spike (examples/capture_spike.rs) to
-# dump a captured frame to a PNG for visual verification -- not needed by
-# the real engine-host binary, which writes raw bytes into SharedFrameBuffer
-# instead.
-image = { version = "0.25", default-features = false, features = ["png"] }
 # Real JSON-string unescaping for `ExecuteScript`'s own JSON-encoded return
 # values -- see `nav_state.rs`'s JSON-body detection for why the plain
 # strip-outer-quotes trick `input.rs`'s href parsing gets away with isn't
@@ -60,3 +55,10 @@ windows = { version = "0.62", features = [
 # depends on (see that crate's own `[dependencies.windows-numerics]`), same
 # reasoning as the `webview2-com` pin above.
 windows-numerics = { version = "0.3.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Only used by the Phase-2 capture spike (examples/capture_spike.rs) to
+# dump a captured frame to a PNG for visual verification -- not needed by
+# the real engine-host binary, which writes raw bytes into SharedFrameBuffer
+# instead.
+image = { version = "0.25", default-features = false, features = ["png"] }

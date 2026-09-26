@@ -1,3 +1,7 @@
+// `wrap_client!`'s generated `new` and `ClientBuilder::build` take one argument per
+// handler or shared handle; bundling them into a struct would only rename the list.
+#![allow(clippy::too_many_arguments)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

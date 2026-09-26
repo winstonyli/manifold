@@ -4884,7 +4884,6 @@ version = "0.1.0"
 dependencies = [
  "cef",
  "ipc-protocol",
- "url",
  "windows 0.62.2",
 ]
 

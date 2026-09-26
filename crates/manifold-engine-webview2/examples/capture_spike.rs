@@ -37,7 +37,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_SINGLETHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, PeekMessageW, RegisterClassW, ShowWindow,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_SHOWNOACTIVATE, WNDCLASSW,
 };
 
 const WIDTH: u32 = 320;
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
     }
 
     // Captured surface is BGRA -- swap to RGBA for `image`'s encoder.
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
 
