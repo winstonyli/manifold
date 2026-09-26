@@ -1927,7 +1927,7 @@ git commit -m "Plan B cleanup: store in use (no dead-code allow), docs describe 
 
 ## Outcome (executed 2026-09-26)
 
-Landed on `session-store-app` as 524a706..PENDING (BASE for Task 14 was `ac9249e`): `cargo test -q -j 12 -p manifold` reports 128 passed, 2 ignored (timing probes), and clippy is clean with no `dead_code` allow anywhere in `store/` or `session_sync.rs`. `cargo build -p manifold`, `scripts/headless-smoke-test.sh` (26 checks, all PASS), and `scripts/two-instance-test.sh` (all 3 scenarios ok) all pass against the freshly built exe.
+Landed on `session-store-app` as 524a706..6a4fc2d (BASE for Task 14 was `ac9249e`): `cargo test -q -j 12 -p manifold` reports 128 passed, 2 ignored (timing probes), and clippy is clean with no `dead_code` allow anywhere in `store/` or `session_sync.rs`. `cargo build -p manifold`, `scripts/headless-smoke-test.sh` (26 checks, all PASS), and `scripts/two-instance-test.sh` (all 3 scenarios ok) all pass against the freshly built exe.
 
 Task 14 itself removed `store/mod.rs`'s `#![allow(dead_code)]` and resolved every warning it had been hiding:
 - `Journal::actor()` — deleted; nothing calls it and nothing in the spec's sub-project 2 notes names a use for it.
