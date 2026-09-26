@@ -487,8 +487,8 @@ fn main() {
 }
 
 /// `GdkPixbuf` rows can be padded to a stride wider than `width * 4` for
-/// alignment; our IPC contract assumes tightly-packed rows (`width * height
-/// * 4` bytes, no padding — see `ipc_protocol::frame_buffer`'s doc comment
+/// alignment; our IPC contract assumes tightly-packed rows
+/// (`width * height * 4` bytes, no padding — see `ipc_protocol::frame_buffer`'s doc comment
 /// and `manifold`'s texture upload), so copy row-by-row rather than
 /// sending the raw buffer as-is.
 fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {
