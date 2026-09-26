@@ -132,7 +132,7 @@ A set of nodes. Each node has:
 | `color` | all | diffed | `None` = untagged; black is `Some(0)` and is encoded |
 | `group` | all | diffed, as `Move` | the tree edge |
 | `parent` | Tab | diffed | "opened from" link, a plain register |
-| `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation should never set it, so replicas whose logins redirect differently don't bounce each other's tabs. **Plan B sets it on every url change the engine reports, redirects included**, because no engine reports a navigation's cause; instances on one profile share logins, so nothing bounces in sub-project 1. Sub-project 2 must narrow it to user-started navigations before sync. |
+| `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation should never set it, so replicas whose logins redirect differently don't bounce each other's tabs. **Plan B sets it on every url change the engine reports, redirects included**, because no engine reports a navigation's cause, except a change that follows a load the store started (another replica's `url`, a restore): that stays local while the tab loads and for 5 s after (`App::shares_url_change`). Instances on one profile share logins, but a site that redirects to a fresh url on every load (a consumed nonce) would otherwise have two instances navigate each other forever (two-instance test, scenario 3). Sub-project 2 must narrow it to user-started navigations before sync. |
 | `engine`, `pinned` | Tab | diffed | |
 | `name`, `from_json` | Group | diffed | |
 | `text` | Note | diffed | whole string, LWW (sub-project 4 replaces it) |

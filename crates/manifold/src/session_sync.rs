@@ -23,6 +23,11 @@ use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CL
 /// disk isn't retried every frame.
 const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long after a store-started load last reported loading its tab's url
+/// changes stay local (`App::shares_url_change`): a script redirect can
+/// come just after the page reports loaded.
+const STORE_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 
@@ -400,6 +405,7 @@ impl App {
                 node.parent = id_of(fields, field::PARENT);
             }
             let mut swap = None;
+            let mut store_load = false;
             match &mut node.payload {
                 NodePayload::Tab(tab) => {
                     if changed(field::PINNED) {
@@ -409,6 +415,7 @@ impl App {
                     if changed(field::URL) && tab.url != url {
                         tab.url = url.clone();
                         tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
+                        store_load = true;
                     }
                     let want = engine_field(fields);
                     if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
@@ -438,6 +445,9 @@ impl App {
                 NodePayload::Note(_) => {}
                 // Paths, keys and values never change after creation.
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
+            }
+            if store_load {
+                self.note_store_load(&id);
             }
             if let Some(target) = swap {
                 self.start_swap_to(&id, target);
@@ -591,6 +601,32 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Tab `id` is loading a url the store gave it (another replica's
+    /// `url`, or a restore): its url changes stay local until the load
+    /// settles (`shares_url_change`).
+    pub(crate) fn note_store_load(&mut self, id: &str) {
+        self.store_loads.insert(id.to_string(), std::time::Instant::now());
+    }
+
+    /// Whether tab `id`'s reported url change is shared (ruling 3). Not
+    /// while it follows a load the store started, nor for `STORE_LOAD_GRACE`
+    /// after the tab was last seen loading: a site that redirects to a
+    /// fresh url on every load (a nonce, a session token) would otherwise
+    /// have two instances navigate each other back and forth forever. The
+    /// url stays local; the next navigation after the load is shared.
+    pub(crate) fn shares_url_change(&mut self, id: &str) -> bool {
+        let Some(since) = self.store_loads.get_mut(id) else { return true };
+        if self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.loading) {
+            *since = std::time::Instant::now();
+            return false;
+        }
+        if since.elapsed() < STORE_LOAD_GRACE {
+            return false;
+        }
+        self.store_loads.remove(id);
+        true
     }
 
     /// Marks explicit field `field` (`pos` or `url`) of `id` for the next
@@ -1170,6 +1206,7 @@ impl App {
         self.graph_settled_key = None;
         self.failed_tab_retries.clear();
         self.spawning.clear();
+        self.store_loads.clear();
         self.remote_in_flight.clear();
         self.last_shared.clear();
         self.pending_local = None;
@@ -1580,6 +1617,18 @@ pub(crate) mod tests {
         assert!(app.save_session());
         assert!(matches!(&app.nodes[&note].payload, NodePayload::Note(n) if n.text == "theirs"));
         assert_eq!(app.nodes[&note].color, Some(egui::Color32::RED));
+    }
+
+    #[test]
+    fn url_changes_after_a_store_started_load_stay_local_until_it_settles() {
+        let mut app = App::default();
+        assert!(app.shares_url_change("7"), "an ordinary tab shares");
+        app.note_store_load("7");
+        assert!(!app.shares_url_change("7"), "a redirect right after the store's navigation");
+        assert!(!app.shares_url_change("7"), "still within the grace");
+        app.store_loads.insert("7".into(), std::time::Instant::now() - STORE_LOAD_GRACE);
+        assert!(app.shares_url_change("7"), "settled: the next navigation is shared");
+        assert!(app.store_loads.is_empty());
     }
 
     #[test]

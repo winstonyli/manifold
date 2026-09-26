@@ -1036,12 +1036,13 @@ impl App {
         let mut changed = false;
         for (tab_id, msg) in messages {
             let url_changed = self.handle_engine_message(&tab_id, msg);
-            if url_changed {
+            if url_changed && self.shares_url_change(&tab_id) {
                 // Ruling 3: every reported url change is shared, whichever
                 // tab it came from -- mark it here rather than leaving it
                 // to `navigate_tab` (that only handles this instance's own
                 // address-bar navigations, not the engine's own
-                // confirmation this responds to, nor back/forward).
+                // confirmation this responds to, nor back/forward) --
+                // except while it follows a load the store started.
                 self.mark(&tab_id, field::URL);
             }
             changed |= url_changed;

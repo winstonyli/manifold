@@ -7,7 +7,10 @@
 #   1. A imports a group, B adds a note: both EXPORTSESSION node sets agree.
 #   2. A imports enough notes to compact while B stays open; B edits
 #      after: both agree and nothing is lost.
-#   3. A adds a note and is killed; a fresh instance still has it.
+#   3. A navigates a tab to a site that redirects to a fresh url on every
+#      load (scripts/nonce_server.py): B follows once, and the two don't
+#      keep navigating each other (the site's request count settles).
+#   4. A adds a note and is killed; a fresh instance still has it.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -153,7 +156,40 @@ wait_agree "scenario 2" "$out/a2.json" "$out/b2.json"
 assert_py has_kinds "$out/a2.json" "note:201"
 echo "scenario 2: ok"
 
-echo "=== scenario 3: kill A ==="
+echo "=== scenario 3: a url that changes on every load ==="
+python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 150 >"$out/port" </dev/null &
+wait_file "$out/port"
+port="$(tr -d '\r\n' <"$out/port")"
+hits() { cat "$out/hits" 2>/dev/null || echo 0; }
+sa NEWTAB
+sa WAITTABS
+# The new tab is focused but shown in Graph view headless.
+sa TOGGLEVIEW
+# Let the new tab's own first load settle, or its address-bar update
+# overwrites the typed url before ENTER.
+sa "SLEEP 3"
+sa "ADDRESSBAR http://127.0.0.1:$port/r"
+sa "SLEEP 1"
+sa ENTER
+# A's load (a redirect, then the page), then B's (the same, as its copy
+# follows): at least 4 requests.
+for _ in $(seq 150); do [ "$(hits)" -ge 4 ] && break; sleep 0.2; done
+[ "$(hits)" -ge 4 ] || {
+    echo "FAIL: scenario 3: only $(hits) requests; B never followed A's navigation"
+    exit 1
+}
+# Past STORE_LOAD_GRACE (5 s), then a window as long again: a bounce is a
+# round trip every second or two, so the count would keep climbing.
+sleep 6
+settled="$(hits)"
+sleep 10
+[ "$(hits)" -eq "$settled" ] || {
+    echo "FAIL: scenario 3: the instances keep navigating each other ($settled -> $(hits) requests in 10 s)"
+    exit 1
+}
+echo "scenario 3: ok ($settled requests)"
+
+echo "=== scenario 4: kill A ==="
 sa "EXPORTSESSION $(win "$out/before3.json")"
 wait_file "$out/before3.json"
 sa NEWNOTE
@@ -184,6 +220,6 @@ assert_py has_id "$out/c.json" "$new_id"
 sc QUIT
 wait "$C_PID" 2>/dev/null || true
 c_winpid=""
-echo "scenario 3: ok"
+echo "scenario 4: ok"
 
 echo "two-instance test: ok"
