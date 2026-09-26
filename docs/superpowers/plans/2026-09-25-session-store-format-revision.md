@@ -2122,3 +2122,15 @@ Landed on `dev` in merge 6910e0c (branch `store-format-revision`, 587babf..a6bf9
 - Task 7: review found that a failed save of damaged bytes still let compaction or an append destroy them; fixed with an `unsaved_damage` flag and an `ensure_saved` guard before every rewrite or truncation, plus two tests (1c5b2fd). Hence 64 tests, not 62.
 - Final review: `save_copy` removes a stale `.prev`; a clean reload clears `unsaved_damage`; spec and contract wording aligned; two tests. Hence 66 tests, not 64.
 - Otherwise the blocks were applied as written.
+
+Left for later (reviewed and judged minor; none loses data under a single fault):
+- `save_copy` must never get the journal's own path; it would now also delete the live `.prev`. Add `debug_assert!(path != self.path)` when something calls it.
+- A damaged header accepts any `.prev` (edge-case row 7). Save As no longer leaves a foreign one, but a check that the surviving ops' parents exist in the base would tighten it.
+- A damaged header drops the `prev_generation` link, so a later lost snapshot can't use `.prev`.
+- `save_damaged` skips when `.damaged-<gen>` exists, so newer damage in a file that isn't rewritten (a `keep_unknown` BadCrc tail) isn't saved. Naming copies `.damaged-<gen>-<crc>` would make the invariant exact.
+- A second damaged load overwrites an untaken `Recovery`; only a repair during `close` at exit is uncovered.
+- `append` refuses while `unsaved_damage` is set even when nothing would be truncated (mid-file damage). Safe, but commits fail if the save keeps failing for reasons other than a full disk.
+- A whole BadCrc frame at EOF (a crash mid-append) is reported as damage; word it softly in the UI.
+- `resync` is O(n × claimed length) on crafted bytes (edge-case row 13).
+- `Doc::prune`'s used-actor loop duplicates `doc_actors` in journal.rs; merge them into one `Doc` helper when either is touched.
+- Tests: the fuzz never has a `.prev`, and doesn't compare the repaired document with a reference; no test for prune followed by a `.prev` rebuild with deletes, for repair followed by a normal compaction's `.prev` rotation, for a damaged read-only file staying unwritten, or for a non-deleted `Kind::Unknown(n>0)` leaf surviving `prune`. Nothing tests two processes on the `.lock`, or a real crash mid-write.
