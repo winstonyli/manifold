@@ -3001,18 +3001,22 @@ impl App {
         origin
     }
 
-    /// A fresh group's default display name -- derived from its own id's
-    /// numeric suffix (`alloc_node_id`'s own monotonic, never-reused
-    /// counter) rather than `self.groups.len() + 1`, which the three call
-    /// sites all used until this was found live: dissolving/closing a
-    /// group shrinks `len()`, so a later new group's default name could
-    /// collide with an existing one's (e.g. three groups "Group 1/2/3",
-    /// dissolve "Group 2", create a new one -- `len()` is back to 2, so the
-    /// new group's name is "Group 3", a duplicate). Manually *renaming* two
-    /// groups to the identical string is left alone -- that's a deliberate
-    /// user choice, not an accidental default-naming collision.
-    fn default_group_name(id: &str) -> String {
-        format!("Group {}", id.trim_start_matches("grp-"))
+    /// A fresh group's default display name: "Group N" for the smallest N
+    /// no group is named yet. Not the group count plus one, which repeats a
+    /// name after a dissolve (three groups "Group 1/2/3", dissolve "Group
+    /// 2", and the next new one is "Group 3" again), and not the id, which
+    /// is a long store id. Manually *renaming* two groups to the identical
+    /// string is left alone -- that's a deliberate user choice.
+    fn default_group_name(&self) -> String {
+        let taken: HashSet<&str> = self
+            .nodes
+            .values()
+            .filter_map(|node| match &node.payload {
+                NodePayload::Group(group) => Some(group.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        (1..).map(|n| format!("Group {n}")).find(|name| !taken.contains(name.as_str())).expect("a free number")
     }
 
     /// Dissolves a group: members rejoin *its own parent's* level again
@@ -4090,7 +4094,7 @@ impl App {
     /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
     /// which passes the exact position that was right-clicked instead.
     fn insert_group_at(&mut self, id: String, pos: egui::Vec2) {
-        let name = Self::default_group_name(&id);
+        let name = self.default_group_name();
         self.nodes.insert(
             id.clone(),
             GraphNode {
@@ -5812,5 +5816,29 @@ mod tests {
         let a: crate::store::model::NodeId = a.parse().expect("a store node id");
         let b: crate::store::model::NodeId = b.parse().unwrap();
         assert_eq!((a.actor, a.counter + 1), (b.actor, b.counter));
+    }
+
+    #[test]
+    fn a_new_group_takes_the_smallest_free_number() {
+        let mut app = App::default();
+        let add = |app: &mut App, name: &str| {
+            let payload = NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+            let node = GraphNode {
+                parent: None,
+                group: None,
+                pos: egui::Vec2::ZERO,
+                vel: egui::Vec2::ZERO,
+                color: None,
+                payload,
+            };
+            let id = app.alloc_node_id();
+            app.nodes.insert(id, node);
+        };
+        assert_eq!(app.default_group_name(), "Group 1");
+        add(&mut app, "Group 1");
+        add(&mut app, "Group 3");
+        assert_eq!(app.default_group_name(), "Group 2", "a dissolved group's number is reused, never duplicated");
+        add(&mut app, "Group 2");
+        assert_eq!(app.default_group_name(), "Group 4");
     }
 }

@@ -228,23 +228,7 @@ check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
 ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays in Tab view, navigates nowhere" \
     's["tab_view"] and not s["suggestions"] and q == row'
 
-# Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
-# NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
-# button leaves it. The card's position is fixed: the root tab and the
-# group are the only nodes, and a node's spawn jitter comes from its id.
-# DOUBLECLICK rather than two CLICKs, which a slow frame can push past
-# egui's double-click delay.
-send "ESCAPE"
-send "NEWGROUP"
-sleep 1 # Tab-to-Graph transition, layout settle
-send "SCREENSHOT $out_dir_win\group_card.png"
-check_screenshot "$out_dir/group_card.png" "group card"
-send "DOUBLECLICK 250 125"
-check_state group_in "double-clicking the group card enters the group" 'not s["tab_view"] and s["current_group"]'
-send "CLICK 22 17"
-check_state group_out "the back button leaves the group" 's["current_group"] is None'
-
-# Tab drops inside a group. `query NAME EXPR` evaluates EXPR over an
+# Card helpers. `query NAME EXPR` evaluates EXPR over an
 # already-exported NAME.json without exporting again: `s` (the state),
 # `cards` (by id), `tabs`/`groups` (sorted ids), `xy(id)` and `lt(id)` (a
 # card's center and top-left corner, where its eject button sits, as "x
@@ -285,6 +269,26 @@ settle() {
     done
     failed "$1: the layout never stopped moving"
 }
+
+# Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
+# NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
+# button leaves it. The card is found by its reported position: spawn
+# jitter comes from the id, and ids are random per launch. DOUBLECLICK
+# rather than two CLICKs, which a slow frame can push past egui's
+# double-click delay.
+send "ESCAPE"
+send "NEWGROUP"
+sleep 1 # Tab-to-Graph transition, layout settle
+send "SCREENSHOT $out_dir_win\group_card.png"
+check_screenshot "$out_dir/group_card.png" "group card"
+settle group_card
+first_group=$(query group_card 'groups[0]')
+send "DOUBLECLICK $(query group_card "xy('$first_group')")"
+check_state group_in "double-clicking the group card enters the group" 'not s["tab_view"] and s["current_group"]'
+send "CLICK 22 17"
+check_state group_out "the back button leaves the group" 's["current_group"] is None'
+
+# Tab drops inside a group.
 
 # `drag X0 Y0 X1 Y1 [button]`: a press, six moves and a release with no
 # sleep between them (see debug_control.rs's advice on drags).

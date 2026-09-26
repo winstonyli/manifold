@@ -292,7 +292,7 @@ impl App {
                     .filter_map(|id| self.nodes.get(id))
                     .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
                 let pos = sum / count;
-                let name = Self::default_group_name(&id);
+                let name = self.default_group_name();
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
