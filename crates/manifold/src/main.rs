@@ -19,6 +19,7 @@ mod popups;
 mod process_manager;
 mod redirect_fetch;
 mod session;
+mod session_sync;
 mod settings;
 mod settings_page;
 mod store;
