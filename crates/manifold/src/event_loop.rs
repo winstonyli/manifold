@@ -103,7 +103,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.dispatch_window_event(event_loop, WindowEvent::RedrawRequested);
                 }
             }
-            UserEvent::TabSpawned(outcome) => self.handle_tab_spawn_result(outcome),
+            UserEvent::TabSpawned(outcome) => self.handle_tab_spawn_result(*outcome),
         }
     }
 
@@ -445,7 +445,7 @@ impl App {
     pub(crate) fn render_frame(&mut self, egui_output: Option<egui::FullOutput>) {
         let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
         let content_panes_pts = self.content_panes_points(ppp);
-        let content_panes_px: Vec<((f32, f32, f32, f32), &str)> = content_panes_pts
+        let content_panes_px: Vec<(gpu::PxRect, &str)> = content_panes_pts
             .iter()
             .map(|(rect, id)| {
                 ((rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp), id.as_str())

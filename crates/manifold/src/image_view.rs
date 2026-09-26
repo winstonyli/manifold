@@ -181,7 +181,7 @@ impl App {
         let trailing_width = trailing_ui.min_rect().width();
         let identity = format!("{} · {}×{}", download_filename(&path), image.x as u32, image.y as u32);
         let label_max_width =
-            (ui.available_width() - trailing_width - IMAGE_ZOOM_CHIP_RESERVED_WIDTH).max(80.0).min(360.0);
+            (ui.available_width() - trailing_width - IMAGE_ZOOM_CHIP_RESERVED_WIDTH).clamp(80.0, 360.0);
         ui.allocate_ui_with_layout(
             egui::vec2(label_max_width, ui.available_height()),
             egui::Layout::left_to_right(egui::Align::Center),

@@ -84,7 +84,7 @@ pub struct Settings {
     /// posture `Settings::load` already has for the whole file); an older
     /// file whose values were saved as *physical* pixels before this fix
     /// restores those numbers as if they were logical points, which on a
-    /// >100%-scaled monitor makes the window come back *larger* than it was
+    /// monitor scaled past 100% makes the window come back *larger* than it was
     /// (e.g. 2744 saved physical pixels reopen as 2744 points = 3430
     /// physical at 125%). That doesn't self-correct: the next save records
     /// the new, inflated size in points, so the window simply stays at it

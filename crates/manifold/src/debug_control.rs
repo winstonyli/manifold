@@ -544,6 +544,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
     let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
     let mut parts = rest.split_whitespace();
+    // Commands whose whole argument is a path or text, which must not be empty.
+    let non_empty = |command: fn(String) -> DebugCommand| (!rest.is_empty()).then(|| command(rest.to_string()));
     match cmd.to_ascii_uppercase().as_str() {
         "MOUSEMOVE" => Some(DebugCommand::MouseMove { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? }),
         "MOUSEDOWN" => Some(DebugCommand::MouseDown {
@@ -607,7 +609,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "false" => false,
             _ => return None,
         })),
-        "SCREENSHOT" => Some(DebugCommand::Screenshot(rest.to_string())).filter(|_| !rest.is_empty()),
+        "SCREENSHOT" => non_empty(DebugCommand::Screenshot),
         "RESIZE" => Some(DebugCommand::Resize(parts.next()?.parse().ok()?, parts.next()?.parse().ok()?)),
         "QUIT" => Some(DebugCommand::Quit),
         "QUICKSWITCHOPEN" => Some(DebugCommand::QuickSwitchOpen),
@@ -622,29 +624,29 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
         "TOGGLESETTINGSPAGE" => Some(DebugCommand::ToggleSettingsPage),
-        "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
-        "EXPORTSTATE" => Some(DebugCommand::ExportState(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
-        "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTSESSION" => non_empty(DebugCommand::ExportSession),
+        "EXPORTSTATE" => non_empty(DebugCommand::ExportState),
+        "IMPORTSESSION" => non_empty(DebugCommand::ImportSession),
+        "EXPORTBOOKMARKS" => non_empty(DebugCommand::ExportBookmarks),
+        "IMPORTBOOKMARKS" => non_empty(DebugCommand::ImportBookmarks),
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
         "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
         "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
-        "EXPORTGROUP" => Some(DebugCommand::ExportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTGROUP" => Some(DebugCommand::ImportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
+        "IMPORTGROUP" => non_empty(DebugCommand::ImportGroup),
         "DUPLICATETAB" => Some(DebugCommand::DuplicateTab),
-        "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
+        "PRINTTOPDF" => non_empty(DebugCommand::PrintToPdf),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
-        "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDDOWNLOAD" => Some(DebugCommand::AddDownload(rest.to_string())).filter(|_| !rest.is_empty()),
+        "ADDIMAGE" => non_empty(DebugCommand::AddImage),
+        "ADDPDF" => non_empty(DebugCommand::AddPdf),
+        "ADDJSON" => non_empty(DebugCommand::AddJson),
+        "ADDDOWNLOAD" => non_empty(DebugCommand::AddDownload),
         "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(if rest.is_empty() {
             60.0
         } else {
@@ -656,8 +658,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "EXPANDJSONASGRAPH" => Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty()),
-        "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPANDJSONASGRAPH" => non_empty(DebugCommand::ExpandJsonAsGraph),
+        "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
         "HELP" | "?" => Some(DebugCommand::Help),
         _ => None,

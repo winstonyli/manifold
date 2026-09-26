@@ -8,6 +8,9 @@ use winit::window::Window;
 /// screenshot save apart from one that was never attempted this frame
 /// (surface unusable), so a request isn't silently dropped just because it
 /// landed on a transient `Outdated`/`Occluded` frame.
+/// A pane's rectangle in physical pixels: x, y, width, height.
+pub type PxRect = (f32, f32, f32, f32);
+
 pub struct RenderOutcome {
     pub surface_ok: bool,
     /// `Some` only when a screenshot was requested AND `surface_ok` --
@@ -822,7 +825,7 @@ impl GpuState {
     fn record_content_layers(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        panes: &[((f32, f32, f32, f32), Option<&TabTexture>)],
+        panes: &[(PxRect, Option<&TabTexture>)],
         pipeline: &wgpu::RenderPipeline,
         clear: bool,
     ) {
@@ -851,7 +854,7 @@ impl GpuState {
     fn record_content_pass(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        viewport: (f32, f32, f32, f32),
+        viewport: PxRect,
         showing: Option<&TabTexture>,
         pipeline: &wgpu::RenderPipeline,
         clear: bool,
@@ -954,7 +957,7 @@ impl GpuState {
     /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
-        panes: &[((f32, f32, f32, f32), &str)],
+        panes: &[(PxRect, &str)],
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
@@ -1006,7 +1009,7 @@ impl GpuState {
         // its first frame yet, or whose texture was already freed, simply
         // draws nothing for this frame, same tolerance a single-pane render
         // already had).
-        let panes: Vec<((f32, f32, f32, f32), Option<&TabTexture>)> =
+        let panes: Vec<(PxRect, Option<&TabTexture>)> =
             panes.iter().map(|(rect, id)| (*rect, self.tab_textures.get(*id))).collect();
 
         // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
@@ -1160,7 +1163,7 @@ impl GpuState {
                         self.config.format,
                         wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
                     ) {
-                        for px in pixels.chunks_exact_mut(4) {
+                        for px in pixels.as_chunks_mut::<4>().0 {
                             px.swap(0, 2);
                         }
                     }

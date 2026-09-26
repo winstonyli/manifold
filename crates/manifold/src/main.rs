@@ -711,7 +711,7 @@ fn truncate_to_width(
         let chars: Vec<char> = text.chars().collect();
         let (mut lo, mut hi) = (0usize, chars.len());
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             let candidate: String = chars[..mid].iter().collect::<String>() + "…";
             if width_of(&candidate) <= bucketed_width {
                 lo = mid;
@@ -1186,7 +1186,7 @@ fn take_focus(pending: &mut Option<FocusTarget>, target: FocusTarget) -> bool {
 /// to be async in the first place.
 enum UserEvent {
     Debug(DebugCommand),
-    TabSpawned(TabSpawnOutcome),
+    TabSpawned(Box<TabSpawnOutcome>),
 }
 
 /// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
@@ -2718,7 +2718,7 @@ impl App {
         let generation = self.session_generation;
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
-            let _ = proxy.send_event(UserEvent::TabSpawned(TabSpawnOutcome { spawn, generation, result }));
+            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
         });
     }
 
@@ -3401,7 +3401,7 @@ impl App {
             }
             let perp = (delta - dir * along).length();
             let score = along + perp * 2.0;
-            if best.as_ref().map_or(true, |(_, s)| score < *s) {
+            if best.as_ref().is_none_or(|(_, s)| score < *s) {
                 best = Some((id, score));
             }
         }
@@ -5572,12 +5572,14 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::default();
-    app.headless = headless;
-    // Must be set before `run_app` — `resumed()` calls `spawn_root_tab`,
-    // which needs this to hand its background spawn thread a way to report
-    // back (see `TabSpawnOutcome`'s doc comment).
-    app.event_proxy = Some(event_loop.create_proxy());
+    let mut app = App {
+        headless,
+        // Must be set before `run_app` — `resumed()` calls `spawn_root_tab`,
+        // which needs this to hand its background spawn thread a way to report
+        // back (see `TabSpawnOutcome`'s doc comment).
+        event_proxy: Some(event_loop.create_proxy()),
+        ..App::default()
+    };
     if headless || debug_commands {
         debug_control::spawn_stdin_reader(event_loop.create_proxy());
     }
