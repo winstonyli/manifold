@@ -1026,8 +1026,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{encode_field, field, FieldValue};
-    use crate::store::testutil::temp_dir;
+    use crate::store::model::{encode_field, field, FieldValue, FIELDS};
+    use crate::store::testutil::{temp_dir, XorShift};
 
     fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
         let node = txn.next_id();
@@ -1313,6 +1313,136 @@ mod tests {
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(url(&doc, tab), FieldValue::Str("https://kept.example/".into()));
         assert_eq!(journal.doc().nodes, doc.nodes);
+    }
+
+    /// A session file holding every frame type, op kind and field type:
+    /// the seed `damaged_files_never_panic` mutates.
+    fn rich_file(path: &Path) -> Vec<u8> {
+        let mut journal = Journal::open(path, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let group = txn.next_id();
+        let (tab, create) = create_tab(&mut txn, "https://a.example/");
+        let note = txn.next_id();
+        let mut note_fields = encode_field(field::POS, &FieldValue::Pos(1.5, -2.0));
+        note_fields.extend(encode_field(field::COLOR, &FieldValue::Color(Some(0x12ab34))));
+        note_fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(group))));
+        note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
+        let set = |node, no, value| OpBody::Set { node, field: no, enc: encode_field(no, &value) };
+        let bodies = vec![
+            OpBody::Create { node: group, kind: Kind::Group, fields: encode_field(field::NAME, &FieldValue::Str("g".into())) },
+            create,
+            OpBody::Create { node: note, kind: Kind::Note, fields: note_fields },
+            set(tab, field::ENGINE, FieldValue::Engine(2)),
+            set(tab, field::PINNED, FieldValue::Bool(true)),
+            OpBody::Move { node: tab, group: Some(group) },
+        ];
+        txn.commit(bodies, Some(b"local one".to_vec())).unwrap();
+        journal.close().unwrap(); // a snapshot
+
+        let mut journal = Journal::open(path, ActorId(2)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let leaf = txn.next_id();
+        let mut leaf_fields = encode_field(field::PARENT, &FieldValue::Id(Some(tab)));
+        leaf_fields.extend(encode_field(field::KEY, &FieldValue::Str("k".into())));
+        leaf_fields.extend(encode_field(field::VALUE, &FieldValue::Str("v".into())));
+        let bodies = vec![
+            OpBody::Create { node: leaf, kind: Kind::JsonLeaf, fields: leaf_fields },
+            OpBody::Delete { node: group },
+            OpBody::Move { node: note, group: None },
+            set(note, field::COLOR, FieldValue::Color(None)),
+        ];
+        txn.commit(bodies, Some(b"local two".to_vec())).unwrap();
+        drop(journal);
+        std::fs::read(path).unwrap()
+    }
+
+    /// Damages one frame's message (keeping its CRC valid, so the damage
+    /// reaches the decoders), and sometimes the file itself.
+    fn damage(rng: &mut XorShift, bytes: &[u8]) -> Vec<u8> {
+        let header = read_header(bytes).unwrap();
+        let frames = scan(&bytes[header.len..], header.len).frames;
+        let target = rng.below(frames.len() as u64) as usize;
+        let mut out = bytes[..header.len].to_vec();
+        for (i, frame) in frames.iter().enumerate() {
+            let (mut ty, mut message) = (frame.ty, frame.message.to_vec());
+            for _ in 0..if i == target { 1 + rng.below(4) } else { 0 } {
+                let at = rng.below(message.len() as u64 + 1) as usize;
+                match rng.below(6) {
+                    0 if at < message.len() => message[at] ^= 1 << rng.below(8),
+                    1 if at < message.len() => message[at] = rng.next() as u8,
+                    2 => message.insert(at, rng.next() as u8),
+                    3 if at < message.len() => drop(message.remove(at)),
+                    4 => message.truncate(at),
+                    5 => ty = 1 + rng.below(4),
+                    _ => {}
+                }
+            }
+            encode_frame(&mut out, ty, &message);
+        }
+        match rng.below(8) {
+            0 => {
+                let at = rng.below(out.len() as u64) as usize;
+                out[at] ^= 1 << rng.below(8);
+            }
+            1 => out.truncate(rng.below(out.len() as u64) as usize),
+            _ => {}
+        }
+        out
+    }
+
+    /// Everything a reader of `bytes` might do. Errors are fine; panics
+    /// are not, and what this build reads it can write and read back.
+    fn use_damaged(bytes: &[u8], path: &Path, open: bool) {
+        let _ = inspect(bytes);
+        if let Ok((doc, _)) = Journal::read(bytes) {
+            doc.with_descendants(doc.nodes.keys().copied().collect());
+            for (&id, node) in &doc.nodes {
+                doc.effective_group(id);
+                node.message();
+                for def in &FIELDS {
+                    node.get(def.no);
+                }
+            }
+            let mut again = header_bytes(1);
+            again.extend(snapshot_bytes(&doc));
+            let (back, _) = Journal::read(&again).expect("a decoded document's snapshot reads back");
+            assert_eq!((&back.nodes, &back.version), (&doc.nodes, &doc.version));
+            let text = serde_json::to_string(&crate::store::json::doc_to_json(&doc)).unwrap();
+            let json: crate::store::json::JsonDoc = serde_json::from_str(&text).unwrap();
+            let mut counter = 0;
+            let fresh = || {
+                counter += 1;
+                NodeId { actor: ActorId(9), counter }
+            };
+            crate::store::json::import(&json, fresh).expect("an export imports");
+        }
+        if open {
+            std::fs::write(path, bytes).unwrap();
+            if let Ok(mut journal) = Journal::open(path, ActorId(3)) {
+                if let Ok(mut txn) = journal.begin() {
+                    let (_, create) = create_tab(&mut txn, "https://z.example/");
+                    let _ = txn.commit(vec![create], None);
+                }
+                let _ = journal.close();
+            }
+        }
+    }
+
+    #[test]
+    fn damaged_files_never_panic() {
+        let dir = temp_dir("damaged");
+        let seed = rich_file(&dir.join("seed.mnf"));
+        let path = dir.join("session.mnf");
+        let mut rng = XorShift(0x5EED);
+        for i in 0..10_000 {
+            let bytes = damage(&mut rng, &seed);
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_damaged(&bytes, &path, i % 20 == 0)));
+            if run.is_err() {
+                let keep = dir.join(format!("crash-{i}.mnf"));
+                std::fs::write(&keep, &bytes).unwrap();
+                panic!("damaged file {i} panicked; kept at {}", keep.display());
+            }
+        }
     }
 
     #[test]

@@ -3348,7 +3348,6 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
 - **Plan-level risk.** One bad mid-file frame truncates every valid frame after it at the next append. The fix would be to scan ahead and refuse to truncate, or keep a backup.
 - **Durability.** There's no directory fsync or `MOVEFILE_WRITE_THROUGH` after compaction's rename.
 - **Test gaps.**
-  - Decoder fuzzing that asserts no panics.
   - Compaction equivalence.
   - A real multi-process appender test.
   - fsync failing after the write.
