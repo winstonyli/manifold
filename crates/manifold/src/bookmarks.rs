@@ -38,8 +38,7 @@ pub fn load() -> (Vec<Bookmark>, Option<String>) {
 
 /// Same read as `load`, just from an arbitrary path — the "Import
 /// Bookmarks..." settings-popup button reads back whatever "Export
-/// Bookmarks..." wrote, same shape `Session::load_from`/`save_to` already
-/// have for named sessions.
+/// Bookmarks..." wrote.
 pub fn load_from(path: &Path) -> Result<Vec<Bookmark>, String> {
     crate::json_file::load(path, "bookmarks")
 }

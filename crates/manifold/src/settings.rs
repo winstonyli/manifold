@@ -143,11 +143,10 @@ fn settings_path() -> Option<PathBuf> {
     Some(PathBuf::from(appdata).join("manifold").join("settings.json"))
 }
 
-/// Cheap, process-local "did this file's bytes change" check -- see
-/// `session::content_fingerprint`'s own doc comment (this is the same
-/// idea, kept as its own small copy per that module's own doc comment
-/// rather than shared, since `session.rs`/`settings.rs` are otherwise
-/// already fully independent of each other).
+/// Cheap, process-local "did this file's bytes change" check -- not a
+/// cryptographic or cross-run-stable hash, just `DefaultHasher` (SipHash)
+/// over the raw file contents, good enough to notice that some *other*
+/// process touched `settings.json` since this one last read or wrote it.
 fn content_fingerprint(contents: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -156,17 +155,18 @@ fn content_fingerprint(contents: &str) -> u64 {
 }
 
 /// A fingerprint of `settings.json` exactly as it sits on disk right now --
-/// see `session::fingerprint`'s own doc comment for the full reasoning;
-/// this is the identical mechanism applied to the other single-shared-file
-/// auto-save path.
+/// `None` if it doesn't exist or can't be read. `App::save_settings`
+/// compares it against what it saw at last load/save, so a second
+/// `manifold.exe` on this profile that changed the file meanwhile is
+/// noticed instead of silently clobbered.
 pub fn fingerprint() -> Option<u64> {
     let contents = std::fs::read_to_string(settings_path()?).ok()?;
     Some(content_fingerprint(&contents))
 }
 
 /// Where a save that lost a fingerprint race lands instead of overwriting
-/// the real `settings.json` -- see `session::conflict_path`'s own doc
-/// comment for why this is timestamped rather than a fixed name.
+/// the real `settings.json`. Unix-seconds-suffixed, so a second conflict
+/// later in the same run can't overwrite the first one's unreviewed data.
 pub fn conflict_path() -> Option<PathBuf> {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let appdata = std::env::var_os("APPDATA")?;

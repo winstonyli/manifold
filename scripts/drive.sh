@@ -5,9 +5,13 @@
 # or README.md's "Headless mode" section), in a fresh isolated APPDATA so
 # the real %APPDATA%\manifold is never read or written.
 #
-#   SEED=<dir>      copy <dir>/*.json (session.json, settings.json, ...) into
-#                   the isolated profile first; without it the first-launch
-#                   demo scene loads
+#   SEED=<dir>      copy <dir>/*.json (settings.json, bookmarks.json, ...)
+#                   into the isolated profile first. The session itself is
+#                   session.mnf: to start from one, use APPDATA_DIR. Without
+#                   a session the first-launch demo scene loads
+#   APPDATA_DIR=<dir>  use <dir> as the profile instead of a fresh one, and
+#                   keep it: a second run on the same <dir> restores the
+#                   session the first saved (<dir>/appdata/manifold/session.mnf)
 #   VISIBLE=1       a real window (--debug-commands) instead of --headless
 #   KEEP_APPDATA=1  keep the isolated profile afterwards (e.g. to inspect a
 #                   moved-aside file); otherwise it's deleted on exit
@@ -46,10 +50,14 @@ cd "$(git rev-parse --show-toplevel)"
 require_fresh_exe target/debug/manifold.exe
 CMDS="$1"
 REPO_WIN=$(cygpath -w "$PWD")
-D="target/drive-appdata-$$"
-rm -rf "$D"; mkdir -p "$D/appdata/manifold"
-[ -n "${KEEP_APPDATA:-}" ] || trap 'rm -rf "$D"' EXIT
-export APPDATA="$(cygpath -w "$PWD/$D")\\appdata"
+if [ -n "${APPDATA_DIR:-}" ]; then
+  D="$APPDATA_DIR"; mkdir -p "$D/appdata/manifold"
+else
+  D="target/drive-appdata-$$"
+  rm -rf "$D"; mkdir -p "$D/appdata/manifold"
+  [ -n "${KEEP_APPDATA:-}" ] || trap 'rm -rf "$D"' EXIT
+fi
+export APPDATA="$(cygpath -w "$(cd "$D" && pwd)")\\appdata"
 [ -z "${SEED:-}" ] || cp "$SEED"/*.json "$D/appdata/manifold/"
 MODE=--headless; [ -z "${VISIBLE:-}" ] || MODE=--debug-commands
 while IFS= read -r line; do

@@ -256,7 +256,7 @@ impl App {
                 req.save_as_requested = true;
             }
         });
-        let names = session::Session::list_named();
+        let names = session::list_named();
         if names.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new("No saved sessions").small().weak()).wrap());
         }
@@ -276,8 +276,7 @@ impl App {
         // neither, so it would just hang forever with no
         // way to test it here. `EXPORTSESSION`/
         // `IMPORTSESSION` debug commands call
-        // `build_session_snapshot().save_to`/
-        // `session::Session::load_from` directly with an
+        // `export_session_to`/`json_file::load` directly with an
         // explicit path instead, bypassing the dialog
         // entirely (import still stages into
         // `pending_import` same as a real file pick would,
@@ -328,9 +327,7 @@ impl App {
         if req.save_as_requested {
             let name = sanitize_session_name(&self.session_name_draft);
             if !name.is_empty() {
-                self.build_session_snapshot().save_as(&name);
-                self.queue_toast(format!("Saved session '{name}'"));
-                self.session_name_draft.clear();
+                self.queue_toast("Named sessions are unavailable until the session store work lands".into());
             }
         }
         if let Some(name) = &req.open_session_name {
@@ -338,19 +335,20 @@ impl App {
             self.close_settings_page();
         }
         if let Some(name) = &req.delete_session_name {
-            session::Session::delete_named(name);
+            session::delete_named(name);
         }
         if req.export_requested {
             if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {
-                self.build_session_snapshot().save_to(&path);
-                self.queue_toast(toast.0);
+                if self.export_session_to(&path) {
+                    self.queue_toast(toast.0);
+                }
             }
         }
         if req.import_requested {
             if let Some(path) = rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file() {
-                match session::Session::load_from(&path) {
-                    Ok(session) => {
-                        self.pending_import = Some(session);
+                match crate::json_file::load(&path, "session") {
+                    Ok(json) => {
+                        self.pending_import = Some(json);
                         self.close_settings_page();
                     }
                     Err(err) => self.queue_toast(err),

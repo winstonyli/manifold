@@ -70,6 +70,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    /// A clean exit (a window close, or headless `QUIT`): the store's last
+    /// save and close.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.close_store();
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Debug(cmd) => {
@@ -301,6 +307,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.poll_store();
                 let focused_tab = self
                     .focused
                     .as_deref()
@@ -755,7 +762,7 @@ impl App {
             DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
             DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
             DebugCommand::ExportSession(path) => {
-                self.build_session_snapshot().save_to(std::path::Path::new(&path));
+                self.export_session_to(std::path::Path::new(&path));
             }
             DebugCommand::ExportState(path) => {
                 let focused_url = self
@@ -811,13 +818,13 @@ impl App {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
                 }
             }
-            DebugCommand::ImportSession(path) => match session::Session::load_from(std::path::Path::new(&path)) {
-                Ok(session) => self.pending_import = Some(session),
+            DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
+                Ok(json) => self.pending_import = Some(json),
                 Err(err) => self.queue_toast(err),
             },
             DebugCommand::ConfirmImport => {
-                if let Some(session) = self.pending_import.take() {
-                    self.replace_running_session(session);
+                if let Some(json) = self.pending_import.take() {
+                    self.replace_running_session(&json);
                 }
             }
             DebugCommand::CancelImport => {
@@ -1019,11 +1026,11 @@ impl App {
         }
         // One `save_session()` for the whole drain rather than one per
         // `NavigationStateChanged`.
-        let mut url_changed = false;
+        let mut changed = false;
         for (tab_id, msg) in messages {
-            url_changed |= self.handle_engine_message(&tab_id, msg);
+            changed |= self.handle_engine_message(&tab_id, msg);
         }
-        if url_changed {
+        if changed {
             self.save_session();
         }
 
@@ -1123,9 +1130,10 @@ impl App {
     /// Applies one message from tab `tab_id`'s engine (see
     /// `drain_tab_events`, which uploads frames itself). Messages that
     /// update the tab do nothing once it's gone, e.g. after a crash earlier
-    /// in the same drain. Returns whether the tab's settled url changed
-    /// (title/history-only changes and a same-url reload don't count),
-    /// the one thing here worth saving the session for.
+    /// in the same drain. Returns whether something worth saving the
+    /// session for happened: the tab's settled url changed (title/history-
+    /// only changes and a same-url reload don't count), or a download
+    /// completed (the store keeps completed downloads).
     pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
         match msg {
             EngineToHost::FrameReady { .. } => {}
@@ -1267,6 +1275,7 @@ impl App {
                 self.queue_toast(format!("Saved {path}"));
                 if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
                     dl.completed = true;
+                    return true;
                 }
             }
         }

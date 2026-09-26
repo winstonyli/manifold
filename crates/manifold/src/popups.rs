@@ -1008,8 +1008,8 @@ impl App {
     /// `load_named_session` already uses; Cancel just discards the staged
     /// session, leaving the running one untouched.
     pub(crate) fn build_import_confirm_popup(&mut self, ui: &mut egui::Ui) {
-        let Some(session) = &self.pending_import else { return };
-        let incoming = session.tabs.len();
+        let Some(json) = &self.pending_import else { return };
+        let incoming = json.nodes.iter().filter(|n| n.kind == "tab").count();
         let current = self.nodes.len();
         let mut confirm = false;
         let mut cancel = false;
@@ -1042,8 +1042,8 @@ impl App {
                 });
             });
         if confirm {
-            if let Some(session) = self.pending_import.take() {
-                self.replace_running_session(session);
+            if let Some(json) = self.pending_import.take() {
+                self.replace_running_session(&json);
             }
         }
         if cancel {

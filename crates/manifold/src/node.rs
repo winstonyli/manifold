@@ -507,13 +507,11 @@ impl GraphNode {
 ///
 /// Entering/leaving eases the camera via `GraphCameraTween` rather than
 /// `Transition` — see that type's own doc comment for why. Groups, their
-/// members and nesting are saved in `session.json` (`session::SessionGroup`,
-/// `SessionPlace::group`), except the ones `from_json` marks.
+/// members and nesting are saved in the session store (`session_sync`).
 pub(crate) struct GroupPayload {
     pub(crate) name: String,
-    /// Made by "Expand as Graph" (`App::expand_json_as_graph`). Not saved,
-    /// like the JSON leaves inside it; a node the user moved into one is
-    /// saved under the nearest saved group around it (`App::saved_group`).
+    /// Made by "Expand as Graph" (`App::expand_json_as_graph`). Saved like
+    /// any group, as are the JSON leaves inside it.
     pub(crate) from_json: bool,
 }
 

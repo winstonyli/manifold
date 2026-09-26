@@ -437,7 +437,7 @@ type DeferredOverlays = Vec<DeferredOverlay>;
 /// "Saved <path>" toast text this app shows for every export (Session,
 /// Bookmarks, one Group) on success. Doesn't write anything itself, and
 /// deliberately isn't a method on `App` -- the caller still does its own
-/// serialization (`self.build_session_snapshot().save_to(path)`, etc.)
+/// serialization (`self.export_session_to(&path)`, etc.)
 /// and sets `self.save_toast`, which a `&mut self` helper here couldn't
 /// do without a borrow conflict against a closure also wanting to touch
 /// `self`. Previously this dialog-plus-toast tail was hand-copied three
@@ -1351,7 +1351,7 @@ struct App {
     /// popup` shows its tab count against the currently running session's
     /// own, so replacing a real working session with an accidentally-wrong
     /// file is a deliberate second click, not a silent one-shot dialog pick.
-    pending_import: Option<session::Session>,
+    pending_import: Option<store::json::JsonDoc>,
     /// The settings popup's "Save Session As..." name field -- kept across
     /// popup open/close within the running session (not persisted), same
     /// convenience the group-rename draft gets.
@@ -1396,10 +1396,20 @@ struct App {
     /// whose waiting senders sit in `tabs_spawned_waiters` until this
     /// reaches zero.
     tab_spawns_in_flight: usize,
-    /// The `SpawnPurpose::Restore` share of `tab_spawns_in_flight`: tabs
-    /// that are already in the saved session but not yet back in `nodes`.
-    /// `save_session` waits for it to reach zero.
-    restore_spawns_in_flight: usize,
+    /// Ids whose tab spawn is in flight (every `SpawnPurpose`): no live
+    /// node yet, so `save_session` keeps them in the store rather than
+    /// deleting them (contract "In-flight spawns").
+    spawning: HashSet<String>,
+    /// Other replicas' latest change to a node in `spawning`, applied when
+    /// its spawn lands (`None`: deleted). The spawn itself carries only
+    /// what it was started with.
+    remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
+    /// Explicit fields (`pos`, `url`) marked at user actions, for the next
+    /// save to write (spec "Local edits become ops").
+    explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
+    /// The shared `pos` each live node last had, so a remote change moves a
+    /// node only when its `pos` changed (`materialize`).
+    shared_pos: HashMap<String, egui::Vec2>,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
@@ -1599,18 +1609,19 @@ struct App {
     /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
 
-    /// When the auto-restore `session.json` was last written -- shown in
-    /// the settings popup's Sessions section next to a "Save Now" button,
-    /// so a save that's actually continuous (every mutation calls
+    /// When `save_session` last committed to the store -- shown in the
+    /// settings popup's Sessions section next to a "Save Now" button, so a
+    /// save that's actually continuous (every mutation calls
     /// `save_session`, not a timer) has some visible confirmation instead
     /// of being purely invisible. `None` until the first save this run.
     last_session_save: Option<std::time::Instant>,
-    /// `session::fingerprint()`/`settings::fingerprint()` as this process
-    /// last saw them (set at load, updated after every successful save) --
-    /// see `save_session`'s own doc comment for what they're for. `None`
-    /// until the corresponding file has actually been loaded or saved once
-    /// this run, which also means "skip the conflict check" the first time.
-    session_fingerprint: Option<u64>,
+    /// The last store error or repair notice toasted (`store_error`,
+    /// `take_store_recovery`), so an identical one isn't repeated.
+    last_store_notice: Option<String>,
+    /// `settings::fingerprint()` as this process last saw it (set at load,
+    /// updated after every successful save) -- see `save_settings`. `None`
+    /// until the file has actually been loaded or saved once this run,
+    /// which also means "skip the conflict check" the first time.
     settings_fingerprint: Option<u64>,
 
     /// Find-in-page, for the focused tab only. See `FindState`.
@@ -1743,7 +1754,10 @@ impl Default for App {
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
             tab_spawns_in_flight: 0,
-            restore_spawns_in_flight: 0,
+            spawning: HashSet::new(),
+            remote_in_flight: HashMap::new(),
+            explicit: std::collections::BTreeSet::new(),
+            shared_pos: HashMap::new(),
             tabs_spawned_waiters: Vec::new(),
             session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
@@ -1782,7 +1796,7 @@ impl Default for App {
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
             last_session_save: None,
-            session_fingerprint: None,
+            last_store_notice: None,
             settings_fingerprint,
             find: FindState::default(),
             tab_spawn_error: None,
@@ -2144,58 +2158,12 @@ impl App {
         self.address_bar.focused = false;
     }
 
-    /// Snapshots the current tab graph (shape, url/engine/position per tab,
-    /// focused id, view mode) and writes it to disk — called at every point
-    /// that shape actually changes (a tab spawns, closes, navigates, or
-    /// focus/view changes), not once per frame; see `session::Session`'s
-    /// own doc comment for what is/isn't portable across a restart.
-    ///
-    /// **Concurrency-safe, not just fire-and-forget**: before actually
-    /// overwriting `session.json`, checks whether its on-disk fingerprint
-    /// still matches what this process last loaded/saved -- if some *other*
-    /// process (another `manifold.exe` instance, or anything else sharing
-    /// this profile) has written to it in the meantime, this write is
-    /// redirected to `session::conflict_path()` instead of clobbering
-    /// theirs, and the user is told via a toast. Found live, the hard way:
-    /// two of this project's own concurrent development/testing sessions
-    /// silently overwrote each other's `session.json` with zero warning,
-    /// before this existed -- see the README's own entry on this fix for
-    /// the full incident. The first save of a run (`session_fingerprint`
-    /// still `None` -- nothing was ever loaded, or this is a fresh install)
-    /// always proceeds normally; there's nothing to conflict with yet.
-    ///
-    /// Skipped while restored tabs are still spawning
-    /// (`restore_spawns_in_flight`): a snapshot then would drop them, and
-    /// a crash before the last one landed would leave that file behind.
-    /// The last landing saves (`handle_tab_spawn_result`).
-    fn save_session(&mut self) {
-        if self.restore_spawns_in_flight > 0 {
-            return;
-        }
-        let snapshot = self.build_session_snapshot();
-        let on_disk = session::fingerprint();
-        if self.session_fingerprint.is_some() && on_disk != self.session_fingerprint {
-            if let Some(path) = session::conflict_path() {
-                snapshot.save_to(&path);
-                eprintln!(
-                    "session: session.json changed on disk since last load/save -- wrote {} instead",
-                    path.display()
-                );
-                self.queue_toast(format!(
-                    "Session changed by another process -- your changes saved to {}",
-                    path.display()
-                ));
-            }
-            return;
-        }
-        snapshot.save();
-        self.session_fingerprint = session::fingerprint();
-        self.last_session_save = Some(std::time::Instant::now());
-    }
-
-    /// Same concurrency-safety idea as `save_session`, for `settings.json` --
-    /// see that function's own doc comment for the full reasoning. Replaces
-    /// every direct `self.settings.save()` call site.
+    /// Writes `settings.json`, unless another process (another
+    /// `manifold.exe` on this profile) changed it since this one last read
+    /// or wrote it: then the write goes to `settings::conflict_path()` and a
+    /// toast says so, rather than clobbering theirs. The first save of a run
+    /// (`settings_fingerprint` still `None`) always proceeds. Replaces every
+    /// direct `self.settings.save()` call site.
     fn save_settings(&mut self) {
         let on_disk = settings::fingerprint();
         if self.settings_fingerprint.is_some() && on_disk != self.settings_fingerprint {
@@ -2216,321 +2184,10 @@ impl App {
         self.settings_fingerprint = settings::fingerprint();
     }
 
-    /// Shared body for the Note/Image/Pdf/Json cases of
-    /// `build_session_snapshot` below -- each of those four kinds' own
-    /// snapshot is just `(id, one string field, position)`, differing only
-    /// in which node accessor supplies the string. Returns id/field/place
-    /// tuples; the caller maps each into its own concrete `Session*` struct.
-    fn collect_session_field<'a>(
-        &'a self,
-        extract: impl Fn(&'a GraphNode) -> Option<&'a str>,
-    ) -> Vec<(String, String, session::SessionPlace)> {
-        self.node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let field = extract(node)?;
-                Some((id.clone(), field.to_string(), self.session_place(node)))
-            })
-            .collect()
-    }
-
-    /// `node`'s saved position, group and color.
-    fn session_place(&self, node: &GraphNode) -> session::SessionPlace {
-        session::SessionPlace {
-            pos_x: node.pos.x,
-            pos_y: node.pos.y,
-            group: self.saved_group(node.group.as_deref()),
-            color: node.color.map(|c| (c.r(), c.g(), c.b())),
-        }
-    }
-
-    /// `group`, or its nearest saved ancestor when it's an "Expand as Graph"
-    /// group (`GroupPayload::from_json`), which isn't saved. `None` for the
-    /// top level.
-    fn saved_group<'a>(&'a self, mut group: Option<&'a str>) -> Option<String> {
-        while let Some(id) = group {
-            let node = self.nodes.get(id)?;
-            match node.as_group() {
-                Some(g) if !g.from_json => return Some(id.to_string()),
-                _ => group = node.group.as_deref(),
-            }
-        }
-        None
-    }
-
-    /// The `session::Session` value both the auto-restore `save_session`
-    /// and "Save Session As..." serialize -- factored out so the two never
-    /// drift into building this differently.
-    fn build_session_snapshot(&self) -> session::Session {
-        let tabs = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let (url, engine) = node.payload.saved_tab()?;
-                Some(session::SessionTab {
-                    id: id.clone(),
-                    parent: node.parent.clone(),
-                    url: url.to_string(),
-                    engine,
-                    place: self.session_place(node),
-                    pinned: node
-                        .as_tab()
-                        .map(|t| t.pinned)
-                        .or_else(|| node.as_failed_tab().map(|t| t.pinned))
-                        .unwrap_or(false),
-                })
-            })
-            .collect();
-        // Note/Image/Pdf/Json's own snapshots are all "id, one string field,
-        // position" -- only a tab's needs the extra `parent`/`engine` fields
-        // above, so it stays its own block. `collect_session_field` shares
-        // the actual duplicated part (the `node_order` walk, the id clone,
-        // the position read); each kind still builds its own concrete
-        // `Session*` struct, since there's no shared trait across them worth
-        // introducing just for this.
-        let notes = self
-            .collect_session_field(|n| n.as_note().map(|note| note.text.as_str()))
-            .into_iter()
-            .map(|(id, text, place)| session::SessionNote { id, text, place })
-            .collect();
-        let images = self
-            .collect_session_field(|n| n.as_image().map(|image| image.path.as_str()))
-            .into_iter()
-            .map(|(id, path, place)| session::SessionImage { id, path, place })
-            .collect();
-        let pdfs = self
-            .collect_session_field(|n| n.as_pdf().map(|pdf| pdf.path.as_str()))
-            .into_iter()
-            .map(|(id, path, place)| session::SessionPdf { id, path, place })
-            .collect();
-        let jsons = self
-            .collect_session_field(|n| n.as_json().filter(|json| json.key.is_none()).map(|json| json.path.as_str()))
-            .into_iter()
-            .map(|(id, path, place)| session::SessionJson { id, path, place })
-            .collect();
-        let groups = self
-            .node_order
-            .iter()
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let group = node.as_group().filter(|g| !g.from_json)?;
-                Some(session::SessionGroup {
-                    id: id.clone(),
-                    name: group.name.clone(),
-                    place: self.session_place(node),
-                })
-            })
-            .collect();
-        session::Session {
-            tabs,
-            notes,
-            images,
-            pdfs,
-            jsons,
-            groups,
-            current_group: self.saved_group(self.current_group.as_deref()),
-            focused: self.focused.clone(),
-            view_mode_tab: matches!(self.view_mode, ViewMode::Item),
-            // `viewed_image` stays `Some` while Settings is open on top of
-            // Image view (`open_settings_page` only swaps `view_mode`, so
-            // it can restore it via `settings_return_view`) -- the
-            // invariant is `viewed_image` is `Some` only while
-            // `view_mode == Item` (see the design doc's Plan-time
-            // corrections), so a snapshot taken from Settings must not
-            // write a `viewed_image` alongside `view_mode_tab: false`.
-            viewed_image: self.viewed_image.clone().filter(|_| self.view_mode == ViewMode::Item),
-            // Ids now come from the journal's counter (`alloc_node_id`), not
-            // a per-kind counter these fields could round-trip -- kept only
-            // so an older build reading this file still finds the fields it
-            // expects. Task 5 removes them along with `session.json` itself.
-            next_tab_id: 0,
-            next_note_id: 0,
-            next_image_id: 0,
-            next_pdf_id: 0,
-            next_json_id: 0,
-            next_group_id: 0,
-        }
-    }
-
-    /// Startup: replays a saved `session::Session` instead of spawning one
-    /// fresh root tab — returns `false` (having done nothing) if there's no
-    /// session file, it's corrupt (moved aside with a toast -- see
-    /// `Session::load`), or it has zero tabs, so the caller can
-    /// fall back to `spawn_root_tab`, same "never let a bad/missing file
-    /// stop the browser from starting" posture `Settings::load` already
-    /// takes. All of a session's tabs are spawned concurrently (like
-    /// `process_manager::spawn_tab` always is) rather than parent-before-
-    /// child — a child referencing a not-yet-spawned parent is already a
-    /// case `graph_layout::step` handles gracefully (skips the edge's
-    /// spring force until both ends exist), so there's no correctness
-    /// reason to serialize the spawns, only a briefly-less-tidy transient
-    /// layout.
-    fn restore_session(&mut self) -> bool {
-        let session = match session::Session::load() {
-            Ok(Some(session)) => session,
-            Ok(None) => return false,
-            Err(err) => {
-                self.queue_toast(err);
-                return false;
-            }
-        };
-        if session.tabs.is_empty()
-            && session.notes.is_empty()
-            && session.images.is_empty()
-            && session.pdfs.is_empty()
-            && session.jsons.is_empty()
-        {
-            return false;
-        }
-        // Re-reads the file `session::Session::load()` above already just
-        // read -- see `settings_fingerprint`'s own init in `App::default`
-        // for why this isn't worth threading out through `load()` itself.
-        self.session_fingerprint = session::fingerprint();
-        self.apply_session(session);
-        true
-    }
-
-    /// Replays a `session::Session`'s tabs/focus/view-mode -- shared by
-    /// startup's `restore_session` (loads `session.json`) and runtime's
-    /// `load_named_session` ("Open Session", loads a named save). Callers
-    /// are responsible for checking `session.tabs.is_empty()` themselves
-    /// first (each wants a different fallback for that case) and, for a
-    /// runtime load, for tearing down whatever was open before calling
-    /// this.
-    fn apply_session(&mut self, session: session::Session) {
-        // A node naming a group the file doesn't have lands at the top level.
-        let saved_groups: HashSet<String> = session.groups.iter().map(|g| g.id.clone()).collect();
-        let place = |p: &session::SessionPlace| {
-            (
-                egui::vec2(p.pos_x, p.pos_y),
-                p.group.clone().filter(|g| saved_groups.contains(g)),
-                p.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)),
-            )
-        };
-        for group in session.groups {
-            let (pos, parent_group, color) = place(&group.place);
-            let payload = NodePayload::Group(GroupPayload { name: group.name, from_json: false });
-            let node = GraphNode { parent: None, group: parent_group, pos, vel: egui::Vec2::ZERO, color, payload };
-            self.nodes.insert(group.id.clone(), node);
-            self.node_order.push(group.id);
-        }
-        self.current_group = session.current_group.clone().filter(|g| saved_groups.contains(g));
-        for note in session.notes {
-            let (pos, group, color) = place(&note.place);
-            self.nodes.insert(
-                note.id.clone(),
-                GraphNode {
-                    parent: None,
-                    group,
-                    pos,
-                    vel: egui::Vec2::ZERO,
-                    color,
-                    payload: NodePayload::Note(NotePayload { text: note.text, editing: false }),
-                },
-            );
-            self.node_order.push(note.id);
-        }
-        // A card whose file is gone stays as a placeholder (`error`), so
-        // the next save doesn't forget it.
-        for image in session.images {
-            let (pos, group, color) = place(&image.place);
-            if let Err(error) = self.insert_image_node_with_id(image.id.clone(), image.path.clone(), pos, None) {
-                let payload = ImagePayload { path: image.path, width: 0, height: 0, error: Some(error) };
-                self.insert_placeholder_node(image.id.clone(), pos, NodePayload::Image(payload));
-            }
-            self.restore_group_and_color(&image.id, group, color);
-        }
-        for pdf in session.pdfs {
-            let (pos, group, color) = place(&pdf.place);
-            self.insert_pdf_node_with_id(pdf.id.clone(), pdf.path, pos, None);
-            self.restore_group_and_color(&pdf.id, group, color);
-        }
-        for json in session.jsons {
-            let (pos, group, color) = place(&json.place);
-            if let Err(error) = self.insert_json_node_with_id(json.id.clone(), json.path.clone(), pos, None) {
-                let value = serde_json::Value::Null;
-                let payload = JsonPayload { path: json.path, value, key: None, error: Some(error) };
-                self.insert_placeholder_node(json.id.clone(), pos, NodePayload::Json(payload));
-            }
-            self.restore_group_and_color(&json.id, group, color);
-        }
-        let valid_focus = session.focused.as_ref().filter(|id| session.tabs.iter().any(|t| &t.id == *id));
-        self.focused = valid_focus.cloned().or_else(|| session.tabs.first().map(|t| t.id.clone()));
-        self.view_mode = if session.view_mode_tab { ViewMode::Item } else { ViewMode::Graph };
-        // Images were inserted above, so a still-valid id is already a node.
-        self.viewed_image = session
-            .viewed_image
-            .clone()
-            .filter(|_| self.view_mode == ViewMode::Item)
-            .filter(|id| self.nodes.get(id).and_then(|n| n.as_image()).is_some_and(|i| i.error.is_none()));
-        // Reset zoom/pan rather than carrying over whatever the previous
-        // image (or this same session's own stale on-disk value) left
-        // behind -- a loaded session's `viewed_image` always opens at Fit.
-        self.image_view = ImageViewState::default();
-        if self.showing_tab_view() {
-            // The focused tab hasn't actually spawned yet — this is the
-            // exact same "still starting up" gap crash recovery has, so
-            // reuse its own spinner-instead-of-snapping-to-Graph path
-            // (see `build_tab_view_ui`) rather than inventing a second one.
-            self.pending_respawn_focus = self.focused.clone();
-        }
-        for tab in session.tabs {
-            let (pos, group, color) = place(&tab.place);
-            let spawn =
-                TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
-            let carry = TabCarry { pinned: tab.pinned, color, ..spawn.carry };
-            self.spawn_tab_async(TabSpawn { parent: tab.parent, group, carry, ..spawn });
-        }
-        self.camera.frame_restored = true;
-    }
-
-    /// `apply_session`'s last step for an Image/PDF/JSON node, whose insert
-    /// helpers place it at the top level with no color.
-    fn restore_group_and_color(&mut self, id: &str, group: Option<String>, color: Option<egui::Color32>) {
-        if let Some(node) = self.nodes.get_mut(id) {
-            node.group = group;
-            node.color = color;
-        }
-    }
-
-    /// "Open Session" (settings popup): loads a named save and replaces the
-    /// running session with it. A no-op if the name doesn't exist or its
-    /// file is empty/corrupt, so a bad load can't wipe a perfectly good
-    /// running session.
-    fn load_named_session(&mut self, name: &str) {
-        match session::Session::load_named(name) {
-            Ok(session) => self.replace_running_session(session),
-            Err(err) => self.queue_toast(err),
-        }
-    }
-
-    /// Tears down every currently-open tab/download/group -- each tab's own
-    /// `EngineTab::Drop` handles process shutdown+kill, the same
-    /// mechanism `destroy_tab` already relies on, so clearing the map is
-    /// enough, no per-tab teardown call needed -- then replays `session`
-    /// via `apply_session`, same as startup replays `session.json`. Shared
-    /// by `load_named_session` and the "Import Session..." confirm popup's
-    /// own Import button (see `pending_import`); a no-op for an empty
-    /// session, so a bad/empty load can't wipe a perfectly good running one.
-    fn replace_running_session(&mut self, session: session::Session) {
-        if session.tabs.is_empty() {
-            return;
-        }
-        self.nodes.clear();
-        self.node_order.clear();
-        self.focused = None;
-        self.current_group = None;
-        self.dragging = None;
-        self.hovered = None;
-        self.selected_tabs.clear();
-        self.rect_select_start = None;
-        self.graph_settled_key = None;
-        self.failed_tab_retries.clear();
-        self.session_generation += 1;
-        self.apply_session(session);
-        self.save_session();
+    /// "Open Session" (settings popup). Named sessions move to the store in
+    /// a later step of the session-store work; until then Open only says so.
+    fn load_named_session(&mut self, _name: &str) {
+        self.queue_toast("Named sessions are unavailable until the session store work lands".into());
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -2662,9 +2319,7 @@ impl App {
     fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         self.tab_spawns_in_flight += 1;
-        if matches!(spawn.purpose, SpawnPurpose::Restore) {
-            self.restore_spawns_in_flight += 1;
-        }
+        self.spawning.insert(spawn.id.clone());
         let generation = self.session_generation;
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
@@ -2685,24 +2340,17 @@ impl App {
             result,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor } = carry;
+        self.spawning.remove(&id);
+        let remote = self.remote_in_flight.remove(&id);
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
         if self.tab_spawns_in_flight == 0 {
             for waiter in self.tabs_spawned_waiters.drain(..) {
                 let _ = waiter.send(());
             }
         }
-        let restore_done = matches!(purpose, SpawnPurpose::Restore) && {
-            self.restore_spawns_in_flight = self.restore_spawns_in_flight.saturating_sub(1);
-            self.restore_spawns_in_flight == 0
-        };
         // Spawned for a session that's since been replaced: dropping the
         // `EngineTab` shuts its engine host down. See `session_generation`.
         if generation != self.session_generation {
-            // Every way out of this fn saves once the last restored tab has
-            // landed, so the saves skipped meanwhile (`save_session`) happen.
-            if restore_done {
-                self.save_session();
-            }
             return;
         }
         // A group dissolved while this spawn was still in flight (spawning
@@ -2715,12 +2363,7 @@ impl App {
             match self.nodes.get(&id).filter(|n| n.as_failed_tab().is_some()) {
                 Some(card) => (card.parent.clone(), card.group.clone(), card.pos, card.color),
                 // Closed while retrying (see `failed_tab_retries`).
-                None => {
-                    if restore_done {
-                        self.save_session();
-                    }
-                    return;
-                }
+                None => return,
             }
         } else {
             (parent, group, pos, color)
@@ -2833,6 +2476,7 @@ impl App {
                         }
                     }
                 }
+                self.land_remote_in_flight(&id, remote);
                 self.save_session();
             }
             Err(err) => {
@@ -2856,6 +2500,9 @@ impl App {
                         carry,
                         fallback_kind: None,
                     };
+                    if let Some(remote) = remote {
+                        self.remote_in_flight.insert(spawn.id.clone(), remote);
+                    }
                     self.respawn_tab(spawn);
                     return;
                 }
@@ -2869,8 +2516,9 @@ impl App {
                     let payload = NodePayload::FailedTab(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
                     if !self.node_order.iter().any(|t| t == &id) {
-                        self.node_order.push(id);
+                        self.node_order.push(id.clone());
                     }
+                    self.land_remote_in_flight(&id, remote);
                     self.save_session();
                     return;
                 }
@@ -3793,6 +3441,13 @@ impl App {
     /// closed tab was focused. Records nothing: `close_node` is the close
     /// that feeds "Recently Closed".
     fn destroy_tab(&mut self, id: &str) {
+        self.remove_tab(id);
+        self.save_session();
+    }
+
+    /// `destroy_tab` without the save: a tab another replica deleted
+    /// (`remove_remotely_deleted`), whose removal is not a local edit.
+    fn remove_tab(&mut self, id: &str) {
         let Some(parent) = self.nodes.get(id).filter(|n| n.as_tab().is_some()).map(|n| n.parent.clone()) else {
             return;
         };
@@ -3845,7 +3500,6 @@ impl App {
             // to send `FindStop` to, so only the UI side of the close.
             self.find.close();
         }
-        self.save_session();
     }
 
     /// M2's swap sequence, now per-tab and driven by the engine-picker
@@ -4152,7 +3806,8 @@ impl App {
     /// engine's `DownloadStarted` and the headless `ADDDOWNLOAD <path>`
     /// debug command (downloads otherwise only ever come from a real
     /// engine download, so headless runs had no way to get one). A no-op
-    /// if `tab_id` is gone. Downloads aren't persisted, so no save.
+    /// if `tab_id` is gone. The store keeps only completed downloads
+    /// (`DownloadCompleted` saves), so no save.
     fn insert_download_node(&mut self, tab_id: String, path: String, total_bytes: Option<u64>) {
         let Some((node_pos, node_group)) = self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone())) else {
             return;
@@ -4178,8 +3833,10 @@ impl App {
         self.node_order.push(id);
     }
 
-    /// Session restore's stand-in for an image/JSON card whose file
-    /// couldn't be loaded -- see `ImagePayload::error`.
+    /// Inserts a node showing `payload` at `pos`, top level and uncolored:
+    /// `materialize`'s way in for kinds with no insert helper of their own,
+    /// and for an image/JSON card whose file couldn't be loaded (see
+    /// `ImagePayload::error`).
     fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: NodePayload) {
         let node = GraphNode { parent: None, group: None, pos, vel: egui::Vec2::ZERO, color: None, payload };
         self.nodes.insert(id.clone(), node);
@@ -4448,18 +4105,15 @@ impl App {
     /// nested graph nodes: an object/array becomes a `Group` (matching this
     /// app's existing unlimited Group-nesting model), a scalar becomes a
     /// plain `JsonPayload` leaf (see that struct's own doc comment for why
-    /// no new node kind exists for this). Read-only, one-way, and
-    /// session-only, per this feature's own design doc
+    /// no new node kind exists for this). Read-only and one-way, per this
+    /// feature's own design doc
     /// (`docs/superpowers/specs/2026-09-19-json-expand-as-graph-design.md`):
-    /// there's no "collapse back," and nothing here is written to
-    /// `session.json`. The original node is converted in place (`payload`
-    /// is swapped, not the node removed and reinserted) so its existing
-    /// `pos`/`group`/`color` (all on the shared `GraphNode`) carry over
-    /// untouched -- but since a group made here isn't saved (`GroupPayload::from_json`), this also means
-    /// the *source file itself* drops out of `session.json` entirely the
-    /// next time it saves, not just the exploded subtree: after a restart
-    /// there's no compact card left to click back to, only "Add File..."
-    /// to bring the file back as a fresh node. A bare scalar at the JSON's
+    /// there's no "collapse back". The groups and leaves are saved like any
+    /// other node (`GroupPayload::from_json` marks the groups). The original
+    /// card is replaced by the root group under a fresh id, keeping its
+    /// `pos`/`group`/`color`, since a store node never changes kind: after
+    /// this there's no compact card left to click back to, only
+    /// "Add File..." to bring the file back as a fresh node. A bare scalar at the JSON's
     /// own root has nothing to explode into -- this just leaves such a
     /// node as it already is, a harmless no-op rather than something worth
     /// guarding against.
@@ -4475,11 +4129,26 @@ impl App {
             _ => false,
         };
         if has_entries {
-            let root_name = download_filename(&path).to_string();
-            if let Some(node) = self.nodes.get_mut(json_node_id) {
-                node.payload = NodePayload::Group(GroupPayload { name: root_name, from_json: true });
+            // A store node never changes kind, so the card becomes a group
+            // under a fresh id, keeping its place, group, color and draw
+            // order; the JSON node is deleted from the store.
+            let Some(mut node) = self.nodes.remove(json_node_id) else { return };
+            let root_id = self.alloc_node_id();
+            node.payload =
+                NodePayload::Group(GroupPayload { name: download_filename(&path).to_string(), from_json: true });
+            self.nodes.insert(root_id.clone(), node);
+            for id in self.node_order.iter_mut().filter(|id| *id == json_node_id) {
+                *id = root_id.clone();
             }
-            self.expand_json_entries(json_node_id, &value, &path);
+            for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(json_node_id)) {
+                node.parent = Some(root_id.clone());
+            }
+            for slot in [&mut self.dragging, &mut self.hovered, &mut self.json_viewer_node] {
+                if slot.as_deref() == Some(json_node_id) {
+                    *slot = None;
+                }
+            }
+            self.expand_json_entries(&root_id, &value, &path);
         }
     }
 
@@ -4968,14 +4637,14 @@ impl App {
 
     /// `close_node` for a single user action (hover ✕, context-menu
     /// Delete/Close, Downloads popup Remove), then persists the session --
-    /// except for a Download, which isn't part of the saved session at
-    /// all, and a tab or group, whose `destroy_tab`/`destroy_group`
+    /// except for a tab or group, whose `destroy_tab`/`destroy_group`
     /// already save.
     fn close_node_and_save(&mut self, id: &str) {
         let persisted = self.nodes.get(id).is_some_and(|node| {
             matches!(
                 item_node_kind(&node.payload),
                 ItemNodeKind::FailedTab
+                    | ItemNodeKind::Download
                     | ItemNodeKind::Note
                     | ItemNodeKind::Image
                     | ItemNodeKind::Pdf

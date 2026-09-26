@@ -1,16 +1,21 @@
 //! The live graph and the session store (spec "Local edits become ops").
-//! This half is pure: each live node's shared fields (`Shared`), and the
-//! diff that turns local edits into ops. The `impl App` half (restore,
-//! saving, other replicas' ops) follows it.
+//! The first half is pure: each live node's shared fields (`Shared`), and
+//! the diff that turns local edits into ops. The `impl App` half after it
+//! restores the session, saves local edits, and shows other replicas' ops.
 
-// Wired into `App` by Task 5; this attribute goes then.
-#![cfg_attr(not(test), allow(dead_code))]
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use std::collections::{BTreeMap, BTreeSet};
+use ipc_protocol::HostToEngine;
 
+use crate::node::{
+    DownloadPayload, FailedTabPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload,
+};
 use crate::process_manager::EngineKind;
+use crate::store::journal::JournalError;
+use crate::store::json::JsonDoc;
 use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
+use crate::{App, SpawnPurpose, TabCarry, TabSpawn, ViewMode};
 
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
@@ -160,6 +165,596 @@ pub(crate) fn diff(
         }
     }
     ops
+}
+
+// ---- The live graph and the store -----------------------------------------
+
+/// One node another replica changed: its kind, fields and effective
+/// group, or `None` when it is no longer live (deleted or pruned).
+pub(crate) type RemoteChange = (NodeId, Option<(Kind, Fields, Option<NodeId>)>);
+
+/// A node's kind, fields and group, as `materialize` takes them.
+pub(crate) type RemoteNode = (Kind, Fields, Option<String>);
+
+fn str_of(fields: &Fields, no: u32) -> String {
+    match fields.get(&no) {
+        Some(FieldValue::Str(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn bool_of(fields: &Fields, no: u32) -> bool {
+    matches!(fields.get(&no), Some(FieldValue::Bool(true)))
+}
+
+fn pos_of(fields: &Fields) -> egui::Vec2 {
+    match fields.get(&field::POS) {
+        Some(FieldValue::Pos(x, y)) => egui::vec2(*x, *y),
+        _ => egui::Vec2::ZERO,
+    }
+}
+
+fn id_of(fields: &Fields, no: u32) -> Option<String> {
+    match fields.get(&no) {
+        Some(FieldValue::Id(Some(id))) => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+fn engine_field(fields: &Fields) -> EngineKind {
+    engine_of(match fields.get(&field::ENGINE) {
+        Some(FieldValue::Engine(code)) => *code,
+        _ => 0,
+    })
+}
+
+/// A tab's fields beyond `pos` and `color`, live or failed.
+fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, parent: Option<NodeId>) -> Kind {
+    fields.insert(field::URL, FieldValue::Str(url.to_owned()));
+    fields.insert(field::ENGINE, FieldValue::Engine(engine_code(engine)));
+    fields.insert(field::PINNED, FieldValue::Bool(pinned));
+    fields.insert(field::PARENT, FieldValue::Id(parent));
+    Kind::Tab
+}
+
+impl App {
+    /// Every live node the store keeps, as `Shared`. Skipped: an
+    /// in-progress download (it can't resume), and a node whose id isn't a
+    /// store id (only hand-built test nodes).
+    pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
+        let parse = |id: &Option<String>| id.as_deref().and_then(|id| id.parse::<NodeId>().ok());
+        let str = |s: &str| FieldValue::Str(s.to_owned());
+        let mut out = BTreeMap::new();
+        for (key, node) in &self.nodes {
+            let Ok(id) = key.parse::<NodeId>() else { continue };
+            // Never a non-finite `pos` (contract "Fields").
+            let finite = node.pos.x.is_finite() && node.pos.y.is_finite();
+            let pos = if finite { FieldValue::Pos(node.pos.x, node.pos.y) } else { FieldValue::Pos(0.0, 0.0) };
+            let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(node.color))]);
+            let kind = match &node.payload {
+                // A swap in progress already shows its target engine, so a
+                // save meanwhile doesn't write the old one back.
+                NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, .. }) => {
+                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse(&node.parent))
+                }
+                NodePayload::FailedTab(FailedTabPayload { url, kind, pinned, .. }) => {
+                    tab_fields(&mut fields, url, *kind, *pinned, parse(&node.parent))
+                }
+                NodePayload::Download(dl) if dl.completed => {
+                    fields.insert(field::PATH, str(&dl.path));
+                    Kind::Download
+                }
+                NodePayload::Download(_) => continue,
+                NodePayload::Group(g) => {
+                    fields.insert(field::NAME, str(&g.name));
+                    fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
+                    Kind::Group
+                }
+                NodePayload::Note(n) => {
+                    fields.insert(field::TEXT, str(&n.text));
+                    Kind::Note
+                }
+                NodePayload::Image(i) => {
+                    fields.insert(field::PATH, str(&i.path));
+                    Kind::Image
+                }
+                NodePayload::Pdf(p) => {
+                    fields.insert(field::PATH, str(&p.path));
+                    Kind::Pdf
+                }
+                NodePayload::Json(j) => {
+                    fields.insert(field::PATH, str(&j.path));
+                    match &j.key {
+                        None => Kind::Json,
+                        Some(key) => {
+                            fields.insert(field::KEY, str(key));
+                            fields.insert(field::VALUE, FieldValue::Str(j.value.to_string()));
+                            Kind::JsonLeaf
+                        }
+                    }
+                }
+            };
+            debug_assert_eq!(fields.keys().copied().collect::<Vec<_>>(), {
+                let mut want = kind_fields(kind).to_vec();
+                want.sort();
+                want
+            });
+            out.insert(id, Shared { kind, group: parse(&node.group), fields });
+        }
+        out
+    }
+
+    /// Makes live node `id` show `fields`. A new node is inserted, and a
+    /// new tab is spawned with `purpose` (it joins `spawning`). A node whose
+    /// spawn is in flight keeps the change for when it lands
+    /// (`remote_in_flight`). An existing node is updated in place:
+    /// - `pos` moves only when the shared pos changed (`shared_pos`);
+    /// - a tab's url change navigates without marking `url`;
+    /// - an engine change swaps engines.
+    ///
+    /// A kind mismatch between the live node and `kind` is ignored (the
+    /// store never changes a node's kind). A file card whose file can't be
+    /// loaded is kept, showing its error, so the next diff doesn't delete
+    /// it from the store.
+    pub(crate) fn materialize(
+        &mut self,
+        id: String,
+        kind: Kind,
+        fields: &Fields,
+        group: Option<String>,
+        purpose: SpawnPurpose,
+    ) {
+        if self.spawning.contains(&id) {
+            self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
+            return;
+        }
+        let pos = pos_of(fields);
+        let color = fields.get(&field::COLOR).and_then(color_of);
+        let pos_changed = self.shared_pos.insert(id.clone(), pos) != Some(pos);
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.group = group;
+            node.color = color;
+            if pos_changed {
+                node.pos = pos;
+                node.vel = egui::Vec2::ZERO;
+            }
+            if kind == Kind::Tab {
+                node.parent = id_of(fields, field::PARENT);
+            }
+            let mut swap = None;
+            match &mut node.payload {
+                NodePayload::Tab(tab) => {
+                    tab.pinned = bool_of(fields, field::PINNED);
+                    let url = str_of(fields, field::URL);
+                    if tab.url != url {
+                        tab.url = url.clone();
+                        tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
+                    }
+                    let want = engine_field(fields);
+                    if tab.swap_target.unwrap_or(tab.tab.kind) != want {
+                        swap = Some(want);
+                    }
+                }
+                NodePayload::FailedTab(tab) => {
+                    tab.pinned = bool_of(fields, field::PINNED);
+                    tab.url = str_of(fields, field::URL);
+                    tab.kind = engine_field(fields);
+                }
+                NodePayload::Group(g) => {
+                    g.name = str_of(fields, field::NAME);
+                    g.from_json = bool_of(fields, field::FROM_JSON);
+                }
+                NodePayload::Note(n) => n.text = str_of(fields, field::TEXT),
+                // Paths, keys and values never change after creation.
+                NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
+            }
+            if let Some(target) = swap {
+                self.start_swap_to(&id, target);
+            }
+            return;
+        }
+        match kind {
+            Kind::Tab => {
+                let url = str_of(fields, field::URL);
+                let spawn = TabSpawn::new(id, url, engine_field(fields), pos, purpose, self.settings.zoom_factor);
+                let carry = TabCarry { pinned: bool_of(fields, field::PINNED), color, ..spawn.carry };
+                self.spawn_tab_async(TabSpawn { parent: id_of(fields, field::PARENT), group, carry, ..spawn });
+                return;
+            }
+            Kind::Group => {
+                let payload =
+                    GroupPayload { name: str_of(fields, field::NAME), from_json: bool_of(fields, field::FROM_JSON) };
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(payload));
+            }
+            Kind::Note => {
+                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
+            }
+            Kind::Image => {
+                let path = str_of(fields, field::PATH);
+                if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
+                    let payload = ImagePayload { path, width: 0, height: 0, error: Some(error) };
+                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
+                }
+            }
+            Kind::Pdf => self.insert_pdf_node_with_id(id.clone(), str_of(fields, field::PATH), pos, None),
+            Kind::Json => {
+                let path = str_of(fields, field::PATH);
+                if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
+                    let payload = JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error) };
+                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                }
+            }
+            Kind::JsonLeaf => {
+                let text = str_of(fields, field::VALUE);
+                let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+                let key = Some(str_of(fields, field::KEY));
+                let payload = JsonPayload { path: str_of(fields, field::PATH), value, key, error: None };
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+            }
+            Kind::Download => {
+                let path = str_of(fields, field::PATH);
+                let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
+                let payload =
+                    DownloadPayload { path, bytes_received: bytes, total_bytes: Some(bytes), completed: true };
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
+            }
+            Kind::Unknown(_) => return,
+        }
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.group = group;
+            node.color = color;
+        }
+    }
+
+    fn remote_changes(doc: &Doc, remote: &[NodeId]) -> Vec<RemoteChange> {
+        remote
+            .iter()
+            .map(|&id| {
+                let live = doc.nodes.get(&id).filter(|n| n.is_live());
+                (id, live.map(|n| (n.kind, fields_of(n), doc.effective_group(id))))
+            })
+            .collect()
+    }
+
+    /// Shows other replicas' changes, before the next diff (contract
+    /// "Missing means deleted"): the diff would otherwise delete what they
+    /// created and recreate what they pruned. A deleted node is removed
+    /// without a Recently Closed entry (`remove_remotely_deleted`), and a
+    /// tab's engine host is shut down. Groups are materialized before the
+    /// nodes inside them, so a new member never names a group that doesn't
+    /// exist yet. A new tab spawns as `Restore`, so a spawn failure keeps
+    /// it as a failed card rather than dropping it from the store.
+    pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
+        changes.sort_by_key(|(_, c)| !matches!(c, Some((Kind::Group, ..))));
+        let toasts = self.save_toast_queue.len();
+        for (id, change) in changes {
+            let key = id.to_string();
+            match change {
+                Some((kind, fields, group)) => {
+                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), SpawnPurpose::Restore)
+                }
+                None if self.spawning.contains(&key) => {
+                    self.remote_in_flight.insert(key, None);
+                }
+                None => {
+                    self.shared_pos.remove(&key);
+                    self.remove_remotely_deleted(&key);
+                }
+            }
+        }
+        self.collapse_toasts_since(toasts);
+    }
+
+    /// Removes a node another replica deleted, recording nothing and saving
+    /// nothing. Its tab children move to its parent. A group's members move
+    /// to the group's own group (`dissolve_group`, which also leaves the
+    /// level if it was showing): a member the store still has is in
+    /// `remote` too (it lists descendants) and gets its effective group
+    /// from there, and one only this replica has lands where the store
+    /// would show it. Either way no live node names a removed group.
+    pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
+        let Some(node) = self.nodes.get(id) else { return };
+        let (parent, up) = (node.parent.clone(), node.group.clone());
+        let is_group = node.as_group().is_some();
+        let is_tab = node.as_tab().is_some();
+        for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
+            node.parent = parent.clone();
+        }
+        if is_group {
+            // A change waiting for a spawn may name this group too.
+            for (_, _, group) in self.remote_in_flight.values_mut().flatten() {
+                if group.as_deref() == Some(id) {
+                    *group = up.clone();
+                }
+            }
+            self.dissolve_group(id);
+        } else if is_tab {
+            self.remove_tab(id);
+        } else {
+            self.destroy_node(id); // saves nothing for these kinds
+        }
+        if self.viewed_image.as_deref() == Some(id) {
+            self.viewed_image = None;
+            if self.view_mode == ViewMode::Item {
+                self.view_mode = ViewMode::Graph;
+            }
+        }
+        if self.focused.as_deref() == Some(id) {
+            self.focused = None;
+        }
+        self.selected_tabs.remove(id);
+        self.failed_tab_retries.remove(id);
+    }
+
+    /// Applies what other replicas changed while `id`'s spawn was in flight,
+    /// now that its node exists (`handle_tab_spawn_result`).
+    pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
+        match remote {
+            Some(Some((kind, fields, group))) => {
+                self.materialize(id.to_string(), kind, &fields, group, SpawnPurpose::Restore)
+            }
+            Some(None) => {
+                self.shared_pos.remove(id);
+                self.remove_remotely_deleted(id);
+            }
+            None => {}
+        }
+    }
+
+    /// Saves local edits (spec "Local edits become ops"): take the lock,
+    /// show what other replicas wrote, diff the live graph against the
+    /// document, and commit. On error the explicit marks stay for the next
+    /// save, which re-diffs (contract "Transactions").
+    pub(crate) fn save_session(&mut self) {
+        // Each round applies what others wrote since the last; four rounds
+        // of fresh remote frames means another instance is busy: try again
+        // at the next save point (or frame: `poll_store`) rather than spin.
+        for _ in 0..4 {
+            // Projected before `begin`, since the `Txn` borrows the journal.
+            let live = self.shared_nodes();
+            let keep: BTreeSet<NodeId> = self.spawning.iter().filter_map(|id| id.parse().ok()).collect();
+            let Some(journal) = self.journal.as_mut() else { return };
+            let txn = match journal.begin() {
+                Ok(txn) => txn,
+                Err(err) => return self.store_error(err),
+            };
+            if !txn.remote.is_empty() {
+                let changes = Self::remote_changes(txn.doc(), &txn.remote);
+                drop(txn);
+                self.take_store_recovery();
+                self.apply_remote(changes);
+                continue;
+            }
+            if txn.read_only() {
+                drop(txn);
+                return self.take_store_recovery();
+            }
+            let ops = diff(txn.doc(), &live, &self.explicit, &keep);
+            let result = if ops.is_empty() {
+                drop(txn);
+                Ok(())
+            } else {
+                txn.commit(ops)
+            };
+            self.take_store_recovery();
+            match result {
+                Ok(()) => {
+                    // A committed `pos` is the node's shared pos from now on.
+                    for (id, shared) in &live {
+                        if let Some(FieldValue::Pos(x, y)) = shared.fields.get(&field::POS) {
+                            let (key, pos) = (id.to_string(), egui::vec2(*x, *y));
+                            if self.explicit.contains(&(*id, field::POS)) {
+                                self.shared_pos.insert(key, pos);
+                            } else {
+                                self.shared_pos.entry(key).or_insert(pos);
+                            }
+                        }
+                    }
+                    self.explicit.clear();
+                    self.last_session_save = Some(std::time::Instant::now());
+                }
+                Err(err) => self.store_error(err),
+            }
+            return;
+        }
+    }
+
+    /// Startup: shows the document (Task 7 adds personal state). `false`
+    /// when it has no live node, so the caller starts fresh.
+    pub(crate) fn restore_session(&mut self) -> bool {
+        let Some(journal) = self.journal.as_ref() else { return false };
+        let doc = journal.doc();
+        let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
+            doc.live().map(|(id, n)| (id, n.kind, fields_of(n), doc.effective_group(id))).collect();
+        self.take_store_recovery();
+        if nodes.is_empty() {
+            return false;
+        }
+        nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
+        let toasts = self.save_toast_queue.len();
+        for (id, kind, fields, group) in &nodes {
+            let group = group.map(|g| g.to_string());
+            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore);
+        }
+        self.collapse_toasts_since(toasts);
+        // Graph view with the first tab focused, re-fit once restored tabs
+        // land. Task 7 restores the saved view instead.
+        self.focused = nodes.iter().find(|(_, kind, ..)| *kind == Kind::Tab).map(|(id, ..)| id.to_string());
+        self.view_mode = ViewMode::Graph;
+        self.camera.frame_restored = true;
+        true
+    }
+
+    /// Each frame: pick up other instances' edits, and flush a debounced
+    /// fsync (contract "Flushing").
+    pub(crate) fn poll_store(&mut self) {
+        let Some(journal) = self.journal.as_mut() else { return };
+        let synced = journal.sync_if_due();
+        let changed = journal.changed_on_disk();
+        if let Err(err) = synced {
+            self.store_error(err);
+        }
+        if changed {
+            self.save_session();
+        }
+    }
+
+    /// Clean exit: save, then close (compacts only if something changed).
+    pub(crate) fn close_store(&mut self) {
+        self.save_session();
+        if let Some(journal) = self.journal.as_mut() {
+            if let Err(err) = journal.close() {
+                eprintln!("session: closing the store failed: {err}");
+            }
+        }
+    }
+
+    /// The session as a JSON snapshot (Export Session), saved first so it
+    /// holds every edit. `None` without a store.
+    pub(crate) fn export_session_json(&mut self) -> Option<JsonDoc> {
+        self.save_session();
+        Some(crate::store::json::doc_to_json(self.journal.as_ref()?.doc()))
+    }
+
+    /// Writes `export_session_json` to `path` (Export Session, headless
+    /// `EXPORTSESSION`). A failure is logged and toasted, and gives `false`.
+    pub(crate) fn export_session_to(&mut self, path: &std::path::Path) -> bool {
+        let written = match self.export_session_json() {
+            None => Err("no session file".to_string()),
+            Some(json) => serde_json::to_string_pretty(&json).map_err(|e| e.to_string()).and_then(|text| {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                std::fs::write(path, text).map_err(|e| e.to_string())
+            }),
+        };
+        if let Err(err) = &written {
+            eprintln!("session: couldn't export to {}: {err}", path.display());
+            self.queue_toast(format!("Couldn't export the session to {}: {err}", path.display()));
+        }
+        written.is_ok()
+    }
+
+    /// Replaces the running session with `json`'s nodes under fresh ids
+    /// (Import Session; Task 9 adds Open). The save at the end deletes
+    /// every node that was live from the store. Returns the label map
+    /// (file id → new id) for remapping personal state (Task 7). A file
+    /// with no tabs changes nothing, so a bad import can't wipe a working
+    /// session.
+    pub(crate) fn replace_running_session(&mut self, json: &JsonDoc) -> HashMap<String, String> {
+        let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
+            Ok(imported) => imported,
+            Err(err) => {
+                self.queue_toast(format!("Couldn't import the session: {err}"));
+                return HashMap::new();
+            }
+        };
+        if !imported.iter().any(|i| i.kind == Kind::Tab) {
+            self.queue_toast("The session has no tabs".into());
+            return HashMap::new();
+        }
+        self.teardown_running_session();
+        let map: HashMap<String, String> =
+            json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
+        // A group or parent outside the file (import keeps real node ids)
+        // names nothing once the old session is gone.
+        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
+        let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
+        let mut imported = imported;
+        imported.sort_by_key(|i| i.kind != Kind::Group);
+        let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());
+        let toasts = self.save_toast_queue.len();
+        for node in imported {
+            let group = match node.fields.get(&field::GROUP) {
+                Some(FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
+                _ => None,
+            };
+            let mut fields: Fields = kind_fields(node.kind)
+                .iter()
+                .map(|&no| {
+                    let absent = || FieldValue::absent(field_def(no).expect("a known field").ty);
+                    (no, node.fields.get(&no).cloned().unwrap_or_else(absent))
+                })
+                .collect();
+            if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
+                *parent = parent.filter(|p| ids.contains(p));
+            }
+            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore);
+        }
+        self.collapse_toasts_since(toasts);
+        self.focused = first_tab;
+        self.view_mode = ViewMode::Graph;
+        self.camera.frame_restored = true;
+        self.save_session();
+        map
+    }
+
+    /// Clears the running session's nodes and the state naming them. Each
+    /// tab's `EngineTab::Drop` shuts its engine host down, as `destroy_tab`
+    /// relies on, so clearing the map is enough; spawns still in flight are
+    /// dropped when they land (`session_generation`).
+    fn teardown_running_session(&mut self) {
+        self.nodes.clear();
+        self.node_order.clear();
+        self.focused = None;
+        self.viewed_image = None;
+        self.split_tab = None;
+        self.current_group = None;
+        self.dragging = None;
+        self.hovered = None;
+        self.selected_tabs.clear();
+        self.rect_select_start = None;
+        self.graph_settled_key = None;
+        self.failed_tab_retries.clear();
+        self.spawning.clear();
+        self.remote_in_flight.clear();
+        self.shared_pos.clear();
+        self.session_generation += 1;
+    }
+
+    /// Collapses the toasts queued since `mark` into one, so a bulk restore
+    /// or import with many missing files toasts once, not once per card.
+    fn collapse_toasts_since(&mut self, mark: usize) {
+        let extra = self.save_toast_queue.len().saturating_sub(mark + 1);
+        if extra > 0 {
+            let first = self.save_toast_queue.drain(mark..).next().expect("toasts past the mark");
+            self.save_toast_queue.push_back(format!("{first} (and {extra} more)"));
+        }
+    }
+
+    /// Tells the user once about a store error (Task 10 refines this).
+    pub(crate) fn store_error(&mut self, err: JournalError) {
+        self.store_notice(format!("Session not saved: {err}"));
+    }
+
+    /// Tells the user what a repair of the session file lost, and where
+    /// the original was kept (contract "Repairs").
+    pub(crate) fn take_store_recovery(&mut self) {
+        let Some(recovery) = self.journal.as_mut().and_then(|j| j.take_recovery()) else { return };
+        let mut message = if recovery.new_document {
+            "The session file was damaged; started a new one with what could be read".to_string()
+        } else if recovery.from_prev {
+            "The session file was damaged; restored from its previous copy".to_string()
+        } else {
+            let parts = recovery.damaged.len() + recovery.skipped_frames + usize::from(recovery.header_damaged);
+            format!("The session file was damaged; skipped {parts} damaged part(s)")
+        };
+        if let Some(saved) = &recovery.saved {
+            message.push_str(&format!(" (original kept at {})", saved.display()));
+        }
+        self.store_notice(message);
+    }
+
+    /// Logs and toasts `message`, unless it is the last one shown: a
+    /// failing store or a damage report repeats at each save.
+    fn store_notice(&mut self, message: String) {
+        if self.last_store_notice.as_ref() != Some(&message) {
+            eprintln!("session: {message}");
+            self.queue_toast(message.clone());
+            self.last_store_notice = Some(message);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +951,82 @@ mod tests {
             at = live.get(&g).and_then(|s| s.group);
         }
         false
+    }
+
+    /// Materializes `nodes` into a windowless app, as `apply_remote` would
+    /// show another replica's new nodes.
+    fn app_with(nodes: &BTreeMap<NodeId, Shared>) -> App {
+        let mut app = App::default();
+        let changes = nodes.iter().map(|(&id, s)| (id, Some((s.kind, s.fields.clone(), s.group)))).collect();
+        app.apply_remote(changes);
+        app
+    }
+
+    #[test]
+    fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
+        let red = color_value(Some(egui::Color32::from_rgb(200, 10, 10)));
+        let nodes = BTreeMap::from([
+            (
+                id(0),
+                shared(
+                    Kind::Note,
+                    Some(id(1)),
+                    &[
+                        (field::TEXT, FieldValue::Str("hello".into())),
+                        (field::POS, FieldValue::Pos(3.0, -4.0)),
+                        (field::COLOR, red),
+                    ],
+                ),
+            ),
+            (
+                id(1),
+                shared(
+                    Kind::Group,
+                    None,
+                    &[(field::NAME, FieldValue::Str("G".into())), (field::FROM_JSON, FieldValue::Bool(true))],
+                ),
+            ),
+            (
+                id(2),
+                shared(
+                    Kind::JsonLeaf,
+                    Some(id(1)),
+                    &[
+                        (field::PATH, FieldValue::Str("C:/data.json".into())),
+                        (field::KEY, FieldValue::Str("answer".into())),
+                        (field::VALUE, FieldValue::Str("42".into())),
+                    ],
+                ),
+            ),
+        ]);
+        assert_eq!(app_with(&nodes).shared_nodes(), nodes);
+    }
+
+    #[test]
+    fn a_remotely_removed_group_leaves_no_member_naming_it() {
+        let nodes = BTreeMap::from([
+            (id(0), group("Outer")),
+            (id(1), shared(Kind::Group, Some(id(0)), &[(field::NAME, FieldValue::Str("Inner".into()))])),
+            (id(2), note("stored member", Some(id(1)))),
+        ]);
+        let mut app = app_with(&nodes);
+        // A note only this replica has, not yet saved, inside the group.
+        let local = id(3).to_string();
+        let payload = NodePayload::Note(NotePayload { text: "local".into(), editing: false });
+        app.insert_placeholder_node(local.clone(), egui::Vec2::ZERO, payload);
+        app.nodes.get_mut(&local).unwrap().group = Some(id(1).to_string());
+        app.current_group = Some(id(1).to_string());
+        // What `remote_changes` reports when another replica deletes Inner:
+        // the group gone, its stored member now shown in Outer.
+        let member = nodes[&id(2)].fields.clone();
+        app.apply_remote(vec![(id(1), None), (id(2), Some((Kind::Note, member, Some(id(0)))))]);
+        let inner = id(1).to_string();
+        assert!(!app.nodes.contains_key(&inner) && !app.node_order.contains(&inner));
+        let outer = Some(id(0).to_string());
+        assert_eq!(app.nodes[&id(2).to_string()].group, outer);
+        assert_eq!(app.nodes[&local].group, outer, "the local-only member moves to the effective group");
+        assert_eq!(app.current_group, outer, "the view leaves the removed level");
+        assert!(app.nodes.values().all(|n| n.group.as_deref() != Some(inner.as_str())));
     }
 
     #[test]
