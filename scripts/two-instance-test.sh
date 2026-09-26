@@ -142,12 +142,11 @@ text="$(printf 'x%.0s' $(seq 1 500))"
 } >"$big"
 sa "IMPORTGROUP $(win "$big")"
 sa WAITTABS
+# B edits only once A has compacted (the fresh profile had no `.prev`), so
+# the edit lands on the rewritten file.
+wait_file "$profile/manifold/session.mnf.prev"
 sb NEWNOTE
 wait_agree "scenario 2" "$out/a2.json" "$out/b2.json"
-[ -f "$profile/manifold/session.mnf.prev" ] || {
-    echo "FAIL: scenario 2: session.mnf.prev is missing -- A should have compacted"
-    exit 1
-}
 # >=201: the 200 imported notes plus B's own from this scenario (B's note
 # from scenario 1 is a separate node again already counted at the group
 # level, not as "note" text necessarily, so this is a floor, not exact).
