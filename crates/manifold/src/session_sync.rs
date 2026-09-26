@@ -631,7 +631,7 @@ impl App {
                         }
                     }
                     self.explicit.clear();
-                    self.last_store_notice = None;
+                    self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     return true;
                 }
@@ -1092,9 +1092,9 @@ impl App {
         }
     }
 
-    /// What to tell the user about a repair (contract "Repairs").
+    /// Tells the user a store call failed (contract "Read-only" for
+    /// `ReadOnly`).
     pub(crate) fn store_error(&mut self, err: JournalError) {
-        use crate::store::journal::JournalError;
         let msg = match err {
             JournalError::ReadOnly => "This session was written by a newer manifold; changes aren't saved".to_string(),
             _ => format!("Session not saved: {err}"),
@@ -1109,15 +1109,15 @@ impl App {
         self.notice(recovery_notice(&recovery));
     }
 
-    /// Logs and toasts `message`, unless it is the last one shown: a
+    /// Logs and toasts `msg`, unless it was shown since the last commit: a
     /// failing store or a damage report repeats at each save.
     fn notice(&mut self, msg: String) {
-        if self.last_store_notice.as_deref() == Some(&msg) {
+        if self.store_notices.contains(&msg) {
             return;
         }
         eprintln!("session: {msg}");
         self.queue_toast(msg.clone());
-        self.last_store_notice = Some(msg);
+        self.store_notices.insert(msg);
     }
 }
 

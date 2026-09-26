@@ -1648,9 +1648,10 @@ struct App {
     /// `save_session`, not a timer) has some visible confirmation instead
     /// of being purely invisible. `None` until the first save this run.
     last_session_save: Option<std::time::Instant>,
-    /// The last store error or repair notice toasted (`store_error`,
-    /// `take_store_recovery`), so an identical one isn't repeated.
-    last_store_notice: Option<String>,
+    /// Store errors and repair notices toasted since the last commit
+    /// (`store_error`, `take_store_recovery`), each shown once: a read-only
+    /// file with a damaged tail reports both at every reload.
+    store_notices: std::collections::BTreeSet<String>,
     /// `settings::fingerprint()` as this process last saw it (set at load,
     /// updated after every successful save) -- see `save_settings`. `None`
     /// until the file has actually been loaded or saved once this run,
@@ -1834,7 +1835,7 @@ impl Default for App {
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
             last_session_save: None,
-            last_store_notice: None,
+            store_notices: std::collections::BTreeSet::new(),
             settings_fingerprint,
             find: FindState::default(),
             tab_spawn_error: None,
