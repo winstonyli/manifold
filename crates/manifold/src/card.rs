@@ -743,8 +743,12 @@ impl App {
             // `drain_tab_events`), so marking every frame could commit an
             // intermediate position as its own op, repeatedly, before the
             // drag even ends.
+            // A card removed mid-drag (closed, crashed, swapped) leaves its
+            // id here; skip it rather than clearing at every removal site.
             for moved_id in std::mem::take(&mut self.drag_moved) {
-                self.mark(&moved_id, field::POS);
+                if self.nodes.contains_key(&moved_id) {
+                    self.mark(&moved_id, field::POS);
+                }
             }
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).

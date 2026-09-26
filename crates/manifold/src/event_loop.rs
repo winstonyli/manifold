@@ -1208,10 +1208,6 @@ impl App {
                 // `finish_swap`'s own comment on this.
                 if self.dragging.as_deref() == Some(tab_id) {
                     self.dragging = None;
-                    // See `App::remove_node`'s own comment on why an
-                    // aborted drag's pending moves are dropped here rather
-                    // than marked.
-                    self.drag_moved.clear();
                 }
                 if self.hovered.as_deref() == Some(tab_id) {
                     self.hovered = None;

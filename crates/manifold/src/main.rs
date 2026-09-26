@@ -2585,12 +2585,6 @@ impl App {
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
-            // The drag this cancels never reaches card.rs's own release
-            // branch (the id it was dragging is gone), so nothing marks
-            // `drag_moved`'s pending positions -- drop them rather than
-            // leaving them to be marked, wrongly, by some later, unrelated
-            // drag's release.
-            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -2718,9 +2712,6 @@ impl App {
     fn forget_removed_group(&mut self, id: &str) {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
-            // See `remove_node`'s own comment on why an aborted drag's
-            // pending moves are dropped here rather than marked.
-            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -3495,9 +3486,6 @@ impl App {
         }
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
-            // See `remove_node`'s own comment on why an aborted drag's
-            // pending moves are dropped here rather than marked.
-            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -3561,9 +3549,6 @@ impl App {
         // instant the respawned node starts rendering again.
         if self.dragging.as_deref() == Some(tab_id) {
             self.dragging = None;
-            // See `remove_node`'s own comment on why an aborted drag's
-            // pending moves are dropped here rather than marked.
-            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
@@ -4021,9 +4006,6 @@ impl App {
         }
         if self.dragging.as_deref() == Some(tab_id) {
             self.dragging = None;
-            // See `remove_node`'s own comment on why an aborted drag's
-            // pending moves are dropped here rather than marked.
-            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
@@ -4174,11 +4156,6 @@ impl App {
             }
             for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(json_node_id)) {
                 node.parent = Some(root_id.clone());
-            }
-            if self.dragging.as_deref() == Some(json_node_id) {
-                // See `remove_node`'s own comment on why an aborted drag's
-                // pending moves are dropped here rather than marked.
-                self.drag_moved.clear();
             }
             for slot in [&mut self.dragging, &mut self.hovered, &mut self.json_viewer_node] {
                 if slot.as_deref() == Some(json_node_id) {
