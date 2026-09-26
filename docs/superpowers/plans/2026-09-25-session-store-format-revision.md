@@ -2115,7 +2115,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ## Outcome (executed 2026-09-26)
 
-Executed on branch `store-format-revision` as 587babf.. through the final-review fixes: 66 `store::` tests; clippy clean. Deviations from the blocks above:
+Landed on `dev` in merge 6910e0c (branch `store-format-revision`, 587babf..a6bf90d): 66 `store::` tests; clippy clean. Deviations from the blocks above:
 - Task 1: kept the spec's two unknown-frame-type bullets that the brief's replacement range would have deleted; also changed a leftover "written to `Local`" to the personal-state file.
 - Global Constraints: the per-task clippy check became the pre-commit hook's (`-D warnings`), not a grep of `src\store`.
 - Task 4: rewrapped `close`'s doc comment (308ab38).
