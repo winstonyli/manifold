@@ -702,6 +702,9 @@ pub struct Journal {
     /// The file on disk still holds the damage `load` found; cleared once
     /// a rewrite succeeds.
     damaged_on_disk: bool,
+    /// A repair's save of the damaged original failed: no rewrite or
+    /// truncating append may proceed until a retried save succeeds.
+    unsaved_damage: bool,
     /// Repairs since `take_recovery` last took them.
     recovery: Option<Recovery>,
     /// The header's link to `.prev`, kept by a repair's rewrite.
@@ -738,6 +741,7 @@ impl Journal {
             compaction_failed: false,
             dirty: false,
             damaged_on_disk: false,
+            unsaved_damage: false,
             recovery: None,
             prev_generation: 0,
             read_only: false,
@@ -985,6 +989,7 @@ impl Journal {
     }
 
     fn append(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
+        self.ensure_saved()?;
         let mut file = OpenOptions::new().write(true).open(&self.path)?;
         file.set_len(self.end)?; // cuts a torn tail
         file.seek(SeekFrom::Start(self.end))?;
@@ -1026,6 +1031,7 @@ impl Journal {
     }
 
     fn rewrite(&mut self, rotate: bool) -> Result<(), JournalError> {
+        self.ensure_saved()?;
         self.doc.forget_moves();
         self.doc.prune();
         let prev_generation = if rotate { self.generation } else { self.prev_generation };
@@ -1041,22 +1047,45 @@ impl Journal {
 
     /// After a load that found damage: saves the file as it was beside it,
     /// then rewrites it without the damage when this build may compact it.
-    /// `.prev`, the good copy, is left as it is. If the save fails, nothing
-    /// is rewritten; if the rewrite fails, the next `begin` tries again.
+    /// `.prev`, the good copy, is left as it is. If the save fails, the
+    /// file is left untouched (`unsaved_damage`), and `ensure_saved` retries
+    /// before any later rewrite or truncating append; if the rewrite fails,
+    /// the next `begin` tries again.
     fn repair(&mut self, bytes: &[u8]) {
-        if !self.damaged_on_disk {
+        if !self.damaged_on_disk || self.save_original(bytes).is_err() {
             return;
-        }
-        let saved = damaged_path(&self.path, bytes);
-        if save_damaged(&saved, bytes).is_err() {
-            return;
-        }
-        if let Some(recovery) = &mut self.recovery {
-            recovery.saved = Some(saved);
         }
         if !self.keep_unknown && !self.read_only && self.rewrite(false).is_err() {
             (self.compaction_failed, self.stale) = (true, true);
         }
+    }
+
+    /// Saves `bytes` (the file as read, damaged) aside if it isn't already
+    /// there, tracking whether that succeeded in `unsaved_damage` and, when
+    /// there is a pending `Recovery`, its `saved` path.
+    fn save_original(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
+        let saved = damaged_path(&self.path, bytes);
+        let result = save_damaged(&saved, bytes);
+        self.unsaved_damage = result.is_err();
+        if result.is_ok() {
+            if let Some(recovery) = &mut self.recovery {
+                recovery.saved = Some(saved.clone());
+            }
+        }
+        result.map(|()| saved)
+    }
+
+    /// Retries saving the damaged original once before anything that would
+    /// rewrite or truncate the live file, so a save that failed in `repair`
+    /// never lets the damage be lost to a later write. Fails, leaving the
+    /// file untouched, only if the retry also fails.
+    fn ensure_saved(&mut self) -> Result<(), JournalError> {
+        if !self.unsaved_damage {
+            return Ok(());
+        }
+        let bytes = std::fs::read(&self.path)?;
+        self.save_original(&bytes)?;
+        Ok(())
     }
 
     /// The repairs since the last call: the app tells the user once.
@@ -2112,5 +2141,54 @@ mod tests {
         let saved = recovery.saved.unwrap();
         assert!(saved.to_string_lossy().ends_with(&format!(".damaged-{:016x}", crc32c(&damaged))));
         assert!(!read_header(&std::fs::read(&path).unwrap()).unwrap().damaged);
+    }
+
+    #[test]
+    fn a_failed_save_blocks_rewrite_and_truncation_until_retried() {
+        let dir = temp_dir("unsaved-damage");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1]; // not the file's last frame
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // Block `save_damaged`'s temp file with a directory of the same name.
+        let saved = damaged_path(&path, &damaged);
+        let tmp = with_suffix(&saved, ".tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), damaged); // the repair's rewrite never ran
+        let recovery = journal.take_recovery().unwrap();
+        assert!(recovery.saved.is_none());
+
+        // A commit is refused rather than truncating the unsaved original away.
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://blocked.example/");
+        assert!(txn.commit(vec![create]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+
+        // Once the save can succeed, the next operation retries it and proceeds.
+        std::fs::remove_dir(&tmp).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://ok.example/");
+        txn.commit(vec![create]).unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), damaged);
+        assert_ne!(std::fs::read(&path).unwrap(), damaged);
+    }
+
+    #[test]
+    fn take_recovery_returns_none_the_second_time() {
+        let dir = temp_dir("recovery-once");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1];
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert!(journal.take_recovery().is_some());
+        assert!(journal.take_recovery().is_none());
     }
 }
