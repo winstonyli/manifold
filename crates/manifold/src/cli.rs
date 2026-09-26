@@ -14,18 +14,16 @@ use crate::store::model::ActorId;
 /// Runs the tool the arguments name: `None` when they name none.
 pub(crate) fn run(args: &[String]) -> Option<i32> {
     let arg = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1));
-    #[allow(clippy::question_mark)]
     let result = if let Some(file) = arg("--dump") {
         dump(Path::new(file))
     } else if let Some(file) = arg("--check") {
         check(Path::new(file))
-    } else if let Some(input) = arg("--import-json") {
+    } else {
+        let input = arg("--import-json")?;
         match arg("--out") {
             Some(out) => import_json(Path::new(input), Path::new(out)),
             None => Err("--import-json needs --out <file.mnf>".into()),
         }
-    } else {
-        return None;
     };
     Some(match result {
         Ok(code) => code,
