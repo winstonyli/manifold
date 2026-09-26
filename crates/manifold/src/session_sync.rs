@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ipc_protocol::HostToEngine;
 
+use crate::local_state::{LocalNode, LocalState};
 use crate::node::{
     DownloadPayload, FailedTabPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload,
 };
@@ -298,6 +299,12 @@ impl App {
     /// store never changes a node's kind). A file card whose file can't be
     /// loaded is kept, showing its error, so the next diff doesn't delete
     /// it from the store.
+    ///
+    /// `initial_pos`, when given, places the node here instead of at
+    /// `fields`'s stored `pos` (restore applies personal state's settled
+    /// position); `last_shared` still records the real stored `pos`, so a
+    /// later save doesn't diff the override back into the store. Every
+    /// caller but `restore_session` passes `None`.
     pub(crate) fn materialize(
         &mut self,
         id: String,
@@ -305,12 +312,13 @@ impl App {
         fields: &Fields,
         group: Option<String>,
         purpose: SpawnPurpose,
+        initial_pos: Option<egui::Vec2>,
     ) {
         if self.spawning.contains(&id) {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
-        let pos = pos_of(fields);
+        let pos = initial_pos.unwrap_or_else(|| pos_of(fields));
         let color = fields.get(&field::COLOR).and_then(color_of);
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
@@ -453,7 +461,7 @@ impl App {
             let key = id.to_string();
             match change {
                 Some((kind, fields, group)) => {
-                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), SpawnPurpose::Restore)
+                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), SpawnPurpose::Restore, None)
                 }
                 None if self.spawning.contains(&key) => {
                     self.remote_in_flight.insert(key, None);
@@ -513,7 +521,7 @@ impl App {
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
             Some(Some((kind, fields, group))) => {
-                self.materialize(id.to_string(), kind, &fields, group, SpawnPurpose::Restore)
+                self.materialize(id.to_string(), kind, &fields, group, SpawnPurpose::Restore, None)
             }
             Some(None) => {
                 self.last_shared.remove(id);
@@ -601,14 +609,22 @@ impl App {
         false
     }
 
-    /// Startup: shows the document (Task 7 adds personal state). `false`
-    /// when it has no live node, so the caller starts fresh.
+    /// Startup: shows the document, then applies personal state
+    /// (`session.mnf.local`) on top. `false` when it has no live node, so
+    /// the caller starts fresh.
     pub(crate) fn restore_session(&mut self) -> bool {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
         let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
             doc.live().map(|(id, n)| (id, n.kind, fields_of(n), doc.effective_group(id))).collect();
         self.take_store_recovery();
+        // Contract: `Err` or `None` (no file, another document's, or a
+        // newer format version) is a fresh start, same as a session with no
+        // personal state at all.
+        let local = match self.journal.as_ref().map(|j| j.read_local()) {
+            Some(Ok(Some(bytes))) => LocalState::from_bytes(&bytes).unwrap_or_default(),
+            _ => LocalState::default(),
+        };
         if nodes.is_empty() {
             return false;
         }
@@ -616,15 +632,190 @@ impl App {
         let toasts = self.save_toast_queue.len();
         for (id, kind, fields, group) in &nodes {
             let group = group.map(|g| g.to_string());
-            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore);
+            // The store's own `pos` still becomes `last_shared` inside
+            // `materialize`; only the live placement is overridden.
+            let initial_pos = local.nodes.get(&id.to_string()).map(|n| egui::vec2(n.pos[0], n.pos[1]));
+            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore, initial_pos);
         }
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
-        // land. Task 7 restores the saved view instead.
+        // land; `apply_local` below overrides both from personal state when
+        // it has them.
         self.focused = nodes.iter().find(|(_, kind, ..)| *kind == Kind::Tab).map(|(id, ..)| id.to_string());
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
+        self.apply_local(local);
+        self.local_written = Some(self.local_state());
         true
+    }
+
+    /// This profile's personal state as the live graph currently shows it
+    /// (spec "Personal state"): what to write to `session.mnf.local`.
+    pub(crate) fn local_state(&self) -> LocalState {
+        let item = self.view_mode == ViewMode::Item;
+        let nodes = self
+            .nodes
+            .iter()
+            .filter(|(id, _)| id.parse::<NodeId>().is_ok())
+            .map(|(id, node)| {
+                let mut local = LocalNode { pos: [node.pos.x, node.pos.y], ..LocalNode::default() };
+                match &node.payload {
+                    NodePayload::Tab(tab) => {
+                        local.title = tab.title.clone();
+                        local.muted = tab.muted;
+                        if tab.zoom_factor != self.settings.zoom_factor {
+                            local.zoom = Some(tab.zoom_factor);
+                        }
+                    }
+                    NodePayload::Note(n) => local.editing = n.editing,
+                    _ => {}
+                }
+                (id.clone(), local)
+            })
+            .collect();
+        let rect = self.camera.rect;
+        LocalState {
+            focused: self.focused.clone(),
+            view_item: item,
+            current_group: self.current_group.clone(),
+            viewed_image: item.then(|| self.viewed_image.clone()).flatten(),
+            split_tab: self.split_tab.clone(),
+            groups_collapsed: self.groups_collapsed,
+            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
+            nodes,
+            closed: Vec::new(), // Task 8
+        }
+    }
+
+    /// Applies `state` (personal state, from `session.mnf.local` or an
+    /// imported/opened file) on top of the just-restored/imported live
+    /// graph. A view field naming a node takes hold only when that node
+    /// exists, live or still spawning; otherwise the caller's own default
+    /// stands. A node still spawning keeps its entry in `self.pending_local`
+    /// for `handle_tab_spawn_result` to apply once it lands.
+    pub(crate) fn apply_local(&mut self, state: LocalState) {
+        let exists = |id: &Option<String>| {
+            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawning.contains(id))
+        };
+        if exists(&state.focused) {
+            self.focused = state.focused;
+        }
+        if exists(&state.current_group) {
+            self.current_group = state.current_group;
+        }
+        if exists(&state.viewed_image) {
+            self.viewed_image = state.viewed_image;
+        }
+        if exists(&state.split_tab) {
+            self.split_tab = state.split_tab;
+        }
+        self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
+        self.groups_collapsed = state.groups_collapsed;
+        // Item view showing a tab still spawning (`focused` names it, but
+        // it's not in `self.nodes` yet -- a tab's restore is always async):
+        // `build_tab_view_ui` bounces an unknown-tab Item view back to
+        // Graph every frame *unless* `pending_respawn_focus` names it, the
+        // same guard a crash respawn or engine swap relies on to stay put
+        // while its own tab is missing mid-respawn. Without this, Item view
+        // never actually survives a restore -- it bounces to Graph the very
+        // first frame after `apply_local`, before the spawn can land.
+        if self.view_mode == ViewMode::Item && self.viewed_image.is_none() {
+            if let Some(id) = &self.focused {
+                if !self.nodes.get(id).is_some_and(|n| n.as_tab().is_some()) {
+                    self.pending_respawn_focus = Some(id.clone());
+                }
+            }
+        }
+
+        let mut pending = BTreeMap::new();
+        for (id, node) in state.nodes {
+            if let Some(live) = self.nodes.get_mut(&id) {
+                Self::apply_local_node(live, &node);
+            } else if self.spawning.contains(&id) {
+                pending.insert(id, node);
+            }
+        }
+        if !pending.is_empty() {
+            self.pending_local = Some(LocalState { nodes: pending, ..LocalState::default() });
+        }
+
+        if let Some((rect, level)) = state.camera {
+            if level == self.current_group {
+                self.camera.rect = egui::Rect::from_min_max(egui::pos2(rect[0], rect[1]), egui::pos2(rect[2], rect[3]));
+                self.camera.frame_restored = false;
+            }
+        }
+    }
+
+    /// One node's share of `apply_local`: settled position, and whatever
+    /// its payload kind keeps (a tab's title/muted/zoom, a note's editing).
+    fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
+        live.pos = egui::vec2(node.pos[0], node.pos[1]);
+        live.vel = egui::Vec2::ZERO;
+        match &mut live.payload {
+            NodePayload::Tab(tab) => {
+                tab.title = node.title.clone();
+                tab.muted = node.muted;
+                if let Some(zoom) = node.zoom {
+                    tab.zoom_factor = zoom;
+                }
+            }
+            NodePayload::Note(n) => n.editing = node.editing,
+            _ => {}
+        }
+    }
+
+    /// Applies a spawning node's personal-state entry once its node exists
+    /// (`handle_tab_spawn_result`), removing it from `pending_local`. A
+    /// `FailedTab` card has no title/muted/editing fields, so only its
+    /// position (and zoom, which it does have) come from personal state;
+    /// the rest of the entry is simply dropped rather than lingering for an
+    /// id that will never gain those fields.
+    pub(crate) fn apply_pending_local(&mut self, id: &str) {
+        let Some(pending) = &mut self.pending_local else { return };
+        let Some(node) = pending.nodes.remove(id) else { return };
+        if pending.nodes.is_empty() {
+            self.pending_local = None;
+        }
+        if let Some(live) = self.nodes.get_mut(id) {
+            match &live.payload {
+                NodePayload::Tab(_) | NodePayload::Note(_) => Self::apply_local_node(live, &node),
+                _ => {
+                    live.pos = egui::vec2(node.pos[0], node.pos[1]);
+                    live.vel = egui::Vec2::ZERO;
+                    if let (NodePayload::FailedTab(tab), Some(zoom)) = (&mut live.payload, node.zoom) {
+                        tab.zoom_factor = zoom;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes personal state when it changed (contract "Personal state"):
+    /// at most every 30 s, 2.5 s after a Recently Closed change, and at
+    /// exit (`force`).
+    pub(crate) fn maybe_write_local(&mut self, force: bool) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+        const AFTER_CLOSED: std::time::Duration = std::time::Duration::from_millis(2500);
+        let due = force
+            || self.closed_changed_at.is_some_and(|t| t.elapsed() >= AFTER_CLOSED)
+            || self.local_written_at.elapsed() >= EVERY;
+        if !due || self.journal.is_none() {
+            return;
+        }
+        let state = self.local_state();
+        self.local_written_at = std::time::Instant::now();
+        if self.local_written.as_ref().is_some_and(|w| !crate::local_state::differs(w, &state)) {
+            self.closed_changed_at = None;
+            return;
+        }
+        match self.journal.as_ref().unwrap().write_local(&state.to_bytes()) {
+            Ok(()) => {
+                self.local_written = Some(state);
+                self.closed_changed_at = None;
+            }
+            Err(err) => self.store_error(err),
+        }
     }
 
     /// Each frame: pick up other instances' edits, and flush a debounced
@@ -639,11 +830,14 @@ impl App {
         if changed {
             self.save_session();
         }
+        self.maybe_write_local(false);
     }
 
-    /// Clean exit: save, then close (compacts only if something changed).
+    /// Clean exit: save, write personal state, then close (compacts only if
+    /// something changed).
     pub(crate) fn close_store(&mut self) {
         self.save_session();
+        self.maybe_write_local(true);
         if let Some(journal) = self.journal.as_mut() {
             if let Err(err) = journal.close() {
                 eprintln!("session: closing the store failed: {err}");
@@ -725,12 +919,15 @@ impl App {
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
                 *parent = parent.filter(|p| ids.contains(p));
             }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore);
+            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore, None);
         }
         self.collapse_toasts_since(toasts);
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
+        if let Some(state) = json.local.clone().and_then(|value| serde_json::from_value::<LocalState>(value).ok()) {
+            self.apply_local(state.remap(&map));
+        }
         self.save_session();
         map
     }
@@ -1217,5 +1414,63 @@ mod tests {
         assert_eq!(color_of(&color_value(Some(c))), Some(c));
         assert_eq!(color_value(Some(egui::Color32::BLACK)), FieldValue::Color(Some(0)), "black is encoded");
         assert_eq!(color_of(&color_value(None)), None);
+    }
+
+    /// Item view (`view_item`) restoring onto a tab that's still spawning
+    /// (a tab's restore is always async) must not bounce back to Graph the
+    /// first frame -- `build_tab_view_ui` (tab_view.rs) does exactly that
+    /// for any Item view whose focused id isn't a live tab yet, unless
+    /// `pending_respawn_focus` names it (the same guard a crash respawn
+    /// uses). `apply_local` sets it for this case; this only re-checks the
+    /// state it leaves behind, since the actual bounce-back is UI code this
+    /// module can't drive without a window.
+    #[test]
+    fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() {
+        let path = crate::store::testutil::temp_dir("view-item-spawning").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let tab = add(
+            &mut app,
+            NodePayload::FailedTab(FailedTabPayload {
+                url: "https://x/".into(),
+                kind: EngineKind::Servo,
+                error: "x".into(),
+                pinned: false,
+                zoom_factor: 1.0,
+                retrying: false,
+            }),
+        );
+        // A node whose id isn't live yet -- `spawning`, not `self.nodes` --
+        // is exactly the shape a real tab restore has before its spawn
+        // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
+        app.nodes.remove(&tab);
+        app.spawning.insert(tab.clone());
+        let state = LocalState { focused: Some(tab.clone()), view_item: true, ..LocalState::default() };
+        app.apply_local(state);
+        assert_eq!(app.view_mode, ViewMode::Item);
+        assert_eq!(app.pending_respawn_focus.as_deref(), Some(tab.as_str()));
+    }
+
+    /// A launch that changes nothing (no user action at all) must rewrite
+    /// neither the session nor its personal state -- otherwise every launch
+    /// would touch both files even when nothing happened. `insert_note_at`
+    /// (main.rs) is private to that module and also saves as a side effect,
+    /// so this uses the `add` helper and sets the settled position directly,
+    /// same as Task 5's own no-window tests.
+    #[test]
+    fn an_idle_open_and_close_writes_nothing() {
+        let dir = crate::store::testutil::temp_dir("idle-app");
+        let path = dir.join("session.mnf");
+        {
+            let mut app = app_on(&path, 1);
+            let id = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+            app.nodes.get_mut(&id).unwrap().pos = egui::vec2(3.0, 4.0);
+            app.close_store();
+        }
+        let before = (std::fs::read(&path).unwrap(), std::fs::read(crate::store::local::path_for(&path)).unwrap());
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        app.close_store();
+        let after = (std::fs::read(&path).unwrap(), std::fs::read(crate::store::local::path_for(&path)).unwrap());
+        assert!(before == after, "an idle launch rewrote the session or its personal state");
     }
 }

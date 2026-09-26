@@ -12,6 +12,7 @@ mod group_export;
 mod image_view;
 mod input;
 mod json_file;
+mod local_state;
 mod node;
 mod pdf;
 mod pdf_fetch;
@@ -1413,6 +1414,23 @@ struct App {
     /// now differs, so a remote change to one field doesn't overwrite
     /// another field's unsaved local value.
     last_shared: HashMap<String, session_sync::Shared>,
+    /// Personal state (spec "Personal state") last written to
+    /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
+    /// writing when the current state compares equal, so an idle session
+    /// never rewrites the file.
+    local_written: Option<local_state::LocalState>,
+    /// When `local_written` was last written (or, at startup, `Instant::now`
+    /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
+    local_written_at: std::time::Instant,
+    /// Set when Recently Closed changes (Task 8); `maybe_write_local` writes
+    /// `AFTER_CLOSED` after this, instead of waiting for the `EVERY` timer.
+    closed_changed_at: Option<std::time::Instant>,
+    /// Personal-state entries for nodes `apply_local` found still spawning
+    /// (no live node yet): applied once each one's node is inserted
+    /// (`handle_tab_spawn_result`), then removed. Only `nodes` is ever
+    /// populated here -- the view fields are resolved once, in `apply_local`
+    /// itself, since spawning is enough for those to take effect.
+    pending_local: Option<local_state::LocalState>,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
@@ -1770,6 +1788,10 @@ impl Default for App {
             remote_in_flight: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
+            local_written: None,
+            local_written_at: std::time::Instant::now(),
+            closed_changed_at: None,
+            pending_local: None,
             tabs_spawned_waiters: Vec::new(),
             session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
@@ -2435,6 +2457,7 @@ impl App {
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
+                self.apply_pending_local(&id);
                 match purpose {
                     SpawnPurpose::Root => {
                         self.focused = Some(id.clone());
@@ -2532,6 +2555,7 @@ impl App {
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
+                    self.apply_pending_local(&id);
                     self.land_remote_in_flight(&id, remote);
                     self.save_session();
                     return;
