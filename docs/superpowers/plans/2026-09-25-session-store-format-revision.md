@@ -19,15 +19,16 @@ Nothing outside `store/` uses the module yet (`#![allow(dead_code)]`).
 
 ## Global Constraints
 
-- Work on `dev`. Never push. Commit at the end of each task with the message given, ending with the trailer line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- **Never run `cargo fmt`** (the crate has hand-formatted regions). Match the surrounding style: long lines are fine, and comments are sparse and full sentences.
+- Work on the branch `store-format-revision` (from `dev`; it merges back into `dev`). Never push. Commit at the end of each task with the message given, ending with the trailer line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Run `cargo fmt --all` before each commit (style: `rustfmt.toml`, width 120). Keep the surrounding comment style: sparse, full sentences. `OpBody` is `#[rustfmt::skip]`; keep its variants on one line each.
 - Build and test with `-j 12`.
-- Every task ends with both of these green:
+- Every task ends with all of these green:
   - `cargo test -q -p manifold -j 12 store::` (the task gives the expected count);
-  - `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'` prints nothing.
+  - `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'` prints nothing;
+  - `cargo fmt --all --check`.
 - Tests touch files only under `store::testutil::temp_dir`. Nothing touches `%APPDATA%`, and no task runs the app.
 - `FORMAT_VERSION` stays `1` although the header and frames change. The format is unshipped, and nothing outside tests has written a `.mnf` file. (Assumption: verify with `git grep -n "Journal::open" -- crates/manifold/src ':!crates/manifold/src/store'`, which prints nothing.)
-- **This plan's code was not compiled before it was written**, unlike Plan A's. The blocks are complete and were checked by reading against the current source (`fd6b036`). Compile errors are transcription or plan defects: fix them minimally and note them in the report. Behaviour that differs from the tests is a real finding. Report it; don't weaken a test.
+- **This plan's code was not compiled before it was written**, unlike Plan A's. The blocks are complete and were checked by reading against the source at `fd6b036`. The workspace was reformatted afterwards (`db79f32`), so code this plan quotes as "replace this" may now be wrapped differently: match it by content, not by line breaks. Compile errors are transcription or plan defects: fix them minimally and note them in the report. Behaviour that differs from the tests is a real finding. Report it; don't weaken a test.
 - Frame types 1 and 4 are retired and never reused. Field numbers are never reused either.
 
 ## Why these changes (one line each; Task 1 puts the full text in the spec)
