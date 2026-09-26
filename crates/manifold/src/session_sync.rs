@@ -12,7 +12,7 @@ use crate::node::{
     DownloadPayload, FailedTabPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload,
 };
 use crate::process_manager::EngineKind;
-use crate::store::journal::JournalError;
+use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::JsonDoc;
 use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
@@ -166,6 +166,24 @@ pub(crate) fn diff(
         }
     }
     ops
+}
+
+// ---- Store notices and repairs -------------------------------------------
+
+/// What to tell the user about a repair (contract "Repairs").
+pub(crate) fn recovery_notice(r: &Recovery) -> String {
+    let what = if r.new_document {
+        "The session file's start was lost; what survived was kept as a new session".to_owned()
+    } else if r.from_prev {
+        "The session file was damaged and rebuilt from its previous copy".to_owned()
+    } else {
+        let n = r.damaged.len().max(r.skipped_frames);
+        format!("The session file was damaged; {n} damaged part{} skipped", if n == 1 { " was" } else { "s were" })
+    };
+    match &r.saved {
+        Some(path) => format!("{what}. The original is saved at {}", path.display()),
+        None => format!("{what}. The original could not be saved, so nothing new is written until it can be"),
+    }
 }
 
 // ---- The live graph and the store -----------------------------------------
@@ -586,6 +604,7 @@ impl App {
             }
             if txn.read_only() {
                 drop(txn);
+                self.notice("This session was written by a newer manifold; changes aren't saved".to_string());
                 self.take_store_recovery();
                 return false;
             }
@@ -612,6 +631,7 @@ impl App {
                         }
                     }
                     self.explicit.clear();
+                    self.last_store_notice = None;
                     self.last_session_save = Some(std::time::Instant::now());
                     return true;
                 }
@@ -1072,37 +1092,32 @@ impl App {
         }
     }
 
-    /// Tells the user once about a store error (Task 10 refines this).
+    /// What to tell the user about a repair (contract "Repairs").
     pub(crate) fn store_error(&mut self, err: JournalError) {
-        self.store_notice(format!("Session not saved: {err}"));
+        use crate::store::journal::JournalError;
+        let msg = match err {
+            JournalError::ReadOnly => "This session was written by a newer manifold; changes aren't saved".to_string(),
+            _ => format!("Session not saved: {err}"),
+        };
+        self.notice(msg);
     }
 
     /// Tells the user what a repair of the session file lost, and where
     /// the original was kept (contract "Repairs").
     pub(crate) fn take_store_recovery(&mut self) {
         let Some(recovery) = self.journal.as_mut().and_then(|j| j.take_recovery()) else { return };
-        let mut message = if recovery.new_document {
-            "The session file was damaged; started a new one with what could be read".to_string()
-        } else if recovery.from_prev {
-            "The session file was damaged; restored from its previous copy".to_string()
-        } else {
-            let parts = recovery.damaged.len() + recovery.skipped_frames + usize::from(recovery.header_damaged);
-            format!("The session file was damaged; skipped {parts} damaged part(s)")
-        };
-        if let Some(saved) = &recovery.saved {
-            message.push_str(&format!(" (original kept at {})", saved.display()));
-        }
-        self.store_notice(message);
+        self.notice(recovery_notice(&recovery));
     }
 
     /// Logs and toasts `message`, unless it is the last one shown: a
     /// failing store or a damage report repeats at each save.
-    fn store_notice(&mut self, message: String) {
-        if self.last_store_notice.as_ref() != Some(&message) {
-            eprintln!("session: {message}");
-            self.queue_toast(message.clone());
-            self.last_store_notice = Some(message);
+    fn notice(&mut self, msg: String) {
+        if self.last_store_notice.as_deref() == Some(&msg) {
+            return;
         }
+        eprintln!("session: {msg}");
+        self.queue_toast(msg.clone());
+        self.last_store_notice = Some(msg);
     }
 }
 
@@ -1115,6 +1130,18 @@ pub(crate) mod tests {
     use crate::store::testutil::{temp_dir, XorShift};
 
     const A: ActorId = ActorId(0xA);
+
+    #[test]
+    fn recovery_notices_say_what_was_lost_and_where_the_original_is() {
+        let r = Recovery {
+            damaged: vec![(10, 20)],
+            saved: Some("C:/x/session.mnf.damaged-1".into()),
+            ..Recovery::default()
+        };
+        assert_eq!(recovery_notice(&r), "The session file was damaged; 1 damaged part was skipped. The original is saved at C:/x/session.mnf.damaged-1");
+        let r = Recovery { from_prev: true, saved: None, ..Recovery::default() };
+        assert!(recovery_notice(&r).contains("rebuilt from its previous copy"));
+    }
 
     fn id(counter: u64) -> NodeId {
         NodeId { actor: A, counter }
