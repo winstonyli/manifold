@@ -18,6 +18,11 @@ use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind,
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CLOSED};
 
+/// How long after a save that didn't commit `poll_store` tries again:
+/// soon enough that an edit isn't left unsaved, slow enough that a failing
+/// disk isn't retried every frame.
+const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 
@@ -613,11 +618,12 @@ impl App {
     /// document, and commit. On error the explicit marks stay for the next
     /// save, which re-diffs (contract "Transactions"). `true` when the
     /// store now holds every local edit: `false` read-only, on error, and
-    /// when another instance kept writing.
+    /// when another instance kept writing. The last two are tried again
+    /// by `poll_store` after `SAVE_RETRY`.
     pub(crate) fn save_session(&mut self) -> bool {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
-        // at the next save point (or frame: `poll_store`) rather than spin.
+        // later (`save_retry_at`) rather than spin.
         for _ in 0..4 {
             // Projected before `begin`, since the `Txn` borrows the journal.
             let mut live = self.shared_nodes();
@@ -630,6 +636,7 @@ impl App {
                 Ok(txn) => txn,
                 Err(err) => {
                     self.store_error(err);
+                    self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
@@ -682,16 +689,19 @@ impl App {
                     self.explicit.clear();
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
+                    self.save_retry_at = None;
                     self.flush_history();
                     return true;
                 }
                 Err(err) => {
                     self.store_error(err);
+                    self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
                     self.flush_history();
                     return false;
                 }
             }
         }
+        self.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
         self.flush_history();
         false
     }
@@ -931,8 +941,8 @@ impl App {
         }
     }
 
-    /// Each frame: pick up other instances' edits, and flush a debounced
-    /// fsync (contract "Flushing").
+    /// Each frame: pick up other instances' edits, retry a save that didn't
+    /// commit, and flush a debounced fsync (contract "Flushing").
     pub(crate) fn poll_store(&mut self) {
         let Some(journal) = self.journal.as_mut() else { return };
         let synced = journal.sync_if_due();
@@ -940,7 +950,8 @@ impl App {
         if let Err(err) = synced {
             self.store_error(err);
         }
-        if changed {
+        let retry_due = self.save_retry_at.is_some_and(|at| std::time::Instant::now() >= at);
+        if changed || retry_due {
             self.save_session();
         }
         self.maybe_write_local(false);
@@ -1594,7 +1605,12 @@ pub(crate) mod tests {
         set_readonly(false);
         assert!(!saved);
         assert!(app.explicit.contains(&mark), "kept for the next save");
-        assert!(app.save_session());
+        // Nothing else happens, so only the retry saves it.
+        app.poll_store();
+        assert!(app.explicit.contains(&mark), "not retried before SAVE_RETRY");
+        app.save_retry_at = Some(std::time::Instant::now());
+        app.poll_store();
+        assert!(app.save_retry_at.is_none());
         assert!(app.explicit.is_empty());
         assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(5.0, 6.0));
     }

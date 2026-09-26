@@ -1642,6 +1642,11 @@ struct App {
     /// `save_session`, not a timer) has some visible confirmation instead
     /// of being purely invisible. `None` until the first save this run.
     last_session_save: Option<std::time::Instant>,
+    /// When a save that didn't commit (another instance kept writing, or
+    /// the write failed) is tried again by `poll_store`; `None` when
+    /// nothing is owed. Without it an edit could sit unsaved until the next
+    /// local action or remote write.
+    save_retry_at: Option<std::time::Instant>,
     /// Store errors and repair notices toasted since the last commit
     /// (`store_error`, `take_store_recovery`), each shown once: a read-only
     /// file with a damaged tail reports both at every reload.
@@ -1838,6 +1843,7 @@ impl Default for App {
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
             last_session_save: None,
+            save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),
             settings_fingerprint,
             find: FindState::default(),
