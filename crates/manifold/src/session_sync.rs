@@ -1132,6 +1132,21 @@ pub(crate) mod tests {
     const A: ActorId = ActorId(0xA);
 
     #[test]
+    fn alternating_store_notices_are_each_shown_once_until_a_commit() {
+        let dir = crate::store::testutil::temp_dir("notices");
+        let mut app = app_on(&dir.join("session.mnf"), 1);
+        for _ in 0..3 {
+            app.notice("read-only".into());
+            app.notice("damaged".into());
+        }
+        assert_eq!(app.save_toast_queue.len(), 2);
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        assert!(app.save_session());
+        app.notice("read-only".into());
+        assert_eq!(app.save_toast_queue.len(), 3, "a commit lets a notice show again");
+    }
+
+    #[test]
     fn recovery_notices_say_what_was_lost_and_where_the_original_is() {
         let r = Recovery {
             damaged: vec![(10, 20)],
