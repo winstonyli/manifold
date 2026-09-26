@@ -166,23 +166,39 @@ pub struct Header {
     /// Random per compacted file: a changed generation means another
     /// process replaced the file, so it must be read again from the start.
     pub generation: u64,
+    /// The generation of the file this one was compacted from, which
+    /// `<path>.prev` then holds; 0 for none.
+    pub prev_generation: u64,
+    /// The header's CRC failed: its fields may be wrong. The file is
+    /// repaired (spec "File and frames").
+    pub damaged: bool,
     pub len: usize,
 }
 
+/// Reads the header. Its layout through the CRC is the same in every
+/// format version, so a newer build's header reads too.
 pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
     if buf.get(..4) != Some(&MAGIC[..]) {
         return Err(JournalError::NotAJournal);
     }
     let (version, n) = varint::read(&buf[4..]).map_err(|_| JournalError::NotAJournal)?;
     let at = 4 + n;
-    let generation = buf.get(at..at + 8).ok_or(JournalError::NotAJournal)?;
-    Ok(Header { version, generation: u64::from_le_bytes(generation.try_into().expect("8 bytes")), len: at + 8 })
+    let word = |i: usize| {
+        buf.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes"))).ok_or(JournalError::NotAJournal)
+    };
+    let (generation, prev_generation) = (word(at)?, word(at + 8)?);
+    let crc = buf.get(at + 16..at + 20).ok_or(JournalError::NotAJournal)?;
+    let damaged = crc32c(&buf[..at + 16]) != u32::from_le_bytes(crc.try_into().expect("4 bytes"));
+    Ok(Header { version, generation, prev_generation, damaged, len: at + 20 })
 }
 
-fn header_bytes(generation: u64) -> Vec<u8> {
+fn header_bytes(generation: u64, prev_generation: u64) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
     varint::write(&mut out, FORMAT_VERSION);
     out.extend_from_slice(&generation.to_le_bytes());
+    out.extend_from_slice(&prev_generation.to_le_bytes());
+    let crc = crc32c(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
     out
 }
 
@@ -657,7 +673,7 @@ impl Journal {
         let mut journal = Journal::blank(path, actor);
         let _lock = journal.lock()?;
         if !path.exists() {
-            write_compacted(path, &Doc::new(DocId::random()))?;
+            write_compacted(path, &Doc::new(DocId::random()), 0, false)?;
         }
         journal.load(&std::fs::read(path)?)?;
         journal.note_seen();
@@ -846,7 +862,7 @@ impl Journal {
     fn compact(&mut self) -> Result<(), JournalError> {
         self.doc.forget_moves();
         self.doc.prune();
-        let bytes = write_compacted(&self.path, &self.doc)?;
+        let bytes = write_compacted(&self.path, &self.doc, self.generation, true)?;
         let doc = std::mem::replace(&mut self.doc, Doc::new(DocId([0; 16])));
         self.load(&bytes)?;
         debug_assert_eq!(self.doc.nodes, doc.nodes);
@@ -897,7 +913,7 @@ impl Journal {
         doc.id = DocId::random();
         doc.forget_moves();
         doc.prune();
-        write_compacted(path, &doc)?;
+        write_compacted(path, &doc, 0, false)?;
         if let Some(state) = local {
             local::write(path, doc.id, state)?;
         }
@@ -993,14 +1009,35 @@ fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
 }
 
 /// Writes a compacted file (header, snapshot) beside `path`, fsyncs it,
-/// and renames it over `path`. Returns its bytes.
-fn write_compacted(path: &Path, doc: &Doc) -> Result<Vec<u8>, JournalError> {
-    let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"));
+/// and renames it over `path`. With `rotate`, the file it replaces is kept
+/// as `<path>.prev` first, and `prev_generation` is that file's
+/// generation. Returns its bytes.
+fn write_compacted(path: &Path, doc: &Doc, prev_generation: u64, rotate: bool) -> Result<Vec<u8>, JournalError> {
+    let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"), prev_generation);
     bytes.extend(snapshot_bytes(doc));
     let tmp = with_suffix(path, ".tmp");
     write_synced(&tmp, &bytes)?;
+    if rotate {
+        keep_prev(path);
+    }
     std::fs::rename(&tmp, path)?;
     Ok(bytes)
+}
+
+/// Keeps `path` as `<path>.prev`: a hard link, so no bytes are copied,
+/// or a copy where links fail (FAT, some network drives). Best effort: a
+/// failure only means there is no `.prev` to recover from.
+fn keep_prev(path: &Path) {
+    let prev = prev_path(path);
+    let _ = std::fs::remove_file(&prev);
+    if std::fs::hard_link(path, &prev).is_err() {
+        let _ = std::fs::copy(path, &prev);
+    }
+}
+
+/// The file before the last compaction (spec "Compact").
+pub fn prev_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".prev")
 }
 
 // ---- Inspection (`--dump`, `--check`) --------------------------------------
@@ -1008,6 +1045,8 @@ fn write_compacted(path: &Path, doc: &Doc) -> Result<Vec<u8>, JournalError> {
 pub struct Inspect {
     pub version: u64,
     pub generation: u64,
+    pub prev_generation: u64,
+    pub header_damaged: bool,
     pub file_len: usize,
     /// `(offset, type, size)` of every whole frame.
     pub frames: Vec<(usize, u64, usize)>,
@@ -1021,6 +1060,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
     Ok(Inspect {
         version: header.version,
         generation: header.generation,
+        prev_generation: header.prev_generation,
+        header_damaged: header.damaged,
         file_len: bytes.len(),
         frames: scan.frames.iter().map(|f| (f.offset, f.ty, f.size)).collect(),
         torn: scan.stop.map(|stop| (scan.end, stop)),
@@ -1283,7 +1324,7 @@ mod tests {
 
         // A snapshot with the reserved Move-log tail (field 4) filled in.
         let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
-        let mut bytes = header_bytes(7);
+        let mut bytes = header_bytes(7, 0);
         let mut snapshot = snapshot_message(&doc);
         let mut tail = Writer::new();
         tail.bytes(4, b"tail");
@@ -1433,7 +1474,7 @@ mod tests {
                     node.get(def.no);
                 }
             }
-            let mut again = header_bytes(1);
+            let mut again = header_bytes(1, 0);
             again.extend(snapshot_bytes(&doc));
             let back = Journal::read(&again).expect("a decoded document's snapshot reads back");
             assert_eq!((&back.nodes, &back.version), (&doc.nodes, &doc.version));
@@ -1483,6 +1524,8 @@ mod tests {
         drop(Journal::open(&path, ActorId(1)).unwrap());
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[4] = 2; // format_version 2
+        let crc = crc32c(&bytes[..21]);
+        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         assert!(journal.read_only());
@@ -1492,6 +1535,37 @@ mod tests {
         assert!(!local::path_for(&path).exists());
         journal.close().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn the_header_is_checked_and_names_the_file_kept_as_prev() {
+        let dir = temp_dir("header");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let first = read_header(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!((first.len, first.prev_generation, first.damaged), (25, 0, false));
+        assert!(!prev_path(&path).exists());
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://h.example/");
+        txn.commit(vec![create]).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        journal.close().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(read_header(&after).unwrap().prev_generation, first.generation);
+        assert_eq!(std::fs::read(prev_path(&path)).unwrap(), before);
+
+        // Save As keeps no `.prev` and links none.
+        let copy = dir.join("copy.mnf");
+        journal.save_copy(&copy, None).unwrap();
+        assert!(!prev_path(&copy).exists());
+        assert_eq!(read_header(&std::fs::read(&copy).unwrap()).unwrap().prev_generation, 0);
+
+        // A flipped bit anywhere after the magic is caught.
+        for at in 4..25 {
+            let mut flipped = after.clone();
+            flipped[at] ^= 0x10;
+            assert!(!matches!(read_header(&flipped), Ok(h) if !h.damaged), "byte {at}");
+        }
     }
 
     #[test]
