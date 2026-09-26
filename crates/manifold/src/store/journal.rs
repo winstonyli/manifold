@@ -840,6 +840,7 @@ impl Journal {
         debug_assert_eq!(self.doc.nodes, doc.nodes);
         self.note_seen();
         self.unsynced = false;
+        self.compaction_failed = false;
         Ok(())
     }
 
