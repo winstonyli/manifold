@@ -952,6 +952,7 @@ impl App {
         self.spawning.clear();
         self.remote_in_flight.clear();
         self.last_shared.clear();
+        self.pending_local = None;
         self.session_generation += 1;
     }
 
