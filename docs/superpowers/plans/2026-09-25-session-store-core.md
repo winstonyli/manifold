@@ -3301,3 +3301,54 @@ and in the next bullet replace "absent when untagged;" with "absent when untagge
 git add docs/superpowers/specs/2026-09-25-session-op-log-design.md
 git commit -m "Spec: rulings from planning the store core" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Outcome (executed 2026-09-25)
+
+Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and clippy is clean. The code differs from this plan's blocks in two review-driven commits, and the repo is the source of truth:
+
+- **a582397.**
+  - A failed read or write marks the journal `stale`, and the next `begin` re-reads the whole file.
+  - A frame that doesn't re-encode to its own bytes (an unknown structural field) blocks compaction.
+  - An op counter of `u64::MAX` is rejected.
+- **83639a5, 25e9dce.**
+  - `effective_group` skips every non-live group, and never panics.
+  - `remote` includes descendants (`Doc::with_descendants`).
+  - A failed compaction no longer fails the commit.
+  - `save_copy` refuses while stale (`JournalError::Stale`) and locks its target.
+  - A non-finite `pos` decodes as absent.
+
+### Contracts Plan B must honour
+- **Actors and ids.** Give each `Journal::open` a fresh `ActorId::random()`, because the id counter restarts at 0 for every `Journal`.
+- **Transactions.**
+  - Diff and commit only inside a `Txn`, against `txn.doc()`.
+  - After any `Err`, don't retry the same bodies. `begin` again and re-diff.
+  - Don't trust `Journal::doc()` after an error until a `begin` succeeds.
+- **The lock.** `begin` blocks on the lock and does I/O (a whole-file read, and maybe an fsync or a compaction), so keep a `Txn` short.
+- **Read-only.** `read_only()` can become true mid-session, when a newer build compacts the file. Check it after `begin`.
+- **Flushing.** Call `sync_if_due()` every frame and `close()` on a clean exit.
+- **`Local` frames.** Write one only when personal state changed, because they count toward compaction.
+- **`remote`.** It already includes descendants. Code that applies ops outside the journal (sync, later) must call `with_descendants` itself.
+- **Fields.**
+  - `Node::get` panics on a field number not in the table, so pass only `field::*` constants.
+  - Never emit a non-finite `pos`: `Writer::f32` only `debug_assert`s it.
+- **`save_copy`.** Never pass the journal's own path.
+- **JSON import.** It keeps ids that aren't in the file when they parse as real node ids, so an imported `parent` can dangle.
+
+### Deferred, with reasons
+- **`NodeId::from_str` is lenient.** It accepts uppercase hex and leading zeros. This only matters for hand-written JSON labels.
+- **`Set.enc` isn't validated** as its own field's encoding. Replicas still converge. Fix it before signing, in sub-project 2.
+- **Duplicate fields in a `Create`** are first-wins for registers, but the spec says last-wins. It's deterministic, and honest writers never produce them.
+- **Unknown op kinds.** When skipped, the clock doesn't observe them. The file never compacts in that case, so only last-writer-wins ties are affected.
+- **`Clock::tick` can overflow** at `ms + 1` when a crafted file holds `u64::MAX` ms.
+- **Performance.**
+  - `catch_up` reads the whole file on every save.
+  - The fsync debounce is leading-edge, so the first save after a quiet second fsyncs on the caller's thread.
+- **Plan-level risk.** One bad mid-file frame truncates every valid frame after it at the next append. The fix would be to scan ahead and refuse to truncate, or keep a backup.
+- **Durability.** There's no directory fsync or `MOVEFILE_WRITE_THROUGH` after compaction's rename.
+- **Test gaps.**
+  - Decoder fuzzing that asserts no panics.
+  - Compaction equivalence.
+  - A real multi-process appender test.
+  - fsync failing after the write.
