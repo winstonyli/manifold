@@ -1028,7 +1028,16 @@ impl App {
         // `NavigationStateChanged`.
         let mut changed = false;
         for (tab_id, msg) in messages {
-            changed |= self.handle_engine_message(&tab_id, msg);
+            let url_changed = self.handle_engine_message(&tab_id, msg);
+            if url_changed {
+                // Ruling 3: every reported url change is shared, whichever
+                // tab it came from -- mark it here rather than leaving it
+                // to `navigate_tab` (that only handles this instance's own
+                // address-bar navigations, not the engine's own
+                // confirmation this responds to, nor back/forward).
+                self.mark(&tab_id, field::URL);
+            }
+            changed |= url_changed;
         }
         if changed {
             self.save_session();

@@ -726,6 +726,7 @@ impl App {
             for moved_id in moved {
                 if let Some(node) = self.nodes.get_mut(&moved_id) {
                     node.pos += delta;
+                    self.mark(&moved_id, field::POS);
                 }
             }
         } else if self.dragging.as_deref() == Some(id) {

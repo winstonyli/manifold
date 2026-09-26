@@ -49,6 +49,7 @@ use node::*;
 use popups::*;
 use process_manager::{EngineKind, EngineTab};
 use settings::{SearchEngine, Settings};
+use store::model::field;
 use tab_view::*;
 use theme::*;
 use winit::application::ApplicationHandler;
@@ -2116,6 +2117,7 @@ impl App {
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });
+            self.mark(tab_id, field::URL);
         }
     }
 

@@ -523,6 +523,15 @@ impl App {
         }
     }
 
+    /// Marks explicit field `field` (`pos` or `url`) of `id` for the next
+    /// save (spec "Local edits become ops"). New nodes need no mark: their
+    /// `Create` carries every field.
+    pub(crate) fn mark(&mut self, id: &str, field: u32) {
+        if let Ok(id) = id.parse() {
+            self.explicit.insert((id, field));
+        }
+    }
+
     /// Saves local edits (spec "Local edits become ops"): take the lock,
     /// show what other replicas wrote, diff the live graph against the
     /// document, and commit. On error the explicit marks stay for the next
@@ -1158,6 +1167,21 @@ mod tests {
         assert!(app.save_session());
         assert!(app.explicit.is_empty());
         assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(5.0, 6.0));
+    }
+
+    #[test]
+    fn a_marked_pos_is_saved_and_an_unmarked_one_is_not() {
+        let path = temp_dir("marks").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        app.nodes.get_mut(&note).unwrap().pos = egui::vec2(1.0, 1.0);
+        assert!(app.save_session());
+        app.nodes.get_mut(&note).unwrap().pos = egui::vec2(50.0, 50.0);
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(1.0, 1.0), "physics motion stays local");
+        app.mark(&note, field::POS);
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 50.0));
     }
 
     #[test]
