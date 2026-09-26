@@ -44,7 +44,8 @@ pub(crate) struct MoveRec {
 }
 
 impl Doc {
-    /// Applies `op` and returns the nodes whose shown state may have changed.
+    /// Applies `op` and returns the nodes it changed. Nodes shown inside
+    /// them may move too: see `Doc::with_descendants`.
     pub fn apply(&mut self, op: &Op) -> Vec<NodeId> {
         let stamp = op.stamp();
         let next = self.version.entry(op.id.actor).or_insert(0);
@@ -94,10 +95,7 @@ impl Doc {
                 // ignored. It keeps its tree edge; see `apply_move`.
                 entry.deleted = true;
                 entry.fields.clear();
-                // Its members now show at its nearest live ancestor.
-                let mut touched = vec![*node];
-                touched.extend(self.nodes.iter().filter(|(_, n)| n.group == Some(*node)).map(|(id, _)| *id));
-                touched
+                vec![*node]
             }
         }
     }
@@ -134,8 +132,10 @@ impl Doc {
         touched
     }
 
-    /// Drops the move log. Compaction does this: every op written after it
-    /// is stamped later than everything in the file, so none is undone.
+    /// Drops the move log. Only sound when every op applied after this is
+    /// stamped later than every op applied before it, so none would be
+    /// undone: the journal compacts under its lock after catching up, and
+    /// stamps its own ops after that. Sync will need the Move-log tail.
     pub fn forget_moves(&mut self) {
         self.moves.clear();
     }

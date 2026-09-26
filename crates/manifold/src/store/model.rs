@@ -2,7 +2,7 @@
 //! logical clock, node kinds, the field table, and nodes whose fields are
 //! last-writer-wins registers holding their field's own TLV encoding.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::ops::MoveRec;
@@ -308,7 +308,8 @@ fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError> {
 }
 
 /// Decodes `encode_field`'s output (or any encoding of field `def`; the
-/// last occurrence wins).
+/// last occurrence wins). A non-finite position is not a position: it
+/// decodes as absent.
 pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvError> {
     let mut value = FieldValue::absent(def.ty);
     for field in Reader::new(encoded) {
@@ -324,7 +325,11 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
                         _ => {}
                     }
                 }
-                FieldValue::Pos(x, y)
+                if x.is_finite() && y.is_finite() {
+                    FieldValue::Pos(x, y)
+                } else {
+                    FieldValue::absent(def.ty)
+                }
             }
             FieldType::Color => FieldValue::Color(Some(v.u32()?)),
             FieldType::Id => FieldValue::Id(Some(decode_id(v.bytes()?)?)),
@@ -418,17 +423,39 @@ impl Doc {
         self.nodes.iter().filter(|(_, node)| node.is_live()).map(|(id, node)| (*id, node))
     }
 
-    /// The group `id` is shown in: its own, or, when that group was
-    /// deleted, its nearest live ancestor (spec "Semantics").
+    /// The group `id` is shown in: its own, or, when that group isn't live
+    /// (deleted, not created yet, or of a kind this build doesn't know),
+    /// its nearest live ancestor (spec "Semantics"). `None` is the top
+    /// level, also for a group missing from the document or a cycle, which
+    /// only a damaged snapshot can hold.
     pub fn effective_group(&self, id: NodeId) -> Option<NodeId> {
         let mut group = self.nodes.get(&id)?.group;
         for _ in 0..=self.nodes.len() {
-            match group.and_then(|g| self.nodes.get(&g)) {
-                Some(node) if node.deleted => group = node.group,
-                _ => return group,
+            let node = self.nodes.get(&group?)?;
+            if node.is_live() {
+                return group;
+            }
+            group = node.group;
+        }
+        None
+    }
+
+    /// `nodes` and every node below one of them: where a node is shown
+    /// depends on each group above it (`effective_group`).
+    pub fn with_descendants(&self, nodes: BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        let mut out = nodes.clone();
+        for (&id, node) in &self.nodes {
+            let mut cur = node.group;
+            for _ in 0..self.nodes.len() {
+                let Some(c) = cur else { break };
+                if nodes.contains(&c) {
+                    out.insert(id);
+                    break;
+                }
+                cur = self.nodes.get(&c).and_then(|n| n.group);
             }
         }
-        unreachable!("the move log keeps the tree acyclic")
+        out
     }
 
     /// Whether `ancestor` is on the path from `of` to the root, `of`
@@ -515,5 +542,39 @@ mod tests {
         }
         assert_eq!(Kind::from_code(40), Kind::Unknown(40));
         assert_eq!(Kind::Unknown(40).code(), 40);
+    }
+
+    #[test]
+    fn a_non_finite_position_decodes_as_absent() {
+        let def = field_def(field::POS).unwrap();
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut pos = Writer::new();
+            pos.fixed32(1, bad.to_bits());
+            let mut enc = Writer::new();
+            enc.message(field::POS, &pos);
+            assert_eq!(decode_field(def, &enc.into_bytes()).unwrap(), FieldValue::Pos(0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn nodes_show_at_their_nearest_live_group() {
+        let id = |counter| NodeId { actor: ActorId(1), counter };
+        let node = |kind, group: Option<u64>, deleted| Node { kind, fields: BTreeMap::new(), group: group.map(id), deleted };
+        let mut doc = Doc::new(DocId([0; 16]));
+        doc.nodes.insert(id(1), node(Kind::Group, None, false));
+        doc.nodes.insert(id(2), node(Kind::Group, Some(1), true)); // deleted, in 1
+        doc.nodes.insert(id(3), node(Kind::Tab, Some(2), false)); // shown in 1
+        doc.nodes.insert(id(4), node(Kind::Tab, Some(99), false)); // group missing
+        doc.nodes.insert(id(5), node(Kind::Unknown(40), Some(1), false)); // a newer build's group
+        doc.nodes.insert(id(6), node(Kind::Tab, Some(5), false)); // shown in 1
+        doc.nodes.insert(id(7), node(Kind::Group, Some(8), true)); // 7 and 8: a damaged cycle
+        doc.nodes.insert(id(8), node(Kind::Group, Some(7), true));
+        doc.nodes.insert(id(9), node(Kind::Tab, Some(7), false));
+        assert_eq!(doc.effective_group(id(3)), Some(id(1)));
+        assert_eq!(doc.effective_group(id(4)), None);
+        assert_eq!(doc.effective_group(id(6)), Some(id(1)));
+        assert_eq!(doc.effective_group(id(9)), None);
+        assert_eq!(doc.with_descendants(BTreeSet::from([id(2)])), BTreeSet::from([id(2), id(3)]));
+        assert_eq!(doc.with_descendants(BTreeSet::from([id(1)])), BTreeSet::from([1, 2, 3, 5, 6].map(id)));
     }
 }

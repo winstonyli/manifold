@@ -43,6 +43,9 @@ pub enum JournalError {
     Corrupt(String),
     /// Written by a newer format version; this build only reads it.
     ReadOnly,
+    /// A read or write failed, so this replica may not match its file;
+    /// `begin` re-reads it.
+    Stale,
 }
 
 impl From<io::Error> for JournalError {
@@ -64,6 +67,7 @@ impl std::fmt::Display for JournalError {
             JournalError::NotAJournal => write!(f, "not a manifold session file"),
             JournalError::Corrupt(what) => write!(f, "damaged session file: {what}"),
             JournalError::ReadOnly => write!(f, "written by a newer manifold; opened read-only"),
+            JournalError::Stale => write!(f, "the session file must be read again first"),
         }
     }
 }
@@ -596,6 +600,8 @@ pub struct Journal {
     /// A read or write failed partway, so this state (actor table, `end`,
     /// document) may not match the file: the next `begin` re-reads it whole.
     stale: bool,
+    /// A compaction failed; appends go on and `close` tries again.
+    compaction_failed: bool,
     read_only: bool,
     /// Length and modified time last seen, for `changed_on_disk`.
     seen: Option<(u64, SystemTime)>,
@@ -627,6 +633,7 @@ impl Journal {
             since_snapshot: 0,
             keep_unknown: false,
             stale: false,
+            compaction_failed: false,
             read_only: false,
             seen: None,
             last_sync: Instant::now(),
@@ -680,14 +687,7 @@ impl Journal {
     }
 
     fn lock(&self) -> Result<File, JournalError> {
-        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut lock_path = self.path.clone().into_os_string();
-        lock_path.push(".lock");
-        let file = OpenOptions::new().create(true).truncate(false).write(true).open(lock_path)?;
-        file.lock()?;
-        Ok(file)
+        lock_file(&self.path)
     }
 
     /// Takes the lock and reads what other processes appended since.
@@ -794,8 +794,7 @@ impl Journal {
             touched
         };
         self.note_seen();
-        let unique: BTreeSet<NodeId> = touched.into_iter().collect();
-        Ok(unique.into_iter().collect())
+        Ok(self.doc.with_descendants(touched.into_iter().collect()).into_iter().collect())
     }
 
     fn append(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
@@ -829,7 +828,7 @@ impl Journal {
     }
 
     fn should_compact(&self) -> bool {
-        !self.keep_unknown && self.since_snapshot > (2 * self.snapshot_len).max(COMPACT_MIN)
+        !self.keep_unknown && !self.compaction_failed && self.since_snapshot > (2 * self.snapshot_len).max(COMPACT_MIN)
     }
 
     /// Rewrites the file as one snapshot (spec "Compact"). Holds the lock.
@@ -871,8 +870,13 @@ impl Journal {
     }
 
     /// Writes this document, compacted, to `path` under a new document id
-    /// (spec "Named sessions": Save As).
+    /// (spec "Named sessions": Save As), under `path`'s lock. Refused while
+    /// this replica may not match its own file. Not for its own path.
     pub fn save_copy(&self, path: &Path) -> Result<(), JournalError> {
+        if self.stale {
+            return Err(JournalError::Stale);
+        }
+        let _lock = lock_file(path)?;
         let mut doc = self.doc.clone();
         doc.id = DocId::random();
         doc.forget_moves();
@@ -943,8 +947,10 @@ impl Journal {
         if local.is_some() {
             j.local = local;
         }
-        if j.should_compact() {
-            j.compact()?;
+        if j.should_compact() && j.compact().is_err() {
+            // The ops are in the file and a failed rewrite leaves it as it
+            // was: the commit stands. Re-read once; `close` tries again.
+            (j.compaction_failed, j.stale) = (true, true);
         }
         Ok(())
     }
@@ -954,6 +960,18 @@ impl Journal {
 /// read-only handle fails with "Access is denied".
 fn sync_data(path: &Path) -> io::Result<()> {
     OpenOptions::new().write(true).open(path)?.sync_data()
+}
+
+/// Takes the exclusive lock beside `path` (`<path>.lock`), creating it.
+fn lock_file(path: &Path) -> Result<File, JournalError> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut lock_path = path.to_path_buf().into_os_string();
+    lock_path.push(".lock");
+    let file = OpenOptions::new().create(true).truncate(false).write(true).open(lock_path)?;
+    file.lock()?;
+    Ok(file)
 }
 
 fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
@@ -1175,6 +1193,32 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_compaction_does_not_fail_the_commit() {
+        let dir = temp_dir("compact-fail");
+        let path = dir.join("session.mnf");
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        std::fs::create_dir(&tmp).unwrap(); // the rewrite's temp file can't be created
+        let mut txn = journal.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://0.example/");
+        txn.commit(vec![create], None).unwrap();
+        let long = "x".repeat(1000);
+        for i in 0..200 {
+            let text = FieldValue::Str(format!("{i}{long}"));
+            let txn = journal.begin().unwrap();
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None).unwrap();
+        }
+        assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
+        assert!(journal.close().is_err());
+        std::fs::remove_dir(&tmp).unwrap();
+        journal.close().unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
+        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(url(&doc, tab), FieldValue::Str(format!("199{long}")));
+    }
+
+    #[test]
     fn a_newer_builds_frames_and_fields_survive() {
         let dir = temp_dir("newer");
         let path = dir.join("session.mnf");
@@ -1259,6 +1303,7 @@ mod tests {
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://lost.example/");
         assert!(txn.commit(vec![create], None).is_err()); // the actor table grew in memory only
+        assert!(matches!(journal.save_copy(&dir.join("copy.mnf")), Err(JournalError::Stale)));
         set_readonly(false);
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://kept.example/");
