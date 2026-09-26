@@ -2321,4 +2321,108 @@ mod tests {
         assert!(journal.take_recovery().is_some());
         assert!(journal.take_recovery().is_none());
     }
+
+    // Tests with real processes. Each child is this test binary running the
+    // ignored `child_writer` test, told what to do through the environment.
+
+    /// Long enough that a few hundred commits pass `COMPACT_MIN`, so the
+    /// writers compact while the other one is running.
+    fn child_url(actor: u64, i: u64) -> String {
+        format!("https://p{actor}.example/{i}/{}", "x".repeat(400))
+    }
+
+    fn spawn_writer(path: &Path, actor: u64, count: u64) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["store::journal::tests::child_writer", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("MANIFOLD_STORE_CHILD", path)
+            .env("MANIFOLD_STORE_ACTOR", actor.to_string())
+            .env("MANIFOLD_STORE_COUNT", count.to_string())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn live_urls(doc: &Doc) -> std::collections::BTreeSet<String> {
+        doc.live()
+            .filter_map(|(_, node)| match node.get(field::URL) {
+                FieldValue::Str(url) => Some(url),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Commits one tab at a time and prints `committed <i>` after each
+    /// commit returns; `count` 0 means until killed. Run only as a child.
+    #[test]
+    #[ignore = "a child process of the multi-process tests"]
+    fn child_writer() {
+        let var = |name| std::env::var(name).unwrap();
+        let path = PathBuf::from(var("MANIFOLD_STORE_CHILD"));
+        let actor: u64 = var("MANIFOLD_STORE_ACTOR").parse().unwrap();
+        let count: u64 = var("MANIFOLD_STORE_COUNT").parse().unwrap();
+        let mut journal = Journal::open(&path, ActorId(actor)).unwrap();
+        let mut i = 0;
+        while count == 0 || i < count {
+            let mut txn = journal.begin().unwrap();
+            let (_, create) = create_tab(&mut txn, &child_url(actor, i));
+            txn.commit(vec![create]).unwrap();
+            println!("committed {i}");
+            i += 1;
+        }
+        journal.close().unwrap();
+    }
+
+    #[test]
+    fn two_processes_writing_one_file_lose_nothing() {
+        let dir = temp_dir("processes");
+        let path = dir.join("session.mnf");
+        Journal::open(&path, ActorId(1)).unwrap().close().unwrap();
+        let children = [spawn_writer(&path, 2, 200), spawn_writer(&path, 3, 200)];
+        for child in children {
+            assert!(child.wait_with_output().unwrap().status.success());
+        }
+        let mut journal = Journal::open(&path, ActorId(4)).unwrap();
+        assert_eq!(journal.take_recovery(), None);
+        let expected = (0..200).flat_map(|i| [child_url(2, i), child_url(3, i)]).collect();
+        assert_eq!(live_urls(journal.doc()), expected);
+        // 400 tabs of ~450 bytes: both writers compacted along the way.
+        assert!(prev_path(&path).exists());
+    }
+
+    #[test]
+    fn a_writer_killed_mid_commit_loses_at_most_that_commit() {
+        use std::io::BufRead;
+        let dir = temp_dir("killed");
+        let path = dir.join("session.mnf");
+        let mut rng = XorShift(0x4B11);
+        let mut committed = std::collections::BTreeSet::new();
+        for round in 0..8u64 {
+            let actor = 10 + round;
+            let mut child = spawn_writer(&path, actor, 0);
+            let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+            // The harness prints `test child_writer ... ` without a newline, so
+            // `committed 0` shares its line: parse indices rather than count lines.
+            let index = |line: &str| line.rsplit_once("committed ").and_then(|(_, i)| i.parse::<u64>().ok());
+            let mut reported = 0;
+            let stop_after = 1 + rng.below(40);
+            while reported < stop_after {
+                reported = reported.max(index(&lines.next().unwrap().unwrap()).map_or(0, |i| i + 1));
+            }
+            child.kill().unwrap();
+            child.wait().unwrap();
+            // Commits printed after `stop_after` but before the process died.
+            reported = lines.map_while(Result::ok).filter_map(|l| index(&l)).fold(reported, |n, i| n.max(i + 1));
+            committed.extend((0..reported).map(|i| child_url(actor, i)));
+
+            let mut journal = Journal::open(&path, ActorId(99)).unwrap();
+            let urls = live_urls(journal.doc());
+            assert!(urls.is_superset(&committed), "round {round}: a reported commit is missing");
+            assert!(urls.len() <= committed.len() + 1, "round {round}: more than the in-flight commit landed");
+            // The in-flight commit, if it landed, stays.
+            committed = urls;
+            // A kill leaves at most a torn tail, never damage worth a report.
+            assert_eq!(journal.take_recovery(), None, "round {round}");
+            journal.close().unwrap();
+        }
+    }
 }
