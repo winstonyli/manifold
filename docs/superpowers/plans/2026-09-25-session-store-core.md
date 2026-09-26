@@ -3328,7 +3328,15 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
 - **The lock.** `begin` blocks on the lock and does I/O (a whole-file read, and maybe an fsync or a compaction), so keep a `Txn` short.
 - **Read-only.** `read_only()` can become true mid-session, when a newer build compacts the file. Check it after `begin`.
 - **Flushing.** Call `sync_if_due()` every frame and `close()` on a clean exit.
-- **`Local` frames.** Write one only when personal state changed, because they count toward compaction.
+- **Personal state.** It is in `session.mnf.local` (format revision, Plan A′).
+  - Call `read_local()` once after `open`. Treat `Err` or `None` as a fresh start.
+  - Call `write_local()` only when the state changed: at most every 30 s, 2.5 s after a Recently Closed change, and at exit before `close()`.
+  - Settled positions count as changed only past 1 px.
+  - `save_copy(path, Some(state))` gives the copy its state.
+- **Missing means deleted.** A node id in `remote` that is missing from `doc()` was deleted; compaction may have pruned it.
+  - Never name a non-live node as the group or `parent` of a new op; use its effective group, or none.
+  - After `begin`, apply the `remote` changes to the live graph before diffing, so a pruned node is never re-emitted.
+- **Repairs.** After `open` and after each `begin`, call `take_recovery()`. When it returns `Some`, tell the user what was lost and where the original was saved (`saved`).
 - **`remote`.** It already includes descendants. Code that applies ops outside the journal (sync, later) must call `with_descendants` itself.
 - **Fields.**
   - `Node::get` panics on a field number not in the table, so pass only `field::*` constants.
@@ -3343,9 +3351,8 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
 - **Unknown op kinds.** When skipped, the clock doesn't observe them. The file never compacts in that case, so only last-writer-wins ties are affected.
 - **`Clock::tick` can overflow** at `ms + 1` when a crafted file holds `u64::MAX` ms.
 - **Performance.**
-  - `catch_up` reads the whole file on every save.
+  - `catch_up` reads the whole file on every save (incremental parsing, but a whole-file read).
   - The fsync debounce is leading-edge, so the first save after a quiet second fsyncs on the caller's thread.
-- **Plan-level risk.** One bad mid-file frame truncates every valid frame after it at the next append. The fix would be to scan ahead and refuse to truncate, or keep a backup.
 - **Durability.** There's no directory fsync or `MOVEFILE_WRITE_THROUGH` after compaction's rename.
 - **Test gaps.**
   - Compaction equivalence.
