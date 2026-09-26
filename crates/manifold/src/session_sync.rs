@@ -16,7 +16,7 @@ use crate::store::journal::JournalError;
 use crate::store::json::JsonDoc;
 use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
-use crate::{App, SpawnPurpose, TabCarry, TabSpawn, ViewMode};
+use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CLOSED};
 
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
@@ -216,6 +216,21 @@ fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, 
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
     Kind::Tab
+}
+
+/// `raw` (an imported node's field values, as `store::json::import` gave
+/// them) shaped like `Shared::fields`: exactly `kind_fields(kind)`, with
+/// any field the file left out filled in as absent. Shared by
+/// `replace_running_session` and `App::reopen_closed` (main.rs), which
+/// both materialize nodes `store::json::import` produced.
+pub(crate) fn imported_fields(kind: Kind, raw: &BTreeMap<u32, FieldValue>) -> Fields {
+    kind_fields(kind)
+        .iter()
+        .map(|&no| {
+            let absent = || FieldValue::absent(field_def(no).expect("a known field").ty);
+            (no, raw.get(&no).cloned().unwrap_or_else(absent))
+        })
+        .collect()
 }
 
 impl App {
@@ -683,7 +698,7 @@ impl App {
             groups_collapsed: self.groups_collapsed,
             camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
             nodes,
-            closed: Vec::new(), // Task 8
+            closed: self.closed.iter().map(|e| e.doc.clone()).collect(),
         }
     }
 
@@ -711,6 +726,16 @@ impl App {
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
+        // Oldest first, like `state.closed` itself; a blank entry (a
+        // format this build doesn't recognize inside `doc.nodes`, or one
+        // some other bug produced) is dropped rather than shown as an
+        // empty row.
+        let mut closed: Vec<ClosedEntry> =
+            state.closed.into_iter().filter(|doc| !doc.nodes.is_empty()).map(|doc| ClosedEntry { doc }).collect();
+        if closed.len() > MAX_CLOSED {
+            closed.drain(..closed.len() - MAX_CLOSED);
+        }
+        self.closed = closed;
         // Item view showing a tab still spawning (`focused` names it, but
         // it's not in `self.nodes` yet -- a tab's restore is always async):
         // `build_tab_view_ui` bounces an unknown-tab Item view back to
@@ -909,13 +934,7 @@ impl App {
                 Some(FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
                 _ => None,
             };
-            let mut fields: Fields = kind_fields(node.kind)
-                .iter()
-                .map(|&no| {
-                    let absent = || FieldValue::absent(field_def(no).expect("a known field").ty);
-                    (no, node.fields.get(&no).cloned().unwrap_or_else(absent))
-                })
-                .collect();
+            let mut fields = imported_fields(node.kind, &node.fields);
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
                 *parent = parent.filter(|p| ids.contains(p));
             }
@@ -926,7 +945,13 @@ impl App {
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
         if let Some(state) = json.local.clone().and_then(|value| serde_json::from_value::<LocalState>(value).ok()) {
+            // Recently Closed is this profile's own history, not document
+            // content: an imported/opened file's `local.closed` (if any)
+            // never replaces it, so `apply_local`'s own restore of
+            // `self.closed` is undone right after.
+            let closed = std::mem::take(&mut self.closed);
             self.apply_local(state.remap(&map));
+            self.closed = closed;
         }
         self.save_session();
         map
@@ -1001,7 +1026,7 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::journal::Journal;
     use crate::store::model::{ActorId, DocId, Hlc};
@@ -1273,12 +1298,13 @@ mod tests {
         assert!(app.nodes.values().all(|n| n.group.as_deref() != Some(inner.as_str())));
     }
 
-    /// A windowless app saving to `path` as `actor`.
-    fn app_on(path: &std::path::Path, actor: u64) -> App {
+    /// A windowless app saving to `path` as `actor`. `pub(crate)`: also
+    /// used by `main.rs`'s own windowless tests (e.g. `closed_entry`'s).
+    pub(crate) fn app_on(path: &std::path::Path, actor: u64) -> App {
         App { journal: Some(Journal::open(path, ActorId(actor)).unwrap()), ..App::default() }
     }
 
-    fn add(app: &mut App, payload: NodePayload) -> String {
+    pub(crate) fn add(app: &mut App, payload: NodePayload) -> String {
         let id = app.alloc_node_id();
         app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, payload);
         id

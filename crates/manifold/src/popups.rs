@@ -194,6 +194,42 @@ impl App {
         picked
     }
 
+    /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
+    /// into `ui` as a side effect, same as the row's other icons) and the
+    /// text -- `name` for a group (with its member count), `url` for a
+    /// tab, `text` for a note, `path` for every file-backed kind.
+    fn closed_entry_label(ui: &mut egui::Ui, node: &store::json::JsonNode, member_count: usize) -> String {
+        let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        match node.kind.as_str() {
+            "tab" => {
+                let code = store::model::ENGINES.iter().position(|e| *e == str_field("engine")).unwrap_or(0) as u64 + 1;
+                engine_dot(ui, session_sync::engine_of(code), 8.0);
+                str_field("url")
+            }
+            "group" => {
+                ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+                format!("{} ({member_count})", str_field("name"))
+            }
+            "note" => {
+                ui.label(egui_phosphor::light::NOTE_PENCIL);
+                str_field("text").lines().next().unwrap_or_default().to_string()
+            }
+            "image" => {
+                ui.label(egui_phosphor::light::IMAGE);
+                str_field("path")
+            }
+            "pdf" => {
+                ui.label(egui_phosphor::light::FILE_PDF);
+                str_field("path")
+            }
+            _ => {
+                // "json" / "json_leaf", and anything a newer build added.
+                ui.label(egui_phosphor::light::BRACKETS_CURLY);
+                str_field("path")
+            }
+        }
+    }
+
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
     /// every entry, newest first; click one to reopen it where it was.
     pub(crate) fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
@@ -204,32 +240,8 @@ impl App {
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
                 for (index, entry) in self.closed.iter().enumerate().rev() {
                     ui.horizontal(|ui| {
-                        let label = match &entry.nodes[0].piece {
-                            ClosedPiece::Tab { url, kind, .. } => {
-                                engine_dot(ui, *kind, 8.0);
-                                url.clone()
-                            }
-                            ClosedPiece::Group { name } => {
-                                ui.label(egui_phosphor::light::FOLDER_SIMPLE);
-                                format!("{name} ({})", entry.nodes.len() - 1)
-                            }
-                            ClosedPiece::Note(text) => {
-                                ui.label(egui_phosphor::light::NOTE_PENCIL);
-                                text.lines().next().unwrap_or_default().to_string()
-                            }
-                            ClosedPiece::Image(path) => {
-                                ui.label(egui_phosphor::light::IMAGE);
-                                path.clone()
-                            }
-                            ClosedPiece::Pdf(path) => {
-                                ui.label(egui_phosphor::light::FILE_PDF);
-                                path.clone()
-                            }
-                            ClosedPiece::Json(path) | ClosedPiece::JsonLeaf { path, .. } => {
-                                ui.label(egui_phosphor::light::BRACKETS_CURLY);
-                                path.clone()
-                            }
-                        };
+                        let root = &entry.doc.nodes[0];
+                        let label = Self::closed_entry_label(ui, root, entry.doc.nodes.len() - 1);
                         if ui
                             .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -245,6 +257,7 @@ impl App {
 
         if let Some(index) = reopen_index {
             let entry = self.closed.remove(index);
+            self.closed_changed_at = Some(std::time::Instant::now());
             self.reopen_closed(entry);
             close = true;
         }

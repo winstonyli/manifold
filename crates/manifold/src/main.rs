@@ -28,7 +28,7 @@ mod suggestions;
 mod tab_view;
 mod theme;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
@@ -987,105 +987,91 @@ const PAN_HISTORY_LEN: usize = 6;
 /// doc comment.
 const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// One "Recently Closed" entry: a closed node and, if it's a group,
-/// everything under it, as it was (see `closed_entry`). `nodes[0]` is the
-/// node that was closed. `App::reopen_closed` rebuilds it with fresh ids.
-/// Not cookies/localStorage/scroll position, the same "graph shape only"
-/// limit session restore and an engine swap have.
+/// One "Recently Closed" entry: a store-shaped JSON snapshot of the
+/// closed node and, if it's a group, every live member at any depth, as
+/// `closed_entry` built it. `doc.nodes[0]` is the node that was closed.
+/// `App::reopen_closed` imports the whole snapshot with fresh ids. Not
+/// cookies/localStorage/scroll position, the same "graph shape only"
+/// limit session restore and an engine swap have. `doc.local` carries any
+/// tab's zoom that differs from the default settings zoom (zoom is
+/// personal state, not a store field), as `{"zoom": {"<label>": 1.25}}`,
+/// applied through `pending_local` once that tab respawns.
 struct ClosedEntry {
-    nodes: Vec<ClosedNode>,
-}
-
-/// One node of a `ClosedEntry`, with its old id. `group`/`parent` are old
-/// ids too: reopening remaps the ones inside the entry and keeps the rest
-/// only if that node still exists.
-struct ClosedNode {
-    id: String,
-    parent: Option<String>,
-    group: Option<String>,
-    pos: egui::Vec2,
-    color: Option<egui::Color32>,
-    piece: ClosedPiece,
-}
-
-/// The kind-specific part of a `ClosedNode`. A file-backed node keeps only
-/// its path and is reloaded, so a changed or missing file reopens as it is
-/// now; a note and an "Expand as Graph" leaf keep their content.
-enum ClosedPiece {
-    Tab { url: String, kind: EngineKind, pinned: bool, zoom_factor: f64 },
-    Group { name: String },
-    Note(String),
-    Image(String),
-    Pdf(String),
-    Json(String),
-    JsonLeaf { path: String, key: Option<String>, value: serde_json::Value },
+    doc: store::json::JsonDoc,
 }
 
 /// How many entries `App::closed` keeps before dropping the oldest, like a
 /// browser's own bounded "Recently closed" list.
 const MAX_CLOSED: usize = 20;
 
-/// What of `payload` is worth reopening. `None` for a Download (it has no
-/// closed state) and a blank note (nothing to restore).
-fn closed_piece(payload: &NodePayload) -> Option<ClosedPiece> {
-    Some(match payload {
-        NodePayload::Tab(tab) => ClosedPiece::Tab {
-            url: tab.url.clone(),
-            kind: tab.tab.kind,
-            pinned: tab.pinned,
-            zoom_factor: tab.zoom_factor,
+/// Whether `kind`/`fields` (as `App::shared_nodes` sees a live node) is
+/// worth keeping in a `ClosedEntry`. `false` for a completed download (it
+/// has no closed state -- starting it over isn't "reopening") and a blank
+/// note (nothing to restore); everything else -- tabs, groups, images,
+/// PDFs, JSON files and leaves -- is.
+fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
+    match kind {
+        store::model::Kind::Download => false,
+        store::model::Kind::Note => match fields.get(&field::TEXT) {
+            Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
+            _ => false,
         },
-        NodePayload::FailedTab(tab) => {
-            ClosedPiece::Tab { url: tab.url.clone(), kind: tab.kind, pinned: tab.pinned, zoom_factor: tab.zoom_factor }
-        }
-        NodePayload::Group(group) => ClosedPiece::Group { name: group.name.clone() },
-        NodePayload::Note(note) if !note.text.trim().is_empty() => ClosedPiece::Note(note.text.clone()),
-        NodePayload::Image(image) => ClosedPiece::Image(image.path.clone()),
-        NodePayload::Pdf(pdf) => ClosedPiece::Pdf(pdf.path.clone()),
-        NodePayload::Json(json) if json.key.is_none() => ClosedPiece::Json(json.path.clone()),
-        NodePayload::Json(json) => {
-            ClosedPiece::JsonLeaf { path: json.path.clone(), key: json.key.clone(), value: json.value.clone() }
-        }
-        NodePayload::Note(_) | NodePayload::Download(_) => return None,
-    })
+        _ => true,
+    }
+}
+
+/// `id`'s live tab zoom, when it differs from the default -- what
+/// `closed_entry` records in `doc.local["zoom"]`. Zoom isn't a store
+/// field (it's personal state), so it doesn't come from `shared_nodes`.
+fn tab_zoom(app: &App, id: &str) -> Option<f64> {
+    let zoom = match app.nodes.get(id).map(|n| &n.payload) {
+        Some(NodePayload::Tab(tab)) => tab.zoom_factor,
+        Some(NodePayload::FailedTab(tab)) => tab.zoom_factor,
+        _ => return None,
+    };
+    (zoom != app.settings.zoom_factor).then_some(zoom)
 }
 
 /// The `ClosedEntry` closing `id` should record: `id` and, for a group,
-/// every node under it at any depth (in `order`, i.e. draw order), minus
-/// what `closed_piece` skips. `None` when `id` itself isn't worth
-/// reopening, which includes a lone "Expand as Graph" leaf: it's one of
-/// many, and each would push a real entry out of `MAX_CLOSED`.
-fn closed_entry(nodes: &NodeMap, order: &[String], id: &str) -> Option<ClosedEntry> {
-    let snapshot = |id: &str, node: &GraphNode, piece| ClosedNode {
-        id: id.to_string(),
-        parent: node.parent.clone(),
-        group: node.group.clone(),
-        pos: node.pos,
-        color: node.color,
-        piece,
-    };
-    let root = nodes.get(id)?;
-    let piece = closed_piece(&root.payload)?;
-    if matches!(piece, ClosedPiece::JsonLeaf { .. }) {
+/// every node under it at any depth (in `app.node_order`, i.e. draw
+/// order), minus what `worth_reopening` skips. `None` when `id` itself
+/// isn't worth reopening, which includes a lone "Expand as Graph" leaf:
+/// it's one of many, and each would push a real entry out of `MAX_CLOSED`.
+fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
+    let shared = app.shared_nodes();
+    let root_id: store::model::NodeId = id.parse().ok()?;
+    let root = shared.get(&root_id)?;
+    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root.fields) {
         return None;
     }
-    let mut entry = vec![snapshot(id, root, piece)];
+    let mut nodes = vec![store::json::node_json(id, root.kind, &root.fields, None)];
+    let mut zoom = serde_json::Map::new();
+    if let Some(z) = tab_zoom(app, id) {
+        zoom.insert(id.to_string(), serde_json::json!(z));
+    }
     // Only a group has members; for anything else this finds none.
-    let mut levels = vec![id.to_string()];
+    let mut levels = vec![root_id];
     while let Some(level) = levels.pop() {
-        for (member_id, member) in order.iter().filter_map(|m| nodes.get(m).map(|n| (m, n))) {
-            if member.group.as_deref() != Some(level.as_str()) {
+        for member_id in &app.node_order {
+            let Ok(member_id) = member_id.parse::<store::model::NodeId>() else { continue };
+            let Some(member) = shared.get(&member_id) else { continue };
+            if member.group != Some(level) {
                 continue;
             }
-            if member.as_group().is_some() {
-                levels.push(member_id.clone());
+            if member.kind == store::model::Kind::Group {
+                levels.push(member_id);
             }
-            if let Some(piece) = closed_piece(&member.payload) {
-                entry.push(snapshot(member_id, member, piece));
+            if worth_reopening(member.kind, &member.fields) {
+                let label = member_id.to_string();
+                nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
+                if let Some(z) = tab_zoom(app, &label) {
+                    zoom.insert(label, serde_json::json!(z));
+                }
             }
         }
     }
-    Some(ClosedEntry { nodes: entry })
+    let local = (!zoom.is_empty()).then(|| serde_json::json!({ "zoom": zoom }));
+    Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
 /// One entry in `App::history` -- see that field's own doc comment.
@@ -2049,79 +2035,82 @@ impl App {
     /// Records what closing `id` loses (see `closed_entry`), dropping the
     /// oldest entry past `MAX_CLOSED`. Called before anything is removed.
     fn record_closed(&mut self, id: &str) {
-        if let Some(entry) = closed_entry(&self.nodes, &self.node_order, id) {
+        if let Some(entry) = closed_entry(self, id) {
             self.closed.push(entry);
             if self.closed.len() > MAX_CLOSED {
                 self.closed.remove(0);
             }
+            self.closed_changed_at = Some(std::time::Instant::now());
         }
     }
 
-    /// Rebuilds a closed entry where it was: fresh ids, the old positions
-    /// and tags, links between its own nodes remapped, and links outside it
-    /// kept only if that node still exists (else the top level, or no
-    /// parent). Tabs spawn as new tabs (`SpawnPurpose::New`, nothing
+    /// Rebuilds a closed entry where it was: fresh ids via `store::json::
+    /// import`, the old positions/colors/zooms, links inside the entry
+    /// remapped (import resolves labels within the file), and a tab's
+    /// `parent` outside the entry kept only if that node still exists.
+    /// The root's group becomes `self.current_group` (it's written as
+    /// `None` in the doc -- see `closed_entry`); every other node keeps
+    /// the group `closed_entry` recorded, if it's still part of this
+    /// entry. Tabs spawn as new tabs (`SpawnPurpose::New`, nothing
     /// focused). An image or JSON file that's gone since is toasted and
-    /// skipped; a PDF reopens as its error card.
+    /// skipped; a PDF reopens as its error card. Ends with `save_session`.
     fn reopen_closed(&mut self, entry: ClosedEntry) {
-        let mut ids = std::collections::HashMap::new();
-        for node in &entry.nodes {
-            let id = match node.piece {
-                ClosedPiece::Tab { .. } => self.alloc_node_id(),
-                ClosedPiece::Group { .. } => self.alloc_node_id(),
-                ClosedPiece::Note(_) => self.alloc_node_id(),
-                ClosedPiece::Image(_) => self.alloc_node_id(),
-                ClosedPiece::Pdf(_) => self.alloc_node_id(),
-                ClosedPiece::Json(_) | ClosedPiece::JsonLeaf { .. } => self.alloc_node_id(),
-            };
-            ids.insert(node.id.clone(), id);
-        }
-        let relink = |old: &Option<String>| {
-            let old = old.as_ref()?;
-            ids.get(old).cloned().or_else(|| self.nodes.contains_key(old).then(|| old.clone()))
+        let imported = match store::json::import(&entry.doc, || self.alloc_node_id().parse().expect("a store id")) {
+            Ok(imported) => imported,
+            Err(err) => {
+                self.queue_toast(format!("Couldn't reopen: {err}"));
+                return;
+            }
         };
-        let placed: Vec<_> = entry.nodes.iter().map(|n| (relink(&n.parent), relink(&n.group))).collect();
-        for (node, (parent, group)) in entry.nodes.into_iter().zip(placed) {
-            let id = ids[&node.id].clone();
-            let ClosedNode { pos, color, piece, .. } = node;
-            // `None` once a helper has inserted the node itself.
-            let payload = match piece {
-                ClosedPiece::Tab { url, kind, pinned, zoom_factor } => {
-                    self.tab_spawn_error = None;
-                    let spawn = TabSpawn::new(id, url, kind, pos, SpawnPurpose::New, zoom_factor);
-                    let carry = TabCarry { pinned, color, zoom_factor };
-                    self.spawn_tab_async(TabSpawn { parent, group, carry, ..spawn });
-                    continue;
-                }
-                ClosedPiece::Group { name } => Some(NodePayload::Group(GroupPayload { name, from_json: false })),
-                ClosedPiece::Note(text) => Some(NodePayload::Note(NotePayload { text, editing: false })),
-                ClosedPiece::JsonLeaf { path, key, value } => {
-                    Some(NodePayload::Json(JsonPayload { path, value, key, error: None }))
-                }
-                ClosedPiece::Image(path) => {
-                    let _ = self.insert_image_node_with_id(id.clone(), path, pos, group.clone());
-                    None
-                }
-                ClosedPiece::Pdf(path) => {
-                    self.insert_pdf_node_with_id(id.clone(), path, pos, group.clone());
-                    None
-                }
-                ClosedPiece::Json(path) => {
-                    let _ = self.insert_json_node_with_id(id.clone(), path, pos, group.clone());
-                    None
+        let Some(root_id) = imported.first().map(|i| i.id) else { return };
+        let ids: BTreeSet<store::model::NodeId> = imported.iter().map(|i| i.id).collect();
+        let groups: BTreeSet<store::model::NodeId> =
+            imported.iter().filter(|i| i.kind == store::model::Kind::Group).map(|i| i.id).collect();
+        // Old label (the id `closed_entry` recorded it under) -> zoom,
+        // read from `doc.local`, then carried over to the fresh id below
+        // (`imported[i]` is `entry.doc.nodes[i]`, per `import`'s contract).
+        let zoom_by_label: std::collections::BTreeMap<&str, f64> = entry
+            .doc
+            .local
+            .as_ref()
+            .and_then(|v| v.get("zoom"))
+            .and_then(|v| v.as_object())
+            .map(|map| map.iter().filter_map(|(k, v)| Some((k.as_str(), v.as_f64()?))).collect())
+            .unwrap_or_default();
+        let zoom: HashMap<store::model::NodeId, f64> = entry
+            .doc
+            .nodes
+            .iter()
+            .zip(&imported)
+            .filter_map(|(n, i)| zoom_by_label.get(n.id.as_str()).map(|&z| (i.id, z)))
+            .collect();
+
+        let mut imported = imported;
+        imported.sort_by_key(|i| i.kind != store::model::Kind::Group);
+        for node in imported {
+            let group = if node.id == root_id {
+                self.current_group.clone()
+            } else {
+                match node.fields.get(&field::GROUP) {
+                    Some(store::model::FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
+                    _ => None,
                 }
             };
-            match payload {
-                Some(payload) => {
-                    self.nodes
-                        .insert(id.clone(), GraphNode { parent, group, pos, vel: egui::Vec2::ZERO, color, payload });
-                    self.node_order.push(id);
-                }
-                None => {
-                    if let Some(node) = self.nodes.get_mut(&id) {
-                        node.color = color;
-                    }
-                }
+            let mut fields = session_sync::imported_fields(node.kind, &node.fields);
+            if let Some(store::model::FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
+                *parent = parent.filter(|p| ids.contains(p) || self.nodes.contains_key(&p.to_string()));
+            }
+            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::New, None);
+            if let Some(&factor) = zoom.get(&node.id) {
+                let pos = match fields.get(&field::POS) {
+                    Some(store::model::FieldValue::Pos(x, y)) => [*x, *y],
+                    _ => [0.0, 0.0],
+                };
+                let local = local_state::LocalNode { pos, zoom: Some(factor), ..local_state::LocalNode::default() };
+                self.pending_local
+                    .get_or_insert_with(local_state::LocalState::default)
+                    .nodes
+                    .insert(node.id.to_string(), local);
             }
         }
         self.save_session();
@@ -4389,6 +4378,7 @@ impl App {
     /// if there's none.
     fn reopen_closed_shortcut(&mut self) {
         if let Some(entry) = self.closed.pop() {
+            self.closed_changed_at = Some(std::time::Instant::now());
             self.reopen_closed(entry);
         }
     }
@@ -5278,97 +5268,76 @@ mod tests {
         assert!((scale_of(clamped) - GRAPH_ZOOM_MIN).abs() < 1e-3);
     }
 
-    // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which
-    // a unit test can't construct.
-    #[test]
-    fn closed_piece_skips_what_has_nothing_to_restore() {
-        assert!(matches!(
-            closed_piece(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
-            Some(ClosedPiece::Note(text)) if text == "n"
-        ));
-        // A blank note (never typed in, or only whitespace): nothing to restore.
-        for text in [
-            "", " 
-	",
-        ] {
-            assert!(closed_piece(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
-        }
-        assert!(matches!(
-            closed_piece(&NodePayload::Json(JsonPayload { path: "d.json".into(), value: serde_json::Value::Null, key: None, error: None })),
-            Some(ClosedPiece::Json(path)) if path == "d.json"
-        ));
-        assert!(matches!(
-            closed_piece(&NodePayload::Json(JsonPayload { path: "d.json".into(), value: 1.into(), key: Some("k".into()), error: None })),
-            Some(ClosedPiece::JsonLeaf { key: Some(key), .. }) if key == "k"
-        ));
-        assert!(closed_piece(&NodePayload::Download(DownloadPayload {
-            path: "file.bin".into(),
-            bytes_received: 0,
-            total_bytes: None,
-            completed: true,
-        }))
-        .is_none());
-        // A failed tab's card reopens as the tab it stands in for.
-        assert!(matches!(
-            closed_piece(&NodePayload::FailedTab(FailedTabPayload {
-            url: "https://example.org/".into(),
-            kind: EngineKind::Cef,
-            error: "no binary".into(),
-            pinned: true,
-            zoom_factor: 1.5,
-            retrying: false,
-        })),
-            Some(ClosedPiece::Tab { url, kind: EngineKind::Cef, pinned: true, zoom_factor })
-                if url == "https://example.org/" && zoom_factor == 1.5
-        ));
-    }
-
-    /// Closing a group records it and everything under it at any depth as
-    /// one entry, root first, skipping blank notes and nothing outside it.
+    /// Closing a group records it and every live member at any depth as
+    /// one store-shaped entry, root first: `entry.doc.nodes[0]` is the
+    /// group itself, and `worth_reopening` drops a blank note and a
+    /// completed download along the way (a download has nothing sensible
+    /// to reopen, the same as before this test's rewrite for Task 8).
+    /// These are today's selection rules -- which ids, in what order, and
+    /// which roots give `None` -- kept exactly as the pre-store-snapshot
+    /// version of this test pinned them.
     #[test]
     fn closed_entry_snapshots_the_whole_subtree() {
-        let node = |group: Option<&str>, payload| GraphNode {
-            parent: None,
-            group: group.map(str::to_string),
-            pos: egui::Vec2::ZERO,
-            vel: egui::Vec2::ZERO,
-            color: None,
-            payload,
-        };
-        let note = |text: &str| NodePayload::Note(NotePayload { text: text.into(), editing: false });
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
-        let leaf = || {
+        use crate::session_sync::tests::{add, app_on};
+        let path = store::testutil::temp_dir("closed-entry").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
+
+        let outer = add(&mut app, NodePayload::Group(GroupPayload { name: "Outer".into(), from_json: false }));
+        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false }));
+        put_in(&mut app, &note0, &outer);
+        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false }));
+        put_in(&mut app, &note1, &outer);
+        let inner = add(&mut app, NodePayload::Group(GroupPayload { name: "Inner".into(), from_json: false }));
+        put_in(&mut app, &inner, &outer);
+        let img0 =
+            add(&mut app, NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
+        put_in(&mut app, &img0, &inner);
+        let json0 = add(
+            &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
                 value: 1.into(),
                 key: Some("k".into()),
                 error: None,
-            })
-        };
-        let image = NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
-        let mut nodes = NodeMap::default();
-        let mut order = Vec::new();
-        for (id, n) in [
-            ("grp-0", node(None, group("Outer"))),
-            ("note-0", node(Some("grp-0"), note("kept"))),
-            ("note-1", node(Some("grp-0"), note(" "))),
-            ("grp-1", node(Some("grp-0"), group("Inner"))),
-            ("img-0", node(Some("grp-1"), image)),
-            ("json-0", node(Some("grp-1"), leaf())),
-            ("note-2", node(None, note("outside"))),
-        ] {
-            nodes.insert(id.to_string(), n);
-            order.push(id.to_string());
-        }
-        let entry = closed_entry(&nodes, &order, "grp-0").unwrap();
-        let ids: Vec<&str> = entry.nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(ids, ["grp-0", "note-0", "grp-1", "img-0", "json-0"]);
-        assert_eq!(entry.nodes[3].group.as_deref(), Some("grp-1"));
+            }),
+        );
+        put_in(&mut app, &json0, &inner);
+        let dl0 = add(
+            &mut app,
+            NodePayload::Download(DownloadPayload {
+                path: "f.bin".into(),
+                bytes_received: 1,
+                total_bytes: Some(1),
+                completed: true,
+            }),
+        );
+        put_in(&mut app, &dl0, &inner);
+        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false }));
 
-        nodes.insert("json-1".into(), node(None, leaf()));
-        assert!(closed_entry(&nodes, &order, "json-1").is_none());
-        assert!(closed_entry(&nodes, &order, "note-1").is_none());
-        assert_eq!(closed_entry(&nodes, &order, "note-2").unwrap().nodes.len(), 1);
+        let entry = closed_entry(&app, &outer).unwrap();
+        let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
+            "a blank note and a completed download are both skipped"
+        );
+        assert_eq!(entry.doc.nodes[0].kind, "group");
+        assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
+        assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
+
+        let leaf_outside = add(
+            &mut app,
+            NodePayload::Json(JsonPayload {
+                path: "d.json".into(),
+                value: 1.into(),
+                key: Some("k".into()),
+                error: None,
+            }),
+        );
+        assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
+        assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
+        assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
     }
 
     // One row per kind, pinned to the exact menus each kind showed before
