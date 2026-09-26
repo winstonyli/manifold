@@ -369,6 +369,10 @@ frame  = len: u32 LE | crc: u32 LE | frame_type (varint) | message
   damaged); otherwise an empty document under a new id. The surviving ops
   apply on top. A build that must not compact the file (below) only
   saves the copy. The app tells the user what was repaired.
+
+  `.prev` is still the file from before the damaged generation, so a
+  later rebuild from it can miss changes made in that generation; this is
+  reported as `from_prev`.
 - A frame with a valid CRC and a **type this build does not know**
   (written by a newer build) is skipped and kept, never treated as a
   torn tail, so an older build cannot truncate a newer build's data. An
@@ -392,7 +396,7 @@ It is replaced whole (a temp file, fsync, rename) under the journal's
 lock. Reading it:
 - A document id other than the journal's means the journal was replaced
   or recovered: the file is ignored.
-- A damaged file reads as no state.
+- A damaged file returns a Corrupt error, which the app treats as no state.
 - A newer format version is not read, and the next write replaces it.
   Personal state is recomputable, and newer builds read older versions.
 
@@ -432,7 +436,8 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
     names.
 
   What is shown doesn't change. A later op naming a dropped node makes a
-  placeholder, which isn't shown.
+  placeholder, which isn't shown. Id-valued registers (`parent`) are not
+  counted: they may name a pruned node, which reads as deleted.
 - **Two instances on one profile**: each append takes an exclusive lock
   on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
   the journal itself would be lost when compaction renames a new file

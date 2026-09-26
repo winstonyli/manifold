@@ -58,7 +58,7 @@ Nothing outside `store/` uses the module yet (`#![allow(dead_code)]`).
 | 13 | Resync cost | Linear in practice: most offsets fail on a zero or oversized length. Quadratic only for adversarial files, which aren't attacker-written | — |
 | 14 | Another replica's frames are damaged, found by `catch_up` under the lock | Full reload plus repair, never a cut. That replica loses the in-memory ops that sat in the damaged region; its next `begin` reports them in `remote` as missing | T7 test |
 | 15 | A `BadCrc` tail in a file this build can't compact (`keep_unknown`/read-only) | Each `begin` reloads it until the next append cuts it. Rare, bounded | — |
-| 16 | The damaged copy can't be saved (disk full) | No rewrite. Appends go after the last valid frame, so nothing more is cut. A `BadCrc` tail is still cut at the next append, like a torn tail | code comment |
+| 16 | The damaged copy can't be saved (disk full) | No rewrite. An append that would cut unsaved damaged bytes (a torn tail, or a `BadCrc` tail on the file's own truncating append) is refused until a retried save of the damaged original succeeds | code comment |
 | 17 | The repair rewrite fails | `compaction_failed` and `stale` are set; the next `begin` reloads and retries | code |
 | 18 | No hard links (FAT/exFAT, some network drives) | Fall back to copying. If the copy fails too, there is no `.prev`; it is a best-effort safety net | code |
 | 19 | Crash between creating `.prev` and the rename | `.prev` then has the current generation, not the linked one, so it is ignored | by construction |
@@ -2115,9 +2115,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ## Outcome (executed 2026-09-26)
 
-Executed on branch `store-format-revision` as 587babf..8d28b8e, followed by this commit: 64 `store::` tests; clippy clean. Deviations from the blocks above:
+Executed on branch `store-format-revision` as 587babf.. through the final-review fixes: 66 `store::` tests; clippy clean. Deviations from the blocks above:
 - Task 1: kept the spec's two unknown-frame-type bullets that the brief's replacement range would have deleted; also changed a leftover "written to `Local`" to the personal-state file.
 - Global Constraints: the per-task clippy check became the pre-commit hook's (`-D warnings`), not a grep of `src\store`.
 - Task 4: rewrapped `close`'s doc comment (308ab38).
 - Task 7: review found that a failed save of damaged bytes still let compaction or an append destroy them; fixed with an `unsaved_damage` flag and an `ensure_saved` guard before every rewrite or truncation, plus two tests (1c5b2fd). Hence 64 tests, not 62.
+- Final review: `save_copy` removes a stale `.prev`; a clean reload clears `unsaved_damage`; spec and contract wording aligned; two tests. Hence 66 tests, not 64.
 - Otherwise the blocks were applied as written.

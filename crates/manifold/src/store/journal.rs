@@ -862,6 +862,9 @@ impl Journal {
             || !(scan.stop.is_none() && scan.frames.len() == 1 && scan.frames[0].ty == frame::SNAPSHOT);
         if self.damaged_on_disk {
             self.recovery = Some(found);
+        } else {
+            // A file with no damage has nothing left to save.
+            self.unsaved_damage = false;
         }
         Ok(())
     }
@@ -1047,10 +1050,12 @@ impl Journal {
 
     /// After a load that found damage: saves the file as it was beside it,
     /// then rewrites it without the damage when this build may compact it.
-    /// `.prev`, the good copy, is left as it is. If the save fails, the
-    /// file is left untouched (`unsaved_damage`), and `ensure_saved` retries
-    /// before any later rewrite or truncating append; if the rewrite fails,
-    /// the next `begin` tries again.
+    /// A read-only file, or one holding something this build doesn't know
+    /// (`keep_unknown`), still gets its damaged copy saved but is never
+    /// rewritten. `.prev`, the good copy, is left as it is. If the save
+    /// fails, the file is left untouched (`unsaved_damage`), and
+    /// `ensure_saved` retries before any later rewrite or truncating
+    /// append; if the rewrite fails, the next `begin` tries again.
     fn repair(&mut self, bytes: &[u8]) {
         if !self.damaged_on_disk || self.save_original(bytes).is_err() {
             return;
@@ -1135,6 +1140,7 @@ impl Journal {
         doc.forget_moves();
         doc.prune();
         write_compacted(path, &doc, 0, false)?;
+        let _ = std::fs::remove_file(prev_path(path));
         if let Some(state) = local {
             local::write(path, doc.id, state)?;
         }
@@ -1842,8 +1848,9 @@ mod tests {
         assert_eq!(read_header(&after).unwrap().prev_generation, first.generation);
         assert_eq!(std::fs::read(prev_path(&path)).unwrap(), before);
 
-        // Save As keeps no `.prev` and links none.
+        // Save As keeps no `.prev` and links none, dropping a stale one.
         let copy = dir.join("copy.mnf");
+        std::fs::write(prev_path(&copy), b"stale").unwrap();
         journal.save_copy(&copy, None).unwrap();
         assert!(!prev_path(&copy).exists());
         assert_eq!(read_header(&std::fs::read(&copy).unwrap()).unwrap().prev_generation, 0);
@@ -2133,6 +2140,32 @@ mod tests {
     }
 
     #[test]
+    fn a_prev_with_the_wrong_generation_is_not_used() {
+        let dir = temp_dir("prev-mismatch");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let original = Journal::read(&bytes).unwrap();
+        let (offset, size) = frame_spans(&bytes)[0];
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // `.prev` from another journal entirely: a different generation,
+        // and its tabs are foreign to this document.
+        let foreign_dir = temp_dir("prev-mismatch-foreign");
+        let foreign_bytes = layered_file(&foreign_dir.join("other.mnf"));
+        std::fs::write(prev_path(&path), &foreign_bytes).unwrap();
+
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        let recovery = journal.take_recovery().unwrap();
+        assert!(!recovery.from_prev && recovery.new_document);
+        assert_ne!(journal.doc().id, original.id);
+        assert_ne!(journal.doc().id, Journal::read(&foreign_bytes).unwrap().id);
+        let urls: Vec<FieldValue> = journal.doc().live().map(|(id, _)| url(journal.doc(), id)).collect();
+        assert_eq!(urls, (0..3).map(|i| FieldValue::Str(format!("https://o{i}.example/"))).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn damage_found_while_catching_up_is_repaired_not_cut() {
         let dir = temp_dir("live-damage");
         let path = dir.join("session.mnf");
@@ -2233,6 +2266,46 @@ mod tests {
         txn.commit(vec![create]).unwrap();
         assert_eq!(std::fs::read(&saved).unwrap(), damaged);
         assert_ne!(std::fs::read(&path).unwrap(), damaged);
+    }
+
+    #[test]
+    fn a_clean_reload_clears_unsaved_damage() {
+        let dir = temp_dir("unsaved-damage-cleared");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1]; // not the file's last frame
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // Block this journal's own save, so it opens with the damage
+        // unsaved and never rewritten.
+        let saved = damaged_path(&path, &damaged);
+        let tmp = with_suffix(&saved, ".tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        journal.take_recovery();
+
+        // Another replica repairs the file cleanly.
+        std::fs::remove_dir(&tmp).unwrap();
+        drop(Journal::open(&path, ActorId(4)).unwrap());
+        assert_eq!(std::fs::read(&saved).unwrap(), damaged);
+        assert_ne!(std::fs::read(&path).unwrap(), damaged);
+        let count = |dir: &Path| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".damaged-"))
+                .count()
+        };
+        let before = count(&dir);
+
+        // The stale journal's next commit sees the file is now clean and
+        // doesn't save a spurious, already-clean copy aside.
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://ok.example/");
+        txn.commit(vec![create]).unwrap();
+        assert_eq!(count(&dir), before);
     }
 
     #[test]

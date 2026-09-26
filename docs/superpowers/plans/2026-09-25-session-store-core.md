@@ -3337,6 +3337,8 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
   - Never name a non-live node as the group or `parent` of a new op; use its effective group, or none.
   - After `begin`, apply the `remote` changes to the live graph before diffing, so a pruned node is never re-emitted.
 - **Repairs.** After `open` and after each `begin`, call `take_recovery()`. When it returns `Some`, tell the user what was lost and where the original was saved (`saved`).
+  - A commit returns `Err` while the damaged original can't be saved, rather than dropping edits silently; show this to the user.
+  - A `BadCrc` tail in a file this build can't rewrite (`keep_unknown`/read-only) is reported again after each reload, so the app should not repeat an identical notice.
 - **`remote`.** It already includes descendants. Code that applies ops outside the journal (sync, later) must call `with_descendants` itself.
 - **Fields.**
   - `Node::get` panics on a field number not in the table, so pass only `field::*` constants.
