@@ -610,6 +610,9 @@ pub struct Journal {
     stale: bool,
     /// A compaction failed; appends go on and `close` tries again.
     compaction_failed: bool,
+    /// The file holds more than one clean snapshot: frames after it, a torn
+    /// tail, or damage. `close` compacts only then.
+    dirty: bool,
     read_only: bool,
     /// Length and modified time last seen, for `changed_on_disk`.
     seen: Option<(u64, SystemTime)>,
@@ -640,6 +643,7 @@ impl Journal {
             keep_unknown: false,
             stale: false,
             compaction_failed: false,
+            dirty: false,
             read_only: false,
             seen: None,
             last_sync: Instant::now(),
@@ -743,6 +747,7 @@ impl Journal {
             self.take(frame)?;
         }
         self.end = scan.end as u64;
+        self.dirty = !(scan.stop.is_none() && scan.frames.len() == 1 && scan.frames[0].ty == frame::SNAPSHOT);
         Ok(())
     }
 
@@ -795,6 +800,7 @@ impl Journal {
                 touched.extend(self.take(frame)?);
             }
             self.end = scan.end as u64;
+            self.dirty |= !scan.frames.is_empty() || scan.stop.is_some();
             touched
         };
         self.note_seen();
@@ -808,6 +814,7 @@ impl Journal {
         file.write_all(bytes)?;
         self.end += bytes.len() as u64;
         self.since_snapshot += bytes.len() as u64;
+        self.dirty = true;
         if self.last_sync.elapsed() >= SYNC_DEBOUNCE {
             file.sync_data()?;
             self.last_sync = Instant::now();
@@ -848,8 +855,7 @@ impl Journal {
         Ok(())
     }
 
-    /// Clean exit: catch up, then compact, or just fsync when this build
-    /// must not compact this file.
+    /// Clean exit: catch up, then compact if the file changed since it was last compacted, or just fsync when this build must not compact this file.
     pub fn close(&mut self) -> Result<(), JournalError> {
         if self.read_only {
             return Ok(());
@@ -861,8 +867,10 @@ impl Journal {
                 sync_data(&j.path)?;
                 j.unsynced = false;
                 Ok(())
-            } else {
+            } else if j.dirty {
                 j.compact()
+            } else {
+                Ok(())
             }
         })
     }
@@ -1019,7 +1027,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{encode_field, field, FieldValue, FIELDS};
+    use crate::store::model::{encode_field, field, FieldValue, Node, FIELDS};
     use crate::store::testutil::{temp_dir, XorShift};
 
     fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
@@ -1565,5 +1573,49 @@ mod tests {
         let report = inspect(&bytes).unwrap();
         assert_eq!(report.frames.iter().map(|f| f.1).collect::<Vec<_>>(), [frame::SNAPSHOT]);
         assert_eq!(report.torn, Some((clean, Stop::ZeroLength)));
+    }
+
+    #[test]
+    fn closing_without_changes_leaves_the_file_alone() {
+        let dir = temp_dir("idle");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://idle.example/");
+        txn.commit(vec![create]).unwrap();
+        journal.close().unwrap(); // changed: compacts
+        let compacted = std::fs::read(&path).unwrap();
+        for actor in 2..5 {
+            let mut idle = Journal::open(&path, ActorId(actor)).unwrap();
+            drop(idle.begin().unwrap());
+            idle.close().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), compacted, "launch {actor} rewrote an unchanged file");
+        }
+        let frames = |path: &Path| {
+            inspect(&std::fs::read(path).unwrap()).unwrap().frames.iter().map(|f| f.1).collect::<Vec<_>>()
+        };
+
+        // A replica that appended and died without closing: the next close compacts.
+        let mut crashed = Journal::open(&path, ActorId(5)).unwrap();
+        let txn = crashed.begin().unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
+        drop(crashed);
+        Journal::open(&path, ActorId(6)).unwrap().close().unwrap();
+        assert_eq!(frames(&path), [frame::SNAPSHOT]);
+        assert!(!Journal::read(&std::fs::read(&path).unwrap()).unwrap().nodes.get(&tab).is_some_and(Node::is_live));
+
+        // Another live replica's frames count too.
+        let mut idle = Journal::open(&path, ActorId(7)).unwrap();
+        let mut other = Journal::open(&path, ActorId(8)).unwrap();
+        let mut txn = other.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://other.example/");
+        txn.commit(vec![create]).unwrap();
+        idle.close().unwrap();
+        assert_eq!(frames(&path), [frame::SNAPSHOT]);
+
+        // So does a torn tail.
+        OpenOptions::new().append(true).open(&path).unwrap().write_all(&[7, 0, 0, 0, 1, 2]).unwrap();
+        Journal::open(&path, ActorId(9)).unwrap().close().unwrap();
+        assert_eq!(inspect(&std::fs::read(&path).unwrap()).unwrap().torn, None);
     }
 }
