@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::crc32c::crc32c;
+use super::local;
 use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Kind, Node, NodeId, Reg, Stamp};
 use super::ops::{Op, OpBody};
 use super::tlv::{Reader, TlvError, Writer};
@@ -23,10 +24,9 @@ pub const FORMAT_VERSION: u64 = 1;
 pub mod frame {
     pub const SNAPSHOT: u64 = 2;
     pub const OPS: u64 = 3;
-    pub const LOCAL: u64 = 4;
     /// Never reused: 1 was a file-wide actor table (each frame now
-    /// carries its own).
-    pub const RETIRED: [u64; 1] = [1];
+    /// carries its own), 4 was personal state (now `<session>.local`).
+    pub const RETIRED: [u64; 2] = [1, 4];
 }
 
 /// How long an append may wait for its fsync (spec "Journal").
@@ -599,7 +599,6 @@ pub struct Journal {
     /// End of the last whole frame read: where the next append goes.
     end: u64,
     doc: Doc,
-    local: Option<Vec<u8>>,
     /// Size of the latest snapshot frame, and of the frames after it.
     snapshot_len: u64,
     since_snapshot: u64,
@@ -636,7 +635,6 @@ impl Journal {
             generation: 0,
             end: 0,
             doc: Doc::new(DocId([0; 16])),
-            local: None,
             snapshot_len: 0,
             since_snapshot: 0,
             keep_unknown: false,
@@ -655,28 +653,23 @@ impl Journal {
         let mut journal = Journal::blank(path, actor);
         let _lock = journal.lock()?;
         if !path.exists() {
-            write_compacted(path, &Doc::new(DocId::random()), None)?;
+            write_compacted(path, &Doc::new(DocId::random()))?;
         }
         journal.load(&std::fs::read(path)?)?;
         journal.note_seen();
         Ok(journal)
     }
 
-    /// Reads a session file's document and personal state, as `open`
-    /// would, without a lock or an actor. For `--dump` and tests.
-    pub fn read(bytes: &[u8]) -> Result<(Doc, Option<Vec<u8>>), JournalError> {
+    /// Reads a session file's document, as `open` would, without a lock or
+    /// an actor. For `--dump` and tests.
+    pub fn read(bytes: &[u8]) -> Result<Doc, JournalError> {
         let mut journal = Journal::blank(Path::new(""), ActorId(0));
         journal.load(bytes)?;
-        Ok((journal.doc, journal.local))
+        Ok(journal.doc)
     }
 
     pub fn doc(&self) -> &Doc {
         &self.doc
-    }
-
-    /// The latest personal state (spec "Personal state"), as written.
-    pub fn local(&self) -> Option<&[u8]> {
-        self.local.as_deref()
     }
 
     pub fn actor(&self) -> ActorId {
@@ -685,6 +678,26 @@ impl Journal {
 
     pub fn read_only(&self) -> bool {
         self.read_only
+    }
+
+    /// This profile's personal state for this document (spec "Personal
+    /// state"). `None` when there is none, or it is another document's.
+    pub fn read_local(&self) -> Result<Option<Vec<u8>>, JournalError> {
+        let _lock = self.lock()?;
+        local::read(&self.path, self.doc.id)
+    }
+
+    /// Replaces this profile's personal state for this document. Refused
+    /// read-only, and while this replica may not match its file.
+    pub fn write_local(&self, state: &[u8]) -> Result<(), JournalError> {
+        if self.read_only {
+            return Err(JournalError::ReadOnly);
+        }
+        if self.stale {
+            return Err(JournalError::Stale);
+        }
+        let _lock = self.lock()?;
+        local::write(&self.path, self.doc.id, state)
     }
 
     /// A fresh id from this launch's counter, for a new node.
@@ -723,7 +736,6 @@ impl Journal {
         self.keep_unknown = self.read_only;
         self.stale = false;
         self.doc = Doc::new(DocId([0; 16]));
-        self.local = None;
         self.snapshot_len = 0;
         self.since_snapshot = 0;
         let scan = scan(&bytes[header.len..], header.len);
@@ -757,10 +769,6 @@ impl Journal {
                     touched.extend(self.doc.apply(op));
                 }
                 touched
-            }
-            frame::LOCAL => {
-                self.local = Some(frame.message.to_vec());
-                Vec::new()
             }
             _ => {
                 self.keep_unknown = true; // a newer build's frame: kept, not read
@@ -830,7 +838,7 @@ impl Journal {
     /// Rewrites the file as one snapshot (spec "Compact"). Holds the lock.
     fn compact(&mut self) -> Result<(), JournalError> {
         self.doc.forget_moves();
-        let bytes = write_compacted(&self.path, &self.doc, self.local.as_deref())?;
+        let bytes = write_compacted(&self.path, &self.doc)?;
         let doc = std::mem::replace(&mut self.doc, Doc::new(DocId([0; 16])));
         self.load(&bytes)?;
         debug_assert_eq!(self.doc.nodes, doc.nodes);
@@ -867,9 +875,10 @@ impl Journal {
     }
 
     /// Writes this document, compacted, to `path` under a new document id
-    /// (spec "Named sessions": Save As), under `path`'s lock. Refused while
-    /// this replica may not match its own file. Not for its own path.
-    pub fn save_copy(&self, path: &Path) -> Result<(), JournalError> {
+    /// (spec "Named sessions": Save As), with `local` as the copy's
+    /// personal state, under `path`'s lock. Refused while this replica may
+    /// not match its own file. Not for its own path.
+    pub fn save_copy(&self, path: &Path, local: Option<&[u8]>) -> Result<(), JournalError> {
         if self.stale {
             return Err(JournalError::Stale);
         }
@@ -877,7 +886,10 @@ impl Journal {
         let mut doc = self.doc.clone();
         doc.id = DocId::random();
         doc.forget_moves();
-        write_compacted(path, &doc, self.local.as_deref())?;
+        write_compacted(path, &doc)?;
+        if let Some(state) = local {
+            local::write(path, doc.id, state)?;
+        }
         Ok(())
     }
 }
@@ -892,22 +904,22 @@ impl Txn<'_> {
     }
 
     /// Stamps `bodies` as this replica's next ops, applies them, and
-    /// appends them, and `local` when given, to the file. After an error
-    /// the ops may or may not be in the file; the next `begin` re-reads it,
-    /// so diff again against `doc()` rather than retrying the same bodies.
-    pub fn commit(self, bodies: Vec<OpBody>, local: Option<Vec<u8>>) -> Result<(), JournalError> {
+    /// appends them to the file. After an error the ops may or may not be
+    /// in the file; the next `begin` re-reads it, so diff again against
+    /// `doc()` rather than retrying the same bodies.
+    pub fn commit(self, bodies: Vec<OpBody>) -> Result<(), JournalError> {
         let Txn { journal, _lock, .. } = self;
-        journal.guard(|j| j.write_ops(bodies, local))
+        journal.guard(|j| j.write_ops(bodies))
     }
 }
 
 impl Journal {
-    fn write_ops(&mut self, bodies: Vec<OpBody>, local: Option<Vec<u8>>) -> Result<(), JournalError> {
+    fn write_ops(&mut self, bodies: Vec<OpBody>) -> Result<(), JournalError> {
         let j = self;
         if j.read_only {
             return Err(JournalError::ReadOnly);
         }
-        if bodies.is_empty() && local.is_none() {
+        if bodies.is_empty() {
             return Ok(());
         }
         let now = now_ms();
@@ -919,18 +931,10 @@ impl Journal {
             })
             .collect();
         let mut out = Vec::new();
-        if !ops.is_empty() {
-            encode_frame(&mut out, frame::OPS, &ops_message(&ops));
-        }
-        if let Some(local) = &local {
-            encode_frame(&mut out, frame::LOCAL, local);
-        }
+        encode_frame(&mut out, frame::OPS, &ops_message(&ops));
         j.append(&out)?;
         for op in &ops {
             j.doc.apply(op);
-        }
-        if local.is_some() {
-            j.local = local;
         }
         if j.should_compact() && j.compact().is_err() {
             // The ops are in the file and a failed rewrite leaves it as it
@@ -952,11 +956,24 @@ fn lock_file(path: &Path) -> Result<File, JournalError> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    let mut lock_path = path.to_path_buf().into_os_string();
-    lock_path.push(".lock");
-    let file = OpenOptions::new().create(true).truncate(false).write(true).open(lock_path)?;
+    let file = OpenOptions::new().create(true).truncate(false).write(true).open(with_suffix(path, ".lock"))?;
     file.lock()?;
     Ok(file)
+}
+
+/// `path` with `suffix` appended to its file name (`session.mnf` →
+/// `session.mnf.lock`).
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Creates `path` holding `bytes`, and fsyncs it.
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
@@ -964,21 +981,13 @@ fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
     Some((meta.len(), meta.modified().ok()?))
 }
 
-/// Writes a compacted file (header, actors, snapshot, local) beside
-/// `path`, fsyncs it, and renames it over `path`. Returns its bytes.
-fn write_compacted(path: &Path, doc: &Doc, local: Option<&[u8]>) -> Result<Vec<u8>, JournalError> {
+/// Writes a compacted file (header, snapshot) beside `path`, fsyncs it,
+/// and renames it over `path`. Returns its bytes.
+fn write_compacted(path: &Path, doc: &Doc) -> Result<Vec<u8>, JournalError> {
     let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"));
     bytes.extend(snapshot_bytes(doc));
-    if let Some(local) = local {
-        encode_frame(&mut bytes, frame::LOCAL, local);
-    }
-    let mut tmp = path.to_path_buf().into_os_string();
-    tmp.push(".tmp");
-    {
-        let mut file = File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-    }
+    let tmp = with_suffix(path, ".tmp");
+    write_synced(&tmp, &bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(bytes)
 }
@@ -1026,11 +1035,11 @@ mod tests {
     #[test]
     fn frames_round_trip_and_damage_stops_the_scan() {
         let mut bytes = Vec::new();
-        encode_frame(&mut bytes, frame::LOCAL, b"one");
+        encode_frame(&mut bytes, frame::SNAPSHOT, b"one");
         encode_frame(&mut bytes, frame::OPS, b"");
         let scan1 = scan(&bytes, 0);
         assert_eq!(scan1.frames.len(), 2);
-        assert_eq!((scan1.frames[0].ty, scan1.frames[0].message), (frame::LOCAL, &b"one"[..]));
+        assert_eq!((scan1.frames[0].ty, scan1.frames[0].message), (frame::SNAPSHOT, &b"one"[..]));
         assert_eq!((scan1.end, scan1.stop), (bytes.len(), None));
 
         let mut flipped = bytes.clone();
@@ -1052,7 +1061,7 @@ mod tests {
         for i in 0..5 {
             let mut txn = journal.begin().unwrap();
             let (_, create) = create_tab(&mut txn, &format!("https://example.com/{i}"));
-            txn.commit(vec![create], Some(vec![i])).unwrap();
+            txn.commit(vec![create]).unwrap();
         }
         let full = std::fs::read(&path).unwrap();
         let header = read_header(&full).unwrap();
@@ -1063,30 +1072,29 @@ mod tests {
             assert_eq!(got.frames.len(), expected, "cut at {cut}");
             // Each commit is one ops frame creating one tab.
             let whole_ops = whole.iter().filter(|f| f.ty == frame::OPS && f.offset + f.size <= cut).count();
-            let (doc, _) = Journal::read(&full[..cut]).unwrap();
+            let doc = Journal::read(&full[..cut]).unwrap();
             assert_eq!(doc.live().count(), whole_ops, "cut at {cut}");
         }
     }
 
     #[test]
-    fn reopening_gives_back_the_document_and_local_state() {
+    fn reopening_gives_back_the_document() {
         let dir = temp_dir("reopen");
         let path = dir.join("session.mnf");
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://a.example/");
-        txn.commit(vec![create], Some(b"view".to_vec())).unwrap();
+        txn.commit(vec![create]).unwrap();
         let doc_id = journal.doc().id;
         drop(journal);
 
         let mut reopened = Journal::open(&path, ActorId(2)).unwrap();
         assert_eq!(reopened.doc().id, doc_id);
         assert_eq!(url(reopened.doc(), tab), FieldValue::Str("https://a.example/".into()));
-        assert_eq!(reopened.local(), Some(&b"view"[..]));
         // The new replica's ops are stamped after everything in the file.
         let seen = reopened.doc().clock;
         let txn = reopened.begin().unwrap();
-        txn.commit(vec![OpBody::Delete { node: tab }], None).unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
         assert!(reopened.doc().clock > seen);
     }
 
@@ -1103,14 +1111,14 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://b.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
         let scanned = scan(&bytes[header.len..], header.len);
         assert_eq!((scanned.end, scanned.stop), (bytes.len(), None));
         // The new frames start where the half frame did: it was cut.
         assert!(scanned.frames.iter().any(|f| f.offset as u64 == clean_len));
-        let (doc, _) = Journal::read(&bytes).unwrap();
+        let doc = Journal::read(&bytes).unwrap();
         assert!(doc.nodes[&tab].is_live());
     }
 
@@ -1123,11 +1131,11 @@ mod tests {
 
         let mut txn = a.begin().unwrap();
         let group = txn.next_id();
-        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }], None).unwrap();
+        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
         let mut txn = b.begin().unwrap();
         assert!(txn.remote.contains(&group));
         let (tab, create) = create_tab(&mut txn, "https://c.example/");
-        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }], None).unwrap();
+        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
 
         assert!(!b.changed_on_disk() && a.changed_on_disk());
         let txn = a.begin().unwrap();
@@ -1145,13 +1153,13 @@ mod tests {
         let mut b = Journal::open(&path, ActorId(2)).unwrap();
         let mut txn = a.begin().unwrap();
         let (one, create) = create_tab(&mut txn, "https://one.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         a.close().unwrap(); // compacts while `b` has the file open
 
         let mut txn = b.begin().unwrap();
         assert!(txn.remote.contains(&one));
         let (two, create) = create_tab(&mut txn, "https://two.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
 
         let reopened = Journal::open(&path, ActorId(3)).unwrap();
         assert!(reopened.doc().nodes[&one].is_live() && reopened.doc().nodes[&two].is_live());
@@ -1164,17 +1172,17 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let long = "x".repeat(1000);
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }])
                 .unwrap();
         }
         // 200 KB of appends against a tiny snapshot: compacted at least once.
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(url(&doc, tab), FieldValue::Str(format!("199{long}")));
     }
 
@@ -1188,12 +1196,12 @@ mod tests {
         std::fs::create_dir(&tmp).unwrap(); // the rewrite's temp file can't be created
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let long = "x".repeat(1000);
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }])
                 .unwrap();
         }
         assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
@@ -1201,7 +1209,7 @@ mod tests {
         std::fs::remove_dir(&tmp).unwrap();
         journal.close().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(url(&doc, tab), FieldValue::Str(format!("199{long}")));
     }
 
@@ -1215,10 +1223,10 @@ mod tests {
         let mut future = Writer::new();
         future.str(99, "from the future");
         let future = future.into_bytes();
-        txn.commit(vec![create, OpBody::Set { node: tab, field: 99, enc: future.clone() }], None).unwrap();
+        txn.commit(vec![create, OpBody::Set { node: tab, field: 99, enc: future.clone() }]).unwrap();
         journal.close().unwrap(); // compacts: the unknown field is written back
 
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(doc.nodes[&tab].fields[&99].enc, future);
 
         // A frame type from the future: kept, and the file never compacts.
@@ -1227,7 +1235,7 @@ mod tests {
         OpenOptions::new().append(true).open(&path).unwrap().write_all(&frame).unwrap();
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         let txn = journal.begin().unwrap();
-        txn.commit(vec![OpBody::Delete { node: tab }], None).unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
         journal.close().unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
@@ -1241,7 +1249,7 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://e.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         drop(journal);
 
         // An ops frame whose top level carries a field this build doesn't know.
@@ -1263,7 +1271,7 @@ mod tests {
         assert!(std::fs::read(&path).unwrap().ends_with(&frame));
 
         // A snapshot with the reserved Move-log tail (field 4) filled in.
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         let mut bytes = header_bytes(7);
         let mut snapshot = snapshot_message(&doc);
         let mut tail = Writer::new();
@@ -1289,13 +1297,13 @@ mod tests {
         set_readonly(true);
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://lost.example/");
-        assert!(txn.commit(vec![create], None).is_err()); // the file is read-only
-        assert!(matches!(journal.save_copy(&dir.join("copy.mnf")), Err(JournalError::Stale)));
+        assert!(txn.commit(vec![create]).is_err()); // the file is read-only
+        assert!(matches!(journal.save_copy(&dir.join("copy.mnf"), None), Err(JournalError::Stale)));
         set_readonly(false);
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://kept.example/");
-        txn.commit(vec![create], None).unwrap();
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        txn.commit(vec![create]).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(url(&doc, tab), FieldValue::Str("https://kept.example/".into()));
         assert_eq!(journal.doc().nodes, doc.nodes);
@@ -1326,7 +1334,7 @@ mod tests {
             set(tab, field::PINNED, FieldValue::Bool(true)),
             OpBody::Move { node: tab, group: Some(group) },
         ];
-        txn.commit(bodies, Some(b"local one".to_vec())).unwrap();
+        txn.commit(bodies).unwrap();
         journal.close().unwrap(); // a snapshot
 
         let mut journal = Journal::open(path, ActorId(2)).unwrap();
@@ -1341,7 +1349,7 @@ mod tests {
             OpBody::Move { node: note, group: None },
             set(note, field::COLOR, FieldValue::Color(None)),
         ];
-        txn.commit(bodies, Some(b"local two".to_vec())).unwrap();
+        txn.commit(bodies).unwrap();
         drop(journal);
         std::fs::read(path).unwrap()
     }
@@ -1384,7 +1392,7 @@ mod tests {
     /// are not, and what this build reads it can write and read back.
     fn use_damaged(bytes: &[u8], path: &Path, open: bool) {
         let _ = inspect(bytes);
-        if let Ok((doc, _)) = Journal::read(bytes) {
+        if let Ok(doc) = Journal::read(bytes) {
             doc.with_descendants(doc.nodes.keys().copied().collect());
             for (&id, node) in &doc.nodes {
                 doc.effective_group(id);
@@ -1395,7 +1403,7 @@ mod tests {
             }
             let mut again = header_bytes(1);
             again.extend(snapshot_bytes(&doc));
-            let (back, _) = Journal::read(&again).expect("a decoded document's snapshot reads back");
+            let back = Journal::read(&again).expect("a decoded document's snapshot reads back");
             assert_eq!((&back.nodes, &back.version), (&doc.nodes, &doc.version));
             let text = serde_json::to_string(&crate::store::json::doc_to_json(&doc)).unwrap();
             let json: crate::store::json::JsonDoc = serde_json::from_str(&text).unwrap();
@@ -1411,7 +1419,7 @@ mod tests {
             if let Ok(mut journal) = Journal::open(path, ActorId(3)) {
                 if let Ok(mut txn) = journal.begin() {
                     let (_, create) = create_tab(&mut txn, "https://z.example/");
-                    let _ = txn.commit(vec![create], None);
+                    let _ = txn.commit(vec![create]);
                 }
                 let _ = journal.close();
             }
@@ -1447,7 +1455,9 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         assert!(journal.read_only());
         let txn = journal.begin().unwrap();
-        assert!(matches!(txn.commit(vec![], Some(vec![1])), Err(JournalError::ReadOnly)));
+        assert!(matches!(txn.commit(vec![]), Err(JournalError::ReadOnly)));
+        assert!(matches!(journal.write_local(b"x"), Err(JournalError::ReadOnly)));
+        assert!(!local::path_for(&path).exists());
         journal.close().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
@@ -1471,10 +1481,10 @@ mod tests {
         let mut b = Journal::open(&path, ActorId(2)).unwrap();
         let mut txn = a.begin().unwrap();
         let group = txn.next_id();
-        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }], None).unwrap();
+        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
         let mut txn = b.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://f.example/");
-        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }], None).unwrap();
+        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
@@ -1490,6 +1500,58 @@ mod tests {
         // A frame with no table has no author.
         assert!(decode_ops(&[]).is_err());
         assert!(![frame::SNAPSHOT, frame::OPS].iter().any(|ty| frame::RETIRED.contains(ty)));
+    }
+
+    #[test]
+    fn personal_state_lives_beside_the_journal() {
+        let dir = temp_dir("sidecar");
+        let path = dir.join("session.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        assert_eq!(journal.read_local().unwrap(), None);
+        journal.write_local(b"view").unwrap();
+        journal.write_local(b"view two").unwrap();
+        let reopened = Journal::open(&path, ActorId(2)).unwrap();
+        assert_eq!(reopened.read_local().unwrap().as_deref(), Some(&b"view two"[..]));
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(inspect(&bytes).unwrap().frames.iter().all(|f| f.1 == frame::SNAPSHOT || f.1 == frame::OPS));
+        assert!(!with_suffix(&local::path_for(&path), ".tmp").exists());
+    }
+
+    #[test]
+    fn another_documents_personal_state_is_ignored() {
+        let dir = temp_dir("sidecar-doc");
+        let path = dir.join("session.mnf");
+        let copy = dir.join("copy.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"mine").unwrap();
+        journal.save_copy(&copy, Some(b"copied")).unwrap();
+        let copied = Journal::open(&copy, ActorId(2)).unwrap();
+        assert_eq!(copied.read_local().unwrap().as_deref(), Some(&b"copied"[..]));
+        // A sidecar moved beside another document isn't read.
+        std::fs::copy(local::path_for(&path), local::path_for(&copy)).unwrap();
+        assert_eq!(copied.read_local().unwrap(), None);
+        assert_eq!(journal.read_local().unwrap().as_deref(), Some(&b"mine"[..]));
+    }
+
+    #[test]
+    fn a_damaged_or_newer_sidecar_is_not_read_and_is_replaced() {
+        let dir = temp_dir("sidecar-bad");
+        let path = dir.join("session.mnf");
+        let side = local::path_for(&path);
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"state").unwrap();
+        let clean = std::fs::read(&side).unwrap();
+        let mut damaged = clean.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        std::fs::write(&side, &damaged).unwrap();
+        assert!(matches!(journal.read_local(), Err(JournalError::Corrupt(_))));
+        let mut newer = clean.clone();
+        newer[4] = 2; // format_version 2
+        std::fs::write(&side, &newer).unwrap();
+        assert_eq!(journal.read_local().unwrap(), None);
+        journal.write_local(b"again").unwrap();
+        assert_eq!(journal.read_local().unwrap().as_deref(), Some(&b"again"[..]));
     }
 
     #[test]
