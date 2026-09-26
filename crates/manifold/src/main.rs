@@ -9,6 +9,7 @@ mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod graph_ui;
+mod history;
 mod image_view;
 mod input;
 mod json_file;
@@ -1092,17 +1093,6 @@ fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
-/// One entry in `App::history` -- see that field's own doc comment.
-struct HistoryEntry {
-    title: String,
-    url: String,
-}
-
-/// How many `App::history` remembers before dropping the oldest -- same
-/// "bounded, not a slow leak in a long-running session" reasoning as
-/// `MAX_CLOSED_TABS`.
-const MAX_HISTORY_ENTRIES: usize = 200;
-
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::EngineToHost::
 /// ContextMenuLink`'s doc comment for why this is the one action
@@ -1696,13 +1686,15 @@ struct App {
     /// Escape cancels" shape `renaming_group` already has.
     renaming_bookmark_folder: Option<(String, String)>,
     /// Every distinct `(title, url)` this session has actually navigated
-    /// to, most-recent-last, capped at `MAX_HISTORY_ENTRIES` (oldest
+    /// to, most-recent-last, capped at `history::MAX_HISTORY_ENTRIES` (oldest
     /// dropped first) -- recorded once per real URL change in
     /// `EngineToHost::NavigationStateChanged`'s own handling, so it covers
     /// in-page navigation (clicked links) the same as address-bar entries,
-    /// not just the latter. Session-only, cleared on restart -- unlike
-    /// bookmarks, nothing here is ever written to disk.
-    history: Vec<HistoryEntry>,
+    /// not just the latter. Persisted to `history.json` whenever saved.
+    history: Vec<history::HistoryEntry>,
+    /// Set whenever an entry is pushed to `history` or when history is cleared.
+    /// Saved by `save_session` or `close_store` when `true`.
+    history_dirty: bool,
     /// The history popup's own filter box text -- same "cleared on each
     /// open" reasoning as `bookmarks_filter`.
     history_filter: String,
@@ -1756,6 +1748,7 @@ impl Default for App {
         // return type for.
         let settings_fingerprint = settings::fingerprint();
         let (bookmarks, bookmarks_err) = bookmarks::load();
+        let (history, history_err) = history::load();
         // Before constructing anything that might make its own first real
         // HTTPS request (search suggestions, favicons) -- see `suggestions::
         // warm_up_https_client`'s own doc comment for why this needs to run
@@ -1845,7 +1838,8 @@ impl Default for App {
             bookmarks,
             bookmarks_filter: String::new(),
             renaming_bookmark_folder: None,
-            history: Vec::new(),
+            history,
+            history_dirty: false,
             history_filter: String::new(),
             open_popup: None,
             transition: None,
@@ -1853,7 +1847,7 @@ impl Default for App {
             pending_respawn_focus: None,
             failed_tab_retries: HashSet::new(),
         };
-        for err in [settings_err, bookmarks_err].into_iter().flatten() {
+        for err in [settings_err, bookmarks_err, history_err].into_iter().flatten() {
             app.queue_toast(err);
         }
         app
@@ -2148,10 +2142,11 @@ impl App {
             // one -- `build_history_popup` already falls back to the url
             // for an empty title.
             if node.url != url {
-                self.history.push(HistoryEntry { title: String::new(), url: url.clone() });
-                if self.history.len() > MAX_HISTORY_ENTRIES {
+                self.history.push(history::HistoryEntry { title: String::new(), url: url.clone() });
+                if self.history.len() > history::MAX_HISTORY_ENTRIES {
                     self.history.remove(0);
                 }
+                self.history_dirty = true;
             }
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {

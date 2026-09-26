@@ -462,6 +462,7 @@ impl App {
         }
         if clear_requested {
             self.history.clear();
+            self.history_dirty = true;
             close = true;
         }
         if clicked_outside {

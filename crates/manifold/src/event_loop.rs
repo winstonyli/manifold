@@ -1166,10 +1166,11 @@ impl App {
                 let url_changed = node.url != url;
                 if url_changed {
                     node.json_body = None;
-                    self.history.push(HistoryEntry { title: title.clone(), url: url.clone() });
-                    if self.history.len() > MAX_HISTORY_ENTRIES {
+                    self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
+                    if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);
                     }
+                    self.history_dirty = true;
                     // The origin is known as soon as the url is --
                     // no need to wait for the page to actually
                     // finish loading, unlike a page's own favicon

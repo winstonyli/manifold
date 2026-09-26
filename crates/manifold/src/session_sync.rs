@@ -573,6 +573,17 @@ impl App {
         }
     }
 
+    /// Saves browsing history to disk if `history_dirty` is set, then clears
+    /// the flag. Called from `save_session` and `close_store` on every return
+    /// path. History doesn't depend on the store, so it's saved regardless of
+    /// store success or failure.
+    fn flush_history(&mut self) {
+        if self.history_dirty {
+            crate::history::save(&self.history);
+            self.history_dirty = false;
+        }
+    }
+
     /// Saves local edits (spec "Local edits become ops"): take the lock,
     /// show what other replicas wrote, diff the live graph against the
     /// document, and commit. On error the explicit marks stay for the next
@@ -587,11 +598,15 @@ impl App {
             // Projected before `begin`, since the `Txn` borrows the journal.
             let live = self.shared_nodes();
             let keep: BTreeSet<NodeId> = self.spawning.iter().filter_map(|id| id.parse().ok()).collect();
-            let Some(journal) = self.journal.as_mut() else { return false };
+            let Some(journal) = self.journal.as_mut() else {
+                self.flush_history();
+                return false;
+            };
             let txn = match journal.begin() {
                 Ok(txn) => txn,
                 Err(err) => {
                     self.store_error(err);
+                    self.flush_history();
                     return false;
                 }
             };
@@ -606,6 +621,7 @@ impl App {
                 drop(txn);
                 self.notice("This session was written by a newer manifold; changes aren't saved".to_string());
                 self.take_store_recovery();
+                self.flush_history();
                 return false;
             }
             let ops = diff(txn.doc(), &live, &self.explicit, &keep);
@@ -633,14 +649,17 @@ impl App {
                     self.explicit.clear();
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
+                    self.flush_history();
                     return true;
                 }
                 Err(err) => {
                     self.store_error(err);
+                    self.flush_history();
                     return false;
                 }
             }
         }
+        self.flush_history();
         false
     }
 
@@ -883,6 +902,7 @@ impl App {
     pub(crate) fn close_store(&mut self) {
         self.save_session();
         self.maybe_write_local(true);
+        self.flush_history();
         if let Some(journal) = self.journal.as_mut() {
             if let Err(err) = journal.close() {
                 eprintln!("session: closing the store failed: {err}");
