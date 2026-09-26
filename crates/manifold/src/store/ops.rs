@@ -15,6 +15,7 @@ pub struct Op {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[rustfmt::skip]
 pub enum OpBody {
     /// `fields` is a node message (`Node::message`), `group` included.
     Create { node: NodeId, kind: Kind, fields: Vec<u8> },
@@ -181,7 +182,8 @@ mod tests {
     #[test]
     fn the_later_write_wins_whatever_the_arrival_order() {
         let g = id(1, 0);
-        let ops = [op(1, 0, 1, create(g, Kind::Group, None)), op(1, 1, 5, name(g, "late")), op(2, 0, 3, name(g, "early"))];
+        let ops =
+            [op(1, 0, 1, create(g, Kind::Group, None)), op(1, 1, 5, name(g, "late")), op(2, 0, 3, name(g, "early"))];
         for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
             let doc = apply_all(&order.map(|i| ops[i].clone()));
             assert_eq!(doc.nodes[&g].get(field::NAME), FieldValue::Str("late".into()));
@@ -191,7 +193,11 @@ mod tests {
     #[test]
     fn delete_wins_over_a_concurrent_set() {
         let t = id(1, 0);
-        let doc = apply_all(&[op(1, 0, 1, create(t, Kind::Tab, None)), op(1, 1, 2, OpBody::Delete { node: t }), op(2, 0, 9, name(t, "x"))]);
+        let doc = apply_all(&[
+            op(1, 0, 1, create(t, Kind::Tab, None)),
+            op(1, 1, 2, OpBody::Delete { node: t }),
+            op(2, 0, 9, name(t, "x")),
+        ]);
         assert!(doc.nodes[&t].deleted && doc.nodes[&t].fields.is_empty());
         assert_eq!(doc.live().count(), 0);
     }

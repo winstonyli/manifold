@@ -90,7 +90,11 @@ pub(crate) fn image_display_rect(body: egui::Rect, image: egui::Vec2, scale: f32
 pub(crate) fn clamp_image_pan(pan: egui::Vec2, scaled: egui::Vec2, body: egui::Vec2) -> egui::Vec2 {
     let axis = |pan: f32, scaled: f32, body: f32| {
         let slack = (scaled - body) / 2.0;
-        if slack <= 0.0 { 0.0 } else { pan.clamp(-slack, slack) }
+        if slack <= 0.0 {
+            0.0
+        } else {
+            pan.clamp(-slack, slack)
+        }
     };
     egui::vec2(axis(pan.x, scaled.x, body.x), axis(pan.y, scaled.y, body.y))
 }
@@ -133,11 +137,8 @@ impl App {
         ui: &mut egui::Ui,
         trailing_ui: &mut egui::Ui,
     ) -> ItemToolbarActions {
-        let Some((path, image)) = self
-            .nodes
-            .get(image_id)
-            .and_then(|n| n.as_image())
-            .map(|i| (i.path.clone(), image_pixel_size(i)))
+        let Some((path, image)) =
+            self.nodes.get(image_id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), image_pixel_size(i)))
         else {
             return ItemToolbarActions::default();
         };
@@ -149,14 +150,16 @@ impl App {
                 ui,
                 &mut clicked,
                 |clicked, ui| {
-                    let response = chip_icon_button(ui, egui::Id::new("icon_btn_image_reveal"), egui_phosphor::light::FOLDER_OPEN)
-                        .on_hover_text("Open Containing Folder");
+                    let response =
+                        chip_icon_button(ui, egui::Id::new("icon_btn_image_reveal"), egui_phosphor::light::FOLDER_OPEN)
+                            .on_hover_text("Open Containing Folder");
                     clicked.0 = response.clicked();
                     response.rect
                 },
                 |clicked, ui| {
-                    let response = chip_icon_button(ui, egui::Id::new("icon_btn_image_copy_path"), egui_phosphor::light::COPY)
-                        .on_hover_text("Copy Path");
+                    let response =
+                        chip_icon_button(ui, egui::Id::new("icon_btn_image_copy_path"), egui_phosphor::light::COPY)
+                            .on_hover_text("Copy Path");
                     clicked.1 = response.clicked();
                     response.rect
                 },
@@ -241,9 +244,7 @@ impl App {
         if response.hovered() {
             let factor = ui.input(|i| i.zoom_delta() * (i.smooth_scroll_delta.y * IMAGE_WHEEL_ZOOM_RATE).exp());
             if factor != 1.0 {
-                let anchor = ui
-                    .input(|i| i.pointer.hover_pos())
-                    .map_or(egui::Vec2::ZERO, |p| p - body.center());
+                let anchor = ui.input(|i| i.pointer.hover_pos()).map_or(egui::Vec2::ZERO, |p| p - body.center());
                 (scale, pan) = zoom_about(scale, pan, factor, anchor);
                 changed = true;
             }

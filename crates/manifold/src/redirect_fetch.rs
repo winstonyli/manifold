@@ -112,12 +112,7 @@ impl RedirectFetcher {
 /// trusting it -- so there's no need to parse one out of `url`'s own path
 /// or a response header.
 fn fetch_to_temp_file(tab_id: &str, url: &str, kind: RedirectKind) -> Option<String> {
-    let response = ureq::get(url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(15)))
-        .build()
-        .call()
-        .ok()?;
+    let response = ureq::get(url).config().timeout_global(Some(Duration::from_secs(15))).build().call().ok()?;
     let bytes = response.into_body().with_config().limit(100_000_000).read_to_vec().ok()?;
     if !validate(kind, &bytes) {
         return None;

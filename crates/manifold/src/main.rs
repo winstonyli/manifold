@@ -1,63 +1,64 @@
 mod bookmarks;
+mod card;
 mod crash_report;
 mod debug_control;
+mod engine_info;
+mod event_loop;
 mod favicon_fetch;
 mod gpu;
 mod graph_layout;
+mod graph_ui;
 mod group_export;
-mod json_file;
-mod redirect_fetch;
-mod pdf;
-mod pdf_fetch;
-mod process_manager;
-mod session;
-mod store;
-mod settings;
-mod suggestions;
-mod node;
-mod card;
-mod theme;
-mod engine_info;
 mod image_view;
 mod input;
-mod settings_page;
+mod json_file;
+mod node;
+mod pdf;
+mod pdf_fetch;
 mod popups;
+mod process_manager;
+mod redirect_fetch;
+mod session;
+mod settings;
+mod settings_page;
+mod store;
+mod suggestions;
 mod tab_view;
-mod graph_ui;
-mod event_loop;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
-use redirect_fetch::{RedirectFetcher, RedirectKind};
 use pdf_fetch::PdfFetcher;
+use redirect_fetch::{RedirectFetcher, RedirectKind};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
+use card::*;
 use debug_control::DebugCommand;
+use engine_info::*;
 use gpu::GpuState;
+use graph_ui::*;
+use image_view::*;
+use input::*;
 use ipc_protocol::{
-    frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton,
-    SharedFrameBuffer,
+    frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
+use node::*;
+use popups::*;
 use process_manager::{EngineKind, EngineTab};
 use settings::{SearchEngine, Settings};
+use tab_view::*;
+use theme::*;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{DeviceId, ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    DeviceId, ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Icon, Window, WindowId};
-use node::*;
-use card::*;
-use theme::*;
-use engine_info::*;
-use image_view::*;
-use input::*;
-use popups::*;
-use tab_view::*;
-use graph_ui::*;
 
 /// Tab view's chrome is a single top `Panel` of this exact height, in egui
 /// points — kept as a constant rather than read back from egui's layout so
@@ -206,8 +207,15 @@ fn build_node_context_menu(
 ) -> (Option<NodeAction>, bool) {
     let mut action = None;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
-    let area_rect =
-        build_list_popup_frame(ui.ctx(), config.area_id, anchor, config.min_width, f32::INFINITY, fade, interactable, |ui| {
+    let area_rect = build_list_popup_frame(
+        ui.ctx(),
+        config.area_id,
+        anchor,
+        config.min_width,
+        f32::INFINITY,
+        fade,
+        interactable,
+        |ui| {
             if let Some((draft, focus)) = rename {
                 let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
                 if focus {
@@ -243,7 +251,8 @@ fn build_node_context_menu(
                     }
                 }
             }
-        });
+        },
+    );
     let clicked_outside = clicked_outside_popup(ui, area_rect, None);
     (action, clicked_outside)
 }
@@ -263,7 +272,11 @@ fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option
                 Some(swatch) => {
                     ui.painter().circle_filled(rect.center(), 8.0, swatch);
                     if current == Some(swatch) {
-                        ui.painter().circle_stroke(rect.center(), 8.0, egui::Stroke::new(2.0, ui.visuals().text_color()));
+                        ui.painter().circle_stroke(
+                            rect.center(),
+                            8.0,
+                            egui::Stroke::new(2.0, ui.visuals().text_color()),
+                        );
                     }
                 }
                 None => {
@@ -304,7 +317,9 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     let delete = |label| vec![Button(label, A::Delete)];
     match view.kind {
         ItemNodeKind::Download => finish("download_context_menu", 170.0, file_items(), delete("Remove from List")),
-        ItemNodeKind::Note => finish("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], delete("Delete")),
+        ItemNodeKind::Note => {
+            finish("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], delete("Delete"))
+        }
         ItemNodeKind::Image => finish("image_context_menu", 170.0, file_items(), delete("Delete")),
         ItemNodeKind::Pdf => finish("pdf_context_menu", 170.0, file_items(), delete("Delete")),
         ItemNodeKind::Json => {
@@ -463,10 +478,8 @@ fn save_dialog_with_toast(
     default_name: impl Into<String>,
     filter_label: &str,
 ) -> Option<(std::path::PathBuf, (String, std::time::Instant))> {
-    let path = rfd::FileDialog::new()
-        .set_file_name(default_name.into())
-        .add_filter(filter_label, &["json"])
-        .save_file()?;
+    let path =
+        rfd::FileDialog::new().set_file_name(default_name.into()).add_filter(filter_label, &["json"]).save_file()?;
     let toast = (format!("Saved {}", path.display()), std::time::Instant::now());
     Some((path, toast))
 }
@@ -490,22 +503,18 @@ fn download_filename(path: &str) -> &str {
 fn draw_json_value(ui: &mut egui::Ui, key: &str, value: &serde_json::Value, top_level: bool) {
     match value {
         serde_json::Value::Object(map) => {
-            egui::CollapsingHeader::new(format!("{key}  {{{}}}", map.len()))
-                .default_open(top_level)
-                .show(ui, |ui| {
-                    for (k, v) in map {
-                        draw_json_value(ui, k, v, false);
-                    }
-                });
+            egui::CollapsingHeader::new(format!("{key}  {{{}}}", map.len())).default_open(top_level).show(ui, |ui| {
+                for (k, v) in map {
+                    draw_json_value(ui, k, v, false);
+                }
+            });
         }
         serde_json::Value::Array(items) => {
-            egui::CollapsingHeader::new(format!("{key}  [{}]", items.len()))
-                .default_open(top_level)
-                .show(ui, |ui| {
-                    for (i, v) in items.iter().enumerate() {
-                        draw_json_value(ui, &i.to_string(), v, false);
-                    }
-                });
+            egui::CollapsingHeader::new(format!("{key}  [{}]", items.len())).default_open(top_level).show(ui, |ui| {
+                for (i, v) in items.iter().enumerate() {
+                    draw_json_value(ui, &i.to_string(), v, false);
+                }
+            });
         }
         // `Value`'s own `Display` already renders exactly the compact form
         // wanted here -- a quoted string, a bare number, `true`/`false`, or
@@ -547,11 +556,8 @@ fn debug_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 /// level, into the parent of the group it's in, since groups nest. `None`
 /// (the top level) when that group isn't itself in one.
 fn remove_from_group(nodes: &mut NodeMap, id: &str) {
-    let grandparent = nodes
-        .get(id)
-        .and_then(|n| n.group.as_ref())
-        .and_then(|group| nodes.get(group))
-        .and_then(|g| g.group.clone());
+    let grandparent =
+        nodes.get(id).and_then(|n| n.group.as_ref()).and_then(|group| nodes.get(group)).and_then(|g| g.group.clone());
     if let Some(node) = nodes.get_mut(id) {
         node.group = grandparent;
     }
@@ -609,15 +615,10 @@ fn default_graph_scene_rect() -> egui::Rect {
 /// state; a real "Save As" dialog would be the alternative, but this
 /// project doesn't build custom save UI anywhere else either.
 fn screenshot_default_path() -> std::path::PathBuf {
-    let dir = std::env::var_os("USERPROFILE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default()
-        .join("Pictures");
+    let dir = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default().join("Pictures");
     let _ = std::fs::create_dir_all(&dir);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let timestamp =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     dir.join(format!("manifold-{timestamp}.png"))
 }
 
@@ -700,9 +701,7 @@ fn truncate_to_width(
         return cached.clone();
     }
     let width_of = |s: &str| -> f32 {
-        ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE))
-            .size()
-            .x
+        ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)).size().x
     };
     let result = if bucketed_width <= 0.0 {
         String::new()
@@ -794,11 +793,7 @@ fn render_zoom_chip(
             action = Some(ZoomChipAction::Out);
         }
         let readout = ui
-            .add(
-                egui::Button::new(format!("{}%", pct.round() as i32))
-                    .frame(false)
-                    .min_size(egui::vec2(44.0, 0.0)),
-            )
+            .add(egui::Button::new(format!("{}%", pct.round() as i32)).frame(false).min_size(egui::vec2(44.0, 0.0)))
             .on_hover_text("Reset zoom to 100%")
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if readout.clicked() {
@@ -1070,12 +1065,9 @@ fn closed_piece(payload: &NodePayload) -> Option<ClosedPiece> {
             pinned: tab.pinned,
             zoom_factor: tab.zoom_factor,
         },
-        NodePayload::FailedTab(tab) => ClosedPiece::Tab {
-            url: tab.url.clone(),
-            kind: tab.kind,
-            pinned: tab.pinned,
-            zoom_factor: tab.zoom_factor,
-        },
+        NodePayload::FailedTab(tab) => {
+            ClosedPiece::Tab { url: tab.url.clone(), kind: tab.kind, pinned: tab.pinned, zoom_factor: tab.zoom_factor }
+        }
         NodePayload::Group(group) => ClosedPiece::Group { name: group.name.clone() },
         NodePayload::Note(note) if !note.text.trim().is_empty() => ClosedPiece::Note(note.text.clone()),
         NodePayload::Image(image) => ClosedPiece::Image(image.path.clone()),
@@ -1273,7 +1265,14 @@ struct TabCarry {
 }
 
 impl TabSpawn {
-    fn new(id: String, url: String, kind: EngineKind, pos: egui::Vec2, purpose: SpawnPurpose, zoom_factor: f64) -> Self {
+    fn new(
+        id: String,
+        url: String,
+        kind: EngineKind,
+        pos: egui::Vec2,
+        purpose: SpawnPurpose,
+        zoom_factor: f64,
+    ) -> Self {
         TabSpawn {
             id,
             url,
@@ -1870,11 +1869,7 @@ impl App {
     }
 
     fn screen_size_points(&self) -> egui::Vec2 {
-        let screen = self
-            .window
-            .as_ref()
-            .map(|w| w.inner_size())
-            .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let screen = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
         let ppp = self.ppp() as f32;
         egui::vec2(screen.width as f32 / ppp, screen.height as f32 / ppp)
     }
@@ -1913,11 +1908,13 @@ impl App {
             .map(|i| download_filename(&i.path).to_owned());
         let title = image_title
             .or_else(|| {
-                self.focused
-                    .as_ref()
-                    .and_then(|id| self.nodes.get(id))
-                    .and_then(|n| n.as_tab())
-                    .map(|n| if n.title.is_empty() { n.url.clone() } else { n.title.clone() })
+                self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|n| {
+                    if n.title.is_empty() {
+                        n.url.clone()
+                    } else {
+                        n.title.clone()
+                    }
+                })
             })
             .filter(|t| !t.is_empty())
             .map(|t| format!("{t} — manifold"))
@@ -1948,11 +1945,7 @@ impl App {
     /// value would change for either of them (window resize, or a split
     /// opening/closing) -- see those call sites.
     fn content_size_px(&self) -> (u32, u32) {
-        let full = self
-            .window
-            .as_ref()
-            .map(|w| w.inner_size())
-            .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let full = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
         let height = full.height.saturating_sub(self.chrome_height_px());
         let width = if self.split_tab.is_some() { full.width / 2 } else { full.width };
         (width, height)
@@ -1976,11 +1969,7 @@ impl App {
         let (width, height) = self.content_size_px();
         let dpi_scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
-            node.tab.send(&HostToEngine::Resize {
-                width,
-                height,
-                dpi_scale,
-            });
+            node.tab.send(&HostToEngine::Resize { width, height, dpi_scale });
         }
     }
 
@@ -2103,7 +2092,8 @@ impl App {
             };
             match payload {
                 Some(payload) => {
-                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel: egui::Vec2::ZERO, color, payload });
+                    self.nodes
+                        .insert(id.clone(), GraphNode { parent, group, pos, vel: egui::Vec2::ZERO, color, payload });
                     self.node_order.push(id);
                 }
                 None => {
@@ -2137,8 +2127,7 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.url = url.clone();
-            node.tab
-                .send(&HostToEngine::Navigate { url, referrer: None });
+            node.tab.send(&HostToEngine::Navigate { url, referrer: None });
         }
     }
 
@@ -2156,9 +2145,7 @@ impl App {
             .iter()
             .filter(|id| id.as_str() != exclude)
             .filter_map(|id| self.nodes.get(id).and_then(|n| n.as_tab()).map(|node| (id, node)))
-            .filter(|(_, node)| {
-                node.url.to_lowercase().contains(&query) || node.title.to_lowercase().contains(&query)
-            })
+            .filter(|(_, node)| node.url.to_lowercase().contains(&query) || node.title.to_lowercase().contains(&query))
             .take(5)
             .map(|(id, node)| Suggestion::OpenTab {
                 tab_id: id.clone(),
@@ -2316,7 +2303,11 @@ impl App {
                     url: url.to_string(),
                     engine,
                     place: self.session_place(node),
-                    pinned: node.as_tab().map(|t| t.pinned).or_else(|| node.as_failed_tab().map(|t| t.pinned)).unwrap_or(false),
+                    pinned: node
+                        .as_tab()
+                        .map(|t| t.pinned)
+                        .or_else(|| node.as_failed_tab().map(|t| t.pinned))
+                        .unwrap_or(false),
                 })
             })
             .collect();
@@ -2353,7 +2344,11 @@ impl App {
             .filter_map(|id| {
                 let node = self.nodes.get(id)?;
                 let group = node.as_group().filter(|g| !g.from_json)?;
-                Some(session::SessionGroup { id: id.clone(), name: group.name.clone(), place: self.session_place(node) })
+                Some(session::SessionGroup {
+                    id: id.clone(),
+                    name: group.name.clone(),
+                    place: self.session_place(node),
+                })
             })
             .collect();
         session::Session {
@@ -2511,13 +2506,8 @@ impl App {
             }
             self.restore_group_and_color(&json.id, group, color);
         }
-        let valid_focus = session
-            .focused
-            .as_ref()
-            .filter(|id| session.tabs.iter().any(|t| &t.id == *id));
-        self.focused = valid_focus
-            .cloned()
-            .or_else(|| session.tabs.first().map(|t| t.id.clone()));
+        let valid_focus = session.focused.as_ref().filter(|id| session.tabs.iter().any(|t| &t.id == *id));
+        self.focused = valid_focus.cloned().or_else(|| session.tabs.first().map(|t| t.id.clone()));
         self.view_mode = if session.view_mode_tab { ViewMode::Item } else { ViewMode::Graph };
         // Images were inserted above, so a still-valid id is already a node.
         self.viewed_image = session
@@ -2538,7 +2528,8 @@ impl App {
         }
         for tab in session.tabs {
             let (pos, group, color) = place(&tab.place);
-            let spawn = TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
+            let spawn =
+                TabSpawn::new(tab.id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
             let carry = TabCarry { pinned: tab.pinned, color, ..spawn.carry };
             self.spawn_tab_async(TabSpawn { parent: tab.parent, group, carry, ..spawn });
         }
@@ -2719,10 +2710,7 @@ impl App {
     /// synchronous `Ok`/`Err` branches used to do, once the result actually
     /// arrives.
     fn spawn_tab_async(&mut self, spawn: TabSpawn) {
-        let proxy = self
-            .event_proxy
-            .clone()
-            .expect("event_proxy set in main before any tab spawn");
+        let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         self.tab_spawns_in_flight += 1;
         if matches!(spawn.purpose, SpawnPurpose::Restore) {
             self.restore_spawns_in_flight += 1;
@@ -2798,9 +2786,7 @@ impl App {
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
-                    SpawnPurpose::Respawn | SpawnPurpose::Restore => {
-                        self.focused.as_deref() == Some(id.as_str())
-                    }
+                    SpawnPurpose::Respawn | SpawnPurpose::Restore => self.focused.as_deref() == Some(id.as_str()),
                 };
                 // A split's secondary pane is always live even though it's
                 // never `focused` -- true for a fresh `Split` spawn, and
@@ -2908,7 +2894,18 @@ impl App {
                         engine_label(fallback)
                     ));
                     let carry = TabCarry { pinned, color, zoom_factor };
-                    let spawn = TabSpawn { id, url, kind: fallback, parent, group, pos, vel, purpose, carry, fallback_kind: None };
+                    let spawn = TabSpawn {
+                        id,
+                        url,
+                        kind: fallback,
+                        parent,
+                        group,
+                        pos,
+                        vel,
+                        purpose,
+                        carry,
+                        fallback_kind: None,
+                    };
                     self.respawn_tab(spawn);
                     return;
                 }
@@ -3139,9 +3136,7 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|n| n.group == self.current_group && item_node_kind(&n.payload) == kind)
+                self.nodes.get(*id).is_some_and(|n| n.group == self.current_group && item_node_kind(&n.payload) == kind)
             })
             .cloned()
             .collect()
@@ -3317,9 +3312,7 @@ impl App {
     /// bounding box has no sensible center/size to frame.
     fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
         self.bounds_for_level(
-            self.node_order
-                .iter()
-                .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group)),
+            self.node_order.iter().filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group)),
         )
     }
 
@@ -3355,9 +3348,7 @@ impl App {
         let mut frontier = vec![root_id.to_string()];
         while let Some(current) = frontier.pop() {
             for (id, node) in &self.nodes {
-                if node.parent.as_deref() == Some(current.as_str())
-                    && node.group == level_group
-                    && !result.contains(id)
+                if node.parent.as_deref() == Some(current.as_str()) && node.group == level_group && !result.contains(id)
                 {
                     result.push(id.clone());
                     frontier.push(id.clone());
@@ -3385,10 +3376,7 @@ impl App {
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
     fn current_level_settle_key(&self) -> (Option<String>, usize) {
-        (
-            self.current_group.clone(),
-            GRAPH_DRAW_ORDER.iter().map(|&kind| self.nodes_at_current_level(kind).len()).sum(),
-        )
+        (self.current_group.clone(), GRAPH_DRAW_ORDER.iter().map(|&kind| self.nodes_at_current_level(kind).len()).sum())
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab
@@ -3538,14 +3526,7 @@ impl App {
             .collect();
 
         for _ in 0..SETTLE_ITERATIONS {
-            graph_layout::step(
-                &mut positions,
-                &mut velocities,
-                &edges,
-                &pinned,
-                GRAPH_WORLD_CENTER,
-                SETTLE_DT,
-            );
+            graph_layout::step(&mut positions, &mut velocities, &edges, &pinned, GRAPH_WORLD_CENTER, SETTLE_DT);
         }
 
         for (id, node) in self.nodes.iter_mut() {
@@ -3569,22 +3550,18 @@ impl App {
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip.
     fn duplicate_tab(&mut self, id: &str) {
-        let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
-            n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.url.clone(), t.tab.kind))
-        }) else {
+        let Some((parent, group, url, kind)) = self
+            .nodes
+            .get(id)
+            .and_then(|n| n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.url.clone(), t.tab.kind)))
+        else {
             return;
         };
         self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New);
     }
 
     fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
-        self.spawn_new_tab_with_kind(
-            parent,
-            group,
-            url,
-            self.settings.default_starting_engine,
-            SpawnPurpose::New,
-        );
+        self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine, SpawnPurpose::New);
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_engine`),
@@ -3743,11 +3720,8 @@ impl App {
         self.context_menu = None;
         match self.viewed_image.clone().or_else(|| self.focused.clone()) {
             Some(id) => {
-                self.transition = Some(Transition {
-                    node_id: id,
-                    kind: TransitionKind::ToGraph,
-                    start: std::time::Instant::now(),
-                });
+                self.transition =
+                    Some(Transition { node_id: id, kind: TransitionKind::ToGraph, start: std::time::Instant::now() });
             }
             // No focused tab and no viewed image (shouldn't normally
             // happen — Item view always has one — but nothing to animate
@@ -4402,8 +4376,7 @@ impl App {
     /// push to `closed_tabs`, since this isn't a user-initiated close to
     /// remember as reopenable.
     fn redirect_tab_to_image(&mut self, tab_id: &str, path: String) {
-        let Some((parent, group, pos)) =
-            self.nodes.get(tab_id).map(|n| (n.parent.clone(), n.group.clone(), n.pos))
+        let Some((parent, group, pos)) = self.nodes.get(tab_id).map(|n| (n.parent.clone(), n.group.clone(), n.pos))
         else {
             return;
         };
@@ -4577,9 +4550,7 @@ impl App {
     fn expand_json_entries(&mut self, parent_group_id: &str, value: &serde_json::Value, path: &str) {
         let entries: Vec<(String, &serde_json::Value)> = match value {
             serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
-            serde_json::Value::Array(items) => {
-                items.iter().enumerate().map(|(i, v)| (format!("[{i}]"), v)).collect()
-            }
+            serde_json::Value::Array(items) => items.iter().enumerate().map(|(i, v)| (format!("[{i}]"), v)).collect(),
             _ => return,
         };
         let parent_pos = self.nodes.get(parent_group_id).map(|n| n.pos).unwrap_or(GRAPH_WORLD_CENTER);
@@ -4647,19 +4618,14 @@ impl App {
     /// land and calls the `_with_id` variants directly instead.
     fn add_file_node(&mut self, pos: Option<egui::Vec2>) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Image, PDF, or JSON",
-                &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "json"],
-            )
+            .add_filter("Image, PDF, or JSON", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "json"])
             .pick_file()
         else {
             return;
         };
         let path = path.to_string_lossy().into_owned();
-        let extension = std::path::Path::new(&path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase());
+        let extension =
+            std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
         let inserted = match (extension.as_deref(), pos) {
             (Some("pdf"), Some(pos)) => {
                 let id = self.alloc_pdf_id();
@@ -4682,9 +4648,7 @@ impl App {
                 let group = self.current_group.clone();
                 self.insert_image_node_with_id(id, path, pos, group).is_ok()
             }
-            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), None) => {
-                self.insert_image_node(path)
-            }
+            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), None) => self.insert_image_node(path),
             _ => false,
         };
         if inserted {
@@ -4830,10 +4794,8 @@ impl App {
     /// `pdf_path`) and the headless `PRINTTOPDF` debug command (which
     /// supplies `pdf_path` directly, bypassing the picker).
     fn start_print_to_pdf(&mut self, pdf_path: String) {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        let timestamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let temp_png = std::env::temp_dir().join(format!("manifold-print-{timestamp}.png"));
         self.pending_screenshot = Some(temp_png.to_string_lossy().into_owned());
         self.pending_print_to_pdf = Some(pdf_path);
@@ -4955,12 +4917,9 @@ impl App {
     /// chain in `build_tab_view_ui`).
     fn build_context_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.context_menu.clone();
-        let Some((menu, fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("context_menu_fade"),
-            &current,
-            &mut self.context_menu_cache,
-        ) else {
+        let Some((menu, fade)) =
+            fade_popup_state(ui.ctx(), egui::Id::new("context_menu_fade"), &current, &mut self.context_menu_cache)
+        else {
             return;
         };
         let mut open_tab = false;
@@ -4972,13 +4931,12 @@ impl App {
             .interactable(current.is_some())
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                popup_frame(ui)
-                    .show(ui, |ui| {
-                        if ui.button("Open in new tab").clicked() {
-                            open_tab = true;
-                            close = true;
-                        }
-                    });
+                popup_frame(ui).show(ui, |ui| {
+                    if ui.button("Open in new tab").clicked() {
+                        open_tab = true;
+                        close = true;
+                    }
+                });
             });
 
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, None);
@@ -5074,7 +5032,11 @@ impl App {
         let persisted = self.nodes.get(id).is_some_and(|node| {
             matches!(
                 item_node_kind(&node.payload),
-                ItemNodeKind::FailedTab | ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json
+                ItemNodeKind::FailedTab
+                    | ItemNodeKind::Note
+                    | ItemNodeKind::Image
+                    | ItemNodeKind::Pdf
+                    | ItemNodeKind::Json
             )
         });
         self.close_node(id);
@@ -5199,7 +5161,9 @@ impl App {
         let group_map: HashMap<String, String> =
             export.groups.iter().map(|g| (g.id.clone(), self.alloc_group_id())).collect();
         // A link to a group the file doesn't have lands in the imported group itself.
-        let new_group = |old: Option<String>| Some(old.and_then(|g| group_map.get(&g).cloned()).unwrap_or_else(|| group_id.clone()));
+        let new_group = |old: Option<String>| {
+            Some(old.and_then(|g| group_map.get(&g).cloned()).unwrap_or_else(|| group_id.clone()))
+        };
         for nested in export.groups {
             let Some(new_id) = group_map.get(&nested.id).cloned() else { continue };
             let node = GraphNode {
@@ -5219,7 +5183,8 @@ impl App {
             let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
             let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
             let pos = egui::vec2(tab.pos_x, tab.pos_y);
-            let spawn = TabSpawn::new(new_id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
+            let spawn =
+                TabSpawn::new(new_id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
             self.spawn_tab_async(TabSpawn { parent, group: new_group(tab.group), ..spawn });
         }
     }
@@ -5239,10 +5204,7 @@ impl App {
         if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
             self.node_menu = None;
         }
-        let current = self
-            .node_menu
-            .clone()
-            .and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
+        let current = self.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
         let Some(((id, pos, view), fade)) =
             fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.node_menu_cache)
         else {
@@ -5252,7 +5214,9 @@ impl App {
         let config = node_menu_config(&view, self.headless);
         let mut frozen_draft = view.renaming.clone();
         let rename = match &mut self.renaming_group {
-            Some((gid, draft)) if live && *gid == id => Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename))),
+            Some((gid, draft)) if live && *gid == id => {
+                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename)))
+            }
             _ => frozen_draft.as_mut().map(|draft| (draft, false)),
         };
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
@@ -5425,10 +5389,9 @@ impl App {
                 // doc comment for why this indirection, unlike graph
                 // cards, is needed here specifically.
                 let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
-                let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.label(message);
-                    });
+                let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    ui.label(message);
+                });
                 let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);
                 for (slot, shape) in glow_slots.into_iter().zip(shapes) {
                     ui.painter().set(slot, shape);
@@ -5454,10 +5417,7 @@ impl App {
         if tab_ids.len() < 2 {
             return;
         }
-        let current = self
-            .focused
-            .as_ref()
-            .and_then(|id| tab_ids.iter().position(|t| *t == id));
+        let current = self.focused.as_ref().and_then(|id| tab_ids.iter().position(|t| *t == id));
         let len = tab_ids.len() as isize;
         let next = match current {
             Some(i) => {
@@ -5533,8 +5493,9 @@ impl App {
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
     /// Returns its own rect, which the shortcuts-help popup anchors to.
     fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
-        let help_response = chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
-            .on_hover_text("Keyboard Shortcuts (F1)");
+        let help_response =
+            chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
+                .on_hover_text("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
@@ -5568,8 +5529,7 @@ impl App {
     fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let mut help_rect = egui::Rect::NOTHING;
         toolbar_chip(ui, |ui| {
-            let (help, settings) =
-                in_reading_order(ui, self, Self::build_help_button, Self::build_settings_button);
+            let (help, settings) = in_reading_order(ui, self, Self::build_help_button, Self::build_settings_button);
             help_rect = help;
             help.union(settings)
         });
@@ -5609,9 +5569,7 @@ fn main() {
     // of scripting an OS-level window capture around it.
     let debug_commands = std::env::args().any(|arg| arg == "--debug-commands");
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .expect("create event loop");
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::default();
@@ -5677,8 +5635,10 @@ mod tests {
             Some(ClosedPiece::Note(text)) if text == "n"
         ));
         // A blank note (never typed in, or only whitespace): nothing to restore.
-        for text in ["", " 
-	"] {
+        for text in [
+            "", " 
+	",
+        ] {
             assert!(closed_piece(&NodePayload::Note(NotePayload { text: text.into(), editing: false })).is_none());
         }
         assert!(matches!(
@@ -5725,7 +5685,14 @@ mod tests {
         };
         let note = |text: &str| NodePayload::Note(NotePayload { text: text.into(), editing: false });
         let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
-        let leaf = || NodePayload::Json(JsonPayload { path: "d.json".into(), value: 1.into(), key: Some("k".into()), error: None });
+        let leaf = || {
+            NodePayload::Json(JsonPayload {
+                path: "d.json".into(),
+                value: 1.into(),
+                key: Some("k".into()),
+                error: None,
+            })
+        };
         let image = NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         let mut nodes = NodeMap::default();
         let mut order = Vec::new();
@@ -5770,8 +5737,22 @@ mod tests {
                 .collect();
             (config.area_id, config.min_width, items.join(" | "))
         }
-        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, has_json: bool, headless: bool) -> (&'static str, f32, String) {
-            let view = NodeMenuView { kind, has_group, color: None, pinned, has_json, other_default_engine: false, renaming: None };
+        fn menu(
+            kind: ItemNodeKind,
+            has_group: bool,
+            pinned: bool,
+            has_json: bool,
+            headless: bool,
+        ) -> (&'static str, f32, String) {
+            let view = NodeMenuView {
+                kind,
+                has_group,
+                color: None,
+                pinned,
+                has_json,
+                other_default_engine: false,
+                renaming: None,
+            };
             menu_of(&view, headless)
         }
         for has_group in [false, true] {
@@ -5781,12 +5762,23 @@ mod tests {
             let menu = |kind, pinned, has_json| menu(kind, has_group, pinned, has_json, false);
             assert_eq!(
                 menu(ItemNodeKind::Download, false, false),
-                ("download_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Remove from List"))
+                (
+                    "download_context_menu",
+                    170.0,
+                    format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Remove from List")
+                )
             );
-            assert_eq!(menu(ItemNodeKind::Note, false, false), ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete")));
+            assert_eq!(
+                menu(ItemNodeKind::Note, false, false),
+                ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete"))
+            );
             assert_eq!(
                 menu(ItemNodeKind::Image, false, false),
-                ("image_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
+                (
+                    "image_context_menu",
+                    170.0,
+                    format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
+                )
             );
             assert_eq!(
                 menu(ItemNodeKind::Pdf, false, false),
@@ -5794,11 +5786,19 @@ mod tests {
             );
             assert_eq!(
                 menu(ItemNodeKind::Json, false, false),
-                ("json_context_menu", 170.0, format!("Open Containing Folder | Copy Path | Expand as Graph | <colors>{g} | --- | Delete"))
+                (
+                    "json_context_menu",
+                    170.0,
+                    format!("Open Containing Folder | Copy Path | Expand as Graph | <colors>{g} | --- | Delete")
+                )
             );
             assert_eq!(
                 menu(ItemNodeKind::Tab, false, false),
-                ("tab_context_menu", 150.0, format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close"))
+                (
+                    "tab_context_menu",
+                    150.0,
+                    format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
+                )
             );
             assert_eq!(
                 menu(ItemNodeKind::Tab, true, true).2,
@@ -5806,7 +5806,11 @@ mod tests {
             );
             assert_eq!(
                 menu(ItemNodeKind::Group, false, false),
-                ("group_context_menu", 150.0, format!("Rename | <colors>{g} | --- | Dissolve | Close Group | Export Group..."))
+                (
+                    "group_context_menu",
+                    150.0,
+                    format!("Rename | <colors>{g} | --- | Dissolve | Close Group | Export Group...")
+                )
             );
             assert_eq!(
                 menu(ItemNodeKind::FailedTab, false, false),

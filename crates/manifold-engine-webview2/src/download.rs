@@ -23,8 +23,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
 };
 use webview2_com::{
-    take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
-    StateChangedEventHandler,
+    take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler,
 };
 use windows::core::PWSTR;
 
@@ -74,9 +73,7 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                 .then_some(total_bytes_raw)
                 .filter(|n| *n >= 0)
                 .map(|n| n as u64);
-            pending_for_handler
-                .borrow_mut()
-                .push(DownloadEvent::Started { path: path.clone(), total_bytes });
+            pending_for_handler.borrow_mut().push(DownloadEvent::Started { path: path.clone(), total_bytes });
 
             let pending_for_bytes = pending_for_handler.clone();
             let path_for_bytes = path.clone();
@@ -102,12 +99,8 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
             let state_handler = StateChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let Some(sender) = &sender {
                     let mut state = Default::default();
-                    if unsafe { sender.State(&mut state) }.is_ok()
-                        && state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED
-                    {
-                        pending_for_state
-                            .borrow_mut()
-                            .push(DownloadEvent::Completed { path: path.clone() });
+                    if unsafe { sender.State(&mut state) }.is_ok() && state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                        pending_for_state.borrow_mut().push(DownloadEvent::Completed { path: path.clone() });
                     }
                 }
                 Ok(())

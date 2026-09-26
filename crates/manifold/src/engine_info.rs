@@ -36,8 +36,7 @@ pub(crate) fn engine_color(kind: EngineKind) -> egui::Color32 {
 /// raw `painter()` call positioned by hand.
 pub(crate) fn engine_dot(ui: &mut egui::Ui, kind: EngineKind, diameter: f32) {
     let (rect, _response) = ui.allocate_exact_size(egui::vec2(diameter, diameter), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
+    ui.painter().circle_filled(rect.center(), diameter / 2.0, engine_color(kind));
 }
 
 /// Where each engine actually stands in this specific app, not a general
@@ -198,29 +197,28 @@ pub(crate) fn build_engine_picker_popup(
         .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
-            popup_frame(ui)
-                .show(ui, |ui| {
-                    ui.set_width(340.0);
-                    // Same "cap height, let it scroll" shape the other
-                    // toolbar list popups (Bookmarks/History/Downloads)
-                    // already use -- four cards this rich run well past a
-                    // short window's own height otherwise, with the last
-                    // one (WebKit, usually) silently unreachable past the
-                    // window's bottom edge (confirmed live).
-                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                        for (i, kind) in ENGINE_PICKER_ORDER.into_iter().enumerate() {
-                            if i > 0 {
-                                ui.add_space(6.0);
-                            }
-                            if draw_engine_card(ui, kind, selected == Some(kind)) {
-                                picked = Some(kind);
-                            }
-                            if i > 0 {
-                                ui.add_space(2.0);
-                            }
+            popup_frame(ui).show(ui, |ui| {
+                ui.set_width(340.0);
+                // Same "cap height, let it scroll" shape the other
+                // toolbar list popups (Bookmarks/History/Downloads)
+                // already use -- four cards this rich run well past a
+                // short window's own height otherwise, with the last
+                // one (WebKit, usually) silently unreachable past the
+                // window's bottom edge (confirmed live).
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for (i, kind) in ENGINE_PICKER_ORDER.into_iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(6.0);
                         }
-                    });
+                        if draw_engine_card(ui, kind, selected == Some(kind)) {
+                            picked = Some(kind);
+                        }
+                        if i > 0 {
+                            ui.add_space(2.0);
+                        }
+                    }
                 });
+            });
         })
         .response
         .rect;

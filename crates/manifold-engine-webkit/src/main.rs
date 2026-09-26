@@ -8,8 +8,7 @@ use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use javascriptcore::ValueExt;
 use webkit2gtk::{
-    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView,
-    WebViewExt,
+    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView, WebViewExt,
 };
 
 const DEFAULT_WIDTH: i32 = 1024;
@@ -35,8 +34,7 @@ fn main() {
     // RemoteTransport is keyed by TCP port, not by tab_id (there's no
     // shared memory path here to name a file after).
     let _tab_id = std::env::var("ENGINE_TAB_ID").expect("ENGINE_TAB_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL")
-        .unwrap_or_else(|_| "https://example.com".to_string());
+    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
     let port: u16 = std::env::var("ENGINE_TCP_PORT")
         .expect("ENGINE_TCP_PORT env var required")
         .parse()
@@ -46,8 +44,7 @@ fn main() {
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
     // ipc_protocol::transport::listen_remote's doc comment.
-    let host_ip =
-        std::env::var("ENGINE_HOST_IP").expect("ENGINE_HOST_IP env var required");
+    let host_ip = std::env::var("ENGINE_HOST_IP").expect("ENGINE_HOST_IP env var required");
 
     // Single TCP connection back to manifold, used for both directions
     // via a cloned handle — mirrors process_manager.rs's spawn_webkit_tab
@@ -55,8 +52,7 @@ fn main() {
     // shared memory with the Windows host process, so this engine-host
     // uses RemoteTransport, not the SharedFrameBuffer the other engines
     // use).
-    let control =
-        transport::connect_remote(&host_ip, port).expect("connect to manifold");
+    let control = transport::connect_remote(&host_ip, port).expect("connect to manifold");
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");
     let mut to_host = MessageChannel::new(stream);
@@ -108,10 +104,7 @@ fn main() {
         context.connect_download_started(move |_context, download| {
             let pending_for_destination = pending_for_started.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = std::env::var_os("HOME")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_default()
-                    .join("Downloads");
+                let dir = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join("Downloads");
                 let _ = std::fs::create_dir_all(&dir);
                 // Server-controlled -- only its final path component is
                 // ever used, same `..`/absolute-path guard as CEF's
@@ -125,9 +118,7 @@ fn main() {
                 download.set_destination(&format!("file://{}", dest.display()));
                 let path = dest.to_string_lossy().to_string();
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
-                pending_for_destination
-                    .borrow_mut()
-                    .push(DownloadEvent::Started { path, total_bytes });
+                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes });
                 true
             });
 
@@ -136,9 +127,7 @@ fn main() {
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
                     let bytes_received = download.received_data_length();
-                    pending_for_progress
-                        .borrow_mut()
-                        .push(DownloadEvent::Progress { path, bytes_received });
+                    pending_for_progress.borrow_mut().push(DownloadEvent::Progress { path, bytes_received });
                 }
             });
 
@@ -301,11 +290,7 @@ fn main() {
                 HostToEngine::Reload => {
                     webview.reload();
                 }
-                HostToEngine::Resize {
-                    width: w,
-                    height: h,
-                    ..
-                } => {
+                HostToEngine::Resize { width: w, height: h, .. } => {
                     webview.set_size_request(w as i32, h as i32);
                     offscreen.resize(w as i32, h as i32);
                 }
@@ -325,14 +310,8 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    let url = webview
-                        .uri()
-                        .map(|u| u.to_string())
-                        .unwrap_or_else(|| last_nav.0.clone());
-                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState {
-                        url,
-                        zoom: webview.zoom_level(),
-                    }));
+                    let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
+                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
                 }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(controller) = &find_controller {
@@ -384,10 +363,7 @@ fn main() {
         }
 
         let nav_now = (
-            webview
-                .uri()
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| last_nav.0.clone()),
+            webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
             webview.title().map(|t| t.to_string()).unwrap_or_default(),
             webview.can_go_back(),
             webview.can_go_forward(),
@@ -462,9 +438,7 @@ fn main() {
 
         for event in pending_download.borrow_mut().drain(..) {
             let msg = match event {
-                DownloadEvent::Started { path, total_bytes } => {
-                    EngineToHost::DownloadStarted { path, total_bytes }
-                }
+                DownloadEvent::Started { path, total_bytes } => EngineToHost::DownloadStarted { path, total_bytes },
                 DownloadEvent::Progress { path, bytes_received } => {
                     EngineToHost::DownloadProgress { path, bytes_received }
                 }

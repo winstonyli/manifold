@@ -40,10 +40,7 @@ pub fn load_or_move_aside<T: DeserializeOwned>(path: &Path, what: &str) -> Resul
         Ok(value) => return Ok(Some(value)),
         Err(err) => err,
     };
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(what);
     let aside = path.with_file_name(format!("{stem}.unreadable-{secs}.json"));
     match std::fs::rename(path, &aside) {

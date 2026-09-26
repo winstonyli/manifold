@@ -25,21 +25,10 @@ impl EngineRenderHandler {
     pub fn new(
         initial_width: u32,
         initial_height: u32,
-    ) -> (
-        Self,
-        std::rc::Rc<RefCell<(f32, f32)>>,
-        std::rc::Rc<RefCell<Option<PaintedFrame>>>,
-    ) {
+    ) -> (Self, std::rc::Rc<RefCell<(f32, f32)>>, std::rc::Rc<RefCell<Option<PaintedFrame>>>) {
         let size = std::rc::Rc::new(RefCell::new((initial_width as f32, initial_height as f32)));
         let latest_frame = std::rc::Rc::new(RefCell::new(None));
-        (
-            Self {
-                size: size.clone(),
-                latest_frame: latest_frame.clone(),
-            },
-            size,
-            latest_frame,
-        )
+        (Self { size: size.clone(), latest_frame: latest_frame.clone() }, size, latest_frame)
     }
 }
 

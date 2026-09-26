@@ -23,6 +23,7 @@ pub(crate) const LOD_RESTORE_COUNT: usize = 45;
 /// A click in Graph view, collected while `build_graph_ui` draws and
 /// applied in order once it's done (`App::apply_graph_action`), when
 /// nothing is borrowing `self` for drawing any more.
+#[rustfmt::skip]
 pub(crate) enum GraphAction {
     Node(String, NodeAction),
     /// A new tab under this parent (the toolbar's "+ New Tab", or the
@@ -94,9 +95,7 @@ pub(crate) fn draw_new_node_menu_row(
 /// so it counts "visible" precisely the way culling already does, rather
 /// than a second, slightly different notion of visibility.
 pub(crate) fn count_visible_nodes(nodes: &NodeMap, ids: &[String], viewport: egui::Rect) -> usize {
-    ids.iter()
-        .filter(|id| nodes.get(id.as_str()).is_some_and(|n| node_card_rect(n).intersects(viewport)))
-        .count()
+    ids.iter().filter(|id| nodes.get(id.as_str()).is_some_and(|n| node_card_rect(n).intersects(viewport))).count()
 }
 
 /// What the Graph toolbar (`App::render_graph_toolbar`) hands back to
@@ -210,11 +209,9 @@ impl GraphCamera {
             let elapsed = momentum.start.elapsed();
             let t = elapsed.as_secs_f32();
             let decay = (-PAN_MOMENTUM_DECAY * t).exp();
-            let displacement =
-                momentum.initial_velocity * ((1.0 - decay) / PAN_MOMENTUM_DECAY);
+            let displacement = momentum.initial_velocity * ((1.0 - decay) / PAN_MOMENTUM_DECAY);
             let size = self.rect.size();
-            self.rect =
-                egui::Rect::from_center_size(momentum.start_center + displacement, size);
+            self.rect = egui::Rect::from_center_size(momentum.start_center + displacement, size);
             if elapsed >= PAN_MOMENTUM_MAX_DURATION {
                 self.momentum = None;
             }
@@ -236,11 +233,9 @@ impl App {
     /// mid-animation frame and confirming the content quad visually lines
     /// up with the target node's real on-screen position.
     pub(crate) fn graph_world_to_screen_transform(&self, scene_outer_rect: egui::Rect) -> (f32, egui::Vec2) {
-        let scale = (scene_outer_rect.size() / self.camera.rect.size())
-            .min_elem()
-            .clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        let translation =
-            scene_outer_rect.center().to_vec2() - scale * self.camera.rect.center().to_vec2();
+        let scale =
+            (scene_outer_rect.size() / self.camera.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        let translation = scene_outer_rect.center().to_vec2() - scale * self.camera.rect.center().to_vec2();
         (scale, translation)
     }
 
@@ -397,7 +392,6 @@ impl App {
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
-
         // Computed once per frame and reused everywhere below that only
         // needs "every node of kind X at this level" unconditionally --
         // **found during a performance audit**: each of these seven
@@ -429,10 +423,8 @@ impl App {
         // why. Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
-        let lod_visible_count: usize = at_level
-        .iter()
-        .map(|ids| count_visible_nodes(&self.nodes, ids, self.camera.rect))
-        .sum();
+        let lod_visible_count: usize =
+            at_level.iter().map(|ids| count_visible_nodes(&self.nodes, ids, self.camera.rect)).sum();
         if self.graph_lod_simplified {
             if lod_visible_count < LOD_RESTORE_COUNT {
                 self.graph_lod_simplified = false;
@@ -476,10 +468,7 @@ impl App {
         if self.nodes.is_empty() {
             ui.centered_and_justified(|ui| {
                 match &self.tab_spawn_error {
-                    Some(err) => ui.colored_label(
-                        DANGER_COLOR,
-                        format!("{err}\nClick \"+ New Tab\" to try again."),
-                    ),
+                    Some(err) => ui.colored_label(DANGER_COLOR, format!("{err}\nClick \"+ New Tab\" to try again.")),
                     None => ui.label("No tabs. Click \"+ New Tab\" to start browsing."),
                 };
             });
@@ -503,10 +492,7 @@ impl App {
             // Same formula `current_level_settle_key()` computes, just
             // built from this frame's already-cached lists instead of
             // redoing all seven scans a second time.
-            let current_key = (
-                self.current_group.clone(),
-                at_level.iter().map(Vec::len).sum(),
-            );
+            let current_key = (self.current_group.clone(), at_level.iter().map(Vec::len).sum());
             if self.graph_settled_key.as_ref() != Some(&current_key) {
                 self.settle_current_level();
                 self.graph_settled_key = Some(current_key);
@@ -562,20 +548,13 @@ impl App {
             self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
         }
         if let Some(factor) = graph_zoom_step {
-            self.camera.rect = step_scene_rect(
-                self.camera.rect,
-                factor,
-                scene_outer_rect.size(),
-                GRAPH_ZOOM_MIN,
-                GRAPH_ZOOM_MAX,
-            );
+            self.camera.rect =
+                step_scene_rect(self.camera.rect, factor, scene_outer_rect.size(), GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
         }
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.camera.zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
-        let project = move |world: egui::Pos2| -> egui::Pos2 {
-            (translation + zoom_scale * world.to_vec2()).to_pos2()
-        };
+        let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
         // Clipped to the graph panel's own rect (not `layer_painter`'s
         // default full-content-rect) so a node near the top edge can't
         // paint its label over the toolbar above. `Order::Middle`: above
@@ -640,9 +619,7 @@ impl App {
         // overlay-painted label/icons that was otherwise most visible
         // during a fast pan or zoom.
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
-        let project = move |world: egui::Pos2| -> egui::Pos2 {
-            (translation + zoom_scale * world.to_vec2()).to_pos2()
-        };
+        let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
         for overlay in scene_response.inner {
             overlay(&overlay_painter, &project);
         }
@@ -695,276 +672,268 @@ impl App {
         // that). Every other toolbar in this app gets the same safety net
         // now too, not just this one.
         toolbar_panel("graph_toolbar", ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    // Empty at the true top level; one entry per ancestor
-                    // group otherwise (root-most first, current group
-                    // last) -- groups nest now, so this is a real
-                    // breadcrumb trail, not just "are we inside the one
-                    // possible group or not." See `GroupPayload`'s own doc
-                    // comment on nesting and `group_breadcrumb`'s own.
-                    let breadcrumb = self.group_breadcrumb();
-                    if !breadcrumb.is_empty() {
-                        // Goes up exactly one level (to the current group's
-                        // own parent, possibly another group, not straight
-                        // to the top) -- the breadcrumb trail below takes
-                        // the place "+ New Group" would otherwise fill in
-                        // the empty space "+ New Tab"/"Reset View" already
-                        // occupy at the top level. `CARET_LEFT`, not a raw
-                        // "◀" glyph -- the Tab toolbar's identical back
-                        // chevron already migrated to `egui_phosphor` for
-                        // this exact font's tofu-box risk with symbol
-                        // glyphs; this one had been missed.
-                        let leave_group_response = ui
-                            .button(egui_phosphor::light::CARET_LEFT)
-                            .on_hover_text("Back one level");
-                        if leave_group_response.clicked() {
-                            actions.push(GraphAction::LeaveGroup);
-                        }
-                        leave_group_button_rect = Some(leave_group_response.rect);
-                        let crumb_count = breadcrumb.len();
-                        for (i, (id, name)) in breadcrumb.iter().enumerate() {
-                            // Each crumb's own name comes straight from a
-                            // Group's name -- unbounded, and now often an
-                            // object key or `[index]` from "Expand as
-                            // Graph" (see that feature's own doc comment),
-                            // which tend to run longer than a hand-typed
-                            // group name. A plain `ui.button(name)` has no
-                            // width limit of its own in this horizontal,
-                            // non-wrapping row, so a deeply-nested chain of
-                            // long names could push clean off the toolbar's
-                            // own visible edge -- the exact overflow this
-                            // toolbar's other buttons were already
-                            // confirmed live to hit once before (see the
-                            // icon-only button conversion elsewhere in this
-                            // file). Truncated the same char-count way
-                            // `json_summary` already bounds a JSON card's
-                            // own label, for the same "small fixed chrome,
-                            // not a place for arbitrarily long text" reason.
-                            let display_name = if name.chars().count() > 20 {
-                                format!("{}…", name.chars().take(19).collect::<String>())
-                            } else {
-                                name.clone()
-                            };
-                            if i + 1 == crumb_count {
-                                let is_renaming =
-                                    self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
-                                if is_renaming {
-                                    if let Some((_, draft)) = &mut self.renaming_group {
-                                        let response = ui.add(
-                                            egui::TextEdit::singleline(draft).desired_width(140.0),
-                                        );
-                                        if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
-                                            response.request_focus();
-                                        }
-                                        if response.lost_focus() {
-                                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                                actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
-                                            } else {
-                                                actions.push(GraphAction::Node(id.clone(), NodeAction::CommitRename(draft.clone())));
-                                            }
+            ui.horizontal_centered(|ui| {
+                // Empty at the true top level; one entry per ancestor
+                // group otherwise (root-most first, current group
+                // last) -- groups nest now, so this is a real
+                // breadcrumb trail, not just "are we inside the one
+                // possible group or not." See `GroupPayload`'s own doc
+                // comment on nesting and `group_breadcrumb`'s own.
+                let breadcrumb = self.group_breadcrumb();
+                if !breadcrumb.is_empty() {
+                    // Goes up exactly one level (to the current group's
+                    // own parent, possibly another group, not straight
+                    // to the top) -- the breadcrumb trail below takes
+                    // the place "+ New Group" would otherwise fill in
+                    // the empty space "+ New Tab"/"Reset View" already
+                    // occupy at the top level. `CARET_LEFT`, not a raw
+                    // "◀" glyph -- the Tab toolbar's identical back
+                    // chevron already migrated to `egui_phosphor` for
+                    // this exact font's tofu-box risk with symbol
+                    // glyphs; this one had been missed.
+                    let leave_group_response =
+                        ui.button(egui_phosphor::light::CARET_LEFT).on_hover_text("Back one level");
+                    if leave_group_response.clicked() {
+                        actions.push(GraphAction::LeaveGroup);
+                    }
+                    leave_group_button_rect = Some(leave_group_response.rect);
+                    let crumb_count = breadcrumb.len();
+                    for (i, (id, name)) in breadcrumb.iter().enumerate() {
+                        // Each crumb's own name comes straight from a
+                        // Group's name -- unbounded, and now often an
+                        // object key or `[index]` from "Expand as
+                        // Graph" (see that feature's own doc comment),
+                        // which tend to run longer than a hand-typed
+                        // group name. A plain `ui.button(name)` has no
+                        // width limit of its own in this horizontal,
+                        // non-wrapping row, so a deeply-nested chain of
+                        // long names could push clean off the toolbar's
+                        // own visible edge -- the exact overflow this
+                        // toolbar's other buttons were already
+                        // confirmed live to hit once before (see the
+                        // icon-only button conversion elsewhere in this
+                        // file). Truncated the same char-count way
+                        // `json_summary` already bounds a JSON card's
+                        // own label, for the same "small fixed chrome,
+                        // not a place for arbitrarily long text" reason.
+                        let display_name = if name.chars().count() > 20 {
+                            format!("{}…", name.chars().take(19).collect::<String>())
+                        } else {
+                            name.clone()
+                        };
+                        if i + 1 == crumb_count {
+                            let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
+                            if is_renaming {
+                                if let Some((_, draft)) = &mut self.renaming_group {
+                                    let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                                    if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
+                                        response.request_focus();
+                                    }
+                                    if response.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
+                                        } else {
+                                            actions.push(GraphAction::Node(
+                                                id.clone(),
+                                                NodeAction::CommitRename(draft.clone()),
+                                            ));
                                         }
                                     }
-                                } else if ui
-                                    .button(&display_name)
-                                    .on_hover_text(if display_name == *name {
-                                        "Click to rename".to_string()
-                                    } else {
-                                        format!("Click to rename ({name})")
-                                    })
-                                    .clicked()
-                                {
-                                    actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
                                 }
-                            } else {
-                                // An ancestor, not the current group itself
-                                // -- click to jump straight there (reuses
-                                // `GraphAction::EnterGroup`, the exact same "switch
-                                // current_group and ease the camera" effect
-                                // double-clicking a group card triggers;
-                                // it doesn't care which direction that is).
-                                if ui
-                                    .button(&display_name)
-                                    .on_hover_text(if display_name == *name {
-                                        "Jump to this group".to_string()
-                                    } else {
-                                        format!("Jump to this group ({name})")
-                                    })
-                                    .clicked()
-                                {
-                                    actions.push(GraphAction::EnterGroup(id.clone()));
-                                }
-                                // `CARET_RIGHT`, not a raw "›" glyph -- same
-                                // tofu-box reasoning as the back-one-level
-                                // button above.
-                                ui.label(egui_phosphor::light::CARET_RIGHT);
-                            }
-                        }
-                    }
-                    // "+ New Tab" is the only toolbar spawn action kept --
-                    // it's also the sole recovery path when `self.nodes` is
-                    // completely empty (see `build_graph_ui`'s early return),
-                    // where the right-click empty-canvas card can't appear
-                    // yet. New Note/Add File/New Group used to sit here too,
-                    // but that card already offers all three identically
-                    // once any node exists, and while the graph is fully
-                    // empty those buttons' own flags were silently dropped
-                    // anyway (their sole consumption site is unreachable
-                    // from the early-return branch) -- removing them is a
-                    // pure simplification, not a capability loss.
-                    if ui.button("+ New Tab").clicked() {
-                        actions.push(GraphAction::NewTab(self.focused.clone()));
-                    }
-                    // These three buttons used to carry full text labels
-                    // ("Import Group...", "Ungroup All", "Collapse Groups"/
-                    // "Expand Groups") and, together with "+ New Group"/
-                    // "+ New Tab"/"Reset View", made this toolbar cramped
-                    // enough to confirm live (text touching the window
-                    // edge at 1300pt wide). Switched to `egui_phosphor`
-                    // icons instead of folding into a dropdown -- each
-                    // stays a one-click action, just narrower, with the
-                    // old label preserved as a hover tooltip so the action
-                    // is still discoverable. All three now work at any
-                    // level, not just the top -- see `GroupPayload`'s own
-                    // doc comment on nesting; each already acts on
-                    // `self.current_group`/`nodes_at_current_level(Group)`
-                    // (its own level), never hardcoding the top level.
-                    //
-                    // The rule this toolbar actually follows, for any
-                    // future addition: the identity/entry-point action that
-                    // defines what this toolbar *is* ("+ New Tab") stays
-                    // full text; everything else added later to relieve
-                    // crowding goes icon-only with a hover tooltip carrying
-                    // the old label, per this paragraph's own history.
-                    // "Reset View" was the other text holdout until it
-                    // became the zoom chip's Fit button (hover text keeps
-                    // the name).
-                    //
-                    // Same "real file dialog blocks on OS/human input
-                    // neither exists in headless mode" reasoning as every
-                    // other Export/Import button -- `IMPORTGROUP <path>`
-                    // calls the same underlying import directly instead.
-                    if !self.headless || !groups_at_level.is_empty() {
-                        toolbar_chip(ui, |ui| {
-                            let mut bounds: Option<egui::Rect> = None;
-                            let mut grow = |r: egui::Rect| {
-                                bounds = Some(bounds.map_or(r, |b| b.union(r)));
-                            };
-                            if !self.headless {
-                                let response = chip_icon_button(
-                                    ui,
-                                    egui::Id::new("icon_btn_import_group"),
-                                    egui_phosphor::light::UPLOAD_SIMPLE,
-                                )
-                                .on_hover_text("Import Group...");
-                                grow(response.rect);
-                                if response.clicked() {
-                                    actions.push(GraphAction::ImportGroup);
-                                }
-                            }
-                            if !groups_at_level.is_empty() {
-                                let response = chip_icon_button(
-                                    ui,
-                                    egui::Id::new("icon_btn_ungroup_all"),
-                                    egui_phosphor::light::FOLDER_MINUS,
-                                )
-                                .on_hover_text("Ungroup All");
-                                grow(response.rect);
-                                if response.clicked() {
-                                    actions.push(GraphAction::UngroupAll);
-                                }
-                            }
-                            if !groups_at_level.is_empty() {
-                                let (icon, hover) = if self.groups_collapsed {
-                                    (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
+                            } else if ui
+                                .button(&display_name)
+                                .on_hover_text(if display_name == *name {
+                                    "Click to rename".to_string()
                                 } else {
-                                    (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
-                                };
-                                let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
-                                    .on_hover_text(hover);
-                                grow(response.rect);
-                                if response.clicked() {
-                                    self.groups_collapsed = !self.groups_collapsed;
-                                }
+                                    format!("Click to rename ({name})")
+                                })
+                                .clicked()
+                            {
+                                actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
                             }
-                            bounds.unwrap_or(ui.cursor())
-                        });
-                    }
-                    // −/+/100%/Fit in one chip (`render_zoom_chip`, shared
-                    // with Image view). Fit is the old "Reset View"
-                    // (re-fit every node at this level); the `%` readout
-                    // keeps the current pan and only resets the scale.
-                    let zoom = self.camera.zoom_pct / 100.0;
-                    if let Some(action) = render_zoom_chip(
-                        ui,
-                        self.camera.zoom_pct,
-                        zoom > GRAPH_ZOOM_MIN + 1e-3,
-                        zoom < GRAPH_ZOOM_MAX - 1e-3,
-                        "Reset View (fit all)",
-                    ) {
-                        match action {
-                            ZoomChipAction::Fit => reset_view = true,
-                            ZoomChipAction::Reset100 => reset_zoom = true,
-                            ZoomChipAction::In => graph_zoom_step = Some(ZOOM_STEP),
-                            ZoomChipAction::Out => graph_zoom_step = Some(1.0 / ZOOM_STEP),
+                        } else {
+                            // An ancestor, not the current group itself
+                            // -- click to jump straight there (reuses
+                            // `GraphAction::EnterGroup`, the exact same "switch
+                            // current_group and ease the camera" effect
+                            // double-clicking a group card triggers;
+                            // it doesn't care which direction that is).
+                            if ui
+                                .button(&display_name)
+                                .on_hover_text(if display_name == *name {
+                                    "Jump to this group".to_string()
+                                } else {
+                                    format!("Jump to this group ({name})")
+                                })
+                                .clicked()
+                            {
+                                actions.push(GraphAction::EnterGroup(id.clone()));
+                            }
+                            // `CARET_RIGHT`, not a raw "›" glyph -- same
+                            // tofu-box reasoning as the back-one-level
+                            // button above.
+                            ui.label(egui_phosphor::light::CARET_RIGHT);
                         }
                     }
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.graph_filter)
-                            .desired_width(120.0)
-                            .hint_text("Filter..."),
-                    );
-                    // Only shown once there's actually something to clear --
-                    // same `egui_phosphor::light::X` glyph every other close/
-                    // dismiss affordance in this app already uses, so this
-                    // reads as "clear" at a glance rather than a new symbol.
-                    if !self.graph_filter.is_empty()
-                        && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
-                    {
-                        self.graph_filter.clear();
-                    }
-                    if !self.closed.is_empty() {
-                        let label = format!("Recently Closed ({})", self.closed.len());
-                        let response = ui.button(label);
-                        if response.clicked() {
-                            toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
+                }
+                // "+ New Tab" is the only toolbar spawn action kept --
+                // it's also the sole recovery path when `self.nodes` is
+                // completely empty (see `build_graph_ui`'s early return),
+                // where the right-click empty-canvas card can't appear
+                // yet. New Note/Add File/New Group used to sit here too,
+                // but that card already offers all three identically
+                // once any node exists, and while the graph is fully
+                // empty those buttons' own flags were silently dropped
+                // anyway (their sole consumption site is unreachable
+                // from the early-return branch) -- removing them is a
+                // pure simplification, not a capability loss.
+                if ui.button("+ New Tab").clicked() {
+                    actions.push(GraphAction::NewTab(self.focused.clone()));
+                }
+                // These three buttons used to carry full text labels
+                // ("Import Group...", "Ungroup All", "Collapse Groups"/
+                // "Expand Groups") and, together with "+ New Group"/
+                // "+ New Tab"/"Reset View", made this toolbar cramped
+                // enough to confirm live (text touching the window
+                // edge at 1300pt wide). Switched to `egui_phosphor`
+                // icons instead of folding into a dropdown -- each
+                // stays a one-click action, just narrower, with the
+                // old label preserved as a hover tooltip so the action
+                // is still discoverable. All three now work at any
+                // level, not just the top -- see `GroupPayload`'s own
+                // doc comment on nesting; each already acts on
+                // `self.current_group`/`nodes_at_current_level(Group)`
+                // (its own level), never hardcoding the top level.
+                //
+                // The rule this toolbar actually follows, for any
+                // future addition: the identity/entry-point action that
+                // defines what this toolbar *is* ("+ New Tab") stays
+                // full text; everything else added later to relieve
+                // crowding goes icon-only with a hover tooltip carrying
+                // the old label, per this paragraph's own history.
+                // "Reset View" was the other text holdout until it
+                // became the zoom chip's Fit button (hover text keeps
+                // the name).
+                //
+                // Same "real file dialog blocks on OS/human input
+                // neither exists in headless mode" reasoning as every
+                // other Export/Import button -- `IMPORTGROUP <path>`
+                // calls the same underlying import directly instead.
+                if !self.headless || !groups_at_level.is_empty() {
+                    toolbar_chip(ui, |ui| {
+                        let mut bounds: Option<egui::Rect> = None;
+                        let mut grow = |r: egui::Rect| {
+                            bounds = Some(bounds.map_or(r, |b| b.union(r)));
+                        };
+                        if !self.headless {
+                            let response = chip_icon_button(
+                                ui,
+                                egui::Id::new("icon_btn_import_group"),
+                                egui_phosphor::light::UPLOAD_SIMPLE,
+                            )
+                            .on_hover_text("Import Group...");
+                            grow(response.rect);
+                            if response.clicked() {
+                                actions.push(GraphAction::ImportGroup);
+                            }
                         }
-                        recently_closed_button_rect = Some(response.rect);
-                    }
-                    // Rectangle-select's own action bar: only shown once a
-                    // right-drag has actually selected something (see
-                    // `handle_rect_select`).
-                    if !self.selected_tabs.is_empty() {
-                        // Matches "+ New Group" above: groups the selection
-                        // into a new subgroup of whichever level is
-                        // currently being viewed, not just the top.
-                        if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
-                            actions.push(GraphAction::GroupSelected);
+                        if !groups_at_level.is_empty() {
+                            let response = chip_icon_button(
+                                ui,
+                                egui::Id::new("icon_btn_ungroup_all"),
+                                egui_phosphor::light::FOLDER_MINUS,
+                            )
+                            .on_hover_text("Ungroup All");
+                            grow(response.rect);
+                            if response.clicked() {
+                                actions.push(GraphAction::UngroupAll);
+                            }
                         }
-                        if ui
-                            .button(format!("Close Selected ({})", self.selected_tabs.len()))
-                            .clicked()
-                        {
-                            actions.push(GraphAction::CloseSelected);
+                        if !groups_at_level.is_empty() {
+                            let (icon, hover) = if self.groups_collapsed {
+                                (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
+                            } else {
+                                (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
+                            };
+                            let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
+                                .on_hover_text(hover);
+                            grow(response.rect);
+                            if response.clicked() {
+                                self.groups_collapsed = !self.groups_collapsed;
+                            }
                         }
+                        bounds.unwrap_or(ui.cursor())
+                    });
+                }
+                // −/+/100%/Fit in one chip (`render_zoom_chip`, shared
+                // with Image view). Fit is the old "Reset View"
+                // (re-fit every node at this level); the `%` readout
+                // keeps the current pan and only resets the scale.
+                let zoom = self.camera.zoom_pct / 100.0;
+                if let Some(action) = render_zoom_chip(
+                    ui,
+                    self.camera.zoom_pct,
+                    zoom > GRAPH_ZOOM_MIN + 1e-3,
+                    zoom < GRAPH_ZOOM_MAX - 1e-3,
+                    "Reset View (fit all)",
+                ) {
+                    match action {
+                        ZoomChipAction::Fit => reset_view = true,
+                        ZoomChipAction::Reset100 => reset_zoom = true,
+                        ZoomChipAction::In => graph_zoom_step = Some(ZOOM_STEP),
+                        ZoomChipAction::Out => graph_zoom_step = Some(1.0 / ZOOM_STEP),
                     }
-                    // Cloned rather than borrowed -- `self.tab_spawn_error =
-                    // None` below needs `&mut self`, which a live `&String`
-                    // borrow from `self.tab_spawn_error` would conflict
-                    // with; this only ever clones a short error string, and
-                    // only while one is actually being shown.
-                    if let Some(err) = self.tab_spawn_error.clone() {
-                        ui.colored_label(DANGER_COLOR, &err);
-                        // No dismiss before this -- an error already easy to
-                        // miss in a packed row (now scrollable, see the
-                        // `ScrollArea` above) had no way to clear itself
-                        // short of a new spawn attempt overwriting it.
-                        if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
-                            self.tab_spawn_error = None;
-                        }
+                }
+                ui.add(egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."));
+                // Only shown once there's actually something to clear --
+                // same `egui_phosphor::light::X` glyph every other close/
+                // dismiss affordance in this app already uses, so this
+                // reads as "clear" at a glance rather than a new symbol.
+                if !self.graph_filter.is_empty()
+                    && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
+                {
+                    self.graph_filter.clear();
+                }
+                if !self.closed.is_empty() {
+                    let label = format!("Recently Closed ({})", self.closed.len());
+                    let response = ui.button(label);
+                    if response.clicked() {
+                        toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
                     }
-                    shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
-                });
+                    recently_closed_button_rect = Some(response.rect);
+                }
+                // Rectangle-select's own action bar: only shown once a
+                // right-drag has actually selected something (see
+                // `handle_rect_select`).
+                if !self.selected_tabs.is_empty() {
+                    // Matches "+ New Group" above: groups the selection
+                    // into a new subgroup of whichever level is
+                    // currently being viewed, not just the top.
+                    if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
+                        actions.push(GraphAction::GroupSelected);
+                    }
+                    if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
+                        actions.push(GraphAction::CloseSelected);
+                    }
+                }
+                // Cloned rather than borrowed -- `self.tab_spawn_error =
+                // None` below needs `&mut self`, which a live `&String`
+                // borrow from `self.tab_spawn_error` would conflict
+                // with; this only ever clones a short error string, and
+                // only while one is actually being shown.
+                if let Some(err) = self.tab_spawn_error.clone() {
+                    ui.colored_label(DANGER_COLOR, &err);
+                    // No dismiss before this -- an error already easy to
+                    // miss in a packed row (now scrollable, see the
+                    // `ScrollArea` above) had no way to clear itself
+                    // short of a new spawn attempt overwriting it.
+                    if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
+                        self.tab_spawn_error = None;
+                    }
+                }
+                shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
             });
+        });
         GraphToolbar {
             actions,
             reset_view,
@@ -1092,12 +1061,7 @@ impl App {
                 0.0,
                 egui::Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 35),
             );
-            overlay_painter.rect_stroke(
-                screen_rect,
-                0.0,
-                egui::Stroke::new(1.5, ACCENT),
-                egui::StrokeKind::Inside,
-            );
+            overlay_painter.rect_stroke(screen_rect, 0.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
             if !secondary_down {
                 self.rect_select_start = None;
                 // Barely moved -- a plain right-click, not a real
@@ -1155,14 +1119,11 @@ impl App {
             scene_outer_rect.right_bottom() - minimap_size - egui::Vec2::splat(12.0),
             minimap_size,
         );
-        let world_bounds = self.bounds_for_level(
-            at_level.iter().flatten(),
-        );
+        let world_bounds = self.bounds_for_level(at_level.iter().flatten());
         let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
-        let world_to_minimap = |p: egui::Pos2| -> egui::Pos2 {
-            minimap_rect.center() + (p - world_bounds.center()) * minimap_scale
-        };
+        let world_to_minimap =
+            |p: egui::Pos2| -> egui::Pos2 { minimap_rect.center() + (p - world_bounds.center()) * minimap_scale };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
             let (radius, color) = match kind {
@@ -1179,17 +1140,10 @@ impl App {
                 }
             }
         }
-        let viewport_rect = egui::Rect::from_two_pos(
-            world_to_minimap(self.camera.rect.min),
-            world_to_minimap(self.camera.rect.max),
-        )
-        .intersect(minimap_rect);
-        overlay_painter.rect_stroke(
-            viewport_rect,
-            0.0,
-            egui::Stroke::new(1.5, ACCENT),
-            egui::StrokeKind::Inside,
-        );
+        let viewport_rect =
+            egui::Rect::from_two_pos(world_to_minimap(self.camera.rect.min), world_to_minimap(self.camera.rect.max))
+                .intersect(minimap_rect);
+        overlay_painter.rect_stroke(viewport_rect, 0.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
         overlay_painter.rect_stroke(
             minimap_rect,
             4.0,
@@ -1210,8 +1164,7 @@ impl App {
     /// `camera.rect` this frame).
     pub(crate) fn track_pan_momentum(&mut self, ui: &egui::Ui, scene_rect: egui::Rect) {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
-        let actively_panning =
-            pointer_down && self.dragging.is_none() && self.camera.tween.is_none();
+        let actively_panning = pointer_down && self.dragging.is_none() && self.camera.tween.is_none();
         if actively_panning {
             // A fresh grab of the background cancels any momentum still
             // gliding from an earlier release -- "grab it to stop it".
@@ -1276,8 +1229,7 @@ impl App {
         });
         if minimap_clicked {
             if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
-                let world_click =
-                    world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
+                let world_click = world_bounds.center() + (click_pos - minimap_rect.center()) / minimap_scale;
                 self.camera.jump_to(egui::Rect::from_center_size(world_click, self.camera.rect.size()));
                 self.pending_new_node = None;
             }
@@ -1399,13 +1351,7 @@ impl App {
         // also their stacking order: a later kind draws, and takes
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
-        let mut pass = CardPass {
-            deferred_overlays,
-            actions,
-            inv_zoom,
-            zoom_scale,
-            drop_preview: &drop_preview,
-        };
+        let mut pass = CardPass { deferred_overlays, actions, inv_zoom, zoom_scale, drop_preview: &drop_preview };
         for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
             for id in ids.iter() {
                 // Read before the frame: a Note's `TextEdit` can lose
@@ -1444,7 +1390,9 @@ impl App {
                     }
                     // Click (not drag -- egui doesn't report
                     // `clicked()` for a drag) reveals the file.
-                    ItemNodeKind::Download if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal)),
+                    ItemNodeKind::Download if card.response.clicked() => {
+                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal))
+                    }
                     // Click on the rendered note enters editing in place.
                     ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
                         if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
@@ -1453,11 +1401,11 @@ impl App {
                     }
                     // Maximizes the image into Item view, the same
                     // gesture a Tab card uses.
-                    ItemNodeKind::Image if card.response.clicked() => pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open)),
-                    // Opens the full tree in `build_json_viewer`.
-                    ItemNodeKind::Json if card.response.double_clicked() => {
-                        self.json_viewer_node = Some(id.clone())
+                    ItemNodeKind::Image if card.response.clicked() => {
+                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
                     }
+                    // Opens the full tree in `build_json_viewer`.
+                    ItemNodeKind::Json if card.response.double_clicked() => self.json_viewer_node = Some(id.clone()),
                     // Drills into the group's own subgraph.
                     ItemNodeKind::Group if card.response.double_clicked() => {
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))
@@ -1596,8 +1544,7 @@ impl App {
         if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
             self.peek_suppressed = None;
         }
-        let peek_target =
-            self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
+        let peek_target = self.hovered.clone().filter(|id| self.peek_suppressed.as_deref() != Some(id.as_str()));
         // Polled every frame regardless of `peek_target`, same
         // "continuous polling, not just while shown" reasoning the
         // dropdown popups' own fade needs -- a plain `if let Some`
@@ -1606,8 +1553,7 @@ impl App {
         // since the last poll (however long the pointer sat
         // elsewhere) would make it jump straight to fully visible
         // the instant it reappears instead of visibly fading in.
-        let peek_fade =
-            ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
+        let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
                 let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
@@ -1621,23 +1567,14 @@ impl App {
                         GRAPH_PEEK_SIZE,
                     );
                     ui.set_opacity(peek_fade);
-                    ui.painter()
-                        .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+                    ui.painter().rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
                     ui.painter().image(
                         tex_id,
                         rect,
-                        egui::Rect::from_min_max(
-                            egui::Pos2::new(0.0, 0.0),
-                            egui::Pos2::new(1.0, 1.0),
-                        ),
+                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
-                    ui.painter().rect_stroke(
-                        rect,
-                        6.0,
-                        egui::Stroke::new(1.5, ACCENT),
-                        egui::StrokeKind::Inside,
-                    );
+                    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
                 }
             }
         }
@@ -1652,11 +1589,8 @@ mod tests {
     fn easing_the_camera_stops_a_glide() {
         let mut camera = GraphCamera::new();
         let start = std::time::Instant::now() - std::time::Duration::from_millis(50);
-        camera.momentum = Some(PanMomentum {
-            initial_velocity: egui::vec2(2000.0, 0.0),
-            start,
-            start_center: camera.rect.center(),
-        });
+        camera.momentum =
+            Some(PanMomentum { initial_velocity: egui::vec2(2000.0, 0.0), start, start_center: camera.rect.center() });
         let to = egui::Rect::from_center_size(egui::pos2(5000.0, 5000.0), egui::vec2(400.0, 300.0));
         camera.ease_to(to);
         // Once the ease ends, the glide it replaced must not take over again.

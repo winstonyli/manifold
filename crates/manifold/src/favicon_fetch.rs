@@ -103,12 +103,7 @@ pub fn url_origin(url: &str) -> Option<String> {
 /// constraint.
 fn fetch_favicon(origin: &str) -> Option<FaviconImage> {
     let url = format!("{origin}/favicon.ico");
-    let response = ureq::get(&url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(3)))
-        .build()
-        .call()
-        .ok()?;
+    let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let bytes = response.into_body().with_config().limit(2_000_000).read_to_vec().ok()?;
     let image = image::load_from_memory(&bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();

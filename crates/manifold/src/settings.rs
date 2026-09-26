@@ -168,10 +168,7 @@ pub fn fingerprint() -> Option<u64> {
 /// the real `settings.json` -- see `session::conflict_path`'s own doc
 /// comment for why this is timestamped rather than a fixed name.
 pub fn conflict_path() -> Option<PathBuf> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let appdata = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(appdata).join("manifold").join(format!("settings.conflict-{secs}.json")))
 }

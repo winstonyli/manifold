@@ -4,8 +4,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::{
-    prelude::*, GenericNamespaced, Listener, ListenerOptions, Name, Stream as LocalStream,
-    ToNsName,
+    prelude::*, GenericNamespaced, Listener, ListenerOptions, Name, Stream as LocalStream, ToNsName,
 };
 
 use crate::channel::MessageChannel;
@@ -72,12 +71,8 @@ pub struct LocalListenerPair {
 /// pipes) — it never needs to match manifold's own tab bookkeeping.
 pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
     Ok(LocalListenerPair {
-        host_to_engine: ListenerOptions::new()
-            .name(socket_name(socket_id, "h2e")?)
-            .create_sync()?,
-        engine_to_host: ListenerOptions::new()
-            .name(socket_name(socket_id, "e2h")?)
-            .create_sync()?,
+        host_to_engine: ListenerOptions::new().name(socket_name(socket_id, "h2e")?).create_sync()?,
+        engine_to_host: ListenerOptions::new().name(socket_name(socket_id, "e2h")?).create_sync()?,
     })
 }
 
@@ -118,10 +113,7 @@ fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream>
 /// practice (`connect_local_pair` dials both back within microseconds of
 /// each other), so this favors giving each one its own full budget over
 /// the bookkeeping of a single shared deadline.
-pub fn accept_local_pair(
-    pair: &LocalListenerPair,
-    timeout: Duration,
-) -> io::Result<(LocalTransport, LocalTransport)> {
+pub fn accept_local_pair(pair: &LocalListenerPair, timeout: Duration) -> io::Result<(LocalTransport, LocalTransport)> {
     let sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout)?);
     let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout)?);
     Ok((sender, receiver))
@@ -230,10 +222,7 @@ mod tests {
         // Generous upper bound (not a tight timing assertion) — this just
         // needs to prove it didn't block indefinitely, not measure exact
         // poll-loop overhead.
-        assert!(
-            elapsed < timeout * 5,
-            "accept_remote took {elapsed:?}, expected close to the {timeout:?} timeout"
-        );
+        assert!(elapsed < timeout * 5, "accept_remote took {elapsed:?}, expected close to the {timeout:?} timeout");
     }
 
     /// Same regression, for `accept_local_pair`'s bounded wait (added
@@ -242,8 +231,7 @@ mod tests {
     /// client ever connecting must time out cleanly rather than hang.
     #[test]
     fn accept_local_pair_times_out_when_nobody_connects() {
-        let pair =
-            listen_local_pair("test-accept-local-pair-timeout").expect("listen_local_pair");
+        let pair = listen_local_pair("test-accept-local-pair-timeout").expect("listen_local_pair");
         let timeout = Duration::from_millis(200);
 
         let start = Instant::now();

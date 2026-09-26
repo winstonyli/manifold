@@ -263,11 +263,7 @@ impl Drop for EngineTab {
 /// Cargo workspace layout, no separate install/discovery step needed.
 fn sibling_binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe");
-    path.set_file_name(if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    });
+    path.set_file_name(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() });
     path
 }
 
@@ -292,11 +288,7 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// to `manifold.exe`. No download step writes there yet; the fallback
 /// just means adding one later won't require touching this lookup.
 fn engine_binary_path(kind: EngineKind) -> PathBuf {
-    let file_name = if cfg!(windows) {
-        format!("{}.exe", kind.binary_name())
-    } else {
-        kind.binary_name().to_string()
-    };
+    let file_name = if cfg!(windows) { format!("{}.exe", kind.binary_name()) } else { kind.binary_name().to_string() };
     let sibling = match kind {
         EngineKind::Servo => sibling_binary(kind.binary_name()),
         EngineKind::Cef => {
@@ -470,9 +462,7 @@ fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver
                 Err(_) => break,
             }
         }
-        let _ = tx.send(EngineToHost::Crashed {
-            reason: "engine-host connection lost".to_string(),
-        });
+        let _ = tx.send(EngineToHost::Crashed { reason: "engine-host connection lost".to_string() });
     });
     rx
 }
@@ -550,13 +540,7 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    Ok(EngineTab {
-        kind,
-        socket_id,
-        to_engine: ToEngine::Local(to_engine),
-        events_rx,
-        child,
-    })
+    Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child })
 }
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/

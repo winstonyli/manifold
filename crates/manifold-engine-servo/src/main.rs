@@ -4,15 +4,14 @@ use std::time::Duration;
 
 use dpi::PhysicalSize;
 use ipc_protocol::{
-    modifiers as host_modifiers, EngineToHost, HostToEngine, InputEvent as HostInputEvent,
-    KeyCode as HostKeyCode, SharedFrameBuffer,
+    modifiers as host_modifiers, EngineToHost, HostToEngine, InputEvent as HostInputEvent, KeyCode as HostKeyCode,
+    SharedFrameBuffer,
 };
 use servo::{
-    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState,
-    KeyboardEvent, Location, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction,
-    MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext, ServoBuilder,
-    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta,
-    WheelEvent, WheelMode,
+    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent,
+    Location, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
+    NamedKey, RenderingContext, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
 use url::Url;
 use webrender_api::units::DevicePoint;
@@ -143,16 +142,13 @@ impl WebViewDelegate for Delegate {
         nav.can_go_forward = current + 1 < entries.len();
         nav.dirty = true;
     }
-
 }
 
 fn main() {
     // Servo needs a process-level TLS crypto provider installed before
     // anything touches HTTPS (matches servo's own components/servo/examples/
     // winit_minimal.rs, which does this before constructing anything else).
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("install rustls crypto provider");
+    rustls::crypto::aws_lc_rs::default_provider().install_default().expect("install rustls crypto provider");
 
     // Env vars, not argv — matches manifold-engine-cef, whose argv must stay
     // reserved for CEF's own command-line parsing. Kept consistent here too
@@ -164,8 +160,7 @@ fn main() {
     // pipes (see process_manager::spawn_tab's fallback). Only this id
     // matters here; we never need ENGINE_TAB_ID itself.
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL")
-        .unwrap_or_else(|_| "https://example.com".to_string());
+    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
 
     // Two one-directional control sockets back to manifold (it already
     // created both listeners before spawning this process — see
@@ -174,8 +169,7 @@ fn main() {
     // never needs to duplicate a stream handle to read concurrently with
     // the main thread's sends.
     let (host_to_engine, mut control) =
-        ipc_protocol::transport::connect_local_pair(&socket_id)
-            .expect("connect to manifold control sockets");
+        ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
 
     // A dedicated IO thread owns receiving HostToEngine messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
@@ -191,20 +185,13 @@ fn main() {
     // construction, nothing else. No prepare_for_rendering() call — an
     // earlier attempt added one alongside make_current() and it made things
     // worse, not better; the reference code doesn't call it at all here.
-    rendering_context
-        .make_current()
-        .expect("make rendering context current");
+    rendering_context.make_current().expect("make rendering context current");
 
-    let servo = ServoBuilder::default()
-        .event_loop_waker(Box::new(NoopWaker))
-        .build();
+    let servo = ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).build();
 
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),
-        nav: RefCell::new(NavState {
-            url: initial_url.clone(),
-            ..Default::default()
-        }),
+        nav: RefCell::new(NavState { url: initial_url.clone(), ..Default::default() }),
         context_menu_link: RefCell::new(None),
         json_body: Rc::new(RefCell::new(None)),
         redirect_content_type: Rc::new(RefCell::new(None)),
@@ -215,8 +202,8 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
-    let mut frame_buffer = SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .expect("create shared frame buffer");
+    let mut frame_buffer =
+        SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer");
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
@@ -249,11 +236,7 @@ fn main() {
                 HostToEngine::Reload => {
                     webview.reload();
                 }
-                HostToEngine::Resize {
-                    width: w,
-                    height: h,
-                    ..
-                } => {
+                HostToEngine::Resize { width: w, height: h, .. } => {
                     // A minimized window delivers a real 0x0 `inner_size()`
                     // on Windows — nothing to render either way, and a
                     // zero-length shared frame buffer can't be mapped at
@@ -272,8 +255,8 @@ fn main() {
                     // below wouldn't drop the old value until after the
                     // right-hand side (the new create() call) already ran.
                     drop(frame_buffer);
-                    frame_buffer = SharedFrameBuffer::create(&socket_id, w, h)
-                        .expect("recreate shared frame buffer at new size");
+                    frame_buffer =
+                        SharedFrameBuffer::create(&socket_id, w, h).expect("recreate shared frame buffer at new size");
                 }
                 HostToEngine::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
@@ -359,13 +342,7 @@ fn main() {
             if let Some(image) = rendering_context.read_to_image(rect) {
                 frame_buffer.write_frame(image.as_raw());
                 frame_id += 1;
-                let _ = control.send(&EngineToHost::FrameReady {
-                    frame_id,
-                    width,
-                    height,
-                    damage: None,
-                    pixels: None,
-                });
+                let _ = control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
             }
             rendering_context.present();
         }
@@ -376,40 +353,25 @@ fn main() {
 
 fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
     match event {
-        HostInputEvent::MouseMove { x, y, .. } => Some(ServoInputEvent::MouseMove(
-            MouseMoveEvent::new(webview_point(x, y)),
-        )),
-        HostInputEvent::MouseDown { x, y, button, .. } => Some(ServoInputEvent::MouseButton(
-            MouseButtonEvent::new(
-                MouseButtonAction::Down,
-                translate_mouse_button(button),
-                webview_point(x, y),
-            ),
-        )),
-        HostInputEvent::MouseUp { x, y, button, .. } => Some(ServoInputEvent::MouseButton(
-            MouseButtonEvent::new(
-                MouseButtonAction::Up,
-                translate_mouse_button(button),
-                webview_point(x, y),
-            ),
-        )),
-        HostInputEvent::Scroll {
-            x,
-            y,
-            delta_x,
-            delta_y,
-            ..
-        } => Some(ServoInputEvent::Wheel(WheelEvent::new(
-            WheelDelta {
-                x: delta_x,
-                y: delta_y,
-                z: 0.0,
-                mode: WheelMode::DeltaPixel,
-            },
+        HostInputEvent::MouseMove { x, y, .. } => {
+            Some(ServoInputEvent::MouseMove(MouseMoveEvent::new(webview_point(x, y))))
+        }
+        HostInputEvent::MouseDown { x, y, button, .. } => Some(ServoInputEvent::MouseButton(MouseButtonEvent::new(
+            MouseButtonAction::Down,
+            translate_mouse_button(button),
             webview_point(x, y),
         ))),
-        HostInputEvent::KeyDown { key, modifiers } => Some(ServoInputEvent::Keyboard(
-            KeyboardEvent::new_without_event(
+        HostInputEvent::MouseUp { x, y, button, .. } => Some(ServoInputEvent::MouseButton(MouseButtonEvent::new(
+            MouseButtonAction::Up,
+            translate_mouse_button(button),
+            webview_point(x, y),
+        ))),
+        HostInputEvent::Scroll { x, y, delta_x, delta_y, .. } => Some(ServoInputEvent::Wheel(WheelEvent::new(
+            WheelDelta { x: delta_x, y: delta_y, z: 0.0, mode: WheelMode::DeltaPixel },
+            webview_point(x, y),
+        ))),
+        HostInputEvent::KeyDown { key, modifiers } => {
+            Some(ServoInputEvent::Keyboard(KeyboardEvent::new_without_event(
                 KeyState::Down,
                 key_to_servo_key(key),
                 key_to_servo_code(key),
@@ -417,28 +379,27 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
                 translate_modifiers(modifiers),
                 false,
                 false,
-            ),
-        )),
-        HostInputEvent::KeyUp { key, modifiers } => Some(ServoInputEvent::Keyboard(
-            KeyboardEvent::new_without_event(
-                KeyState::Up,
-                key_to_servo_key(key),
-                key_to_servo_code(key),
-                Location::Standard,
-                translate_modifiers(modifiers),
-                false,
-                false,
-            ),
-        )),
+            )))
+        }
+        HostInputEvent::KeyUp { key, modifiers } => Some(ServoInputEvent::Keyboard(KeyboardEvent::new_without_event(
+            KeyState::Up,
+            key_to_servo_key(key),
+            key_to_servo_code(key),
+            Location::Standard,
+            translate_modifiers(modifiers),
+            false,
+            false,
+        ))),
         // Text insertion drives off `Key::Character`, which is what a page's
         // `<input>`/`<textarea>` actually reads — not `KeyDown`'s `code`
         // (see `key_to_servo_key`'s doc comment on why that's a best-effort
         // guess and not the real produced text for most keys).
         HostInputEvent::Char { codepoint } => {
             let ch = char::from_u32(codepoint)?;
-            Some(ServoInputEvent::Keyboard(
-                KeyboardEvent::from_state_and_key(KeyState::Down, Key::Character(ch.to_string())),
-            ))
+            Some(ServoInputEvent::Keyboard(KeyboardEvent::from_state_and_key(
+                KeyState::Down,
+                Key::Character(ch.to_string()),
+            )))
         }
     }
 }

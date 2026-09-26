@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::model::{encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, ENGINES};
+use super::model::{
+    encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, ENGINES,
+};
 use super::ops::OpBody;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

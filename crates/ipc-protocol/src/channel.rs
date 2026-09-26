@@ -20,8 +20,7 @@ impl<S: Read + Write> MessageChannel<S> {
     }
 
     pub fn send<T: Serialize>(&mut self, msg: &T) -> io::Result<()> {
-        let bytes = postcard::to_allocvec(msg)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bytes = postcard::to_allocvec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         self.stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
         self.stream.write_all(&bytes)?;
         self.stream.flush()

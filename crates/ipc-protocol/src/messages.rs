@@ -35,6 +35,7 @@ pub enum MouseButton {
 /// (typing into a page's form fields, basic shortcuts) without trying to
 /// enumerate every key on every keyboard layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum KeyCode {
     KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
     KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
@@ -80,6 +81,7 @@ pub mod modifiers {
 /// click land at 80% of the intended distance from the content's top-left
 /// corner.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum InputEvent {
     /// `modifiers` (see the `modifiers` module) are the modifier keys held
     /// *at the time of* this mouse event — added so a native-input-
@@ -103,6 +105,7 @@ pub enum InputEvent {
 
 /// Messages sent from the manifold process manager to an engine-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum HostToEngine {
     Navigate { url: String, referrer: Option<String> },
     GoBack,
@@ -179,6 +182,7 @@ pub enum HostToEngine {
 /// over `RemoteTransport`) has no shared memory with the Windows host
 /// process, so it sends the raw pixel bytes inline here instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum EngineToHost {
     FrameReady {
         frame_id: u64,

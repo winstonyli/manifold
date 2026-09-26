@@ -44,26 +44,26 @@ fn key_code_to_vk(key: KeyCode) -> i32 {
         KeyCode::Digit7 => 0x37,
         KeyCode::Digit8 => 0x38,
         KeyCode::Digit9 => 0x39,
-        KeyCode::Enter => 0x0D,       // VK_RETURN
-        KeyCode::Backspace => 0x08,   // VK_BACK
-        KeyCode::Tab => 0x09,         // VK_TAB
-        KeyCode::Space => 0x20,       // VK_SPACE
-        KeyCode::Escape => 0x1B,      // VK_ESCAPE
-        KeyCode::Delete => 0x2E,      // VK_DELETE
-        KeyCode::ArrowLeft => 0x25,   // VK_LEFT
-        KeyCode::ArrowUp => 0x26,     // VK_UP
-        KeyCode::ArrowRight => 0x27,  // VK_RIGHT
-        KeyCode::ArrowDown => 0x28,   // VK_DOWN
-        KeyCode::Home => 0x24,        // VK_HOME
-        KeyCode::End => 0x23,         // VK_END
-        KeyCode::PageUp => 0x21,      // VK_PRIOR
-        KeyCode::PageDown => 0x22,    // VK_NEXT
-        KeyCode::ShiftLeft => 0xA0,   // VK_LSHIFT
-        KeyCode::ShiftRight => 0xA1,  // VK_RSHIFT
-        KeyCode::ControlLeft => 0xA2, // VK_LCONTROL
+        KeyCode::Enter => 0x0D,        // VK_RETURN
+        KeyCode::Backspace => 0x08,    // VK_BACK
+        KeyCode::Tab => 0x09,          // VK_TAB
+        KeyCode::Space => 0x20,        // VK_SPACE
+        KeyCode::Escape => 0x1B,       // VK_ESCAPE
+        KeyCode::Delete => 0x2E,       // VK_DELETE
+        KeyCode::ArrowLeft => 0x25,    // VK_LEFT
+        KeyCode::ArrowUp => 0x26,      // VK_UP
+        KeyCode::ArrowRight => 0x27,   // VK_RIGHT
+        KeyCode::ArrowDown => 0x28,    // VK_DOWN
+        KeyCode::Home => 0x24,         // VK_HOME
+        KeyCode::End => 0x23,          // VK_END
+        KeyCode::PageUp => 0x21,       // VK_PRIOR
+        KeyCode::PageDown => 0x22,     // VK_NEXT
+        KeyCode::ShiftLeft => 0xA0,    // VK_LSHIFT
+        KeyCode::ShiftRight => 0xA1,   // VK_RSHIFT
+        KeyCode::ControlLeft => 0xA2,  // VK_LCONTROL
         KeyCode::ControlRight => 0xA3, // VK_RCONTROL
-        KeyCode::AltLeft => 0xA4,     // VK_LMENU
-        KeyCode::AltRight => 0xA5,    // VK_RMENU
+        KeyCode::AltLeft => 0xA4,      // VK_LMENU
+        KeyCode::AltRight => 0xA5,     // VK_RMENU
     }
 }
 
@@ -122,41 +122,19 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
     };
     match event {
         InputEvent::MouseMove { x, y, modifiers } => {
-            let mouse_event = MouseEvent {
-                x: x as i32,
-                y: y as i32,
-                modifiers: modifiers_to_event_flags(modifiers),
-            };
+            let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_move_event(Some(&mouse_event), 0);
         }
         InputEvent::MouseDown { x, y, button, modifiers } => {
-            let mouse_event = MouseEvent {
-                x: x as i32,
-                y: y as i32,
-                modifiers: modifiers_to_event_flags(modifiers),
-            };
+            let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 0, 1);
         }
         InputEvent::MouseUp { x, y, button, modifiers } => {
-            let mouse_event = MouseEvent {
-                x: x as i32,
-                y: y as i32,
-                modifiers: modifiers_to_event_flags(modifiers),
-            };
+            let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 1, 1);
         }
-        InputEvent::Scroll {
-            x,
-            y,
-            delta_x,
-            delta_y,
-            modifiers,
-        } => {
-            let mouse_event = MouseEvent {
-                x: x as i32,
-                y: y as i32,
-                modifiers: modifiers_to_event_flags(modifiers),
-            };
+        InputEvent::Scroll { x, y, delta_x, delta_y, modifiers } => {
+            let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_wheel_event(Some(&mouse_event), delta_x as i32, delta_y as i32);
         }
         InputEvent::KeyDown { key, modifiers } => {

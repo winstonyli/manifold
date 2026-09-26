@@ -181,10 +181,7 @@ pub fn fingerprint() -> Option<u64> {
 /// overwrite the first one's still-unreviewed data, exactly the failure
 /// mode this whole mechanism exists to prevent.
 pub fn conflict_path() -> Option<PathBuf> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     Some(session_dir()?.join(format!("session.conflict-{secs}.json")))
 }
 

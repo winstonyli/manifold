@@ -22,16 +22,10 @@ mod tests {
         let listeners = transport::listen_local_pair(tab_id).expect("listen_local_pair");
 
         let server = thread::spawn(move || {
-            let (mut to_engine, mut from_engine) = transport::accept_local_pair(
-                &listeners,
-                std::time::Duration::from_secs(5),
-            )
-            .expect("accept_local_pair");
+            let (mut to_engine, mut from_engine) =
+                transport::accept_local_pair(&listeners, std::time::Duration::from_secs(5)).expect("accept_local_pair");
             to_engine
-                .send(&HostToEngine::Navigate {
-                    url: "https://example.com".into(),
-                    referrer: None,
-                })
+                .send(&HostToEngine::Navigate { url: "https://example.com".into(), referrer: None })
                 .expect("send Navigate");
             let reply: EngineToHost = from_engine.recv().expect("recv NavigationStateChanged");
             match reply {
@@ -45,8 +39,7 @@ mod tests {
         // Give the listeners a moment to be ready before the client dials in.
         thread::sleep(std::time::Duration::from_millis(50));
 
-        let (mut from_host, mut to_host) =
-            transport::connect_local_pair(tab_id).expect("connect_local_pair");
+        let (mut from_host, mut to_host) = transport::connect_local_pair(tab_id).expect("connect_local_pair");
         let msg: HostToEngine = from_host.recv().expect("recv Navigate");
         match msg {
             HostToEngine::Navigate { url, .. } => assert_eq!(url, "https://example.com"),

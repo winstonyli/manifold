@@ -224,28 +224,20 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "Literata".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/Literata-Regular.ttf"
-        ))),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Literata-Regular.ttf"))),
     );
     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         family.insert(0, "Literata".to_owned());
     }
     fonts.font_data.insert(
         "Newsreader".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/Newsreader-Bold.ttf"
-        ))),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Newsreader-Bold.ttf"))),
     );
     // Falls back to the same Literata/default chain as body text for any
     // glyph Newsreader's own Latin-focused coverage doesn't have (a heading
     // is still just text -- it shouldn't tofu-box on a character body text
     // would have rendered fine).
-    let mut heading_fallback = fonts
-        .families
-        .get(&egui::FontFamily::Proportional)
-        .cloned()
-        .unwrap_or_default();
+    let mut heading_fallback = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
     heading_fallback.insert(0, "Newsreader".to_owned());
     fonts.families.insert(heading_family(), heading_fallback);
     // A real icon font, not a symbol glyph gamble -- Literata's own doc
@@ -269,9 +261,7 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
 /// one helper rather than each popup separately picking a size/weight, so
 /// they stay visually identical to each other by construction.
 pub(crate) fn heading_text(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text)
-        .font(egui::FontId::new(17.0, heading_family()))
-        .color(TEXT_PRIMARY)
+    egui::RichText::new(text).font(egui::FontId::new(17.0, heading_family())).color(TEXT_PRIMARY)
 }
 
 /// Forces the native (OS-drawn, undecorated-in-headless-mode-only -- see
@@ -381,11 +371,8 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
 pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
     let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
-    let bg = lerp_color32(
-        ui.visuals().widgets.inactive.weak_bg_fill,
-        ui.visuals().widgets.hovered.weak_bg_fill,
-        hover_t,
-    );
+    let bg =
+        lerp_color32(ui.visuals().widgets.inactive.weak_bg_fill, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
     let fg = lerp_color32(
         ui.visuals().widgets.inactive.fg_stroke.color,
         ui.visuals().widgets.hovered.fg_stroke.color,
@@ -417,7 +404,12 @@ pub(crate) fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<
 /// at rest matches every sibling button's sizing exactly while still
 /// hiding the box until the icon is hovered, at which point a soft fill
 /// (no stroke) confirms the hit target.
-pub(crate) fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<String>, enabled: bool) -> egui::Response {
+pub(crate) fn chip_icon_button_enabled(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    icon: impl Into<String>,
+    enabled: bool,
+) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
     let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
     let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
@@ -428,9 +420,7 @@ pub(crate) fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: im
     );
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new(egui::RichText::new(icon.into()).color(fg))
-            .fill(bg)
-            .stroke(egui::Stroke::NONE),
+        egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg).stroke(egui::Stroke::NONE),
     );
     ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
     response
@@ -457,11 +447,9 @@ pub(crate) fn chip_icon_button_enabled(ui: &mut egui::Ui, id: egui::Id, icon: im
 /// widget's own returned `Response::rect` is real.
 pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
-    let (lead_rect, _) =
-        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
     let content_rect = content(ui);
-    let (trail_rect, _) =
-        ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let (trail_rect, _) = ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
     let rect = lead_rect.union(content_rect).union(trail_rect);
     // Content that renders nothing can leave `ui.cursor()`'s fallback
     // infinite in one axis (`.max.x` for left-to-right layouts, `.min.x`

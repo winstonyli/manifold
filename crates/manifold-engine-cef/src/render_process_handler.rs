@@ -130,9 +130,7 @@ fn eval_page_kind(context: &V8Context) -> Option<PageKind> {
     context.enter();
     let content_type = eval_string(context, "document.contentType");
     let kind = match content_type {
-        Some(t) if t == "application/json" => {
-            eval_string(context, "document.body.innerText").map(PageKind::Json)
-        }
+        Some(t) if t == "application/json" => eval_string(context, "document.body.innerText").map(PageKind::Json),
         Some(t) => Some(PageKind::Other(t)),
         None => None,
     };
@@ -154,7 +152,10 @@ fn eval_audio_playing(context: &V8Context) -> bool {
     let mut retval: Option<V8Value> = None;
     let mut exception: Option<V8Exception> = None;
     let ok = context.eval(
-        Some(&"Array.from(document.querySelectorAll('video,audio')).some(function(el){return !el.paused&&!el.muted;});".into()),
+        Some(
+            &"Array.from(document.querySelectorAll('video,audio')).some(function(el){return !el.paused&&!el.muted;});"
+                .into(),
+        ),
         None,
         0,
         Some(&mut retval),

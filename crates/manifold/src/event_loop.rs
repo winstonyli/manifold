@@ -205,9 +205,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // Middle was missing this even though every engine-host's
                 // own `translate_mouse_button`/native input path already
                 // fully implements `MouseButton::Middle`.
-                let egui_wants_it = consumed_by_egui
-                    && button != WinitMouseButton::Right
-                    && button != WinitMouseButton::Middle;
+                let egui_wants_it =
+                    consumed_by_egui && button != WinitMouseButton::Right && button != WinitMouseButton::Middle;
                 let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
                 let in_content = in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane;
                 if let Some(button) = translate_mouse_button(button) {
@@ -217,12 +216,10 @@ impl ApplicationHandler<UserEvent> for App {
                     // bug that gating it the same way as a press caused.
                     let target = match state {
                         ElementState::Pressed if in_content => self.focused.clone(),
-                        ElementState::Released => if matches!(button, MouseButton::Left) {
-                            self.native_drag_tab.take()
-                        } else {
-                            None
+                        ElementState::Released => {
+                            if matches!(button, MouseButton::Left) { self.native_drag_tab.take() } else { None }
+                                .or_else(|| in_content.then(|| self.focused.clone()).flatten())
                         }
-                        .or_else(|| in_content.then(|| self.focused.clone()).flatten()),
                         ElementState::Pressed => None,
                     };
                     if let Some(id) = target {
@@ -258,9 +255,7 @@ impl ApplicationHandler<UserEvent> for App {
                             // surface (and so this event's `x`/`y`) is in --
                             // neither needs converting.
                             let (dx, dy) = match delta {
-                                winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                                    (x as f64 * 20.0, y as f64 * 20.0)
-                                }
+                                winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64 * 20.0, y as f64 * 20.0),
                                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
                             };
                             node.tab.send(&HostToEngine::Input(InputEvent::Scroll {
@@ -283,14 +278,8 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             if let Some(key) = translate_key_code(event.physical_key) {
                                 let input = match event.state {
-                                    ElementState::Pressed => InputEvent::KeyDown {
-                                        key,
-                                        modifiers: self.key_modifiers,
-                                    },
-                                    ElementState::Released => InputEvent::KeyUp {
-                                        key,
-                                        modifiers: self.key_modifiers,
-                                    },
+                                    ElementState::Pressed => InputEvent::KeyDown { key, modifiers: self.key_modifiers },
+                                    ElementState::Released => InputEvent::KeyUp { key, modifiers: self.key_modifiers },
                                 };
                                 node.tab.send(&HostToEngine::Input(input));
                             }
@@ -302,9 +291,7 @@ impl ApplicationHandler<UserEvent> for App {
                             if event.state == ElementState::Pressed {
                                 if let Some(text) = &event.text {
                                     for ch in text.chars() {
-                                        node.tab.send(&HostToEngine::Input(InputEvent::Char {
-                                            codepoint: ch as u32,
-                                        }));
+                                        node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
                                     }
                                 }
                             }
@@ -321,7 +308,10 @@ impl ApplicationHandler<UserEvent> for App {
                     .map(|t| format!("{:?} {}", t.tab.kind, t.url));
                 crash_report::record_state(format!(
                     "view_mode={:?} headless={} node_count={} focused_tab={:?}",
-                    self.view_mode, self.headless, self.nodes.len(), focused_tab
+                    self.view_mode,
+                    self.headless,
+                    self.nodes.len(),
+                    focused_tab
                 ));
                 self.drain_tab_events();
                 // Checked before building this frame's UI so that, the
@@ -428,11 +418,8 @@ impl App {
                 vec![]
             }
         } else if self.showing_tab_view() {
-            let screen = self
-                .window
-                .as_ref()
-                .map(|w| w.inner_size())
-                .unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let screen =
+                self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
             let top = self.chrome_height_points();
             let full_rect = egui::Rect::from_min_size(
                 egui::pos2(0.0, top),
@@ -461,10 +448,7 @@ impl App {
         let content_panes_px: Vec<((f32, f32, f32, f32), &str)> = content_panes_pts
             .iter()
             .map(|(rect, id)| {
-                (
-                    (rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp),
-                    id.as_str(),
-                )
+                ((rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp), id.as_str())
             })
             .collect();
 
@@ -482,12 +466,7 @@ impl App {
                     Some((&self.egui_ctx, output)),
                     screenshot_path.as_deref(),
                 ),
-                None => gpu.render(
-                    &content_panes_px,
-                    content_on_top,
-                    None,
-                    screenshot_path.as_deref(),
-                ),
+                None => gpu.render(&content_panes_px, content_on_top, None, screenshot_path.as_deref()),
             };
             if outcome.surface_ok {
                 self.pending_screenshot = None;
@@ -504,15 +483,16 @@ impl App {
 
     /// A screenshot `render_frame` just took: toasts where it went, or
     /// turns it into the pending PDF.
-    pub(crate) fn handle_screenshot_result(&mut self, screenshot_path: Option<String>, result: Option<Result<(), String>>) {
+    pub(crate) fn handle_screenshot_result(
+        &mut self,
+        screenshot_path: Option<String>,
+        result: Option<Result<(), String>>,
+    ) {
         match result {
             Some(Ok(())) => {
                 if let Some(path) = screenshot_path {
                     if let Some(pdf_path) = self.pending_print_to_pdf.take() {
-                        match pdf::write_image_as_pdf(
-                            std::path::Path::new(&path),
-                            std::path::Path::new(&pdf_path),
-                        ) {
+                        match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
                             Ok(()) => {
                                 self.queue_toast(format!("Saved {pdf_path}"));
                             }
@@ -592,17 +572,24 @@ impl App {
     /// the second release is always within egui's double-click delay
     /// (0.3 s between frame times). Two `CLICK`s are a frame or more apart,
     /// and a slow headless frame pushes them past that.
-    pub(crate) fn debug_click(&mut self, event_loop: &ActiveEventLoop, x: f64, y: f64, button: WinitMouseButton, count: u8) {
+    pub(crate) fn debug_click(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        x: f64,
+        y: f64,
+        button: WinitMouseButton,
+        count: u8,
+    ) {
         self.dispatch_window_event(
             event_loop,
-            WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            },
+            WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
         );
         for _ in 0..count {
             for state in [ElementState::Pressed, ElementState::Released] {
-                self.dispatch_window_event(event_loop, WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button });
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button },
+                );
             }
         }
     }
@@ -617,44 +604,27 @@ impl App {
             DebugCommand::MouseMove { x, y } => {
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::CursorMoved {
-                        device_id: DeviceId::dummy(),
-                        position: PhysicalPosition::new(x, y),
-                    },
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
                 );
             }
             DebugCommand::MouseDown { x, y, button } => {
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::CursorMoved {
-                        device_id: DeviceId::dummy(),
-                        position: PhysicalPosition::new(x, y),
-                    },
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
                 );
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::MouseInput {
-                        device_id: DeviceId::dummy(),
-                        state: ElementState::Pressed,
-                        button,
-                    },
+                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Pressed, button },
                 );
             }
             DebugCommand::MouseUp { x, y, button } => {
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::CursorMoved {
-                        device_id: DeviceId::dummy(),
-                        position: PhysicalPosition::new(x, y),
-                    },
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
                 );
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::MouseInput {
-                        device_id: DeviceId::dummy(),
-                        state: ElementState::Released,
-                        button,
-                    },
+                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button },
                 );
             }
             DebugCommand::Click { x, y, button } => self.debug_click(event_loop, x, y, button, 1),
@@ -662,10 +632,7 @@ impl App {
             DebugCommand::Scroll { x, y, delta_x, delta_y } => {
                 self.dispatch_window_event(
                     event_loop,
-                    WindowEvent::CursorMoved {
-                        device_id: DeviceId::dummy(),
-                        position: PhysicalPosition::new(x, y),
-                    },
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
                 );
                 self.dispatch_window_event(
                     event_loop,
@@ -689,10 +656,18 @@ impl App {
             DebugCommand::AddressBar(_) => eprintln!("debug: ADDRESSBAR ignored: not in Tab view"),
             // Real key presses for the next frame's egui input, so they go
             // through the same checks a keyboard does, in any view.
-            DebugCommand::Enter => self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE)),
-            DebugCommand::Escape => self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE)),
-            DebugCommand::ArrowDown => self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE)),
-            DebugCommand::ArrowUp => self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE)),
+            DebugCommand::Enter => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
+            }
+            DebugCommand::Escape => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
+            }
+            DebugCommand::ArrowDown => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
+            }
+            DebugCommand::ArrowUp => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
+            }
             DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
             DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
             DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
@@ -702,8 +677,7 @@ impl App {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                         for ch in text.chars() {
-                            node.tab
-                                .send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
+                            node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
                         }
                     }
                 }
@@ -711,14 +685,8 @@ impl App {
             DebugCommand::KeyPage(key) => {
                 if let Some(id) = self.focused.clone() {
                     if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown {
-                            key,
-                            modifiers: self.key_modifiers,
-                        }));
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp {
-                            key,
-                            modifiers: self.key_modifiers,
-                        }));
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
                     }
                 }
             }
@@ -789,9 +757,15 @@ impl App {
                 self.build_session_snapshot().save_to(std::path::Path::new(&path));
             }
             DebugCommand::ExportState(path) => {
-                let focused_url = self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+                let focused_url = self
+                    .focused
+                    .as_ref()
+                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|n| n.as_tab())
+                    .map(|t| t.url.clone());
                 let suggestions: Vec<String> = self
-                    .address_bar.combined()
+                    .address_bar
+                    .combined()
                     .into_iter()
                     .map(|s| match s {
                         Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
@@ -836,12 +810,10 @@ impl App {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
                 }
             }
-            DebugCommand::ImportSession(path) => {
-                match session::Session::load_from(std::path::Path::new(&path)) {
-                    Ok(session) => self.pending_import = Some(session),
-                    Err(err) => self.queue_toast(err),
-                }
-            }
+            DebugCommand::ImportSession(path) => match session::Session::load_from(std::path::Path::new(&path)) {
+                Ok(session) => self.pending_import = Some(session),
+                Err(err) => self.queue_toast(err),
+            },
             DebugCommand::ConfirmImport => {
                 if let Some(session) = self.pending_import.take() {
                     self.replace_running_session(session);
@@ -868,25 +840,21 @@ impl App {
                     }
                 }
             }
-            DebugCommand::ImportGroup(path) => {
-                match group_export::load_from(std::path::Path::new(&path)) {
-                    Ok(export) => self.import_group_export(export),
-                    Err(err) => self.queue_toast(err),
-                }
-            }
+            DebugCommand::ImportGroup(path) => match group_export::load_from(std::path::Path::new(&path)) {
+                Ok(export) => self.import_group_export(export),
+                Err(err) => self.queue_toast(err),
+            },
             DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
             }
-            DebugCommand::ImportBookmarks(path) => {
-                match bookmarks::load_from(std::path::Path::new(&path)) {
-                    Ok(imported) => {
-                        self.bookmarks = imported;
-                        bookmarks::save(&self.bookmarks);
-                    }
-                    Err(err) => self.queue_toast(err),
+            DebugCommand::ImportBookmarks(path) => match bookmarks::load_from(std::path::Path::new(&path)) {
+                Ok(imported) => {
+                    self.bookmarks = imported;
+                    bookmarks::save(&self.bookmarks);
                 }
-            }
+                Err(err) => self.queue_toast(err),
+            },
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
@@ -1008,8 +976,7 @@ impl App {
         // idle page, staying well within what this loop could already keep
         // up with (confirmed live: an otherwise-identical idle-memory test
         // with CEF as the default engine stayed flat).
-        let mut frame_updates: std::collections::HashMap<String, FrameUpdate> =
-            std::collections::HashMap::new();
+        let mut frame_updates: std::collections::HashMap<String, FrameUpdate> = std::collections::HashMap::new();
         let mut messages: Vec<(String, EngineToHost)> = Vec::new();
         for tab_id in &self.node_order {
             let Some(tab) = self.nodes.get(tab_id).and_then(|n| n.as_tab()) else {
@@ -1113,11 +1080,8 @@ impl App {
             // while this fetch was still in flight -- only convert it if
             // it's still the same tab still showing the same url that
             // triggered the fetch in the first place.
-            let still_current = self
-                .nodes
-                .get(&result.tab_id)
-                .and_then(|n| n.as_tab())
-                .is_some_and(|t| t.url == result.url);
+            let still_current =
+                self.nodes.get(&result.tab_id).and_then(|n| n.as_tab()).is_some_and(|t| t.url == result.url);
             if let (true, Some(path)) = (still_current, result.path) {
                 match result.kind {
                     RedirectKind::Image => self.redirect_tab_to_image(&result.tab_id, path),
@@ -1137,11 +1101,9 @@ impl App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_frame(&update.tab_id, &pixels, update.width, update.height, format);
                 }
-            } else if let Ok(buf) = SharedFrameBuffer::open_existing(
-                frame_path(&update.socket_id),
-                update.width,
-                update.height,
-            ) {
+            } else if let Ok(buf) =
+                SharedFrameBuffer::open_existing(frame_path(&update.socket_id), update.width, update.height)
+            {
                 // The engine-host truncates-then-grows this file when
                 // (re)creating it (see SharedFrameBuffer::create), which
                 // briefly exposes a 0-byte or otherwise wrong-sized file to
@@ -1288,11 +1250,8 @@ impl App {
                 // `CHROME_HEIGHT_POINTS`'s other call sites). Only
                 // meaningful for the tab currently on screen.
                 if self.focused.as_deref() == Some(tab_id) {
-                    self.context_menu = Some(ContextMenuState {
-                        x: x as f32 / ppp,
-                        y: y as f32 / ppp + CHROME_HEIGHT_POINTS,
-                        href,
-                    });
+                    self.context_menu =
+                        Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }
             EngineToHost::DownloadStarted { path, total_bytes } => {

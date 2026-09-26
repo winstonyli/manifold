@@ -14,9 +14,9 @@ use super::*;
 pub(crate) fn clicked_outside_popup(ui: &egui::Ui, area_rect: egui::Rect, anchor_rect: Option<egui::Rect>) -> bool {
     ui.input(|i| {
         i.pointer.any_click()
-            && i.pointer.interact_pos().is_some_and(|pos| {
-                !area_rect.contains(pos) && anchor_rect.map_or(true, |r| !r.contains(pos))
-            })
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| !area_rect.contains(pos) && anchor_rect.map_or(true, |r| !r.contains(pos)))
     })
 }
 
@@ -48,16 +48,15 @@ pub(crate) fn build_list_popup_frame(
         .interactable(interactable)
         .show(ctx, |ui| {
             ui.set_opacity(fade);
-            popup_frame(ui)
-                .show(ui, |ui| {
-                    ui.set_min_width(min_width);
-                    // An infinite cap makes egui lay out NaN rects; no cap
-                    // lets the area size to its contents.
-                    if max_width.is_finite() {
-                        ui.set_max_width(max_width);
-                    }
-                    add_contents(ui);
-                });
+            popup_frame(ui).show(ui, |ui| {
+                ui.set_min_width(min_width);
+                // An infinite cap makes egui lay out NaN rects; no cap
+                // lets the area size to its contents.
+                if max_width.is_finite() {
+                    ui.set_max_width(max_width);
+                }
+                add_contents(ui);
+            });
         })
         .response
         .rect
@@ -165,7 +164,11 @@ impl App {
     ) -> Option<(egui::Rect, f32)> {
         let open = self.open_popup == Some(which);
         let fade = ctx.animate_bool(egui::Id::new(("anchored_popup_fade", which)), open);
-        if fade > 0.0 { anchor.map(|rect| (rect, fade)) } else { None }
+        if fade > 0.0 {
+            anchor.map(|rect| (rect, fade))
+        } else {
+            None
+        }
     }
 
     /// One of the three engine pickers (Settings' default and current-tab
@@ -198,43 +201,44 @@ impl App {
         let open = self.open_popup == Some(AnchoredPopup::RecentlyClosed);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "recently_closed_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-            for (index, entry) in self.closed.iter().enumerate().rev() {
-                ui.horizontal(|ui| {
-                    let label = match &entry.nodes[0].piece {
-                        ClosedPiece::Tab { url, kind, .. } => {
-                            engine_dot(ui, *kind, 8.0);
-                            url.clone()
+                for (index, entry) in self.closed.iter().enumerate().rev() {
+                    ui.horizontal(|ui| {
+                        let label = match &entry.nodes[0].piece {
+                            ClosedPiece::Tab { url, kind, .. } => {
+                                engine_dot(ui, *kind, 8.0);
+                                url.clone()
+                            }
+                            ClosedPiece::Group { name } => {
+                                ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+                                format!("{name} ({})", entry.nodes.len() - 1)
+                            }
+                            ClosedPiece::Note(text) => {
+                                ui.label(egui_phosphor::light::NOTE_PENCIL);
+                                text.lines().next().unwrap_or_default().to_string()
+                            }
+                            ClosedPiece::Image(path) => {
+                                ui.label(egui_phosphor::light::IMAGE);
+                                path.clone()
+                            }
+                            ClosedPiece::Pdf(path) => {
+                                ui.label(egui_phosphor::light::FILE_PDF);
+                                path.clone()
+                            }
+                            ClosedPiece::Json(path) | ClosedPiece::JsonLeaf { path, .. } => {
+                                ui.label(egui_phosphor::light::BRACKETS_CURLY);
+                                path.clone()
+                            }
+                        };
+                        if ui
+                            .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            reopen_index = Some(index);
                         }
-                        ClosedPiece::Group { name } => {
-                            ui.label(egui_phosphor::light::FOLDER_SIMPLE);
-                            format!("{name} ({})", entry.nodes.len() - 1)
-                        }
-                        ClosedPiece::Note(text) => {
-                            ui.label(egui_phosphor::light::NOTE_PENCIL);
-                            text.lines().next().unwrap_or_default().to_string()
-                        }
-                        ClosedPiece::Image(path) => {
-                            ui.label(egui_phosphor::light::IMAGE);
-                            path.clone()
-                        }
-                        ClosedPiece::Pdf(path) => {
-                            ui.label(egui_phosphor::light::FILE_PDF);
-                            path.clone()
-                        }
-                        ClosedPiece::Json(path) | ClosedPiece::JsonLeaf { path, .. } => {
-                            ui.label(egui_phosphor::light::BRACKETS_CURLY);
-                            path.clone()
-                        }
-                    };
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        reopen_index = Some(index);
-                    }
-                });
-            }
-        });
+                    });
+                }
+            });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
@@ -267,105 +271,91 @@ impl App {
         let open = self.open_popup == Some(AnchoredPopup::Bookmarks);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "bookmarks_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.bookmarks_filter)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Filter..."),
-            );
-            let matches: Vec<(usize, &bookmarks::Bookmark)> = self
-                .bookmarks
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
-                .collect();
-            let mut folders: Vec<&str> = matches
-                .iter()
-                .filter_map(|(_, b)| b.folder.as_deref())
-                .collect();
-            folders.sort_unstable();
-            folders.dedup();
-            // `None` (unfoldered) first, then each named folder
-            // alphabetically -- `folders` is already sorted.
-            let groups: Vec<Option<&str>> =
-                std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
-            if matches.is_empty() {
-                ui.label(egui::RichText::new("No bookmarks yet.").weak());
-            }
-            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                for folder in groups {
-                    let rows: Vec<&(usize, &bookmarks::Bookmark)> = matches
-                        .iter()
-                        .filter(|(_, b)| b.folder.as_deref() == folder)
-                        .collect();
-                    if rows.is_empty() {
-                        continue;
-                    }
-                    if let Some(name) = folder {
-                        ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
-                    }
-                    for (index, bookmark) in rows {
-                        let (index, bookmark) = (*index, *bookmark);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    egui::Label::new(&bookmark.title)
-                                        .truncate()
-                                        .sense(egui::Sense::click()),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                navigate_url = Some(bookmark.url.clone());
-                            }
-                            if ui.small_button(egui_phosphor::light::X).clicked() {
-                                remove_index = Some(index);
-                            }
-                        });
-                        let is_renaming = self
-                            .renaming_bookmark_folder
-                            .as_ref()
-                            .is_some_and(|(url, _)| url == &bookmark.url);
-                        if is_renaming {
-                            if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
-                                let response = ui.add(
-                                    egui::TextEdit::singleline(draft)
-                                        .desired_width(140.0)
-                                        .hint_text("Folder (blank for none)")
-                                        .font(egui::TextStyle::Small),
-                                );
-                                if take_focus(&mut self.pending_focus, FocusTarget::BookmarkFolder) {
-                                    response.request_focus();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.bookmarks_filter)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Filter..."),
+                );
+                let matches: Vec<(usize, &bookmarks::Bookmark)> = self
+                    .bookmarks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| filter_matches(&self.bookmarks_filter, &[&b.title, &b.url]))
+                    .collect();
+                let mut folders: Vec<&str> = matches.iter().filter_map(|(_, b)| b.folder.as_deref()).collect();
+                folders.sort_unstable();
+                folders.dedup();
+                // `None` (unfoldered) first, then each named folder
+                // alphabetically -- `folders` is already sorted.
+                let groups: Vec<Option<&str>> = std::iter::once(None).chain(folders.into_iter().map(Some)).collect();
+                if matches.is_empty() {
+                    ui.label(egui::RichText::new("No bookmarks yet.").weak());
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for folder in groups {
+                        let rows: Vec<&(usize, &bookmarks::Bookmark)> =
+                            matches.iter().filter(|(_, b)| b.folder.as_deref() == folder).collect();
+                        if rows.is_empty() {
+                            continue;
+                        }
+                        if let Some(name) = folder {
+                            ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
+                        }
+                        for (index, bookmark) in rows {
+                            let (index, bookmark) = (*index, *bookmark);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    navigate_url = Some(bookmark.url.clone());
                                 }
-                                if response.lost_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                        folder_rename_cancel = true;
-                                    } else {
-                                        folder_rename_commit = Some(draft.clone());
+                                if ui.small_button(egui_phosphor::light::X).clicked() {
+                                    remove_index = Some(index);
+                                }
+                            });
+                            let is_renaming =
+                                self.renaming_bookmark_folder.as_ref().is_some_and(|(url, _)| url == &bookmark.url);
+                            if is_renaming {
+                                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(draft)
+                                            .desired_width(140.0)
+                                            .hint_text("Folder (blank for none)")
+                                            .font(egui::TextStyle::Small),
+                                    );
+                                    if take_focus(&mut self.pending_focus, FocusTarget::BookmarkFolder) {
+                                        response.request_focus();
+                                    }
+                                    if response.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            folder_rename_cancel = true;
+                                        } else {
+                                            folder_rename_commit = Some(draft.clone());
+                                        }
                                     }
                                 }
+                            } else {
+                                let label = bookmark.folder.as_deref().unwrap_or("No folder");
+                                if ui
+                                    .add(
+                                        egui::Label::new(egui::RichText::new(label).small().weak())
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_text("Click to set folder")
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    folder_rename_start =
+                                        Some((bookmark.url.clone(), bookmark.folder.clone().unwrap_or_default()));
+                                }
                             }
-                        } else {
-                            let label = bookmark.folder.as_deref().unwrap_or("No folder");
-                            if ui
-                                .add(
-                                    egui::Label::new(egui::RichText::new(label).small().weak())
-                                        .sense(egui::Sense::click()),
-                                )
-                                .on_hover_text("Click to set folder")
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                folder_rename_start = Some((
-                                    bookmark.url.clone(),
-                                    bookmark.folder.clone().unwrap_or_default(),
-                                ));
-                            }
+                            ui.add_space(2.0);
                         }
-                        ui.add_space(2.0);
                     }
-                }
+                });
             });
-        });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
@@ -419,33 +409,34 @@ impl App {
         let open = self.open_popup == Some(AnchoredPopup::History);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "history_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.history_filter)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Filter..."),
-            );
-            if self.history.is_empty() {
-                ui.label(egui::RichText::new("No history yet.").weak());
-            }
-            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                for entry in self.history.iter().rev() {
-                    let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                    if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
-                        continue;
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.history_filter)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Filter..."),
+                );
+                if self.history.is_empty() {
+                    ui.label(egui::RichText::new("No history yet.").weak());
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for entry in self.history.iter().rev() {
+                        let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                        if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
+                            continue;
+                        }
+                        if ui
+                            .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            navigate_url = Some(entry.url.clone());
+                        }
                     }
-                    if ui.add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        navigate_url = Some(entry.url.clone());
-                    }
+                });
+                ui.separator();
+                if ui.button("Clear").clicked() {
+                    clear_requested = true;
                 }
             });
-            ui.separator();
-            if ui.button("Clear").clicked() {
-                clear_requested = true;
-            }
-        });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
@@ -483,66 +474,66 @@ impl App {
         let open = self.open_popup == Some(AnchoredPopup::Downloads);
         let area_rect =
             build_list_popup_frame(ui.ctx(), "downloads_popup", anchor_rect, 220.0, 320.0, fade, open, |ui| {
-            if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
-                ui.label(egui::RichText::new("No downloads yet.").weak());
-            }
-            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                for id in self.node_order.iter().rev() {
-                    let Some(node) = self.nodes.get(id).and_then(|n| n.as_download()) else { continue };
-                    ui.horizontal(|ui| {
-                        let filename = download_filename(&node.path);
-                        if ui
-                            .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            reveal_id = Some(id.clone());
-                        }
-                        if ui.small_button(egui_phosphor::light::X).clicked() {
-                            remove_id = Some(id.clone());
-                        }
-                    });
-                    // In-progress downloads get a live progress row below
-                    // the filename; a completed one is left exactly as
-                    // before this feature -- just the filename row above.
-                    if !node.completed {
-                        match node.total_bytes {
-                            Some(total) if total > 0 => {
-                                let fraction = (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);
-                                ui.add(
-                                    egui::ProgressBar::new(fraction)
-                                        .text(format!(
-                                            "{} / {}",
-                                            human_bytes(node.bytes_received),
-                                            human_bytes(total)
-                                        ))
-                                        .desired_width(f32::INFINITY),
-                                );
+                if !self.node_order.iter().any(|id| self.nodes.get(id).is_some_and(|n| n.as_download().is_some())) {
+                    ui.label(egui::RichText::new("No downloads yet.").weak());
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for id in self.node_order.iter().rev() {
+                        let Some(node) = self.nodes.get(id).and_then(|n| n.as_download()) else { continue };
+                        ui.horizontal(|ui| {
+                            let filename = download_filename(&node.path);
+                            if ui
+                                .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                reveal_id = Some(id.clone());
                             }
-                            // No `Content-Length` to size a fraction
-                            // against (chunked transfer) -- a byte count
-                            // with no bar/percentage is honest; a bar stuck
-                            // at some arbitrary fraction (or a fake
-                            // "indeterminate" scroll egui has no built-in
-                            // support for) would just be a guess.
-                            _ => {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!(
-                                            "Downloading… {}",
-                                            human_bytes(node.bytes_received)
-                                        ))
-                                        .small()
-                                        .weak(),
-                                    )
-                                    .wrap(),
-                                );
+                            if ui.small_button(egui_phosphor::light::X).clicked() {
+                                remove_id = Some(id.clone());
+                            }
+                        });
+                        // In-progress downloads get a live progress row below
+                        // the filename; a completed one is left exactly as
+                        // before this feature -- just the filename row above.
+                        if !node.completed {
+                            match node.total_bytes {
+                                Some(total) if total > 0 => {
+                                    let fraction = (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);
+                                    ui.add(
+                                        egui::ProgressBar::new(fraction)
+                                            .text(format!(
+                                                "{} / {}",
+                                                human_bytes(node.bytes_received),
+                                                human_bytes(total)
+                                            ))
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                }
+                                // No `Content-Length` to size a fraction
+                                // against (chunked transfer) -- a byte count
+                                // with no bar/percentage is honest; a bar stuck
+                                // at some arbitrary fraction (or a fake
+                                // "indeterminate" scroll egui has no built-in
+                                // support for) would just be a guess.
+                                _ => {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "Downloading… {}",
+                                                human_bytes(node.bytes_received)
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
                             }
                         }
                     }
-                }
+                });
             });
-        });
 
         let clicked_outside = clicked_outside_popup(ui, area_rect, Some(anchor_rect));
 
@@ -573,13 +564,18 @@ impl App {
     /// toolbar as cramped -- confirmed live, text touching the window edge
     /// even at 1300pt wide). Same anchored Area/Frame pattern
     /// `build_downloads_popup` already uses.
-    pub(crate) fn build_tab_actions_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, focused_id: &str, fade: f32) {
+    pub(crate) fn build_tab_actions_popup(
+        &mut self,
+        ui: &mut egui::Ui,
+        anchor_rect: egui::Rect,
+        focused_id: &str,
+        fade: f32,
+    ) {
         let mut close = false;
         let mut mute_others = false;
         let mut close_others = false;
         let mut toggle_pin_all = false;
-        let tab_pin_states: Vec<bool> =
-            self.nodes.values().filter_map(|n| n.as_tab()).map(|t| t.pinned).collect();
+        let tab_pin_states: Vec<bool> = self.nodes.values().filter_map(|n| n.as_tab()).map(|t| t.pinned).collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
@@ -587,25 +583,23 @@ impl App {
             .interactable(self.open_popup == Some(AnchoredPopup::TabActions))
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                popup_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_min_width(140.0);
-                        if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
-                            mute_others = true;
-                            close = true;
-                        }
-                        if ui.button("Close Others").on_hover_text("Close every other open tab").clicked()
-                        {
-                            close_others = true;
-                            close = true;
-                        }
-                        let label = if all_pinned { "Unpin All" } else { "Pin All" };
-                        let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
-                        if ui.button(label).on_hover_text(hover).clicked() {
-                            toggle_pin_all = true;
-                            close = true;
-                        }
-                    });
+                popup_frame(ui).show(ui, |ui| {
+                    ui.set_min_width(140.0);
+                    if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
+                        mute_others = true;
+                        close = true;
+                    }
+                    if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
+                        close_others = true;
+                        close = true;
+                    }
+                    let label = if all_pinned { "Unpin All" } else { "Pin All" };
+                    let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
+                    if ui.button(label).on_hover_text(hover).clicked() {
+                        toggle_pin_all = true;
+                        close = true;
+                    }
+                });
             });
 
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
@@ -646,10 +640,7 @@ impl App {
         if self.find.text.is_empty() {
             node.tab.send(&HostToEngine::FindStop);
         } else {
-            node.tab.send(&HostToEngine::FindStart {
-                text: self.find.text.clone(),
-                match_case: self.find.match_case,
-            });
+            node.tab.send(&HostToEngine::FindStart { text: self.find.text.clone(), match_case: self.find.match_case });
         }
     }
 
@@ -697,78 +688,73 @@ impl App {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, CHROME_HEIGHT_POINTS + 6.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut self.find.text)
-                                    .desired_width(160.0)
-                                    .hint_text("Find in page"),
-                            );
-                            if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {
-                                response.request_focus();
-                            }
-                            if response.changed() {
-                                text_changed = true;
-                            }
-                            if ui
-                                .toggle_value(&mut self.find.match_case, "Aa")
-                                .on_hover_text("Match case")
-                                .changed()
-                            {
-                                text_changed = true;
-                            }
-                            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                if ui.input(|i| i.modifiers.shift) {
-                                    go_prev = true;
-                                } else {
-                                    go_next = true;
-                                }
-                            }
-
-                            match self.find.result {
-                                Some((0, _)) => {
-                                    ui.label("No results");
-                                }
-                                // WebKit never reports `active_index` (see
-                                // `EngineToHost::FindResult`'s doc comment)
-                                // — show just the count, not "0 of N".
-                                Some((count, 0)) => {
-                                    ui.label(format!("{count}"));
-                                }
-                                Some((count, active)) => {
-                                    ui.label(format!("{active}/{count}"));
-                                }
-                                None => {}
-                            }
-
-                            // Prev/Next stay plain ASCII labels, not Unicode
-                            // arrow glyphs — confirmed live that `▲`/`▼`
-                            // render as empty tofu boxes with this app's own
-                            // font (unlike `◀`/`▶`/`⚙` elsewhere in this same
-                            // toolbar, which do render). Not migrated to
-                            // `egui_phosphor` alongside the close button
-                            // below -- out of scope for the cosmetic-only
-                            // "x"/"X" pass that touched everything else here.
-                            let has_matches = matches!(self.find.result, Some((count, _)) if count > 0);
-                            if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
+                popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.find.text)
+                                .desired_width(160.0)
+                                .hint_text("Find in page"),
+                        );
+                        if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {
+                            response.request_focus();
+                        }
+                        if response.changed() {
+                            text_changed = true;
+                        }
+                        if ui.toggle_value(&mut self.find.match_case, "Aa").on_hover_text("Match case").changed() {
+                            text_changed = true;
+                        }
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if ui.input(|i| i.modifiers.shift) {
                                 go_prev = true;
-                            }
-                            if ui.add_enabled(has_matches, egui::Button::new("Next")).clicked() {
+                            } else {
                                 go_next = true;
                             }
-                            // Was a literal capital "X" -- confirmed live
-                            // that `✕` tofu-boxed here (same finding the
-                            // comment above already documents), so this one
-                            // used the ASCII fallback rather than a Unicode
-                            // glyph. Now the real `X` icon instead, once the
-                            // icon font was already in place for the other
-                            // close buttons in this app's chrome.
-                            if ui.button(egui_phosphor::light::X).clicked() {
-                                close = true;
+                        }
+
+                        match self.find.result {
+                            Some((0, _)) => {
+                                ui.label("No results");
                             }
-                        });
+                            // WebKit never reports `active_index` (see
+                            // `EngineToHost::FindResult`'s doc comment)
+                            // — show just the count, not "0 of N".
+                            Some((count, 0)) => {
+                                ui.label(format!("{count}"));
+                            }
+                            Some((count, active)) => {
+                                ui.label(format!("{active}/{count}"));
+                            }
+                            None => {}
+                        }
+
+                        // Prev/Next stay plain ASCII labels, not Unicode
+                        // arrow glyphs — confirmed live that `▲`/`▼`
+                        // render as empty tofu boxes with this app's own
+                        // font (unlike `◀`/`▶`/`⚙` elsewhere in this same
+                        // toolbar, which do render). Not migrated to
+                        // `egui_phosphor` alongside the close button
+                        // below -- out of scope for the cosmetic-only
+                        // "x"/"X" pass that touched everything else here.
+                        let has_matches = matches!(self.find.result, Some((count, _)) if count > 0);
+                        if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
+                            go_prev = true;
+                        }
+                        if ui.add_enabled(has_matches, egui::Button::new("Next")).clicked() {
+                            go_next = true;
+                        }
+                        // Was a literal capital "X" -- confirmed live
+                        // that `✕` tofu-boxed here (same finding the
+                        // comment above already documents), so this one
+                        // used the ASCII fallback rather than a Unicode
+                        // glyph. Now the real `X` icon instead, once the
+                        // icon font was already in place for the other
+                        // close buttons in this app's chrome.
+                        if ui.button(egui_phosphor::light::X).clicked() {
+                            close = true;
+                        }
                     });
+                });
             });
 
         if text_changed {
@@ -796,9 +782,7 @@ impl App {
             .iter()
             .filter(|id| {
                 self.nodes.get(id.as_str()).and_then(|n| n.as_tab()).is_some_and(|n| {
-                    query.is_empty()
-                        || n.title.to_lowercase().contains(&query)
-                        || n.url.to_lowercase().contains(&query)
+                    query.is_empty() || n.title.to_lowercase().contains(&query) || n.url.to_lowercase().contains(&query)
                 })
             })
             .cloned()
@@ -846,12 +830,9 @@ impl App {
     pub(crate) fn build_quick_switcher(&mut self, ui: &mut egui::Ui) {
         let current = self.quick_switcher.clone();
         let is_live = current.is_some();
-        let Some((switcher, fade)) = fade_popup_state(
-            ui.ctx(),
-            egui::Id::new("quick_switcher_fade"),
-            &current,
-            &mut self.quick_switcher_cache,
-        ) else {
+        let Some((switcher, fade)) =
+            fade_popup_state(ui.ctx(), egui::Id::new("quick_switcher_fade"), &current, &mut self.quick_switcher_cache)
+        else {
             return;
         };
 
@@ -896,58 +877,50 @@ impl App {
             .interactable(is_live)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
-                dialog_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_width(360.0);
-                        if is_live {
-                            if let Some(switcher) = &mut self.quick_switcher {
-                                let response = ui.add(
-                                    egui::TextEdit::singleline(&mut switcher.query)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Search open tabs..."),
-                                );
-                                if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {
-                                    response.request_focus();
-                                }
+                dialog_frame(ui).show(ui, |ui| {
+                    ui.set_width(360.0);
+                    if is_live {
+                        if let Some(switcher) = &mut self.quick_switcher {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut switcher.query)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("Search open tabs..."),
+                            );
+                            if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {
+                                response.request_focus();
                             }
-                        } else {
-                            // Closing: a live `TextEdit` needs `&mut self.
-                            // quick_switcher`, which no longer exists once
-                            // it's actually `None` -- the fade past this
-                            // point is purely a visual echo of the last
-                            // real state, not something still editable.
-                            let placeholder = if query.is_empty() { "Search open tabs..." } else { &query };
-                            ui.label(placeholder);
                         }
-                        ui.separator();
-                        if matches.is_empty() {
-                            ui.label("No matching tabs");
-                        }
-                        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                            for (i, id) in matches.iter().enumerate() {
-                                let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { continue };
-                                let label = if node.title.is_empty() {
-                                    node.url.clone()
-                                } else {
-                                    node.title.clone()
-                                };
-                                if is_live {
-                                    if ui.selectable_label(i == selected_index, label).clicked() {
-                                        jump_to = Some(id.clone());
-                                    }
-                                } else {
-                                    // Non-interactive while closing --
-                                    // clicking a row already fading out
-                                    // would be a confusing "did that even
-                                    // do anything" moment.
-                                    ui.add_enabled(
-                                        false,
-                                        egui::Button::selectable(i == selected_index, label),
-                                    );
+                    } else {
+                        // Closing: a live `TextEdit` needs `&mut self.
+                        // quick_switcher`, which no longer exists once
+                        // it's actually `None` -- the fade past this
+                        // point is purely a visual echo of the last
+                        // real state, not something still editable.
+                        let placeholder = if query.is_empty() { "Search open tabs..." } else { &query };
+                        ui.label(placeholder);
+                    }
+                    ui.separator();
+                    if matches.is_empty() {
+                        ui.label("No matching tabs");
+                    }
+                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        for (i, id) in matches.iter().enumerate() {
+                            let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { continue };
+                            let label = if node.title.is_empty() { node.url.clone() } else { node.title.clone() };
+                            if is_live {
+                                if ui.selectable_label(i == selected_index, label).clicked() {
+                                    jump_to = Some(id.clone());
                                 }
+                            } else {
+                                // Non-interactive while closing --
+                                // clicking a row already fading out
+                                // would be a confusing "did that even
+                                // do anything" moment.
+                                ui.add_enabled(false, egui::Button::selectable(i == selected_index, label));
                             }
-                        });
+                        }
                     });
+                });
             });
 
         if let Some(id) = jump_to {
@@ -997,28 +970,27 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                dialog_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_width(360.0);
-                        ui.label(heading_text("Keyboard Shortcuts"));
-                        ui.separator();
-                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                            egui::Grid::new("shortcuts_help_grid")
-                                .num_columns(2)
-                                .spacing(egui::vec2(16.0, 6.0))
-                                .show(ui, |ui| {
-                                    for (keys, desc) in SHORTCUTS {
-                                        ui.monospace(*keys);
-                                        ui.label(*desc);
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                        ui.separator();
-                        if ui.button("Close").clicked() {
-                            self.shortcuts_help_open = false;
-                        }
+                dialog_frame(ui).show(ui, |ui| {
+                    ui.set_width(360.0);
+                    ui.label(heading_text("Keyboard Shortcuts"));
+                    ui.separator();
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        egui::Grid::new("shortcuts_help_grid").num_columns(2).spacing(egui::vec2(16.0, 6.0)).show(
+                            ui,
+                            |ui| {
+                                for (keys, desc) in SHORTCUTS {
+                                    ui.monospace(*keys);
+                                    ui.label(*desc);
+                                    ui.end_row();
+                                }
+                            },
+                        );
                     });
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        self.shortcuts_help_open = false;
+                    }
+                });
             });
 
         if clicked_outside_popup(ui, area.response.rect, anchor_rect) {
@@ -1044,40 +1016,29 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                dialog_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_min_width(240.0);
-                        ui.label(heading_text("Import Session"));
-                        ui.add_space(6.0);
-                        ui.label(format!(
-                            "Current session: {} tab{}",
-                            current,
-                            if current == 1 { "" } else { "s" }
-                        ));
-                        ui.label(format!(
-                            "Importing: {} tab{}",
-                            incoming,
-                            if incoming == 1 { "" } else { "s" }
-                        ));
-                        ui.add_space(4.0);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Importing replaces every currently open tab.")
-                                    .small()
-                                    .weak(),
-                            )
-                            .wrap(),
-                        );
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Import").clicked() {
-                                confirm = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                cancel = true;
-                            }
-                        });
+                dialog_frame(ui).show(ui, |ui| {
+                    ui.set_min_width(240.0);
+                    ui.label(heading_text("Import Session"));
+                    ui.add_space(6.0);
+                    ui.label(format!("Current session: {} tab{}", current, if current == 1 { "" } else { "s" }));
+                    ui.label(format!("Importing: {} tab{}", incoming, if incoming == 1 { "" } else { "s" }));
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("Importing replaces every currently open tab.").small().weak(),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Import").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
                     });
+                });
             });
         if confirm {
             if let Some(session) = self.pending_import.take() {
@@ -1135,46 +1096,45 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                dialog_frame(ui)
-                    .show(ui, |ui| {
-                        ui.set_width(560.0);
-                        ui.set_height(520.0);
-                        ui.horizontal(|ui| {
-                            ui.label(heading_text("JSON"));
-                            // See `ipc_protocol::EngineToHost::
-                            // RedirectableContent`'s own doc comment for
-                            // why this is the *only* opt-in, user-
-                            // triggered way a JSON tab ever becomes a
-                            // node -- unlike image/etc., which redirect
-                            // automatically, a JSON response is often a
-                            // live, refetchable API call worth keeping as
-                            // an ordinary tab.
-                            if raw_body.is_some()
-                                && ui.button("Save as Node").on_hover_text(
+                dialog_frame(ui).show(ui, |ui| {
+                    ui.set_width(560.0);
+                    ui.set_height(520.0);
+                    ui.horizontal(|ui| {
+                        ui.label(heading_text("JSON"));
+                        // See `ipc_protocol::EngineToHost::
+                        // RedirectableContent`'s own doc comment for
+                        // why this is the *only* opt-in, user-
+                        // triggered way a JSON tab ever becomes a
+                        // node -- unlike image/etc., which redirect
+                        // automatically, a JSON response is often a
+                        // live, refetchable API call worth keeping as
+                        // an ordinary tab.
+                        if raw_body.is_some()
+                            && ui
+                                .button("Save as Node")
+                                .on_hover_text(
                                     "Keep this JSON as a permanent graph node -- the tab keeps navigating normally",
-                                ).clicked()
-                            {
-                                save_as_node = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                        ui.separator();
-                        egui::ScrollArea::vertical().show(ui, |ui| match source {
-                            Source::Parsed(value) => draw_json_value(ui, "root", &value, true),
-                            Source::Raw(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-                                Ok(value) => draw_json_value(ui, "root", &value, true),
-                                Err(err) => {
-                                    ui.colored_label(
-                                        DANGER_COLOR,
-                                        format!("Invalid JSON: {err}"),
-                                    );
-                                    ui.add(egui::Label::new(&body).wrap());
-                                }
-                            },
-                        });
+                                )
+                                .clicked()
+                        {
+                            save_as_node = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
                     });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| match source {
+                        Source::Parsed(value) => draw_json_value(ui, "root", &value, true),
+                        Source::Raw(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                            Ok(value) => draw_json_value(ui, "root", &value, true),
+                            Err(err) => {
+                                ui.colored_label(DANGER_COLOR, format!("Invalid JSON: {err}"));
+                                ui.add(egui::Label::new(&body).wrap());
+                            }
+                        },
+                    });
+                });
             });
         if save_as_node {
             if let Some(body) = raw_body {

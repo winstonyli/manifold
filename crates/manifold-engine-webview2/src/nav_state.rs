@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{
-    take_pwstr, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
-    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    take_pwstr, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, HistoryChangedEventHandler,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
 };
-use windows::core::{HSTRING, PWSTR, BOOL};
+use windows::core::{BOOL, HSTRING, PWSTR};
 
 pub struct NavState {
     pub url: String,

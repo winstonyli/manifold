@@ -28,16 +28,15 @@ use std::time::Duration;
 
 use ipc_protocol::{transport, EngineToHost, HostToEngine, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller,
-    ICoreWebView2Environment, ICoreWebView2Environment3, ICoreWebView2_8,
-    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+    ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
+    ICoreWebView2Environment3, ICoreWebView2_8, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use webview2_com::{
     CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING};
-use windows::UI::Composition::ContainerVisual;
 use windows::Win32::Foundation::RECT;
+use windows::UI::Composition::ContainerVisual;
 
 use nav_state::new_shared_nav_state;
 
@@ -81,10 +80,8 @@ fn main() {
     // is a UI-affine component tied to the thread that pumps its message
     // loop (see window::pump_messages, called from this same thread below).
     unsafe {
-        let _ = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-        );
+        let _ =
+            windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
     }
 
     // DEVIATION from the brief: not called out in Task 3's brief text, but
@@ -101,9 +98,7 @@ fn main() {
     // requires one to exist. `_dispatcher_queue_controller`'s only purpose
     // is to stay alive for the whole process lifetime, same as `_job` below.
     unsafe {
-        let _ = windows::Win32::System::WinRT::RoInitialize(
-            windows::Win32::System::WinRT::RO_INIT_SINGLETHREADED,
-        );
+        let _ = windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_SINGLETHREADED);
     }
     let _dispatcher_queue_controller = unsafe {
         windows::Win32::System::WinRT::CreateDispatcherQueueController(
@@ -135,15 +130,13 @@ fn main() {
     let _job = setup_kill_on_exit_job();
 
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url =
-        std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
 
     // Same convention as manifold-engine-cef/-servo: manifold already created
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_engine`/`control` are one-directional (HostToEngine
     // in, EngineToHost out) -- see transport.rs's own doc comment.
-    let (host_to_engine, mut control) =
-        transport::connect_local_pair(&socket_id).expect("connect to manifold");
+    let (host_to_engine, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
     let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
     // Composition hosting against a real, off-screen host window -- see
@@ -154,16 +147,13 @@ fn main() {
     // own doc comment).
     let hwnd = window::create_hidden_window().expect("create hidden host window");
     let (_composition_target, root_visual) =
-        composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-            .expect("create composition target");
+        composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create composition target");
 
     let environment = create_environment().expect("create CoreWebView2Environment");
     let (comp_controller, controller, webview) =
         create_composition_controller(environment.clone(), hwnd).expect("create CoreWebView2CompositionController");
     unsafe {
-        comp_controller
-            .SetRootVisualTarget(&root_visual)
-            .expect("set composition root visual target");
+        comp_controller.SetRootVisualTarget(&root_visual).expect("set composition root visual target");
     }
 
     resize_controller(&controller, &root_visual, DEFAULT_WIDTH, DEFAULT_HEIGHT);
@@ -237,9 +227,7 @@ fn main() {
     let _ = scheme::register(&environment, &webview);
 
     unsafe {
-        webview
-            .Navigate(&HSTRING::from(&initial_url))
-            .expect("initial navigate");
+        webview.Navigate(&HSTRING::from(&initial_url)).expect("initial navigate");
     }
 
     let mut capture = Capture::new(&root_visual).expect("create capture pipeline");
@@ -305,10 +293,7 @@ fn main() {
                 }
                 HostToEngine::GetState => {
                     let url = nav_state.borrow().url.clone();
-                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState {
-                        url,
-                        zoom: 1.0,
-                    }));
+                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
                 }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(find) = &find_state {
@@ -334,8 +319,7 @@ fn main() {
                     let _ = webview.OpenDevToolsWindow();
                 },
                 HostToEngine::SetMuted { muted } => {
-                    let webview8: windows::core::Result<ICoreWebView2_8> =
-                        windows::core::Interface::cast(&webview);
+                    let webview8: windows::core::Result<ICoreWebView2_8> = windows::core::Interface::cast(&webview);
                     if let Ok(webview8) = webview8 {
                         let _ = unsafe { webview8.SetIsMuted(muted) };
                     }
@@ -429,13 +413,8 @@ fn main() {
                 if let Some(buf) = &mut frame_buffer {
                     buf.write_frame(&pixels);
                     frame_id += 1;
-                    let _ = control.send(&EngineToHost::FrameReady {
-                        frame_id,
-                        width,
-                        height,
-                        damage: None,
-                        pixels: None,
-                    });
+                    let _ =
+                        control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
                 }
             }
         }
@@ -448,9 +427,8 @@ fn main() {
 /// it alive for the process lifetime -- never queried or signaled again.
 fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -484,10 +462,8 @@ fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
         }),
         Box::new(move |error_code, environment| {
             error_code?;
-            tx.send(environment.ok_or_else(|| {
-                windows::core::Error::from(windows::Win32::Foundation::E_POINTER)
-            }))
-            .expect("send environment over mpsc channel");
+            tx.send(environment.ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER)))
+                .expect("send environment over mpsc channel");
             Ok(())
         }),
     )?;
@@ -505,8 +481,7 @@ fn create_composition_controller(
     environment: ICoreWebView2Environment,
     parent: windows::Win32::Foundation::HWND,
 ) -> webview2_com::Result<(ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2)> {
-    let environment3: ICoreWebView2Environment3 =
-        environment.cast().map_err(webview2_com::Error::WindowsError)?;
+    let environment3: ICoreWebView2Environment3 = environment.cast().map_err(webview2_com::Error::WindowsError)?;
     let (tx, rx) = mpsc::channel();
     CreateCoreWebView2CompositionControllerCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
@@ -516,27 +491,19 @@ fn create_composition_controller(
         }),
         Box::new(move |error_code, controller| {
             error_code?;
-            tx.send(controller.ok_or_else(|| {
-                windows::core::Error::from(windows::Win32::Foundation::E_POINTER)
-            }))
-            .expect("send composition controller over mpsc channel");
+            tx.send(controller.ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER)))
+                .expect("send composition controller over mpsc channel");
             Ok(())
         }),
     )?;
     let comp_controller = webview2_com::wait_with_pump(rx)??;
-    let controller: ICoreWebView2Controller =
-        comp_controller.cast().map_err(webview2_com::Error::WindowsError)?;
+    let controller: ICoreWebView2Controller = comp_controller.cast().map_err(webview2_com::Error::WindowsError)?;
     let webview = unsafe { controller.CoreWebView2() }?;
     Ok((comp_controller, controller, webview))
 }
 
 fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &ContainerVisual, width: u32, height: u32) {
-    let bounds = RECT {
-        left: 0,
-        top: 0,
-        right: width as i32,
-        bottom: height as i32,
-    };
+    let bounds = RECT { left: 0, top: 0, right: width as i32, bottom: height as i32 };
     unsafe {
         let _ = controller.SetBounds(bounds);
     }

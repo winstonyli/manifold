@@ -208,9 +208,7 @@ impl GpuState {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("create wgpu surface");
+        let surface = instance.create_surface(window.clone()).expect("create wgpu surface");
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -231,12 +229,8 @@ impl GpuState {
         .expect("request wgpu device");
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+        let surface_format =
+            surface_caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -341,44 +335,42 @@ impl GpuState {
         // surface's own `config.format` (the thumbnail texture egui_wgpu
         // registers must be exactly `Rgba8Unorm`, never sRGB -- see
         // `ThumbTexture`'s own doc comment).
-        let downsample_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("thumbnail downsample bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let downsample_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("thumbnail downsample bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let downsample_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("thumbnail downsample pipeline layout"),
-                bind_group_layouts: &[Some(&downsample_bind_group_layout)],
-                immediate_size: 0,
-            });
+                    count: None,
+                },
+            ],
+        });
+        let downsample_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("thumbnail downsample pipeline layout"),
+            bind_group_layouts: &[Some(&downsample_bind_group_layout)],
+            immediate_size: 0,
+        });
         let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("thumbnail downsample pipeline"),
             layout: Some(&downsample_pipeline_layout),
@@ -415,11 +407,7 @@ impl GpuState {
             mapped_at_creation: false,
         });
 
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &device,
-            config.format,
-            egui_wgpu::RendererOptions::default(),
-        );
+        let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, egui_wgpu::RendererOptions::default());
 
         Self {
             surface,
@@ -473,26 +461,11 @@ impl GpuState {
     /// pointed at a replacement texture via `update_egui_texture_from_wgpu_
     /// texture` when a new one is unavoidable, so callers holding onto that
     /// id never see it silently change.
-    pub fn upload_frame(
-        &mut self,
-        tab_id: &str,
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) {
-        let reuse_main = self
-            .tab_textures
-            .get(tab_id)
-            .is_some_and(|t| t.width == width && t.height == height && t.format == format);
+    pub fn upload_frame(&mut self, tab_id: &str, pixels: &[u8], width: u32, height: u32, format: wgpu::TextureFormat) {
+        let reuse_main =
+            self.tab_textures.get(tab_id).is_some_and(|t| t.width == width && t.height == height && t.format == format);
         if reuse_main {
-            Self::write_full_texture(
-                &self.queue,
-                &self.tab_textures[tab_id].texture,
-                pixels,
-                width,
-                height,
-            );
+            Self::write_full_texture(&self.queue, &self.tab_textures[tab_id].texture, pixels, width, height);
         } else {
             // `view_formats` includes this format's own non-sRGB
             // counterpart -- wgpu requires every format a texture will
@@ -504,11 +477,7 @@ impl GpuState {
                 &self.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("tab frame texture"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -524,33 +493,20 @@ impl GpuState {
                 label: Some("tab texture bind group"),
                 layout: &self.bind_group_layout,
                 entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
-            self.tab_textures
-                .insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group });
+            self.tab_textures.insert(tab_id.to_string(), TabTexture { texture, width, height, format, bind_group });
         }
 
         let (thumb_width, thumb_height) = Self::thumbnail_target_size(width, height, THUMBNAIL_MAX_SIZE);
-        let reuse_thumb = self
-            .thumbnails
-            .get(tab_id)
-            .is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
+        let reuse_thumb =
+            self.thumbnails.get(tab_id).is_some_and(|t| t.width == thumb_width && t.height == thumb_height);
         if !reuse_thumb {
             let thumb_texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tab thumbnail texture"),
-                size: wgpu::Extent3d {
-                    width: thumb_width,
-                    height: thumb_height,
-                    depth_or_array_layers: 1,
-                },
+                size: wgpu::Extent3d { width: thumb_width, height: thumb_height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -568,11 +524,7 @@ impl GpuState {
                 );
                 existing.egui_id
             } else {
-                self.egui_renderer.register_native_texture(
-                    &self.device,
-                    &thumb_view,
-                    wgpu::FilterMode::Linear,
-                )
+                self.egui_renderer.register_native_texture(&self.device, &thumb_view, wgpu::FilterMode::Linear)
             };
             self.thumbnails.insert(
                 tab_id.to_string(),
@@ -670,16 +622,13 @@ impl GpuState {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.downsample_params_buffer.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry { binding: 2, resource: self.downsample_params_buffer.as_entire_binding() },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("thumbnail downsample encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("thumbnail downsample encoder") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("thumbnail downsample pass"),
@@ -710,13 +659,7 @@ impl GpuState {
     /// `width * height * 4` bytes) into `texture` in place, for the
     /// "dimensions unchanged since last time" fast path both blocks in
     /// `upload_frame` share.
-    fn write_full_texture(
-        queue: &wgpu::Queue,
-        texture: &wgpu::Texture,
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-    ) {
+    fn write_full_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], width: u32, height: u32) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -725,11 +668,7 @@ impl GpuState {
                 aspect: wgpu::TextureAspect::All,
             },
             pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
     }
@@ -785,11 +724,7 @@ impl GpuState {
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("favicon texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -809,11 +744,8 @@ impl GpuState {
                 existing.egui_id,
             );
         } else {
-            let egui_id =
-                self.egui_renderer
-                    .register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-            self.favicons
-                .insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
+            let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
+            self.favicons.insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
             self.favicon_order.push_back(key.to_string());
             if self.favicon_order.len() > MAX_CACHED_FAVICONS {
                 if let Some(oldest) = self.favicon_order.pop_front() {
@@ -844,11 +776,7 @@ impl GpuState {
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("image node texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -861,8 +789,7 @@ impl GpuState {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
-        self.images
-            .insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
+        self.images.insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
     }
 
     /// The `egui::TextureId` for an image node's picture, if it decoded
@@ -936,11 +863,7 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: if clear {
-                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
+                    load: if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -983,11 +906,7 @@ impl GpuState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: if clear {
-                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
+                    load: if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1053,8 +972,7 @@ impl GpuState {
         let egui_output = egui_output.map(|(ctx, mut full_output)| {
             for (id, deltas) in &full_output.textures_delta.set {
                 for delta in deltas {
-                    self.egui_renderer
-                        .update_texture(&self.device, &self.queue, *id, delta);
+                    self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
                 }
             }
             for id in &full_output.textures_delta.free {
@@ -1076,14 +994,9 @@ impl GpuState {
             // yet) go unused this frame.
             _ => return RenderOutcome { surface_ok: false, screenshot_result: None },
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tab render encoder"),
-            });
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tab render encoder") });
 
         let width = self.config.width;
         let height = self.config.height;
@@ -1101,8 +1014,7 @@ impl GpuState {
         // offscreen screenshot pass below.
         let mut extra_command_buffers = Vec::new();
         let egui_draw = if let Some((ctx, full_output)) = egui_output {
-            let clipped_primitives =
-                ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
                 size_in_pixels: [width, height],
                 pixels_per_point: full_output.pixels_per_point,
@@ -1194,8 +1106,7 @@ impl GpuState {
             }
 
             let unpadded_bytes_per_row = width * 4;
-            let padded_bytes_per_row = unpadded_bytes_per_row
-                .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                 * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
             let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screenshot readback buffer"),
@@ -1223,11 +1134,7 @@ impl GpuState {
             (path.to_string(), readback_buffer, padded_bytes_per_row)
         });
 
-        self.queue.submit(
-            extra_command_buffers
-                .into_iter()
-                .chain(std::iter::once(encoder.finish())),
-        );
+        self.queue.submit(extra_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
         self.queue.present(frame);
 
         let screenshot_result = pending_screenshot.map(|(path, readback_buffer, padded_bytes_per_row)| {
@@ -1238,17 +1145,14 @@ impl GpuState {
             let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
             match rx.recv() {
                 Ok(Ok(())) => {
-                    let mapped = readback_buffer
-                        .get_mapped_range(..)
-                        .expect("mapped screenshot buffer");
+                    let mapped = readback_buffer.get_mapped_range(..).expect("mapped screenshot buffer");
                     let mut pixels = vec![0u8; (width * height * 4) as usize];
                     let unpadded_bytes_per_row = width * 4;
                     for row in 0..height {
                         let src_start = (row * padded_bytes_per_row) as usize;
                         let dst_start = (row * unpadded_bytes_per_row) as usize;
-                        pixels[dst_start..dst_start + unpadded_bytes_per_row as usize].copy_from_slice(
-                            &mapped[src_start..src_start + unpadded_bytes_per_row as usize],
-                        );
+                        pixels[dst_start..dst_start + unpadded_bytes_per_row as usize]
+                            .copy_from_slice(&mapped[src_start..src_start + unpadded_bytes_per_row as usize]);
                     }
                     drop(mapped);
                     readback_buffer.unmap();

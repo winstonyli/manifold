@@ -38,15 +38,9 @@ pub fn record_state(state: impl std::fmt::Display) {
 
 fn write_report(info: &std::panic::PanicHookInfo<'_>) {
     let backtrace = std::backtrace::Backtrace::force_capture();
-    let state = LAST_STATE
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_else(|| "(no state captured yet)".to_string());
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let state = LAST_STATE.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| "(no state captured yet)".to_string());
+    let timestamp =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let report = format!(
         "Manifold crash report -- unix time {timestamp}\n\n{info}\n\nLast known state:\n{state}\n\nBacktrace:\n{backtrace}\n"
     );

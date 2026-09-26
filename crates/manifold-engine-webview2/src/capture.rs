@@ -15,17 +15,14 @@ use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::UI::Composition::ContainerVisual;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::System::WinRT::Direct3D11::{
-    CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
-};
+use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
+use windows::UI::Composition::ContainerVisual;
 
 pub struct Capture {
     d3d_device: ID3D11Device,
@@ -44,8 +41,7 @@ impl Capture {
         let (d3d_device, d3d_context) = create_d3d11_device()?;
         let dxgi_device: IDXGIDevice = d3d_device.cast()?;
         let winrt_device = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device)? };
-        let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice =
-            winrt_device.cast()?;
+        let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice = winrt_device.cast()?;
 
         let item: GraphicsCaptureItem = GraphicsCaptureItem::CreateFromVisual(visual)?;
 
@@ -83,14 +79,7 @@ impl Capture {
 
         session.StartCapture()?;
 
-        Ok(Self {
-            d3d_device,
-            d3d_context,
-            frame_pool,
-            session,
-            latest,
-            staging: None,
-        })
+        Ok(Self { d3d_device, d3d_context, frame_pool, session, latest, staging: None })
     }
 
     /// Non-blocking: `None` most calls (no new frame since the last one --
@@ -138,9 +127,7 @@ impl Capture {
                 };
                 let mut staging: Option<ID3D11Texture2D> = None;
                 unsafe {
-                    self.d3d_device
-                        .CreateTexture2D(&staging_desc, None, Some(&mut staging))
-                        .ok()?;
+                    self.d3d_device.CreateTexture2D(&staging_desc, None, Some(&mut staging)).ok()?;
                 }
                 self.staging = Some((staging?, desc.Width, desc.Height));
             }
@@ -150,9 +137,7 @@ impl Capture {
 
             let mut mapped = Default::default();
             unsafe {
-                self.d3d_context
-                    .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                    .ok()?;
+                self.d3d_context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).ok()?;
             }
             // No cropping needed -- unlike `CreateForWindow` (which captured a
             // whole window including non-client chrome, requiring the old
@@ -181,10 +166,7 @@ impl Capture {
     /// can apply synchronously with no "wait for the next frame to tell us
     /// its real size" step needed.
     pub fn resize(&mut self, width: u32, height: u32) {
-        let size = windows::Graphics::SizeInt32 {
-            Width: width as i32,
-            Height: height as i32,
-        };
+        let size = windows::Graphics::SizeInt32 { Width: width as i32, Height: height as i32 };
         let _ = self.frame_pool.Recreate(
             &self
                 .d3d_device

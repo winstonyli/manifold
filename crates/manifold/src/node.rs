@@ -525,25 +525,62 @@ mod tests {
     // test can't construct. Its arm is covered by live Tab-view runs instead.
     #[test]
     fn maps_each_constructible_payload_variant_to_its_own_kind() {
-        assert_eq!(item_node_kind(&NodePayload::Download(DownloadPayload { path: "file.bin".into(), bytes_received: 0, total_bytes: Some(1024), completed: false })), ItemNodeKind::Download);
-        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })), ItemNodeKind::Group);
-        assert_eq!(item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })), ItemNodeKind::Note);
-        assert_eq!(item_node_kind(&NodePayload::Image(ImagePayload { path: "img.png".into(), width: 100, height: 100, error: None })), ItemNodeKind::Image);
-        assert_eq!(item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })), ItemNodeKind::Pdf);
-        assert_eq!(item_node_kind(&NodePayload::Json(JsonPayload { path: "data.json".into(), value: serde_json::Value::Null, key: None, error: None })), ItemNodeKind::Json);
+        assert_eq!(
+            item_node_kind(&NodePayload::Download(DownloadPayload {
+                path: "file.bin".into(),
+                bytes_received: 0,
+                total_bytes: Some(1024),
+                completed: false
+            })),
+            ItemNodeKind::Download
+        );
+        assert_eq!(
+            item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
+            ItemNodeKind::Group
+        );
+        assert_eq!(
+            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
+            ItemNodeKind::Note
+        );
+        assert_eq!(
+            item_node_kind(&NodePayload::Image(ImagePayload {
+                path: "img.png".into(),
+                width: 100,
+                height: 100,
+                error: None
+            })),
+            ItemNodeKind::Image
+        );
+        assert_eq!(
+            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
+            ItemNodeKind::Pdf
+        );
+        assert_eq!(
+            item_node_kind(&NodePayload::Json(JsonPayload {
+                path: "data.json".into(),
+                value: serde_json::Value::Null,
+                key: None,
+                error: None
+            })),
+            ItemNodeKind::Json
+        );
     }
 
     /// A failed tab's card is saved, exported and copied as its tab.
     #[test]
     fn saved_tab_keeps_a_failed_tab() {
-        assert_eq!((NodePayload::FailedTab(FailedTabPayload {
-        url: "https://example.org/".into(),
-        kind: EngineKind::Cef,
-        error: "no binary".into(),
-        pinned: true,
-        zoom_factor: 1.5,
-        retrying: false,
-    })).saved_tab(), Some(("https://example.org/", EngineKind::Cef)));
+        assert_eq!(
+            (NodePayload::FailedTab(FailedTabPayload {
+                url: "https://example.org/".into(),
+                kind: EngineKind::Cef,
+                error: "no binary".into(),
+                pinned: true,
+                zoom_factor: 1.5,
+                retrying: false,
+            }))
+            .saved_tab(),
+            Some(("https://example.org/", EngineKind::Cef))
+        );
         assert_eq!(NodePayload::Group(GroupPayload { name: "g".into(), from_json: false }).saved_tab(), None);
     }
 }

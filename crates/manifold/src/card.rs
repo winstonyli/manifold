@@ -104,7 +104,9 @@ pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardSty
             close_icon: egui::Color32::from_black_alpha(200),
             dim_rounding: 6.0,
         },
-        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::FailedTab => CardStyle { dim_rounding: 6.0, ..themed },
+        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::FailedTab => {
+            CardStyle { dim_rounding: 6.0, ..themed }
+        }
         // ACCENT at rest, as group cards have always been.
         ItemNodeKind::Group => CardStyle { border_idle: ACCENT, dim_rounding: 6.0, ..themed },
         _ => themed,
@@ -309,7 +311,11 @@ pub(crate) fn paint_card_control(
                 // A faint ring, so an uncolored card still shows where to
                 // click.
                 None => {
-                    ui.painter().circle_stroke(rect.center(), 6.0 * inv_zoom, egui::Stroke::new(1.5 * inv_zoom, style.border_idle));
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        6.0 * inv_zoom,
+                        egui::Stroke::new(1.5 * inv_zoom, style.border_idle),
+                    );
                 }
             }
         }
@@ -400,22 +406,37 @@ pub(crate) fn paint_card_control(
                 let base_y = rect.center().y + max_h / 2.0;
                 for i in 0..3 {
                     let phase = i as f64 * 1.7;
-                    let h = min_h
-                        + (max_h - min_h) * 0.5 * (1.0 + (t * 6.0 + phase).sin() as f32);
+                    let h = min_h + (max_h - min_h) * 0.5 * (1.0 + (t * 6.0 + phase).sin() as f32);
                     let x = base_x + i as f32 * (bar_w + gap);
-                    let bar_rect = egui::Rect::from_min_max(
-                        egui::Pos2::new(x, base_y - h),
-                        egui::Pos2::new(x + bar_w, base_y),
-                    );
+                    let bar_rect =
+                        egui::Rect::from_min_max(egui::Pos2::new(x, base_y - h), egui::Pos2::new(x + bar_w, base_y));
                     ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
                 }
             }
         }
         CardControl::Eject => {
-            paint_control_square(ui, deferred_overlays, rect, response.hovered(), ACCENT, egui_phosphor::light::SIGN_OUT, style, inv_zoom);
+            paint_control_square(
+                ui,
+                deferred_overlays,
+                rect,
+                response.hovered(),
+                ACCENT,
+                egui_phosphor::light::SIGN_OUT,
+                style,
+                inv_zoom,
+            );
         }
         CardControl::Close => {
-            paint_control_square(ui, deferred_overlays, rect, response.hovered(), DANGER_COLOR, egui_phosphor::light::X, style, inv_zoom);
+            paint_control_square(
+                ui,
+                deferred_overlays,
+                rect,
+                response.hovered(),
+                DANGER_COLOR,
+                egui_phosphor::light::X,
+                style,
+                inv_zoom,
+            );
         }
     }
     response
@@ -445,7 +466,13 @@ pub(crate) fn paint_control_square(
     let icon_pos = rect.center();
     let icon_color = style.close_icon;
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(project(icon_pos), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(14.0), icon_color);
+        overlay_painter.text(
+            project(icon_pos),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(14.0),
+            icon_color,
+        );
     }));
 }
 
@@ -540,7 +567,11 @@ impl App {
         let node = self.nodes.get(id)?;
         let kind = item_node_kind(&node.payload);
         let members: Vec<String> = if kind == ItemNodeKind::Group {
-            self.nodes.iter().filter(|(_, n)| n.group.as_deref() == Some(id)).map(|(member, _)| member.clone()).collect()
+            self.nodes
+                .iter()
+                .filter(|(_, n)| n.group.as_deref() == Some(id))
+                .map(|(member, _)| member.clone())
+                .collect()
         } else {
             Vec::new()
         };
@@ -599,7 +630,8 @@ impl App {
         // the card. The hover-only one covers the whole card, so hovering
         // a Note's text while editing (where `response` is only the
         // header) still counts; being hover-only it takes no clicks.
-        let response = ui.interact(body.interact_rect, egui::Id::new(("graph_card", id)), egui::Sense::click_and_drag());
+        let response =
+            ui.interact(body.interact_rect, egui::Id::new(("graph_card", id)), egui::Sense::click_and_drag());
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
@@ -619,7 +651,11 @@ impl App {
         let style = card_style(view.kind, ui.visuals());
         let (border_width, border_color) = card_border(&view, &style, hover_t);
         let mut background_shapes = card_glow_shapes(rect, 2.0, border_color, inv_zoom, 1.0 + hover_t * 0.8).to_vec();
-        background_shapes.push(egui::Shape::rect_filled(rect, 2.0 * inv_zoom, style.fill.gamma_multiply(1.0 + hover_t * 0.35)));
+        background_shapes.push(egui::Shape::rect_filled(
+            rect,
+            2.0 * inv_zoom,
+            style.fill.gamma_multiply(1.0 + hover_t * 0.35),
+        ));
         // Rectangle-select's highlight: a translucent ACCENT wash, distinct
         // from the focus border (an outline only), so a selected tab still
         // reads differently from the focused one when both apply. In the
@@ -653,13 +689,24 @@ impl App {
             );
         }
         // Registered after both interacts above, so they take the pointer.
-        let mut control = response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
+        let mut control =
+            response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
         let mut control_hovered = false;
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
                 continue;
             }
-            let control_response = paint_card_control(ui, deferred_overlays, card_control, rect, id, &view, &style, inv_zoom, self.graph_lod_simplified);
+            let control_response = paint_card_control(
+                ui,
+                deferred_overlays,
+                card_control,
+                rect,
+                id,
+                &view,
+                &style,
+                inv_zoom,
+                self.graph_lod_simplified,
+            );
             control_hovered |= control_response.hovered();
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action(view.kind));
@@ -694,7 +741,13 @@ impl App {
         }
 
         if let Some(node) = self.nodes.get(id) {
-            dim_if_filtered_out(deferred_overlays, &self.graph_filter, &card_filter_text(&node.payload), rect, style.dim_rounding);
+            dim_if_filtered_out(
+                deferred_overlays,
+                &self.graph_filter,
+                &card_filter_text(&node.payload),
+                rect,
+                style.dim_rounding,
+            );
         }
         Some(CardOutput { response, control })
     }
@@ -721,7 +774,9 @@ impl App {
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
             ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::FailedTab => self.paint_failed_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::FailedTab => {
+                self.paint_failed_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
+            }
         }
     }
 
@@ -743,11 +798,8 @@ impl App {
             return body;
         };
         let (url, retrying) = (failed.url.clone(), failed.retrying);
-        body.tooltip = Some(format!(
-            "Couldn't start {}: {}\nClick to try again.",
-            engine_label(failed.kind),
-            failed.error
-        ));
+        body.tooltip =
+            Some(format!("Couldn't start {}: {}\nClick to try again.", engine_label(failed.kind), failed.error));
         if self.graph_lod_simplified {
             return body;
         }
@@ -905,8 +957,7 @@ impl App {
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let header_h = 20.0 * inv_zoom;
-        let header_rect =
-            egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.min.y + header_h));
+        let header_rect = egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.min.y + header_h));
         let text_rect = egui::Rect::from_min_max(egui::Pos2::new(rect.min.x, rect.min.y + header_h), rect.max)
             .shrink(6.0 * inv_zoom);
         let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
@@ -1070,9 +1121,7 @@ impl App {
         let Some(state) = self.nodes.get(id).and_then(|n| n.as_pdf()).map(|pdf| match &pdf.outcome {
             None => None,
             Some(Err(err)) => Some(Err(err.clone())),
-            Some(Ok(outcome)) => {
-                Some(Ok((self.gpu.as_ref().and_then(|g| g.image_id(id)), outcome.page_count)))
-            }
+            Some(Ok(outcome)) => Some(Ok((self.gpu.as_ref().and_then(|g| g.image_id(id)), outcome.page_count))),
         }) else {
             return body;
         };
@@ -1101,8 +1150,7 @@ impl App {
                     // context menu/toolbar already gives.
                     if page_count > 0 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
                         let page_count_pos = rect.right_bottom();
-                        let page_count_text =
-                            format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
+                        let page_count_text = format!("{page_count} page{}", if page_count == 1 { "" } else { "s" });
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {
                             overlay_painter.text(
                                 project(page_count_pos) + egui::vec2(-4.0, -4.0),
@@ -1223,149 +1271,127 @@ impl App {
         let member_ids = &view.members;
         let member_count = member_ids.len();
         if !self.graph_lod_simplified {
-        if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
-            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
-            // labels entirely rather than truncating to a
-            // near-illegible sliver -- a group card has no
-            // other decoration to fall back on, so it's just
-            // a small colored card (or thumbnail grid) at
-            // this size.
-            let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
-            if member_count > 0 && !self.groups_collapsed {
-                // Member thumbnails: up to 4, a 2x2 grid
-                // filling the card above a bottom name strip
-                // -- like a folder icon previewing its own
-                // contents, using the exact same
-                // `GpuState::thumbnail_id` lookup a tab's
-                // own card already does. A cell with no
-                // thumbnail yet (still loading) falls back
-                // to a plain tinted square rather than
-                // leaving a hole.
-                let title_strip_h = 18.0 * inv_zoom;
-                let grid_rect = egui::Rect::from_min_max(
-                    rect.min,
-                    egui::Pos2::new(rect.max.x, rect.max.y - title_strip_h),
-                )
-                .shrink(4.0 * inv_zoom);
-                let gap = 3.0 * inv_zoom;
-                let cell_size = egui::vec2(
-                    (grid_rect.width() - gap) / 2.0,
-                    (grid_rect.height() - gap) / 2.0,
-                );
-                for (i, member_id) in member_ids.iter().take(4).enumerate() {
-                    let (col, row) = (i as f32 % 2.0, (i / 2) as f32);
-                    let cell_min = grid_rect.min
-                        + egui::vec2(col * (cell_size.x + gap), row * (cell_size.y + gap));
-                    let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
-                    match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
-                        Some(tex_id) => {
-                            ui.painter().image(
-                                tex_id,
-                                cell_rect,
-                                egui::Rect::from_min_max(
-                                    egui::Pos2::new(0.0, 0.0),
-                                    egui::Pos2::new(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        None => {
-                            ui.painter().rect_filled(
-                                cell_rect,
-                                2.0 * inv_zoom,
-                                ui.visuals().extreme_bg_color.gamma_multiply(1.2),
-                            );
+            if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
+                // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
+                // labels entirely rather than truncating to a
+                // near-illegible sliver -- a group card has no
+                // other decoration to fall back on, so it's just
+                // a small colored card (or thumbnail grid) at
+                // this size.
+                let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+                if member_count > 0 && !self.groups_collapsed {
+                    // Member thumbnails: up to 4, a 2x2 grid
+                    // filling the card above a bottom name strip
+                    // -- like a folder icon previewing its own
+                    // contents, using the exact same
+                    // `GpuState::thumbnail_id` lookup a tab's
+                    // own card already does. A cell with no
+                    // thumbnail yet (still loading) falls back
+                    // to a plain tinted square rather than
+                    // leaving a hole.
+                    let title_strip_h = 18.0 * inv_zoom;
+                    let grid_rect =
+                        egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.max.y - title_strip_h))
+                            .shrink(4.0 * inv_zoom);
+                    let gap = 3.0 * inv_zoom;
+                    let cell_size = egui::vec2((grid_rect.width() - gap) / 2.0, (grid_rect.height() - gap) / 2.0);
+                    for (i, member_id) in member_ids.iter().take(4).enumerate() {
+                        let (col, row) = (i as f32 % 2.0, (i / 2) as f32);
+                        let cell_min = grid_rect.min + egui::vec2(col * (cell_size.x + gap), row * (cell_size.y + gap));
+                        let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
+                        match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
+                            Some(tex_id) => {
+                                ui.painter().image(
+                                    tex_id,
+                                    cell_rect,
+                                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            None => {
+                                ui.painter().rect_filled(
+                                    cell_rect,
+                                    2.0 * inv_zoom,
+                                    ui.visuals().extreme_bg_color.gamma_multiply(1.2),
+                                );
+                            }
                         }
                     }
-                }
-                if show_labels {
-                    if member_count > 4 {
-                        let overflow_pos = grid_rect.right_bottom();
-                        let overflow_text = format!("+{}", member_count - 4);
+                    if show_labels {
+                        if member_count > 4 {
+                            let overflow_pos = grid_rect.right_bottom();
+                            let overflow_text = format!("+{}", member_count - 4);
+                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                                overlay_painter.text(
+                                    project(overflow_pos) + egui::vec2(-3.0, -3.0),
+                                    egui::Align2::RIGHT_BOTTOM,
+                                    overflow_text,
+                                    egui::FontId::proportional(12.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }));
+                        }
+                        let title_strip = egui::Rect::from_min_max(
+                            egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
+                            rect.right_bottom(),
+                        );
+                        ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
+                        let name_font = egui::FontId::proportional(13.0);
+                        let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                        let name = truncate_to_width(
+                            &mut self.truncate_cache,
+                            ui.ctx(),
+                            &node.name,
+                            &name_font,
+                            name_max_width,
+                        );
+                        let name_pos = title_strip.center();
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {
                             overlay_painter.text(
-                                project(overflow_pos) + egui::vec2(-3.0, -3.0),
-                                egui::Align2::RIGHT_BOTTOM,
-                                overflow_text,
-                                egui::FontId::proportional(12.0),
+                                project(name_pos),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                name_font,
                                 egui::Color32::WHITE,
                             );
                         }));
                     }
-                    let title_strip = egui::Rect::from_min_max(
-                        egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
-                        rect.right_bottom(),
-                    );
-                    ui.painter().rect_filled(
-                        title_strip,
-                        0.0,
-                        egui::Color32::from_black_alpha(160),
-                    );
-                    let name_font = egui::FontId::proportional(13.0);
+                } else if show_labels {
+                    // Nothing to preview (empty group), or
+                    // previews deliberately hidden by "Collapse
+                    // Groups" -- the original plain centered
+                    // name + tab-count layout, count included
+                    // either way so a collapsed non-empty group
+                    // doesn't read as empty.
+                    let name_font = egui::FontId::proportional(16.0);
                     let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                    let name = truncate_to_width(
-                        &mut self.truncate_cache,
-                        ui.ctx(),
-                        &node.name,
-                        &name_font,
-                        name_max_width,
-                    );
-                    let name_pos = title_strip.center();
+                    let name =
+                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), &node.name, &name_font, name_max_width);
+                    let name_pos = rect.center_top();
+                    let name_color = ui.visuals().text_color();
                     deferred_overlays.push(Box::new(move |overlay_painter, project| {
                         overlay_painter.text(
-                            project(name_pos),
-                            egui::Align2::CENTER_CENTER,
+                            project(name_pos) + egui::vec2(0.0, 14.0),
+                            egui::Align2::CENTER_TOP,
                             name,
                             name_font,
-                            egui::Color32::WHITE,
+                            name_color,
+                        );
+                    }));
+                    let count_label = format!("{} member{}", member_count, if member_count == 1 { "" } else { "s" });
+                    let count_pos = rect.center_bottom();
+                    let count_color = ui.visuals().weak_text_color();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(count_pos) + egui::vec2(0.0, -10.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            count_label,
+                            egui::FontId::proportional(14.0),
+                            count_color,
                         );
                     }));
                 }
-            } else if show_labels {
-                // Nothing to preview (empty group), or
-                // previews deliberately hidden by "Collapse
-                // Groups" -- the original plain centered
-                // name + tab-count layout, count included
-                // either way so a collapsed non-empty group
-                // doesn't read as empty.
-                let name_font = egui::FontId::proportional(16.0);
-                let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                let name = truncate_to_width(
-                    &mut self.truncate_cache,
-                    ui.ctx(),
-                    &node.name,
-                    &name_font,
-                    name_max_width,
-                );
-                let name_pos = rect.center_top();
-                let name_color = ui.visuals().text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(name_pos) + egui::vec2(0.0, 14.0),
-                        egui::Align2::CENTER_TOP,
-                        name,
-                        name_font,
-                        name_color,
-                    );
-                }));
-                let count_label = format!(
-                    "{} member{}",
-                    member_count,
-                    if member_count == 1 { "" } else { "s" }
-                );
-                let count_pos = rect.center_bottom();
-                let count_color = ui.visuals().weak_text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(count_pos) + egui::vec2(0.0, -10.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        count_label,
-                        egui::FontId::proportional(14.0),
-                        count_color,
-                    );
-                }));
             }
-        }
         }
         body
     }
@@ -1422,11 +1448,7 @@ impl App {
                     egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
-                ui.painter().rect_filled(
-                    title_strip,
-                    0.0,
-                    egui::Color32::from_black_alpha(160),
-                );
+                ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
                 // Engine identity as a small colored dot rather than
                 // repeating the "[Servo]"-style bracket text on every
                 // single node — the dot alone is enough once you've
@@ -1551,7 +1573,13 @@ mod tests {
         assert_eq!(tab(|v| v.pinned = true), vec![Swatch, Pin, Close]);
         assert_eq!(tab(|v| v.audio_playing = true), vec![Swatch, Pin, Audio, Close]);
         assert_eq!(tab(|v| v.muted = true), vec![Swatch, Pin, Audio, Close]);
-        assert_eq!(tab(|v| { v.muted = true; v.in_group = true; }), vec![Swatch, Pin, Audio, Eject, Close]);
+        assert_eq!(
+            tab(|v| {
+                v.muted = true;
+                v.in_group = true;
+            }),
+            vec![Swatch, Pin, Audio, Eject, Close]
+        );
         assert_eq!(Close.action(ItemNodeKind::Tab), NodeAction::Delete);
         assert_eq!(Pin.action(ItemNodeKind::Tab), NodeAction::TogglePin);
         assert_eq!(Audio.action(ItemNodeKind::Tab), NodeAction::ToggleMute);
@@ -1618,24 +1646,44 @@ mod tests {
 
     #[test]
     fn node_card_size_matches_each_kinds_card() {
-        let download = NodePayload::Download(DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: false });
+        let download = NodePayload::Download(DownloadPayload {
+            path: "f.bin".into(),
+            bytes_received: 0,
+            total_bytes: None,
+            completed: false,
+        });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
-        assert_eq!(node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
-        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })), GROUP_NODE_SIZE);
-        let json = NodePayload::Json(JsonPayload { path: "a.json".into(), value: serde_json::json!({}), key: None, error: None });
+        assert_eq!(
+            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })),
+            NOTE_NODE_SIZE
+        );
+        assert_eq!(
+            node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
+            GROUP_NODE_SIZE
+        );
+        let json = NodePayload::Json(JsonPayload {
+            path: "a.json".into(),
+            value: serde_json::json!({}),
+            key: None,
+            error: None,
+        });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
-        assert_eq!(node_card_size(&NodePayload::FailedTab(FailedTabPayload {
-            url: "https://example.org/".into(),
-            kind: EngineKind::Cef,
-            error: "no binary".into(),
-            pinned: true,
-            zoom_factor: 1.5,
-            retrying: false,
-        })), GRAPH_NODE_SIZE);
+        assert_eq!(
+            node_card_size(&NodePayload::FailedTab(FailedTabPayload {
+                url: "https://example.org/".into(),
+                kind: EngineKind::Cef,
+                error: "no binary".into(),
+                pinned: true,
+                zoom_factor: 1.5,
+                retrying: false,
+            })),
+            GRAPH_NODE_SIZE
+        );
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image = |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
+        let image =
+            |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -1646,27 +1694,63 @@ mod tests {
         let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
         assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
         assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
-        assert_eq!(node_card_size(&pdf(Some(Ok(PdfOutcome { width: 40, height: 20, page_count: 3 })))), egui::vec2(40.0, 20.0));
+        assert_eq!(
+            node_card_size(&pdf(Some(Ok(PdfOutcome { width: 40, height: 20, page_count: 3 })))),
+            egui::vec2(40.0, 20.0)
+        );
         assert_eq!(node_card_size(&pdf(Some(Ok(PdfOutcome { width: 100_000, height: 50_000, page_count: 1 })))), big);
     }
 
     #[test]
     fn card_filter_text_matches_each_kinds_filter_input() {
-        let download = NodePayload::Download(DownloadPayload { path: "C:/dl/f.bin".into(), bytes_received: 0, total_bytes: None, completed: true });
+        let download = NodePayload::Download(DownloadPayload {
+            path: "C:/dl/f.bin".into(),
+            bytes_received: 0,
+            total_bytes: None,
+            completed: true,
+        });
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(card_filter_text(&download), ["C:/dl/f.bin"]);
-        assert_eq!(card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false })), ["buy milk"]);
-        assert_eq!(card_filter_text(&NodePayload::Image(ImagePayload { path: "C:/pics/cat.png".into(), width: 1, height: 1, error: None })), ["cat.png"]);
-        assert_eq!(card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), ["paper.pdf"]);
-        assert_eq!(card_filter_text(&NodePayload::Json(JsonPayload { path: "C:/data/x.json".into(), value: serde_json::json!(1), key: None, error: None })), ["x.json"]);
-        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })), ["Reading"]);
-        assert_eq!(card_filter_text(&NodePayload::FailedTab(FailedTabPayload {
-            url: "https://example.org/".into(),
-            kind: EngineKind::Cef,
-            error: "no binary".into(),
-            pinned: true,
-            zoom_factor: 1.5,
-            retrying: false,
-        })), ["https://example.org/"]);
+        assert_eq!(
+            card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false })),
+            ["buy milk"]
+        );
+        assert_eq!(
+            card_filter_text(&NodePayload::Image(ImagePayload {
+                path: "C:/pics/cat.png".into(),
+                width: 1,
+                height: 1,
+                error: None
+            })),
+            ["cat.png"]
+        );
+        assert_eq!(
+            card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
+            ["paper.pdf"]
+        );
+        assert_eq!(
+            card_filter_text(&NodePayload::Json(JsonPayload {
+                path: "C:/data/x.json".into(),
+                value: serde_json::json!(1),
+                key: None,
+                error: None
+            })),
+            ["x.json"]
+        );
+        assert_eq!(
+            card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })),
+            ["Reading"]
+        );
+        assert_eq!(
+            card_filter_text(&NodePayload::FailedTab(FailedTabPayload {
+                url: "https://example.org/".into(),
+                kind: EngineKind::Cef,
+                error: "no binary".into(),
+                pinned: true,
+                zoom_factor: 1.5,
+                retrying: false,
+            })),
+            ["https://example.org/"]
+        );
     }
 }

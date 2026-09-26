@@ -68,12 +68,7 @@ impl SharedFrameBuffer {
     fn try_create(name: &str, width: u32, height: u32) -> io::Result<Self> {
         let path = frame_path(name);
         let len = (width as u64) * (height as u64) * 4;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)?;
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
         file.set_len(len)?;
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         Ok(Self { mmap, path, width, height })

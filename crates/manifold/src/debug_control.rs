@@ -53,6 +53,7 @@ use crate::UserEvent;
 /// them, since until the focused tab has spawned, commands that need it
 /// (e.g. `ADDDOWNLOAD`) do nothing.
 #[derive(Debug, Clone)]
+#[rustfmt::skip]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: MouseButton },
@@ -368,7 +369,10 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("FINDNEXT", "Find bar: next match"),
     ("FINDPREVIOUS", "Find bar: previous match"),
     ("CLOSEFINDBAR", "Close the find bar"),
-    ("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)"),
+    (
+        "SETVISIBLE true|false",
+        "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)",
+    ),
     ("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)"),
     ("RESIZE w h", "Resize the window to (w, h)"),
     ("QUIT", "Exit the app"),
@@ -479,19 +483,45 @@ fn parse_single_char_key(name: &str) -> Option<KeyCode> {
     }
     match ch.to_ascii_uppercase() {
         c @ 'A'..='Z' => Some(match c {
-            'A' => KeyCode::KeyA, 'B' => KeyCode::KeyB, 'C' => KeyCode::KeyC, 'D' => KeyCode::KeyD,
-            'E' => KeyCode::KeyE, 'F' => KeyCode::KeyF, 'G' => KeyCode::KeyG, 'H' => KeyCode::KeyH,
-            'I' => KeyCode::KeyI, 'J' => KeyCode::KeyJ, 'K' => KeyCode::KeyK, 'L' => KeyCode::KeyL,
-            'M' => KeyCode::KeyM, 'N' => KeyCode::KeyN, 'O' => KeyCode::KeyO, 'P' => KeyCode::KeyP,
-            'Q' => KeyCode::KeyQ, 'R' => KeyCode::KeyR, 'S' => KeyCode::KeyS, 'T' => KeyCode::KeyT,
-            'U' => KeyCode::KeyU, 'V' => KeyCode::KeyV, 'W' => KeyCode::KeyW, 'X' => KeyCode::KeyX,
-            'Y' => KeyCode::KeyY, 'Z' => KeyCode::KeyZ,
+            'A' => KeyCode::KeyA,
+            'B' => KeyCode::KeyB,
+            'C' => KeyCode::KeyC,
+            'D' => KeyCode::KeyD,
+            'E' => KeyCode::KeyE,
+            'F' => KeyCode::KeyF,
+            'G' => KeyCode::KeyG,
+            'H' => KeyCode::KeyH,
+            'I' => KeyCode::KeyI,
+            'J' => KeyCode::KeyJ,
+            'K' => KeyCode::KeyK,
+            'L' => KeyCode::KeyL,
+            'M' => KeyCode::KeyM,
+            'N' => KeyCode::KeyN,
+            'O' => KeyCode::KeyO,
+            'P' => KeyCode::KeyP,
+            'Q' => KeyCode::KeyQ,
+            'R' => KeyCode::KeyR,
+            'S' => KeyCode::KeyS,
+            'T' => KeyCode::KeyT,
+            'U' => KeyCode::KeyU,
+            'V' => KeyCode::KeyV,
+            'W' => KeyCode::KeyW,
+            'X' => KeyCode::KeyX,
+            'Y' => KeyCode::KeyY,
+            'Z' => KeyCode::KeyZ,
             _ => unreachable!(),
         }),
         c @ '0'..='9' => Some(match c {
-            '0' => KeyCode::Digit0, '1' => KeyCode::Digit1, '2' => KeyCode::Digit2, '3' => KeyCode::Digit3,
-            '4' => KeyCode::Digit4, '5' => KeyCode::Digit5, '6' => KeyCode::Digit6, '7' => KeyCode::Digit7,
-            '8' => KeyCode::Digit8, '9' => KeyCode::Digit9,
+            '0' => KeyCode::Digit0,
+            '1' => KeyCode::Digit1,
+            '2' => KeyCode::Digit2,
+            '3' => KeyCode::Digit3,
+            '4' => KeyCode::Digit4,
+            '5' => KeyCode::Digit5,
+            '6' => KeyCode::Digit6,
+            '7' => KeyCode::Digit7,
+            '8' => KeyCode::Digit8,
+            '9' => KeyCode::Digit9,
             _ => unreachable!(),
         }),
         _ => None,
@@ -515,10 +545,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
     let rest = rest.trim();
     let mut parts = rest.split_whitespace();
     match cmd.to_ascii_uppercase().as_str() {
-        "MOUSEMOVE" => Some(DebugCommand::MouseMove {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-        }),
+        "MOUSEMOVE" => Some(DebugCommand::MouseMove { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? }),
         "MOUSEDOWN" => Some(DebugCommand::MouseDown {
             x: parts.next()?.parse().ok()?,
             y: parts.next()?.parse().ok()?,
@@ -534,10 +561,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             y: parts.next()?.parse().ok()?,
             button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
         }),
-        "DOUBLECLICK" => Some(DebugCommand::DoubleClick {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-        }),
+        "DOUBLECLICK" => {
+            Some(DebugCommand::DoubleClick { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? })
+        }
         "SCROLL" => Some(DebugCommand::Scroll {
             x: parts.next()?.parse().ok()?,
             y: parts.next()?.parse().ok()?,
@@ -619,18 +645,18 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
         "ADDDOWNLOAD" => Some(DebugCommand::AddDownload(rest.to_string())).filter(|_| !rest.is_empty()),
-        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(
-            if rest.is_empty() { 60.0 } else { rest.parse().ok().filter(|s: &f64| *s >= 0.0)? },
-        ))),
+        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(if rest.is_empty() {
+            60.0
+        } else {
+            rest.parse().ok().filter(|s: &f64| *s >= 0.0)?
+        }))),
         "SLEEP" => Some(DebugCommand::Sleep(std::time::Duration::from_secs_f64(
             rest.parse().ok().filter(|s: &f64| *s >= 0.0)?,
         ))),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "EXPANDJSONASGRAPH" => {
-            Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty())
-        }
+        "EXPANDJSONASGRAPH" => Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty()),
         "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
         "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
         "HELP" | "?" => Some(DebugCommand::Help),

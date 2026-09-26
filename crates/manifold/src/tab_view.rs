@@ -159,7 +159,12 @@ impl App {
         ItemToolbarFrame { back_to_graph, shortcuts_help_button_rect, actions }
     }
 
-    pub(crate) fn render_item_toolbar_content(&mut self, node_id: &str, ui: &mut egui::Ui, trailing_ui: &mut egui::Ui) -> ItemToolbarActions {
+    pub(crate) fn render_item_toolbar_content(
+        &mut self,
+        node_id: &str,
+        ui: &mut egui::Ui,
+        trailing_ui: &mut egui::Ui,
+    ) -> ItemToolbarActions {
         let kind = match self.nodes.get(node_id) {
             Some(node) => item_node_kind(&node.payload),
             None => return ItemToolbarActions::default(),
@@ -176,7 +181,12 @@ impl App {
         }
     }
 
-    pub(crate) fn render_tab_toolbar_content(&mut self, focused_id: &str, ui: &mut egui::Ui, trailing_ui: &mut egui::Ui) -> ItemToolbarActions {
+    pub(crate) fn render_tab_toolbar_content(
+        &mut self,
+        focused_id: &str,
+        ui: &mut egui::Ui,
+        trailing_ui: &mut egui::Ui,
+    ) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let node = self.nodes[focused_id].as_tab().unwrap();
         toolbar_chip(ui, |ui| {
@@ -190,12 +200,22 @@ impl App {
             // `CARET_RIGHT` anyway once the icon font was already
             // in place, for the same visual consistency the other
             // icon migrations this session already have.
-            let back = chip_icon_button_enabled(ui, egui::Id::new("icon_btn_back"), egui_phosphor::light::CARET_LEFT, node.can_go_back);
+            let back = chip_icon_button_enabled(
+                ui,
+                egui::Id::new("icon_btn_back"),
+                egui_phosphor::light::CARET_LEFT,
+                node.can_go_back,
+            );
             grow(back.rect);
             if back.clicked() {
                 actions.go_back = true;
             }
-            let forward = chip_icon_button_enabled(ui, egui::Id::new("icon_btn_forward"), egui_phosphor::light::CARET_RIGHT, node.can_go_forward);
+            let forward = chip_icon_button_enabled(
+                ui,
+                egui::Id::new("icon_btn_forward"),
+                egui_phosphor::light::CARET_RIGHT,
+                node.can_go_forward,
+            );
             grow(forward.rect);
             if forward.clicked() {
                 actions.go_forward = true;
@@ -249,9 +269,7 @@ impl App {
             ui.allocate_ui_with_layout(
                 egui::vec2(FAVICON_SIZE.x, identity_slot_height),
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                |ui| {
-                    ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE)))
-                },
+                |ui| ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE))),
             );
         }
 
@@ -281,13 +299,9 @@ impl App {
         }
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
-            && icon_button_eased(
-                trailing_ui,
-                egui::Id::new("icon_btn_close_split"),
-                egui_phosphor::light::X,
-            )
-            .on_hover_text("Close Split")
-            .clicked()
+            && icon_button_eased(trailing_ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::light::X)
+                .on_hover_text("Close Split")
+                .clicked()
         {
             actions.close_split_requested = true;
         }
@@ -297,8 +311,7 @@ impl App {
         // secondary pane is view-only in this first cut, so its
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
-        let split_engine_response =
-            trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
+        let split_engine_response = trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
         if split_engine_response.clicked() {
             toggle_popup(&mut self.open_popup, AnchoredPopup::SplitEngine);
         }
@@ -315,8 +328,9 @@ impl App {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             };
             if has_json {
-                let response = chip_icon_button(ui, egui::Id::new("icon_btn_view_json"), egui_phosphor::light::BRACKETS_CURLY)
-                    .on_hover_text("View as JSON");
+                let response =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_view_json"), egui_phosphor::light::BRACKETS_CURLY)
+                        .on_hover_text("View as JSON");
                 grow(response.rect);
                 if response.clicked() {
                     self.json_viewer_node = Some(focused_id.to_string());
@@ -336,9 +350,8 @@ impl App {
             // entirely is worse than this one icon's border/height not
             // quite matching its `chip_icon_button` neighbor in the
             // same chip.
-            let bookmark = ui
-                .selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE)
-                .on_hover_text("Bookmark");
+            let bookmark =
+                ui.selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE).on_hover_text("Bookmark");
             grow(bookmark.rect);
             if bookmark.clicked() {
                 actions.toggle_bookmark_requested = true;
@@ -534,32 +547,31 @@ impl App {
                         // dropdown lines up with the address bar's edges.
                         let frame = popup_frame(ui);
                         let inner_width = rect.width() - frame.total_margin().sum().x;
-                        frame
-                            .show(ui, |ui| {
-                                ui.set_width(inner_width);
-                                // `ui.set_width` alone only sets the *container's*
-                                // layout width (affects wrapping/available_width),
-                                // not an individual `Button`'s own size — left
-                                // unset, each row was only as wide as its own
-                                // text, producing a ragged right edge instead of
-                                // a uniform list. `min_size`'s width stretches
-                                // each row to fill the container; height stays
-                                // `0.0` (no minimum) so natural row height/padding
-                                // is untouched.
-                                let full_width = ui.available_width();
-                                for (idx, suggestion) in combined.iter().enumerate() {
-                                    let highlighted = self.address_bar.highlighted == Some(idx);
-                                    let mut button = egui::Button::new(suggestion.label())
-                                        .truncate()
-                                        .min_size(egui::vec2(full_width, 0.0));
-                                    if highlighted {
-                                        button = button.fill(ACCENT);
-                                    }
-                                    if ui.add(button).clicked() {
-                                        accepted = Some(suggestion.clone());
-                                    }
+                        frame.show(ui, |ui| {
+                            ui.set_width(inner_width);
+                            // `ui.set_width` alone only sets the *container's*
+                            // layout width (affects wrapping/available_width),
+                            // not an individual `Button`'s own size — left
+                            // unset, each row was only as wide as its own
+                            // text, producing a ragged right edge instead of
+                            // a uniform list. `min_size`'s width stretches
+                            // each row to fill the container; height stays
+                            // `0.0` (no minimum) so natural row height/padding
+                            // is untouched.
+                            let full_width = ui.available_width();
+                            for (idx, suggestion) in combined.iter().enumerate() {
+                                let highlighted = self.address_bar.highlighted == Some(idx);
+                                let mut button = egui::Button::new(suggestion.label())
+                                    .truncate()
+                                    .min_size(egui::vec2(full_width, 0.0));
+                                if highlighted {
+                                    button = button.fill(ACCENT);
                                 }
-                            });
+                                if ui.add(button).clicked() {
+                                    accepted = Some(suggestion.clone());
+                                }
+                            }
+                        });
                     });
                 if let Some(suggestion) = accepted {
                     self.accept_suggestion(suggestion, &focused_id);
@@ -582,9 +594,7 @@ impl App {
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
         let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none();
-        if back_to_graph
-            || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed)
-        {
+        if back_to_graph || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed) {
             self.leave_to_graph();
             return;
         }
@@ -630,7 +640,8 @@ impl App {
         // (view-only in this first cut, see `split_tab`'s own doc comment).
         if let Some(split_id) = self.split_tab.clone() {
             let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-            let screen_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let screen_size =
+                self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
             let screen_max_y = screen_size.height as f32 / ppp;
             let divider_x = (screen_size.width as f32 / ppp) / 2.0;
             let kind = self.nodes.get(&split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
@@ -667,7 +678,8 @@ impl App {
         let has_content = self.gpu.as_ref().is_some_and(|g| g.has_tab_texture(&focused_id));
         if !has_content {
             let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-            let screen_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+            let screen_size =
+                self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
             let screen_width = screen_size.width as f32 / ppp;
             let screen_height = screen_size.height as f32 / ppp;
             let primary_width = if self.split_tab.is_some() { screen_width / 2.0 } else { screen_width };

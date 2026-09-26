@@ -105,9 +105,7 @@ impl Clock {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -559,7 +557,8 @@ mod tests {
     #[test]
     fn nodes_show_at_their_nearest_live_group() {
         let id = |counter| NodeId { actor: ActorId(1), counter };
-        let node = |kind, group: Option<u64>, deleted| Node { kind, fields: BTreeMap::new(), group: group.map(id), deleted };
+        let node =
+            |kind, group: Option<u64>, deleted| Node { kind, fields: BTreeMap::new(), group: group.map(id), deleted };
         let mut doc = Doc::new(DocId([0; 16]));
         doc.nodes.insert(id(1), node(Kind::Group, None, false));
         doc.nodes.insert(id(2), node(Kind::Group, Some(1), true)); // deleted, in 1

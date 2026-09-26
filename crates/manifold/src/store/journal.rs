@@ -397,7 +397,8 @@ fn decode_snapshot(buf: &[u8], actors: &Actors) -> Result<Doc, JournalError> {
                                     _ => {}
                                 }
                             }
-                            let stamp = stamp.ok_or_else(|| JournalError::Corrupt("register without a stamp".into()))?;
+                            let stamp =
+                                stamp.ok_or_else(|| JournalError::Corrupt("register without a stamp".into()))?;
                             node.fields.insert(no, Reg { stamp, enc });
                         }
                         _ => {}
@@ -1185,7 +1186,8 @@ mod tests {
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None).unwrap();
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+                .unwrap();
         }
         // 200 KB of appends against a tiny snapshot: compacted at least once.
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
@@ -1208,7 +1210,8 @@ mod tests {
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None).unwrap();
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+                .unwrap();
         }
         assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
         assert!(journal.close().is_err());
@@ -1261,7 +1264,11 @@ mod tests {
         // An ops frame whose top level carries a field this build doesn't know.
         let mut actors = Actors::default();
         actors.push(ActorId(1));
-        let op = Op { id: NodeId { actor: ActorId(1), counter: 100 }, hlc: Hlc { ms: now_ms() + 1000, logical: 0 }, body: OpBody::Delete { node: tab } };
+        let op = Op {
+            id: NodeId { actor: ActorId(1), counter: 100 },
+            hlc: Hlc { ms: now_ms() + 1000, logical: 0 },
+            body: OpBody::Delete { node: tab },
+        };
         let mut message = ops_message(&[op], &actors);
         let mut extra = Writer::new();
         extra.varint(9, 1);
@@ -1329,7 +1336,11 @@ mod tests {
         note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
         let set = |node, no, value| OpBody::Set { node, field: no, enc: encode_field(no, &value) };
         let bodies = vec![
-            OpBody::Create { node: group, kind: Kind::Group, fields: encode_field(field::NAME, &FieldValue::Str("g".into())) },
+            OpBody::Create {
+                node: group,
+                kind: Kind::Group,
+                fields: encode_field(field::NAME, &FieldValue::Str("g".into())),
+            },
             create,
             OpBody::Create { node: note, kind: Kind::Note, fields: note_fields },
             set(tab, field::ENGINE, FieldValue::Engine(2)),
@@ -1436,7 +1447,8 @@ mod tests {
         let mut rng = XorShift(0x5EED);
         for i in 0..10_000 {
             let bytes = damage(&mut rng, &seed);
-            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_damaged(&bytes, &path, i % 20 == 0)));
+            let run =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_damaged(&bytes, &path, i % 20 == 0)));
             if run.is_err() {
                 let keep = dir.join(format!("crash-{i}.mnf"));
                 std::fs::write(&keep, &bytes).unwrap();

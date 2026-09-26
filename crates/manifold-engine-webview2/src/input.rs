@@ -107,10 +107,7 @@ fn parse_json_string_or_null(json: &str) -> Option<String> {
     if trimmed == "null" {
         return None;
     }
-    trimmed
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .map(str::to_string)
+    trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(str::to_string)
 }
 
 /// Translates and dispatches one `ipc_protocol::InputEvent` -- mouse events
@@ -127,10 +124,9 @@ pub fn send_input(
     match event {
         InputEvent::MouseDown { x, y, button, .. } => {
             let (kind, keys) = match button {
-                MouseButton::Left => (
-                    COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON,
-                ),
+                MouseButton::Left => {
+                    (COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON)
+                }
                 MouseButton::Right => (
                     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
                     COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
@@ -209,16 +205,14 @@ pub fn send_input(
                 );
             }
         }
-        InputEvent::Scroll { x, y, delta_y, .. } => {
-            unsafe {
-                let _ = comp_controller.SendMouseInput(
-                    COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
-                    delta_y as i32 as u32,
-                    POINT { x: x as i32, y: y as i32 },
-                );
-            }
-        }
+        InputEvent::Scroll { x, y, delta_y, .. } => unsafe {
+            let _ = comp_controller.SendMouseInput(
+                COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
+                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                delta_y as i32 as u32,
+                POINT { x: x as i32, y: y as i32 },
+            );
+        },
         // See this module's own doc comment for why a CDP-injected key
         // event, unlike a hand-dispatched DOM `KeyboardEvent`, actually
         // triggers a key's default action.
@@ -235,12 +229,7 @@ pub fn send_input(
         // dispatching `Char` events actually typed the real string into the
         // field (screenshot showed the text and a real cursor).
         InputEvent::Char { codepoint } => {
-            exec(
-                webview,
-                format!(
-                    "document.execCommand('insertText', false, String.fromCodePoint({codepoint}));"
-                ),
-            );
+            exec(webview, format!("document.execCommand('insertText', false, String.fromCodePoint({codepoint}));"));
         }
     }
 }

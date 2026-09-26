@@ -31,11 +31,7 @@ pub struct DownloadResults {
 pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
 
 pub fn new_shared_download_path() -> SharedDownloadPath {
-    Rc::new(RefCell::new(DownloadResults {
-        queue: Vec::new(),
-        started: HashSet::new(),
-        reported: HashSet::new(),
-    }))
+    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), started: HashSet::new(), reported: HashSet::new() }))
 }
 
 /// `%USERPROFILE%\Downloads` -- CEF (unlike WebView2) has no built-in
@@ -44,9 +40,7 @@ pub fn new_shared_download_path() -> SharedDownloadPath {
 /// the (practically never, on a real Windows install) case `USERPROFILE`
 /// isn't set, rather than failing the download outright.
 fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join("Downloads"))
-        .unwrap_or_default()
+    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Downloads")).unwrap_or_default()
 }
 
 #[derive(Clone)]

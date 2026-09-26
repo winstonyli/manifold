@@ -3,17 +3,12 @@ use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-use crate::context_menu_handler::{
-    ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink,
-};
+use crate::context_menu_handler::{ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink};
 use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, SharedDownloadPath};
 use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
-use crate::life_span_handler::{
-    EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab,
-};
+use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab};
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedMuted,
-    SharedNavState,
+    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedMuted, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
 use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, REDIRECT_RESULT};

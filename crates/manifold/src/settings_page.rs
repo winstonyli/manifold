@@ -114,9 +114,8 @@ impl App {
 
         ui.add_space(8.0);
         ui.label("Default starting engine (new tabs)");
-        let combo_text =
-            egui::RichText::new(engine_label(self.settings.default_starting_engine))
-                .color(engine_color(self.settings.default_starting_engine));
+        let combo_text = egui::RichText::new(engine_label(self.settings.default_starting_engine))
+            .color(engine_color(self.settings.default_starting_engine));
         let default_engine_response = ui.button(combo_text);
         if default_engine_response.clicked() {
             toggle_popup(&mut self.open_popup, AnchoredPopup::DefaultEngine);
@@ -143,10 +142,7 @@ impl App {
 
         ui.add_space(8.0);
         ui.label("Home page (new tabs)");
-        if ui
-            .add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY))
-            .lost_focus()
-        {
+        if ui.add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY)).lost_focus() {
             self.save_settings();
         }
     }
@@ -165,10 +161,10 @@ impl App {
         // all, or Settings was reached with a non-tab node
         // (group/note/etc.) focused -- either way, nothing here
         // applies to it.
-        let focus_kind =
-            self.focused.clone().and_then(|id| {
-                self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.tab.kind).map(|kind| (id, kind))
-            });
+        let focus_kind = self
+            .focused
+            .clone()
+            .and_then(|id| self.nodes.get(&id).and_then(|n| n.as_tab()).map(|n| n.tab.kind).map(|kind| (id, kind)));
         match focus_kind {
             Some((id, kind)) => {
                 req.current_tab_id = Some(id.clone());
@@ -181,8 +177,7 @@ impl App {
                     }
                     req.current_engine_button_rect = Some(current_engine_response.rect);
                 });
-                let node_muted =
-                    self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
+                let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
                 let mute_label = if node_muted {
                     format!("{} Unmute", egui_phosphor::light::SPEAKER_X)
                 } else {
@@ -192,25 +187,17 @@ impl App {
                     req.mute_toggle = true;
                 }
                 ui.horizontal(|ui| {
-                    if ui
-                        .button(format!("{} Screenshot", egui_phosphor::light::CAMERA))
-                        .clicked()
-                    {
+                    if ui.button(format!("{} Screenshot", egui_phosphor::light::CAMERA)).clicked() {
                         req.screenshot_requested = true;
                     }
-                    if !self.headless
-                        && ui
-                            .button(format!("{} Print to PDF", egui_phosphor::light::PRINTER))
-                            .clicked()
+                    if !self.headless && ui.button(format!("{} Print to PDF", egui_phosphor::light::PRINTER)).clicked()
                     {
                         req.print_to_pdf_requested = true;
                     }
                 });
             }
             None => {
-                ui.add(
-                    egui::Label::new(egui::RichText::new("No tab focused").small().weak()).wrap(),
-                );
+                ui.add(egui::Label::new(egui::RichText::new("No tab focused").small().weak()).wrap());
             }
         }
     }
@@ -255,11 +242,7 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
         ui.label(heading_text("Sessions"));
-        if ui
-            .button("Save Now")
-            .on_hover_text("Write the auto-restore session.json immediately")
-            .clicked()
-        {
+        if ui.button("Save Now").on_hover_text("Write the auto-restore session.json immediately").clicked() {
             req.save_now_requested = true;
         }
         let last_saved = match self.last_session_save {
@@ -268,32 +251,21 @@ impl App {
         };
         ui.add(egui::Label::new(egui::RichText::new(last_saved).small().weak()).wrap());
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.session_name_draft)
-                    .desired_width(120.0)
-                    .hint_text("Name"),
-            );
+            ui.add(egui::TextEdit::singleline(&mut self.session_name_draft).desired_width(120.0).hint_text("Name"));
             if ui.button("Save As").clicked() {
                 req.save_as_requested = true;
             }
         });
         let names = session::Session::list_named();
         if names.is_empty() {
-            ui.add(
-                egui::Label::new(egui::RichText::new("No saved sessions").small().weak())
-                    .wrap(),
-            );
+            ui.add(egui::Label::new(egui::RichText::new("No saved sessions").small().weak()).wrap());
         }
         for name in names {
             ui.horizontal(|ui| {
                 if ui.button(&name).on_hover_text("Open").clicked() {
                     req.open_session_name = Some(name.clone());
                 }
-                if ui
-                    .small_button(egui_phosphor::light::X)
-                    .on_hover_text("Delete")
-                    .clicked()
-                {
+                if ui.small_button(egui_phosphor::light::X).on_hover_text("Delete").clicked() {
                     req.delete_session_name = Some(name.clone());
                 }
             });
@@ -375,9 +347,7 @@ impl App {
             }
         }
         if req.import_requested {
-            if let Some(path) =
-                rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file()
-            {
+            if let Some(path) = rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file() {
                 match session::Session::load_from(&path) {
                     Ok(session) => {
                         self.pending_import = Some(session);
@@ -394,9 +364,7 @@ impl App {
             }
         }
         if req.import_bookmarks_requested {
-            if let Some(path) =
-                rfd::FileDialog::new().add_filter("Bookmarks", &["json"]).pick_file()
-            {
+            if let Some(path) = rfd::FileDialog::new().add_filter("Bookmarks", &["json"]).pick_file() {
                 match bookmarks::load_from(&path) {
                     Ok(imported) => {
                         self.bookmarks = imported;
@@ -423,8 +391,7 @@ impl App {
             }
         }
         if req.print_to_pdf_requested {
-            if let Some(path) =
-                rfd::FileDialog::new().set_file_name("page.pdf").add_filter("PDF", &["pdf"]).save_file()
+            if let Some(path) = rfd::FileDialog::new().set_file_name("page.pdf").add_filter("PDF", &["pdf"]).save_file()
             {
                 self.start_print_to_pdf(path.to_string_lossy().into_owned());
             }
@@ -435,13 +402,15 @@ impl App {
     /// lists and the two engine pickers.
     pub(crate) fn build_settings_popups(&mut self, ui: &mut egui::Ui, req: &SettingsRequests) {
         let ctx = ui.ctx().clone();
-        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Bookmarks, req.bookmarks_button_rect) {
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Bookmarks, req.bookmarks_button_rect)
+        {
             self.build_bookmarks_popup(ui, rect, fade);
         }
         if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::History, req.history_button_rect) {
             self.build_history_popup(ui, rect, fade);
         }
-        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Downloads, req.downloads_button_rect) {
+        if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::Downloads, req.downloads_button_rect)
+        {
             self.build_downloads_popup(ui, rect, fade);
         }
         let default_engine = Some(self.settings.default_starting_engine);
