@@ -5,10 +5,10 @@
 # or README.md's "Headless mode" section), in a fresh isolated APPDATA so
 # the real %APPDATA%\manifold is never read or written.
 #
-#   SEED=<dir>      copy <dir>/*.json (settings.json, bookmarks.json, ...)
-#                   into the isolated profile first. The session itself is
-#                   session.mnf: to start from one, use APPDATA_DIR. Without
-#                   a session the first-launch demo scene loads
+#   SEED=<dir>      copy <dir>/*.json (settings.json, bookmarks.json, …)
+#                   into the isolated profile. <dir>/session.json, a JSON
+#                   snapshot ({"nodes": […]}, see store/json.rs), becomes the
+#                   profile's session.mnf.
 #   APPDATA_DIR=<dir>  use <dir> as the profile instead of a fresh one, and
 #                   keep it: a second run on the same <dir> restores the
 #                   session the first saved (<dir>/appdata/manifold/session.mnf)
@@ -58,7 +58,14 @@ else
   [ -n "${KEEP_APPDATA:-}" ] || trap 'rm -rf "$D"' EXIT
 fi
 export APPDATA="$(cygpath -w "$(cd "$D" && pwd)")\\appdata"
-[ -z "${SEED:-}" ] || cp "$SEED"/*.json "$D/appdata/manifold/"
+if [ -n "${SEED:-}" ]; then
+  for f in "$SEED"/*.json; do
+    [ "$(basename "$f")" = "session.json" ] || cp "$f" "$D/appdata/manifold/"
+  done
+  if [ -f "$SEED/session.json" ]; then
+    target/debug/manifold.exe --import-json "$(cygpath -w "$SEED/session.json")" --out "$(cygpath -w "$D/appdata/manifold/session.mnf")"
+  fi
+fi
 MODE=--headless; [ -z "${VISIBLE:-}" ] || MODE=--debug-commands
 while IFS= read -r line; do
   line=${line//\{repo\}/"$REPO_WIN"}

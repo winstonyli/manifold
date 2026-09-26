@@ -1,5 +1,6 @@
 mod bookmarks;
 mod card;
+mod cli;
 mod crash_report;
 mod debug_control;
 mod engine_info;
@@ -5102,6 +5103,13 @@ impl App {
 }
 
 fn main() {
+    crash_report::install();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run(&args) {
+        std::process::exit(code);
+    }
+
     // Must happen before the event loop/window are created. Confirmed live
     // that this process was *not* actually DPI-aware despite the assumption
     // that `winit` sets this up automatically: `window.scale_factor()`
@@ -5118,8 +5126,6 @@ fn main() {
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
-
-    crash_report::install();
     let headless = std::env::args().any(|arg| arg == "--headless");
     // Independent of `--headless` -- accepts the exact same stdin-driven
     // `DebugCommand` protocol, but on a completely normal, visible,
