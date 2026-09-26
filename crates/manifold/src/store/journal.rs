@@ -1675,7 +1675,8 @@ mod tests {
     }
 
     /// Damages one frame's message (keeping its CRC valid, so the damage
-    /// reaches the decoders), and sometimes the file itself.
+    /// reaches the decoders), and sometimes the file itself: a bit, a cut, a
+    /// zeroed or random run, or a run copied elsewhere.
     fn damage(rng: &mut XorShift, bytes: &[u8]) -> Vec<u8> {
         let header = read_header(bytes).unwrap();
         let frames = scan(&bytes[header.len..], header.len).frames;
@@ -1697,12 +1698,35 @@ mod tests {
             }
             encode_frame(&mut out, ty, &message);
         }
-        match rng.below(8) {
+        let run = |rng: &mut XorShift, len: usize, max: u64| {
+            let at = rng.below(len as u64) as usize;
+            (at, (at + 1 + rng.below(max) as usize).min(len))
+        };
+        match rng.below(12) {
             0 => {
                 let at = rng.below(out.len() as u64) as usize;
                 out[at] ^= 1 << rng.below(8);
             }
             1 => out.truncate(rng.below(out.len() as u64) as usize),
+            2 => {
+                // Zeros, as from writes persisted out of order.
+                let (at, end) = run(rng, out.len(), 64);
+                out[at..end].fill(0);
+            }
+            3 => {
+                let (at, end) = run(rng, out.len(), 64);
+                for byte in &mut out[at..end] {
+                    *byte = rng.next() as u8;
+                }
+            }
+            4 => {
+                // A run copied elsewhere, as from a misdirected write: it may
+                // duplicate whole frames, snapshots included.
+                let (from, end) = run(rng, out.len(), 256);
+                let copied = out[from..end].to_vec();
+                let at = rng.below(out.len() as u64 + 1) as usize;
+                out.splice(at..at, copied);
+            }
             _ => {}
         }
         out
@@ -1753,7 +1777,11 @@ mod tests {
                     let (_, create) = create_tab(&mut txn, "https://z.example/");
                     let _ = txn.commit(vec![create]);
                 }
-                let _ = journal.close();
+                let may_compact = !journal.keep_unknown && !journal.read_only;
+                if journal.close().is_ok() && may_compact {
+                    let mut again = Journal::open(path, ActorId(4)).expect("a repaired file opens");
+                    assert!(again.take_recovery().is_none(), "a compacting close left damage behind");
+                }
             }
             clear_siblings(path);
         }
@@ -1918,6 +1946,35 @@ mod tests {
         assert_eq!(journal.read_local().unwrap(), None);
         journal.write_local(b"again").unwrap();
         assert_eq!(journal.read_local().unwrap().as_deref(), Some(&b"again"[..]));
+    }
+
+    #[test]
+    fn damaged_personal_state_never_panics_or_reads_wrong() {
+        let dir = temp_dir("local-damaged");
+        let path = dir.join("session.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"some personal state").unwrap();
+        let clean = std::fs::read(local::path_for(&path)).unwrap();
+        let mut rng = XorShift(0x10CA1);
+        for _ in 0..2000 {
+            let mut bytes = clean.clone();
+            for _ in 0..1 + rng.below(3) {
+                if bytes.is_empty() {
+                    break;
+                }
+                let at = rng.below(bytes.len() as u64) as usize;
+                match rng.below(3) {
+                    0 => bytes[at] ^= 1 << rng.below(8),
+                    1 => bytes.truncate(at),
+                    _ => bytes.insert(at, rng.next() as u8),
+                }
+            }
+            std::fs::write(local::path_for(&path), &bytes).unwrap();
+            // The frame's CRC means any state read is the one written.
+            if let Ok(Some(state)) = journal.read_local() {
+                assert_eq!(state, b"some personal state");
+            }
+        }
     }
 
     #[test]
