@@ -24,7 +24,7 @@ Nothing outside `store/` uses the module yet (`#![allow(dead_code)]`).
 - Build and test with `-j 12`.
 - Every task ends with all of these green:
   - `cargo test -q -p manifold -j 12 store::` (the task gives the expected count);
-  - `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'` prints nothing;
+  - `cargo clippy -q -j 12 -p manifold -p ipc-protocol --all-targets -- -D warnings` passes (the pre-commit hook runs it and `cargo fmt --all --check`; never bypass it with `--no-verify`);
   - `cargo fmt --all --check`.
 - Tests touch files only under `store::testutil::temp_dir`. Nothing touches `%APPDATA%`, and no task runs the app.
 - `FORMAT_VERSION` stays `1` although the header and frames change. The format is unshipped, and nothing outside tests has written a `.mnf` file. (Assumption: verify with `git grep -n "Journal::open" -- crates/manifold/src ':!crates/manifold/src/store'`, which prints nothing.)
@@ -596,8 +596,7 @@ In `write_ops`, delete the whole `new_actors` block, from `let mut new_actors` t
 Run: `cargo test -q -p manifold -j 12 store::`
 Expected: 48 passed (47 + 1).
 
-Run: `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'`
-Expected: nothing.
+Run clippy as in Global Constraints. Expected: it passes.
 
 - [ ] **Step 10: Commit**
 
@@ -942,7 +941,7 @@ Check nothing is left: `grep -n "None)\|Some(b\"local\|(doc, _)\|\.local()" crat
 Run: `cargo test -q -p manifold -j 12 store::`
 Expected: 51 passed (48 + 3).
 
-Run clippy as in Global Constraints. Expected: nothing.
+Run clippy as in Global Constraints. Expected: it passes.
 
 - [ ] **Step 8: Commit**
 
@@ -2098,7 +2097,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```markdown
 ## Outcome (executed YYYY-MM-DD)
 
-Landed on `dev` as <first>..<last>: N `store::` tests; clippy clean in `store/`. Deviations from the blocks above: <list, or "none">.
+Landed on `dev` as <first>..<last>: N `store::` tests; clippy clean. Deviations from the blocks above: <list, or "none">.
 ```
 
 Fill in the real commits, the count and the deviations.
