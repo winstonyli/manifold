@@ -3,7 +3,7 @@
 //! diff that turns local edits into ops. The `impl App` half (restore,
 //! saving, other replicas' ops) follows it.
 
-// Wired into `App` by the next task; this attribute goes then.
+// Wired into `App` by Task 5; this attribute goes then.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -296,7 +296,7 @@ mod tests {
         let mut live: BTreeMap<NodeId, Shared> = BTreeMap::new();
         let mut next = 0;
         for _ in 0..200 {
-            match rng.below(4) {
+            match rng.below(5) {
                 0 | 1 => {
                     let groups: Vec<NodeId> =
                         live.iter().filter(|(_, s)| s.kind == Kind::Group).map(|(id, _)| *id).collect();
@@ -321,6 +321,18 @@ mod tests {
                     for n in doomed {
                         live.remove(&n);
                     }
+                }
+                4 if !live.is_empty() => {
+                    let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
+                    let groups: Vec<NodeId> =
+                        live.iter().filter(|(_, s)| s.kind == Kind::Group).map(|(id, _)| *id).collect();
+                    // A move into `key` itself or one of its descendants would create a cycle.
+                    let candidates: Vec<Option<NodeId>> = std::iter::once(None)
+                        .chain(groups.into_iter().map(Some))
+                        .filter(|&g| g != Some(key) && !g.is_some_and(|g| is_inside(&live, g, key)))
+                        .collect();
+                    let choice = candidates[rng.below(candidates.len() as u64) as usize];
+                    live.get_mut(&key).unwrap().group = choice;
                 }
                 _ => {}
             }
