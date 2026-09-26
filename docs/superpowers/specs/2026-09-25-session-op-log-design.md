@@ -41,6 +41,26 @@ it.
 - **Ids are `(actor, counter)`** with a fresh random actor per launch.
 - **Browsing history** moves out of sessions into its own
   `history.json` (it is app-wide, and today not saved at all).
+- **Self-contained frames** (format revision, 2026-09-25). Each `Ops`
+  and `Snapshot` frame carries its own actor table, author first, as
+  Automerge's chunks do. Any frame decodes without the others, so damage
+  costs only the damaged frame. An ops frame grows by about 15 B (median
+  60–64 B against 46 B).
+- **Personal state in a sidecar**, `session.mnf.local`, replaced whole
+  (Obsidian, JetBrains and VS Code also keep UI state apart). The
+  journal holds only shared state, so personal-state churn never grows
+  it or triggers a compaction.
+- **Recover, don't truncate.** Damage mid-file is skipped, not cut:
+  reading resumes at the next valid frame. The original file is saved
+  before the file is rewritten without the damage. `session.mnf.prev`,
+  the file before the last compaction, rebuilds a lost snapshot. Precedents:
+  LevelDB resyncs at block boundaries; Firefox keeps `previous.jsonlz4`.
+- **Compaction prunes** tombstones, placeholders and dead actors that no
+  later op can need, while the document has never been shared.
+- **No compaction at exit when nothing changed.** Firefox's frequent
+  full-session writes wore SSDs (bug 1305193, fixed partly by skipping
+  idle writes, bug 1305950); Chrome doesn't rebuild its session file
+  after a clean close.
 
 ## Data model
 
@@ -93,8 +113,9 @@ old ones. Ops are totally ordered by `(hlc, actor)`.
 
 A set of nodes. Each node has:
 
-- **Existence**: created by `Create`, removed by `Delete`. A deleted id
-  stays a tombstone forever; ids are never reused.
+- **Existence**: created by `Create`, removed by `Delete`. Ids are never
+  reused. A deleted node stays a tombstone until compaction may prune it
+  (see Journal); a node id that names no node reads as deleted.
 - **Kind**, fixed at creation: `Tab`, `Group`, `Note`, `Image`, `Pdf`,
   `Json`, `JsonLeaf`, `Download`.
 - **Fields**, each a last-writer-wins register holding the value and the
@@ -133,7 +154,8 @@ in-progress downloads, which cannot resume.
 
 ### Personal state
 
-Kept per profile, never merged, stored in `Local` frames:
+Kept per profile, never merged, in `session.mnf.local` beside the
+journal (see "Personal-state file"):
 
 - view: `focused`, view mode, `current_group`, `viewed_image`,
   `split_tab`, `groups_collapsed`, camera rect per level (key: group id,
@@ -146,9 +168,24 @@ Kept per profile, never merged, stored in `Local` frames:
   snapshots (the node model with its fields, no timestamps).
 
 Two instances on one profile each keep their own personal state while
-running; `Local` frames are never merged live. On open, the latest
-`Local` frame wins, so one instance's Recently Closed list is replaced
-by the other's; accepted.
+running, and the last write wins. So on the next launch one instance's
+Recently Closed list replaces the other's; accepted.
+
+When it is written (Plan B):
+- only when it changed, and at most every 30 s;
+- 2.5 s after a Recently Closed change (Chrome's save delay), since that
+  alone can't be recomputed;
+- at exit.
+
+Settled positions count as changed only past 1 px, so physics jitter
+never causes a write.
+
+Sizing: about 95 B per tab (id, settled position, title, and the current
+url when it differs from the shared one), 3.4 KB of Recently Closed and
+200 B of view state. That is about 32 KB at 300 tabs and 320 KB at 3000,
+half of today's `session.json`, which is rewritten on every save. Even
+always changing, that is at most 3.8 MB/h or 38 MB/h. A crash loses at
+most 30 s of recomputable state and 2.5 s of Recently Closed.
 
 ### Not saved
 
@@ -217,7 +254,7 @@ each other forever. Instead the sites of the named user actions (drag
 end, placement, drop, import, a typed or clicked navigation, back or
 forward) mark the node, and the next save emits a `Set` for marked
 fields only. Personal fields (settled positions, current url, title,
-zoom, mute, note editing) are written to `Local`.
+zoom, mute, note editing) are written to the personal-state file.
 
 ### Positions
 
@@ -272,8 +309,7 @@ list checked by a test. Encodings of shared values:
 
 - node id in a frame's own structure (op targets, `Move` groups,
   snapshot node keys and group edges, stamps): nested `{1: actor index,
-  2: counter}`, the index into the file's `Actors` table, renumbered at
-  compaction.
+  2: counter}`, the index into the frame's own actor table.
 - node id inside a field value (`parent`): nested `{1: actor (fixed64),
   2: counter}`, the full actor. A field this build does not know is kept
   as raw bytes and could not be renumbered, so field values never hold
@@ -286,24 +322,57 @@ list checked by a test. Encodings of shared values:
 ### File and frames
 
 ```
-file  = magic "MNF\0" | format_version (varint) | generation (u64 LE) | frame*
-frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
-        (len counts frame_type + message)
+file   = header | frame*
+header = magic "MNF\0" | format_version (varint) | generation (u64 LE)
+         | prev_generation (u64 LE) | crc (u32 LE)
+frame  = len: u32 LE | crc: u32 LE | frame_type (varint) | message
+         (len counts frame_type + message)
 ```
 
 - `generation` is random, new at each compaction: a reader holding an
   offset into the old file sees it change and re-reads from the start.
-- `crc` is CRC-32C over `len ‖ frame_type ‖ message`, so an all-zero
-  region never parses as a frame. `len = 0` and `frame_type = 0` are
-  invalid.
-- Frame types: `Actors` (actor u64 → index table, appended as actors
-  appear), `Snapshot` (document id, materialized document, tombstone set, version
-  vector, and a reserved field for a retained Move-log tail),
-  `Ops` (a batch from one actor; counters and HLCs delta-encoded within
-  the batch), `Local` (personal state).
-- Reading stops at the first frame that overruns the file, fails its
-  CRC, or has `len = 0` or type 0; that offset is remembered and the
-  file is truncated to it before the next append.
+  `prev_generation` is the generation of the file this one was compacted
+  from, which `session.mnf.prev` then holds; 0 for none. The header's
+  `crc` is CRC-32C over the header bytes before it. Later format versions
+  add nothing to the header, so its layout is known to every reader.
+- A frame's `crc` is CRC-32C over `len ‖ frame_type ‖ message`, so an
+  all-zero region never parses as a frame. `len = 0` and `frame_type =
+  0` are invalid.
+- Frame types:
+  - `Snapshot` (2): `{1: document id, 2: node*, 3: version*, 4:
+    reserved for a Move-log tail, 5: clock, 6: actor*}`. The actor table
+    is sorted, and all indexes in the frame refer to it.
+  - `Ops` (3): `{1: actor*, 2: op*}`, a batch from one actor. The table
+    lists the author first (index 0), then the other actors its ops name.
+    Counters and HLCs are delta-encoded within the batch.
+  - Types 1 (a file-wide actor table) and 4 (personal state) are
+    retired and never reused.
+- **Reading.** A scan stops at a frame that overruns the file, fails its
+  CRC, or has `len = 0` or type 0.
+  - No valid frame after the stop: a **torn tail**. It is remembered and
+    cut before the next append.
+  - A valid frame after the stop, or a stopped frame that was whole but
+    failed its CRC: **damage**. The next valid frame is sought first
+    where the stopped frame's length points, then at each later byte.
+    Reading resumes there.
+  - Also damage: a whole frame that doesn't decode, and a `Snapshot`
+    after another frame. Both are skipped.
+- **Repair**, on open and whenever catching up finds damage:
+  1. Save the file as it was to `session.mnf.damaged-<16 hex digits>`
+     and fsync it. The digits are the generation, or the whole file's
+     CRC-32C when the header is damaged.
+  2. Rewrite the file as a snapshot of what survived. Leave
+     `session.mnf.prev` and the header's link to it as they were.
+
+  If no snapshot survived, the base is `.prev` when its generation equals
+  the header's `prev_generation` (any `.prev` when the header is
+  damaged); otherwise an empty document under a new id. The surviving ops
+  apply on top. A build that must not compact the file (below) only
+  saves the copy. The app tells the user what was repaired.
+
+  `.prev` is still the file from before the damaged generation, so a
+  later rebuild from it can miss changes made in that generation; this is
+  reported as `from_prev`.
 - A frame with a valid CRC and a **type this build does not know**
   (written by a newer build) is skipped and kept, never treated as a
   torn tail, so an older build cannot truncate a newer build's data. An
@@ -316,26 +385,59 @@ frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
   It still appends its own ops. With a newer `format_version` it opens
   the file read-only and says so.
 
+### Personal-state file
+
+```
+file  = magic "MNL\0" | format_version (varint) | frame
+frame = as above, type 1 (`State`): {1: document id, 2: state}
+```
+
+It is replaced whole (a temp file, fsync, rename) under the journal's
+lock. Reading it:
+- A document id other than the journal's means the journal was replaced
+  or recovered: the file is ignored.
+- A damaged file returns a Corrupt error, which the app treats as no state.
+- A newer format version is not read, and the next write replaces it.
+  Personal state is recomputable, and newer builds read older versions.
+
 CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
 `std::arch` checked against the table path by a test.
 
 ## Journal
 
-- **Open**: check magic and version; read frames; start from the latest
-  `Snapshot`, apply later `Ops`, take the latest `Local`.
-- **Append**: at a save point, diff → one `Ops` frame; personal-state
-  changes → one `Local` frame. `fsync` is debounced to ~1 s and forced on
-  exit (on Windows the handle must be opened for writing, or
-  `FlushFileBuffers` fails); a crash loses at most that second and never
-  leaves an unreadable file. A write that fails partway leaves the
-  replica out of step with the file, so it re-reads the file whole
-  before its next write.
+- **Open**: check magic and version, and read frames, skipping damage.
+  Start from the `Snapshot` and apply later `Ops`. Repair any damage
+  (see File and frames).
+- **Append**: at a save point, diff → one `Ops` frame. `fsync` is
+  debounced to about 1 s and forced on exit. On Windows the handle must
+  be opened for writing, or `FlushFileBuffers` fails. A crash loses at
+  most that second and never leaves an unreadable file. A write that
+  fails partway leaves the replica out of step with the file, so it
+  re-reads the file whole before its next write. Personal state goes to
+  its own file.
 - **Compact** when the ops since the last snapshot exceed twice its size
-  and at least 64 KB, and on a clean exit (unless a rule above forbids
-  it): write a header with a new generation, then `Actors, Snapshot,
-  Local`, to a temp file, fsync, rename over the journal (atomic on
-  Windows). Unknown node fields (kept as raw registers) and tombstones
-  carry over; the Move-log tail field stays empty single-player.
+  and at least 64 KB, and on a clean exit if anything changed since this
+  replica's last read. "Changed" means its own appends, another replica's
+  frames, a torn tail, or damage (unless a rule above forbids
+  compaction). The steps:
+  1. Write a header with a new generation, then the `Snapshot`, to a
+     temp file, and fsync it.
+  2. Keep the old file as `session.mnf.prev`: a hard link, or a copy
+     where links fail. Skipped when repairing a damaged file.
+  3. Rename the temp file over the journal (atomic on Windows).
+
+  Unknown node fields (kept as raw registers) carry over, and the
+  Move-log tail field stays empty single-player.
+
+  **Pruning**, while the document has never been shared, drops:
+  - deleted nodes and placeholders (nodes whose `Create` never arrived)
+    that no group edge names, repeated until nothing more drops;
+  - version entries of actors that no node id, group edge or register
+    names.
+
+  What is shown doesn't change. A later op naming a dropped node makes a
+  placeholder, which isn't shown. Id-valued registers (`parent`) are not
+  counted: they may name a pruned node, which reads as deleted.
 - **Two instances on one profile**: each append takes an exclusive lock
   on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
   the journal itself would be lost when compaction renames a new file
@@ -353,7 +455,7 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   updates the card. This replaces `session::fingerprint`,
   `conflict_path` and the conflict toast.
 - **Named sessions**: each is its own `.mnf` in `sessions/`. Save As
-  writes a compacted copy; Open switches the live file.
+  writes a compacted copy (no `.prev`) and the copy's personal-state file; Open switches the live file.
 
 ## JSON snapshots
 
@@ -406,6 +508,14 @@ seeded xorshift):
 - Convergence: random ops from three actors, including concurrent moves
   that would form cycles and deletes racing moves, applied in many
   random orders, give byte-identical snapshots.
+- Recovery: each ops frame, bit-flipped or zeroed, costs only its own
+  ops, and the original file is saved first. A damaged snapshot is
+  rebuilt from `.prev`. Damage that another replica's catch-up finds is
+  repaired, not cut. Seeded random file damage (bit flips, zeroed and
+  random runs, copied runs, truncation) never panics, and after a
+  compacting close the file is clean.
+- Pruning never changes what is shown.
+- An idle open and close leaves the file byte-identical.
 
 Headless:
 
@@ -430,9 +540,12 @@ Headless:
   cards show their missing-file state.
 - A shared tab whose `engine` is not installed here falls back to a
   local engine without changing the shared field.
-- Tombstones and the version vector grow with every delete and every
-  launch; pruning them needs causal stability (every peer has seen
-  them), which only sync can establish.
+- Compaction prunes tombstones and dead actors only while a document
+  has never been shared. Sub-project 1 never shares, so it always
+  prunes. Sub-project 2 must record when a document is first shared (a
+  `shared` field in the snapshot) and stop pruning from then on. Pruning
+  a shared document needs causal stability (every peer has seen the
+  tombstones), which only sync can establish.
 
 - Invite links carry the document key after `#` (`manifold://join/<doc-id>#<key>`
   or the https equivalent): the fragment is never sent to a server, so a

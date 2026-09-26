@@ -1,6 +1,7 @@
 //! The session file (spec "File and frames", "Journal"): a header, then
-//! CRC-checked frames. Reading stops at the first damaged frame, a torn
-//! tail, which the next append cuts off. Every read and write happens
+//! CRC-checked frames, each readable on its own. Reading resumes past
+//! damage and the file is repaired, keeping the original beside it. A
+//! torn tail is cut by the next append. Every read and write happens
 //! under a lock on a separate `.lock` file, so two processes on one
 //! profile take turns and each merges what the other appended.
 
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::crc32c::crc32c;
+use super::local;
 use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Kind, Node, NodeId, Reg, Stamp};
 use super::ops::{Op, OpBody};
 use super::tlv::{Reader, TlvError, Writer};
@@ -21,10 +23,11 @@ pub const FORMAT_VERSION: u64 = 1;
 
 /// Frame types. 0 is invalid, so a zeroed region never parses.
 pub mod frame {
-    pub const ACTORS: u64 = 1;
     pub const SNAPSHOT: u64 = 2;
     pub const OPS: u64 = 3;
-    pub const LOCAL: u64 = 4;
+    /// Never reused: 1 was a file-wide actor table (each frame now
+    /// carries its own), 4 was personal state (now `<session>.local`).
+    pub const RETIRED: [u64; 2] = [1, 4];
 }
 
 /// How long an append may wait for its fsync (spec "Journal").
@@ -39,7 +42,7 @@ pub enum JournalError {
     Io(io::Error),
     /// No `MNF\0` magic, or the header is cut short.
     NotAJournal,
-    /// A whole, CRC-valid frame whose contents don't decode: a bug.
+    /// A message that doesn't decode (personal state; a frame is skipped instead).
     Corrupt(String),
     /// Written by a newer format version; this build only reads it.
     ReadOnly,
@@ -157,6 +160,57 @@ pub fn scan(buf: &[u8], base: usize) -> Scan<'_> {
     Scan { frames, end: base + pos, stop }
 }
 
+/// Whole frames of `buf` (the file from offset `base` on), read past
+/// damage (spec "File and frames"). Where a scan stops, reading resumes at
+/// the next valid frame. With none after it the stop is a torn tail,
+/// except that a whole frame failing its CRC is damage either way.
+pub struct FullScan<'a> {
+    pub frames: Vec<RawFrame<'a>>,
+    /// `(start, end)` of each damaged region skipped.
+    pub damaged: Vec<(usize, usize)>,
+    /// Where the whole frames end: the end of the file, or a torn tail.
+    pub end: usize,
+    pub stop: Option<Stop>,
+}
+
+pub fn scan_all(buf: &[u8], base: usize) -> FullScan<'_> {
+    let mut frames = Vec::new();
+    let mut damaged = Vec::new();
+    let mut pos = 0;
+    loop {
+        let part = scan(&buf[pos..], base + pos);
+        frames.extend(part.frames);
+        let at = part.end - base;
+        let Some(stop) = part.stop else {
+            return FullScan { frames, damaged, end: part.end, stop: None };
+        };
+        match resync(buf, at) {
+            Some(next) => {
+                damaged.push((base + at, base + next));
+                pos = next;
+            }
+            None => {
+                if stop == Stop::BadCrc {
+                    damaged.push((base + at, base + buf.len()));
+                }
+                return FullScan { frames, damaged, end: part.end, stop: Some(stop) };
+            }
+        }
+    }
+}
+
+/// Where the next valid frame after a stop at `at` starts: where the
+/// stopped frame's own length points (a damaged body), else the first
+/// later offset holding one. `None` when none follows.
+fn resync(buf: &[u8], at: usize) -> Option<usize> {
+    let valid = |p: usize| p < buf.len() && frame_at(&buf[p..]).is_ok();
+    let claimed = buf.get(at..at + 4).map(|b| at + 8 + u32::from_le_bytes(b.try_into().expect("4 bytes")) as usize);
+    if let Some(p) = claimed.filter(|&p| p > at + 8 && valid(p)) {
+        return Some(p);
+    }
+    (at + 1..buf.len()).find(|&p| valid(p))
+}
+
 // ---- Header ---------------------------------------------------------------
 
 pub struct Header {
@@ -164,29 +218,45 @@ pub struct Header {
     /// Random per compacted file: a changed generation means another
     /// process replaced the file, so it must be read again from the start.
     pub generation: u64,
+    /// The generation of the file this one was compacted from, which
+    /// `<path>.prev` then holds; 0 for none.
+    pub prev_generation: u64,
+    /// The header's CRC failed: its fields may be wrong. The file is
+    /// repaired (spec "File and frames").
+    pub damaged: bool,
     pub len: usize,
 }
 
+/// Reads the header. Its layout through the CRC is the same in every
+/// format version, so a newer build's header reads too.
 pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
     if buf.get(..4) != Some(&MAGIC[..]) {
         return Err(JournalError::NotAJournal);
     }
     let (version, n) = varint::read(&buf[4..]).map_err(|_| JournalError::NotAJournal)?;
     let at = 4 + n;
-    let generation = buf.get(at..at + 8).ok_or(JournalError::NotAJournal)?;
-    Ok(Header { version, generation: u64::from_le_bytes(generation.try_into().expect("8 bytes")), len: at + 8 })
+    let word = |i: usize| {
+        buf.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes"))).ok_or(JournalError::NotAJournal)
+    };
+    let (generation, prev_generation) = (word(at)?, word(at + 8)?);
+    let crc = buf.get(at + 16..at + 20).ok_or(JournalError::NotAJournal)?;
+    let damaged = crc32c(&buf[..at + 16]) != u32::from_le_bytes(crc.try_into().expect("4 bytes"));
+    Ok(Header { version, generation, prev_generation, damaged, len: at + 20 })
 }
 
-fn header_bytes(generation: u64) -> Vec<u8> {
+fn header_bytes(generation: u64, prev_generation: u64) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
     varint::write(&mut out, FORMAT_VERSION);
     out.extend_from_slice(&generation.to_le_bytes());
+    out.extend_from_slice(&prev_generation.to_le_bytes());
+    let crc = crc32c(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
     out
 }
 
 // ---- Messages -------------------------------------------------------------
 
-/// The file's actor table: frames name actors by their index here.
+/// A frame's actor table: the frame names actors by their index here.
 #[derive(Debug, Clone, Default)]
 pub struct Actors {
     list: Vec<ActorId>,
@@ -211,20 +281,25 @@ impl Actors {
     }
 }
 
-fn actors_message(actors: &[ActorId]) -> Vec<u8> {
-    let mut w = Writer::new();
-    for actor in actors {
-        w.fixed64(1, actor.0);
+/// Writes `actors` as repeated fixed64 field `no`, in table order.
+fn write_table(w: &mut Writer, no: u32, actors: &Actors) {
+    for actor in &actors.list {
+        w.fixed64(no, actor.0);
     }
-    w.into_bytes()
 }
 
-fn decode_actors(buf: &[u8]) -> Result<Vec<ActorId>, JournalError> {
-    let mut actors = Vec::new();
+/// The table in repeated field `no`, in file order. A repeated actor keeps
+/// its first index; the frame then doesn't re-encode to itself, which
+/// blocks compaction.
+fn read_table(buf: &[u8], no: u32) -> Result<Actors, JournalError> {
+    let mut actors = Actors::default();
     for field in Reader::new(buf) {
         let field = field?;
-        if field.no == 1 {
-            actors.push(ActorId(field.value.fixed64()?));
+        if field.no == no {
+            let actor = ActorId(field.value.fixed64()?);
+            let at = actors.list.len() as u64;
+            actors.index.entry(actor).or_insert(at);
+            actors.list.push(actor);
         }
     }
     Ok(actors)
@@ -319,11 +394,14 @@ fn doc_actors(doc: &Doc) -> Actors {
 }
 
 /// Snapshot: `{1: doc id, 2: node*, 3: version*, 4: reserved for a
-/// retained Move-log tail, 5: clock}`. A node is `{1: id, 2: kind,
-/// 3: deleted, 4: group, 5: register*}` and a register `{1: field,
-/// 2: stamp, 3: value encoding}`. Nodes and registers are in id and
-/// field order, so equal documents encode to equal bytes.
-fn snapshot_message(doc: &Doc, actors: &Actors) -> Vec<u8> {
+/// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 2:
+/// kind, 3: deleted, 4: group, 5: register*}` and a register `{1: field,
+/// 2: stamp, 3: value encoding}`. The actor table is sorted, and nodes and
+/// registers are in id and field order, so equal documents encode to
+/// equal bytes.
+fn snapshot_message(doc: &Doc) -> Vec<u8> {
+    let actors = doc_actors(doc);
+    let actors = &actors;
     let mut w = Writer::new();
     w.bytes(1, &doc.id.0);
     for (id, node) in &doc.nodes {
@@ -364,10 +442,13 @@ fn snapshot_message(doc: &Doc, actors: &Actors) -> Vec<u8> {
     if !clock.is_empty() {
         w.message(5, &clock);
     }
+    write_table(&mut w, 6, actors);
     w.into_bytes()
 }
 
-fn decode_snapshot(buf: &[u8], actors: &Actors) -> Result<Doc, JournalError> {
+fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
+    let actors = read_table(buf, 6)?;
+    let actors = &actors;
     let mut doc = Doc::new(DocId([0; 16]));
     for field in Reader::new(buf) {
         let field = field?;
@@ -426,13 +507,11 @@ fn decode_snapshot(buf: &[u8], actors: &Actors) -> Result<Doc, JournalError> {
     Ok(doc)
 }
 
-/// Actors and snapshot frames for `doc`, as a compacted file holds them.
-/// Equal documents give equal bytes.
+/// The snapshot frame for `doc`, as a compacted file holds it. Equal
+/// documents give equal bytes.
 pub fn snapshot_bytes(doc: &Doc) -> Vec<u8> {
-    let actors = doc_actors(doc);
     let mut out = Vec::new();
-    encode_frame(&mut out, frame::ACTORS, &actors_message(&actors.list));
-    encode_frame(&mut out, frame::SNAPSHOT, &snapshot_message(doc, &actors));
+    encode_frame(&mut out, frame::SNAPSHOT, &snapshot_message(doc));
     out
 }
 
@@ -449,18 +528,21 @@ fn op_actors(op: &Op) -> Vec<ActorId> {
     actors
 }
 
-/// Ops: `{1: author's actor index, 2: op*}`. An op is `{1: counter delta,
-/// 2: ms delta (both zigzag, from the previous op in the frame), 3:
-/// logical, then one body field: 4 Create {1: node, 2: kind, 3: fields},
-/// 5 Set {1: node, 2: field, 3: value encoding}, 6 Move {1: node, 2:
-/// group}, 7 Delete {1: node}}`.
-fn ops_message(ops: &[Op], actors: &Actors) -> Vec<u8> {
+/// Ops: `{1: actor*, 2: op*}`, the frame's table with the author first
+/// (index 0) and then every other actor its ops name, in first-use order.
+/// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
+/// previous op in the frame), 3: logical, then one body field: 4 Create
+/// {1: node, 2: kind, 3: fields}, 5 Set {1: node, 2: field, 3: value
+/// encoding}, 6 Move {1: node, 2: group}, 7 Delete {1: node}}`.
+fn ops_message(ops: &[Op]) -> Vec<u8> {
     let author = ops[0].id.actor;
-    let mut w = Writer::new();
-    let index = actors.index(author);
-    if index != 0 {
-        w.varint(1, index);
+    let mut table = Actors::default();
+    for actor in ops.iter().flat_map(op_actors) {
+        table.push(actor); // `op_actors` starts with the op's author
     }
+    let actors = &table;
+    let mut w = Writer::new();
+    write_table(&mut w, 1, actors);
     let (mut counter, mut ms) = (0u64, 0u64);
     for op in ops {
         assert_eq!(op.id.actor, author, "one author per ops frame");
@@ -514,15 +596,10 @@ fn ops_message(ops: &[Op], actors: &Actors) -> Vec<u8> {
 
 /// The ops in an ops frame. Op kinds this build doesn't know are skipped
 /// (`take` notices: the frame then doesn't re-encode to itself).
-fn decode_ops(buf: &[u8], actors: &Actors) -> Result<Vec<Op>, JournalError> {
-    let mut author = 0;
-    for field in Reader::new(buf) {
-        let field = field?;
-        if field.no == 1 {
-            author = field.value.u64()?;
-        }
-    }
-    let author = actors.get(author)?;
+fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
+    let actors = read_table(buf, 1)?;
+    let actors = &actors;
+    let author = actors.get(0)?;
     let mut ops = Vec::new();
     let (mut counter, mut ms) = (0u64, 0u64);
     for field in Reader::new(buf) {
@@ -579,6 +656,24 @@ fn decode_ops(buf: &[u8], actors: &Actors) -> Result<Vec<Op>, JournalError> {
 
 // ---- The journal ----------------------------------------------------------
 
+/// What reading a damaged file skipped or rebuilt (spec "File and
+/// frames"). The app tells the user.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Recovery {
+    /// `(start, end)` of each damaged region skipped.
+    pub damaged: Vec<(usize, usize)>,
+    /// Whole frames that didn't decode, or a snapshot after other frames.
+    pub skipped_frames: usize,
+    pub header_damaged: bool,
+    /// The snapshot was lost; `.prev` gave the base.
+    pub from_prev: bool,
+    /// The snapshot was lost and no `.prev` fit: a new, empty document
+    /// under a new id, with the surviving ops on top.
+    pub new_document: bool,
+    /// Where the file as it was is kept, once saved.
+    pub saved: Option<PathBuf>,
+}
+
 /// One replica's handle on a session file: the document as of the last
 /// read, this launch's actor, clock and id counter.
 pub struct Journal {
@@ -589,9 +684,7 @@ pub struct Journal {
     generation: u64,
     /// End of the last whole frame read: where the next append goes.
     end: u64,
-    actors: Actors,
     doc: Doc,
-    local: Option<Vec<u8>>,
     /// Size of the latest snapshot frame, and of the frames after it.
     snapshot_len: u64,
     since_snapshot: u64,
@@ -603,6 +696,19 @@ pub struct Journal {
     stale: bool,
     /// A compaction failed; appends go on and `close` tries again.
     compaction_failed: bool,
+    /// The file holds more than one clean snapshot: frames after it, a torn
+    /// tail, or damage. `close` compacts only then.
+    dirty: bool,
+    /// The file on disk still holds the damage `load` found; cleared once
+    /// a rewrite succeeds.
+    damaged_on_disk: bool,
+    /// A repair's save of the damaged original failed: no rewrite or
+    /// truncating append may proceed until a retried save succeeds.
+    unsaved_damage: bool,
+    /// Repairs since `take_recovery` last took them.
+    recovery: Option<Recovery>,
+    /// The header's link to `.prev`, kept by a repair's rewrite.
+    prev_generation: u64,
     read_only: bool,
     /// Length and modified time last seen, for `changed_on_disk`.
     seen: Option<(u64, SystemTime)>,
@@ -627,14 +733,17 @@ impl Journal {
             counter: 0,
             generation: 0,
             end: 0,
-            actors: Actors::default(),
             doc: Doc::new(DocId([0; 16])),
-            local: None,
             snapshot_len: 0,
             since_snapshot: 0,
             keep_unknown: false,
             stale: false,
             compaction_failed: false,
+            dirty: false,
+            damaged_on_disk: false,
+            unsaved_damage: false,
+            recovery: None,
+            prev_generation: 0,
             read_only: false,
             seen: None,
             last_sync: Instant::now(),
@@ -643,33 +752,31 @@ impl Journal {
     }
 
     /// Opens `path`, first creating an empty document there if there is
-    /// none. `NotAJournal` and `Corrupt` leave the file as it was.
+    /// none, and repairs damage (spec "File and frames"). `NotAJournal`
+    /// leaves the file as it was.
     pub fn open(path: &Path, actor: ActorId) -> Result<Journal, JournalError> {
         let mut journal = Journal::blank(path, actor);
         let _lock = journal.lock()?;
         if !path.exists() {
-            write_compacted(path, &Doc::new(DocId::random()), None)?;
+            write_compacted(path, &Doc::new(DocId::random()), 0, false)?;
         }
-        journal.load(&std::fs::read(path)?)?;
+        let bytes = std::fs::read(path)?;
+        journal.load(&bytes)?;
+        journal.repair(&bytes);
         journal.note_seen();
         Ok(journal)
     }
 
-    /// Reads a session file's document and personal state, as `open`
-    /// would, without a lock or an actor. For `--dump` and tests.
-    pub fn read(bytes: &[u8]) -> Result<(Doc, Option<Vec<u8>>), JournalError> {
+    /// Reads a session file's document, as `open` would, without a lock or
+    /// an actor. For `--dump` and tests.
+    pub fn read(bytes: &[u8]) -> Result<Doc, JournalError> {
         let mut journal = Journal::blank(Path::new(""), ActorId(0));
         journal.load(bytes)?;
-        Ok((journal.doc, journal.local))
+        Ok(journal.doc)
     }
 
     pub fn doc(&self) -> &Doc {
         &self.doc
-    }
-
-    /// The latest personal state (spec "Personal state"), as written.
-    pub fn local(&self) -> Option<&[u8]> {
-        self.local.as_deref()
     }
 
     pub fn actor(&self) -> ActorId {
@@ -678,6 +785,26 @@ impl Journal {
 
     pub fn read_only(&self) -> bool {
         self.read_only
+    }
+
+    /// This profile's personal state for this document (spec "Personal
+    /// state"). `None` when there is none, or it is another document's.
+    pub fn read_local(&self) -> Result<Option<Vec<u8>>, JournalError> {
+        let _lock = self.lock()?;
+        local::read(&self.path, self.doc.id)
+    }
+
+    /// Replaces this profile's personal state for this document. Refused
+    /// read-only, and while this replica may not match its file.
+    pub fn write_local(&self, state: &[u8]) -> Result<(), JournalError> {
+        if self.read_only {
+            return Err(JournalError::ReadOnly);
+        }
+        if self.stale {
+            return Err(JournalError::Stale);
+        }
+        let _lock = self.lock()?;
+        local::write(&self.path, self.doc.id, state)
     }
 
     /// A fresh id from this launch's counter, for a new node.
@@ -708,103 +835,171 @@ impl Journal {
         self.seen = file_seen(&self.path);
     }
 
-    /// Replaces this replica's state with `bytes`, a whole file.
+    /// Replaces this replica's state with `bytes`, a whole file, read past
+    /// damage. Fails only on a header it can't read.
     fn load(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
         let header = read_header(bytes)?;
         self.generation = header.generation;
         self.read_only = header.version > FORMAT_VERSION;
         self.keep_unknown = self.read_only;
         self.stale = false;
-        self.actors = Actors::default();
-        self.doc = Doc::new(DocId([0; 16]));
-        self.local = None;
-        self.snapshot_len = 0;
-        self.since_snapshot = 0;
-        let scan = scan(&bytes[header.len..], header.len);
-        for frame in &scan.frames {
-            self.take(frame)?;
+        let scan = scan_all(&bytes[header.len..], header.len);
+        let mut found = Recovery { damaged: scan.damaged, header_damaged: header.damaged, ..Recovery::default() };
+        self.prev_generation = if header.damaged { 0 } else { header.prev_generation };
+        if !self.take_all(&scan.frames, Doc::new(DocId([0; 16])), &mut found.skipped_frames) {
+            // Every file starts with its snapshot: this one was lost.
+            if let Some((base, generation)) = self.prev_base(&header) {
+                (found.from_prev, found.skipped_frames, self.prev_generation) = (true, 0, generation);
+                self.take_all(&scan.frames, base, &mut found.skipped_frames);
+            } else {
+                self.doc.id = DocId::random();
+                found.new_document = true;
+            }
         }
         self.end = scan.end as u64;
+        self.damaged_on_disk = found != Recovery::default();
+        self.dirty = self.damaged_on_disk
+            || !(scan.stop.is_none() && scan.frames.len() == 1 && scan.frames[0].ty == frame::SNAPSHOT);
+        if self.damaged_on_disk {
+            self.recovery = Some(found);
+        } else {
+            // A file with no damage has nothing left to save.
+            self.unsaved_damage = false;
+        }
         Ok(())
     }
 
-    /// Applies one frame read from the file.
-    fn take(&mut self, frame: &RawFrame) -> Result<Vec<NodeId>, JournalError> {
-        let size = frame.size as u64;
-        match frame.ty {
-            frame::SNAPSHOT => {
-                (self.snapshot_len, self.since_snapshot) = (size, 0);
+    /// Applies `frames` on top of `base`, skipping and counting frames that
+    /// don't decode, and snapshots after another frame (only damage puts
+    /// one there). Returns whether the first frame taken was a snapshot.
+    fn take_all(&mut self, frames: &[RawFrame], base: Doc, skipped: &mut usize) -> bool {
+        self.clock.observe(base.clock);
+        self.doc = base;
+        (self.snapshot_len, self.since_snapshot) = (0, 0);
+        let (mut taken, mut snapshot) = (0, false);
+        for f in frames {
+            if f.ty == frame::SNAPSHOT && taken > 0 {
+                *skipped += 1;
+                continue;
             }
-            _ => self.since_snapshot += size,
-        }
-        match frame.ty {
-            frame::ACTORS => {
-                let actors = decode_actors(frame.message)?;
-                self.keep_unknown |= actors_message(&actors) != frame.message;
-                for actor in actors {
-                    self.actors.push(actor);
+            match self.take(f) {
+                Ok(_) => {
+                    snapshot |= taken == 0 && f.ty == frame::SNAPSHOT;
+                    taken += 1;
                 }
-                Ok(Vec::new())
+                Err(_) => *skipped += 1,
             }
+        }
+        snapshot
+    }
+
+    /// The document in `<path>.prev` and its generation, when that is the
+    /// file this one was compacted from: its generation is the header's
+    /// `prev_generation`, or the header is damaged and can't say. Read
+    /// past damage itself, but never from its own `.prev`.
+    fn prev_base(&self, header: &Header) -> Option<(Doc, u64)> {
+        if self.path.as_os_str().is_empty() {
+            return None;
+        }
+        let bytes = std::fs::read(prev_path(&self.path)).ok()?;
+        let prev = read_header(&bytes).ok()?;
+        if !header.damaged && (header.prev_generation == 0 || prev.generation != header.prev_generation) {
+            return None;
+        }
+        let mut journal = Journal::blank(Path::new(""), ActorId(0));
+        journal.load(&bytes).ok()?;
+        if journal.recovery.as_ref().is_some_and(|r| r.new_document) {
+            return None;
+        }
+        Some((journal.doc, prev.generation))
+    }
+
+    /// Applies one frame read from the file. A frame that doesn't decode
+    /// changes nothing.
+    fn take(&mut self, frame: &RawFrame) -> Result<Vec<NodeId>, JournalError> {
+        let touched = match frame.ty {
             frame::SNAPSHOT => {
-                let before: Vec<NodeId> = self.doc.nodes.keys().copied().collect();
-                self.doc = decode_snapshot(frame.message, &self.actors)?;
-                self.keep_unknown |= snapshot_message(&self.doc, &self.actors) != frame.message;
-                self.clock.observe(self.doc.clock);
-                Ok(before.into_iter().chain(self.doc.nodes.keys().copied()).collect())
+                let doc = decode_snapshot(frame.message)?;
+                self.keep_unknown |= snapshot_message(&doc) != frame.message;
+                self.clock.observe(doc.clock);
+                let before = std::mem::replace(&mut self.doc, doc);
+                (self.snapshot_len, self.since_snapshot) = (frame.size as u64, 0);
+                return Ok(before.nodes.into_keys().chain(self.doc.nodes.keys().copied()).collect());
             }
             frame::OPS => {
                 // Encodings are canonical, so a frame that doesn't re-encode
                 // to itself held a field or op kind this build skipped.
-                let ops = decode_ops(frame.message, &self.actors)?;
-                self.keep_unknown |= ops.is_empty() || ops_message(&ops, &self.actors) != frame.message;
+                let ops = decode_ops(frame.message)?;
+                self.keep_unknown |= ops.is_empty() || ops_message(&ops) != frame.message;
                 let mut touched = Vec::new();
                 for op in &ops {
                     self.clock.observe(op.hlc);
                     touched.extend(self.doc.apply(op));
                 }
-                Ok(touched)
-            }
-            frame::LOCAL => {
-                self.local = Some(frame.message.to_vec());
-                Ok(Vec::new())
+                touched
             }
             _ => {
                 self.keep_unknown = true; // a newer build's frame: kept, not read
-                Ok(Vec::new())
+                Vec::new()
             }
-        }
+        };
+        self.since_snapshot += frame.size as u64;
+        Ok(touched)
     }
 
     /// Reads the frames other processes appended, or the whole file again
-    /// if another process compacted it. Returns the nodes they touched.
+    /// if another process compacted it or damage turned up. Returns the
+    /// nodes they touched.
     fn catch_up(&mut self) -> Result<Vec<NodeId>, JournalError> {
         let bytes = std::fs::read(&self.path)?;
         let header = read_header(&bytes)?;
-        let touched = if self.stale || header.generation != self.generation || (bytes.len() as u64) < self.end {
+        let mut touched = Vec::new();
+        let mut reload = self.stale || header.generation != self.generation || (bytes.len() as u64) < self.end;
+        if !reload {
+            let scan = scan(&bytes[self.end as usize..], self.end as usize);
+            for f in &scan.frames {
+                // A snapshot after other frames, or a frame that doesn't
+                // decode, is damage: `load` skips it.
+                let taken = if f.ty == frame::SNAPSHOT {
+                    Err(JournalError::Corrupt("a snapshot after other frames".into()))
+                } else {
+                    self.take(f)
+                };
+                match taken {
+                    Ok(t) => touched.extend(t),
+                    Err(_) => {
+                        reload = true;
+                        break;
+                    }
+                }
+            }
+            // A whole frame failing its CRC, or a stop with a valid frame
+            // after it, is damage, not a torn tail.
+            reload |= scan.stop == Some(Stop::BadCrc) || (scan.stop.is_some() && resync(&bytes, scan.end).is_some());
+            if !reload {
+                self.end = scan.end as u64;
+                self.dirty |= !scan.frames.is_empty() || scan.stop.is_some();
+            }
+        }
+        if reload {
             let before: Vec<NodeId> = self.doc.nodes.keys().copied().collect();
             self.load(&bytes)?;
-            before.into_iter().chain(self.doc.nodes.keys().copied()).collect()
-        } else {
-            let scan = scan(&bytes[self.end as usize..], self.end as usize);
-            let mut touched = Vec::new();
-            for frame in &scan.frames {
-                touched.extend(self.take(frame)?);
-            }
-            self.end = scan.end as u64;
-            touched
-        };
+            self.repair(&bytes);
+            touched = before.into_iter().chain(self.doc.nodes.keys().copied()).collect();
+        }
         self.note_seen();
         Ok(self.doc.with_descendants(touched.into_iter().collect()).into_iter().collect())
     }
 
     fn append(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
+        self.ensure_saved()?;
         let mut file = OpenOptions::new().write(true).open(&self.path)?;
         file.set_len(self.end)?; // cuts a torn tail
         file.seek(SeekFrom::Start(self.end))?;
         file.write_all(bytes)?;
         self.end += bytes.len() as u64;
         self.since_snapshot += bytes.len() as u64;
+        self.dirty = true;
         if self.last_sync.elapsed() >= SYNC_DEBOUNCE {
             file.sync_data()?;
             self.last_sync = Instant::now();
@@ -832,10 +1027,18 @@ impl Journal {
         !self.keep_unknown && !self.compaction_failed && self.since_snapshot > (2 * self.snapshot_len).max(COMPACT_MIN)
     }
 
-    /// Rewrites the file as one snapshot (spec "Compact"). Holds the lock.
+    /// Rewrites the file as one pruned snapshot (spec "Compact"), keeping
+    /// the old file as `.prev` unless it is damaged. Holds the lock.
     fn compact(&mut self) -> Result<(), JournalError> {
+        self.rewrite(!self.damaged_on_disk)
+    }
+
+    fn rewrite(&mut self, rotate: bool) -> Result<(), JournalError> {
+        self.ensure_saved()?;
         self.doc.forget_moves();
-        let bytes = write_compacted(&self.path, &self.doc, self.local.as_deref())?;
+        self.doc.prune();
+        let prev_generation = if rotate { self.generation } else { self.prev_generation };
+        let bytes = write_compacted(&self.path, &self.doc, prev_generation, rotate)?;
         let doc = std::mem::replace(&mut self.doc, Doc::new(DocId([0; 16])));
         self.load(&bytes)?;
         debug_assert_eq!(self.doc.nodes, doc.nodes);
@@ -845,8 +1048,58 @@ impl Journal {
         Ok(())
     }
 
-    /// Clean exit: catch up, then compact, or just fsync when this build
-    /// must not compact this file.
+    /// After a load that found damage: saves the file as it was beside it,
+    /// then rewrites it without the damage when this build may compact it.
+    /// A read-only file, or one holding something this build doesn't know
+    /// (`keep_unknown`), still gets its damaged copy saved but is never
+    /// rewritten. `.prev`, the good copy, is left as it is. If the save
+    /// fails, the file is left untouched (`unsaved_damage`), and
+    /// `ensure_saved` retries before any later rewrite or truncating
+    /// append; if the rewrite fails, the next `begin` tries again.
+    fn repair(&mut self, bytes: &[u8]) {
+        if !self.damaged_on_disk || self.save_original(bytes).is_err() {
+            return;
+        }
+        if !self.keep_unknown && !self.read_only && self.rewrite(false).is_err() {
+            (self.compaction_failed, self.stale) = (true, true);
+        }
+    }
+
+    /// Saves `bytes` (the file as read, damaged) aside if it isn't already
+    /// there, tracking whether that succeeded in `unsaved_damage` and, when
+    /// there is a pending `Recovery`, its `saved` path.
+    fn save_original(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
+        let saved = damaged_path(&self.path, bytes);
+        let result = save_damaged(&saved, bytes);
+        self.unsaved_damage = result.is_err();
+        if result.is_ok() {
+            if let Some(recovery) = &mut self.recovery {
+                recovery.saved = Some(saved.clone());
+            }
+        }
+        result.map(|()| saved)
+    }
+
+    /// Retries saving the damaged original once before anything that would
+    /// rewrite or truncate the live file, so a save that failed in `repair`
+    /// never lets the damage be lost to a later write. Fails, leaving the
+    /// file untouched, only if the retry also fails.
+    fn ensure_saved(&mut self) -> Result<(), JournalError> {
+        if !self.unsaved_damage {
+            return Ok(());
+        }
+        let bytes = std::fs::read(&self.path)?;
+        self.save_original(&bytes)?;
+        Ok(())
+    }
+
+    /// The repairs since the last call: the app tells the user once.
+    pub fn take_recovery(&mut self) -> Option<Recovery> {
+        self.recovery.take()
+    }
+
+    /// Clean exit: catch up, then compact if the file changed since it was last
+    /// compacted, or just fsync when this build must not compact this file.
     pub fn close(&mut self) -> Result<(), JournalError> {
         if self.read_only {
             return Ok(());
@@ -858,8 +1111,10 @@ impl Journal {
                 sync_data(&j.path)?;
                 j.unsynced = false;
                 Ok(())
-            } else {
+            } else if j.dirty {
                 j.compact()
+            } else {
+                Ok(())
             }
         })
     }
@@ -872,9 +1127,10 @@ impl Journal {
     }
 
     /// Writes this document, compacted, to `path` under a new document id
-    /// (spec "Named sessions": Save As), under `path`'s lock. Refused while
-    /// this replica may not match its own file. Not for its own path.
-    pub fn save_copy(&self, path: &Path) -> Result<(), JournalError> {
+    /// (spec "Named sessions": Save As), with `local` as the copy's
+    /// personal state, under `path`'s lock. Refused while this replica may
+    /// not match its own file. Not for its own path.
+    pub fn save_copy(&self, path: &Path, local: Option<&[u8]>) -> Result<(), JournalError> {
         if self.stale {
             return Err(JournalError::Stale);
         }
@@ -882,7 +1138,12 @@ impl Journal {
         let mut doc = self.doc.clone();
         doc.id = DocId::random();
         doc.forget_moves();
-        write_compacted(path, &doc, self.local.as_deref())?;
+        doc.prune();
+        write_compacted(path, &doc, 0, false)?;
+        let _ = std::fs::remove_file(prev_path(path));
+        if let Some(state) = local {
+            local::write(path, doc.id, state)?;
+        }
         Ok(())
     }
 }
@@ -897,22 +1158,22 @@ impl Txn<'_> {
     }
 
     /// Stamps `bodies` as this replica's next ops, applies them, and
-    /// appends them, and `local` when given, to the file. After an error
-    /// the ops may or may not be in the file; the next `begin` re-reads it,
-    /// so diff again against `doc()` rather than retrying the same bodies.
-    pub fn commit(self, bodies: Vec<OpBody>, local: Option<Vec<u8>>) -> Result<(), JournalError> {
+    /// appends them to the file. After an error the ops may or may not be
+    /// in the file; the next `begin` re-reads it, so diff again against
+    /// `doc()` rather than retrying the same bodies.
+    pub fn commit(self, bodies: Vec<OpBody>) -> Result<(), JournalError> {
         let Txn { journal, _lock, .. } = self;
-        journal.guard(|j| j.write_ops(bodies, local))
+        journal.guard(|j| j.write_ops(bodies))
     }
 }
 
 impl Journal {
-    fn write_ops(&mut self, bodies: Vec<OpBody>, local: Option<Vec<u8>>) -> Result<(), JournalError> {
+    fn write_ops(&mut self, bodies: Vec<OpBody>) -> Result<(), JournalError> {
         let j = self;
         if j.read_only {
             return Err(JournalError::ReadOnly);
         }
-        if bodies.is_empty() && local.is_none() {
+        if bodies.is_empty() {
             return Ok(());
         }
         let now = now_ms();
@@ -924,30 +1185,10 @@ impl Journal {
             })
             .collect();
         let mut out = Vec::new();
-        let mut new_actors: Vec<ActorId> = Vec::new();
-        for actor in ops.iter().flat_map(op_actors) {
-            if !j.actors.index.contains_key(&actor) && !new_actors.contains(&actor) {
-                new_actors.push(actor);
-            }
-        }
-        if !new_actors.is_empty() {
-            encode_frame(&mut out, frame::ACTORS, &actors_message(&new_actors));
-            for actor in new_actors {
-                j.actors.push(actor);
-            }
-        }
-        if !ops.is_empty() {
-            encode_frame(&mut out, frame::OPS, &ops_message(&ops, &j.actors));
-        }
-        if let Some(local) = &local {
-            encode_frame(&mut out, frame::LOCAL, local);
-        }
+        encode_frame(&mut out, frame::OPS, &ops_message(&ops));
         j.append(&out)?;
         for op in &ops {
             j.doc.apply(op);
-        }
-        if local.is_some() {
-            j.local = local;
         }
         if j.should_compact() && j.compact().is_err() {
             // The ops are in the file and a failed rewrite leaves it as it
@@ -969,11 +1210,24 @@ fn lock_file(path: &Path) -> Result<File, JournalError> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    let mut lock_path = path.to_path_buf().into_os_string();
-    lock_path.push(".lock");
-    let file = OpenOptions::new().create(true).truncate(false).write(true).open(lock_path)?;
+    let file = OpenOptions::new().create(true).truncate(false).write(true).open(with_suffix(path, ".lock"))?;
     file.lock()?;
     Ok(file)
+}
+
+/// `path` with `suffix` appended to its file name (`session.mnf` →
+/// `session.mnf.lock`).
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Creates `path` holding `bytes`, and fsyncs it.
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
@@ -981,23 +1235,58 @@ fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
     Some((meta.len(), meta.modified().ok()?))
 }
 
-/// Writes a compacted file (header, actors, snapshot, local) beside
-/// `path`, fsyncs it, and renames it over `path`. Returns its bytes.
-fn write_compacted(path: &Path, doc: &Doc, local: Option<&[u8]>) -> Result<Vec<u8>, JournalError> {
-    let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"));
+/// Writes a compacted file (header, snapshot) beside `path`, fsyncs it,
+/// and renames it over `path`. With `rotate`, the file it replaces is kept
+/// as `<path>.prev` first, and `prev_generation` is that file's
+/// generation. Returns its bytes.
+fn write_compacted(path: &Path, doc: &Doc, prev_generation: u64, rotate: bool) -> Result<Vec<u8>, JournalError> {
+    let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"), prev_generation);
     bytes.extend(snapshot_bytes(doc));
-    if let Some(local) = local {
-        encode_frame(&mut bytes, frame::LOCAL, local);
-    }
-    let mut tmp = path.to_path_buf().into_os_string();
-    tmp.push(".tmp");
-    {
-        let mut file = File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
+    let tmp = with_suffix(path, ".tmp");
+    write_synced(&tmp, &bytes)?;
+    if rotate {
+        keep_prev(path);
     }
     std::fs::rename(&tmp, path)?;
     Ok(bytes)
+}
+
+/// Keeps `path` as `<path>.prev`: a hard link, so no bytes are copied,
+/// or a copy where links fail (FAT, some network drives). Best effort: a
+/// failure only means there is no `.prev` to recover from.
+fn keep_prev(path: &Path) {
+    let prev = prev_path(path);
+    let _ = std::fs::remove_file(&prev);
+    if std::fs::hard_link(path, &prev).is_err() {
+        let _ = std::fs::copy(path, &prev);
+    }
+}
+
+/// The file before the last compaction (spec "Compact").
+pub fn prev_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".prev")
+}
+
+/// Where a damaged file is kept before its repair: `<path>.damaged-<16 hex
+/// digits>`, its generation, or the whole file's CRC-32C when its header
+/// is damaged.
+pub fn damaged_path(path: &Path, bytes: &[u8]) -> PathBuf {
+    let tag = match read_header(bytes) {
+        Ok(header) if !header.damaged => header.generation,
+        _ => u64::from(crc32c(bytes)),
+    };
+    with_suffix(path, &format!(".damaged-{tag:016x}"))
+}
+
+/// Writes `bytes` to `path` unless it exists, through a temp file, so a
+/// file there is always whole.
+fn save_damaged(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let tmp = with_suffix(path, ".tmp");
+    write_synced(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 
 // ---- Inspection (`--dump`, `--check`) --------------------------------------
@@ -1005,21 +1294,28 @@ fn write_compacted(path: &Path, doc: &Doc, local: Option<&[u8]>) -> Result<Vec<u
 pub struct Inspect {
     pub version: u64,
     pub generation: u64,
+    pub prev_generation: u64,
+    pub header_damaged: bool,
     pub file_len: usize,
     /// `(offset, type, size)` of every whole frame.
     pub frames: Vec<(usize, u64, usize)>,
+    /// `(start, end)` of each damaged region.
+    pub damaged: Vec<(usize, usize)>,
     /// Where a torn tail starts, and why reading stopped there.
     pub torn: Option<(usize, Stop)>,
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
     let header = read_header(bytes)?;
-    let scan = scan(&bytes[header.len..], header.len);
+    let scan = scan_all(&bytes[header.len..], header.len);
     Ok(Inspect {
         version: header.version,
         generation: header.generation,
+        prev_generation: header.prev_generation,
+        header_damaged: header.damaged,
         file_len: bytes.len(),
         frames: scan.frames.iter().map(|f| (f.offset, f.ty, f.size)).collect(),
+        damaged: scan.damaged,
         torn: scan.stop.map(|stop| (scan.end, stop)),
     })
 }
@@ -1027,8 +1323,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{encode_field, field, FieldValue, FIELDS};
-    use crate::store::testutil::{temp_dir, XorShift};
+    use crate::store::model::{encode_field, field, FieldValue, Node, FIELDS};
+    use crate::store::testutil::{shown, temp_dir, XorShift};
 
     fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
         let node = txn.next_id();
@@ -1043,11 +1339,11 @@ mod tests {
     #[test]
     fn frames_round_trip_and_damage_stops_the_scan() {
         let mut bytes = Vec::new();
-        encode_frame(&mut bytes, frame::LOCAL, b"one");
+        encode_frame(&mut bytes, frame::SNAPSHOT, b"one");
         encode_frame(&mut bytes, frame::OPS, b"");
         let scan1 = scan(&bytes, 0);
         assert_eq!(scan1.frames.len(), 2);
-        assert_eq!((scan1.frames[0].ty, scan1.frames[0].message), (frame::LOCAL, &b"one"[..]));
+        assert_eq!((scan1.frames[0].ty, scan1.frames[0].message), (frame::SNAPSHOT, &b"one"[..]));
         assert_eq!((scan1.end, scan1.stop), (bytes.len(), None));
 
         let mut flipped = bytes.clone();
@@ -1069,7 +1365,7 @@ mod tests {
         for i in 0..5 {
             let mut txn = journal.begin().unwrap();
             let (_, create) = create_tab(&mut txn, &format!("https://example.com/{i}"));
-            txn.commit(vec![create], Some(vec![i])).unwrap();
+            txn.commit(vec![create]).unwrap();
         }
         let full = std::fs::read(&path).unwrap();
         let header = read_header(&full).unwrap();
@@ -1080,30 +1376,29 @@ mod tests {
             assert_eq!(got.frames.len(), expected, "cut at {cut}");
             // Each commit is one ops frame creating one tab.
             let whole_ops = whole.iter().filter(|f| f.ty == frame::OPS && f.offset + f.size <= cut).count();
-            let (doc, _) = Journal::read(&full[..cut]).unwrap();
+            let doc = Journal::read(&full[..cut]).unwrap();
             assert_eq!(doc.live().count(), whole_ops, "cut at {cut}");
         }
     }
 
     #[test]
-    fn reopening_gives_back_the_document_and_local_state() {
+    fn reopening_gives_back_the_document() {
         let dir = temp_dir("reopen");
         let path = dir.join("session.mnf");
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://a.example/");
-        txn.commit(vec![create], Some(b"view".to_vec())).unwrap();
+        txn.commit(vec![create]).unwrap();
         let doc_id = journal.doc().id;
         drop(journal);
 
         let mut reopened = Journal::open(&path, ActorId(2)).unwrap();
         assert_eq!(reopened.doc().id, doc_id);
         assert_eq!(url(reopened.doc(), tab), FieldValue::Str("https://a.example/".into()));
-        assert_eq!(reopened.local(), Some(&b"view"[..]));
         // The new replica's ops are stamped after everything in the file.
         let seen = reopened.doc().clock;
         let txn = reopened.begin().unwrap();
-        txn.commit(vec![OpBody::Delete { node: tab }], None).unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
         assert!(reopened.doc().clock > seen);
     }
 
@@ -1118,16 +1413,17 @@ mod tests {
         drop(file);
 
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
+        assert!(journal.take_recovery().is_none()); // a torn tail is no damage
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://b.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
         let scanned = scan(&bytes[header.len..], header.len);
         assert_eq!((scanned.end, scanned.stop), (bytes.len(), None));
         // The new frames start where the half frame did: it was cut.
         assert!(scanned.frames.iter().any(|f| f.offset as u64 == clean_len));
-        let (doc, _) = Journal::read(&bytes).unwrap();
+        let doc = Journal::read(&bytes).unwrap();
         assert!(doc.nodes[&tab].is_live());
     }
 
@@ -1140,11 +1436,11 @@ mod tests {
 
         let mut txn = a.begin().unwrap();
         let group = txn.next_id();
-        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }], None).unwrap();
+        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
         let mut txn = b.begin().unwrap();
         assert!(txn.remote.contains(&group));
         let (tab, create) = create_tab(&mut txn, "https://c.example/");
-        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }], None).unwrap();
+        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
 
         assert!(!b.changed_on_disk() && a.changed_on_disk());
         let txn = a.begin().unwrap();
@@ -1162,13 +1458,13 @@ mod tests {
         let mut b = Journal::open(&path, ActorId(2)).unwrap();
         let mut txn = a.begin().unwrap();
         let (one, create) = create_tab(&mut txn, "https://one.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         a.close().unwrap(); // compacts while `b` has the file open
 
         let mut txn = b.begin().unwrap();
         assert!(txn.remote.contains(&one));
         let (two, create) = create_tab(&mut txn, "https://two.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
 
         let reopened = Journal::open(&path, ActorId(3)).unwrap();
         assert!(reopened.doc().nodes[&one].is_live() && reopened.doc().nodes[&two].is_live());
@@ -1181,17 +1477,17 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let long = "x".repeat(1000);
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }])
                 .unwrap();
         }
         // 200 KB of appends against a tiny snapshot: compacted at least once.
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(url(&doc, tab), FieldValue::Str(format!("199{long}")));
     }
 
@@ -1205,12 +1501,12 @@ mod tests {
         std::fs::create_dir(&tmp).unwrap(); // the rewrite's temp file can't be created
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         let long = "x".repeat(1000);
         for i in 0..200 {
             let text = FieldValue::Str(format!("{i}{long}"));
             let txn = journal.begin().unwrap();
-            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }], None)
+            txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }])
                 .unwrap();
         }
         assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
@@ -1218,7 +1514,7 @@ mod tests {
         std::fs::remove_dir(&tmp).unwrap();
         journal.close().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(url(&doc, tab), FieldValue::Str(format!("199{long}")));
     }
 
@@ -1232,10 +1528,10 @@ mod tests {
         let mut future = Writer::new();
         future.str(99, "from the future");
         let future = future.into_bytes();
-        txn.commit(vec![create, OpBody::Set { node: tab, field: 99, enc: future.clone() }], None).unwrap();
+        txn.commit(vec![create, OpBody::Set { node: tab, field: 99, enc: future.clone() }]).unwrap();
         journal.close().unwrap(); // compacts: the unknown field is written back
 
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(doc.nodes[&tab].fields[&99].enc, future);
 
         // A frame type from the future: kept, and the file never compacts.
@@ -1244,7 +1540,7 @@ mod tests {
         OpenOptions::new().append(true).open(&path).unwrap().write_all(&frame).unwrap();
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         let txn = journal.begin().unwrap();
-        txn.commit(vec![OpBody::Delete { node: tab }], None).unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
         journal.close().unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
@@ -1258,18 +1554,16 @@ mod tests {
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://e.example/");
-        txn.commit(vec![create], None).unwrap();
+        txn.commit(vec![create]).unwrap();
         drop(journal);
 
         // An ops frame whose top level carries a field this build doesn't know.
-        let mut actors = Actors::default();
-        actors.push(ActorId(1));
         let op = Op {
             id: NodeId { actor: ActorId(1), counter: 100 },
             hlc: Hlc { ms: now_ms() + 1000, logical: 0 },
             body: OpBody::Delete { node: tab },
         };
-        let mut message = ops_message(&[op], &actors);
+        let mut message = ops_message(&[op]);
         let mut extra = Writer::new();
         extra.varint(9, 1);
         message.extend(extra.into_bytes());
@@ -1282,11 +1576,9 @@ mod tests {
         assert!(std::fs::read(&path).unwrap().ends_with(&frame));
 
         // A snapshot with the reserved Move-log tail (field 4) filled in.
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
-        let actors = doc_actors(&doc);
-        let mut bytes = header_bytes(7);
-        encode_frame(&mut bytes, frame::ACTORS, &actors_message(&actors.list));
-        let mut snapshot = snapshot_message(&doc, &actors);
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        let mut bytes = header_bytes(7, 0);
+        let mut snapshot = snapshot_message(&doc);
         let mut tail = Writer::new();
         tail.bytes(4, b"tail");
         snapshot.extend(tail.into_bytes());
@@ -1310,16 +1602,37 @@ mod tests {
         set_readonly(true);
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://lost.example/");
-        assert!(txn.commit(vec![create], None).is_err()); // the actor table grew in memory only
-        assert!(matches!(journal.save_copy(&dir.join("copy.mnf")), Err(JournalError::Stale)));
+        assert!(txn.commit(vec![create]).is_err()); // the file is read-only
+        assert!(matches!(journal.save_copy(&dir.join("copy.mnf"), None), Err(JournalError::Stale)));
         set_readonly(false);
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://kept.example/");
-        txn.commit(vec![create], None).unwrap();
-        let (doc, _) = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        txn.commit(vec![create]).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(url(&doc, tab), FieldValue::Str("https://kept.example/".into()));
         assert_eq!(journal.doc().nodes, doc.nodes);
+    }
+
+    #[test]
+    fn compaction_prunes_and_other_replicas_hear_of_it() {
+        let dir = temp_dir("prune");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = a.begin().unwrap();
+        let (gone, create_gone) = create_tab(&mut txn, "https://gone.example/");
+        let (kept, create_kept) = create_tab(&mut txn, "https://kept.example/");
+        txn.commit(vec![create_gone, create_kept]).unwrap();
+        let txn = a.begin().unwrap();
+        txn.commit(vec![OpBody::Delete { node: gone }]).unwrap();
+        drop(b.begin().unwrap()); // b holds the tombstone
+        a.close().unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(!doc.nodes.contains_key(&gone) && doc.nodes[&kept].is_live());
+        let txn = b.begin().unwrap();
+        assert!(txn.remote.contains(&gone)); // missing from the document: deleted
+        assert!(!txn.doc().nodes.contains_key(&gone));
     }
 
     /// A session file holding every frame type, op kind and field type:
@@ -1347,7 +1660,7 @@ mod tests {
             set(tab, field::PINNED, FieldValue::Bool(true)),
             OpBody::Move { node: tab, group: Some(group) },
         ];
-        txn.commit(bodies, Some(b"local one".to_vec())).unwrap();
+        txn.commit(bodies).unwrap();
         journal.close().unwrap(); // a snapshot
 
         let mut journal = Journal::open(path, ActorId(2)).unwrap();
@@ -1362,13 +1675,14 @@ mod tests {
             OpBody::Move { node: note, group: None },
             set(note, field::COLOR, FieldValue::Color(None)),
         ];
-        txn.commit(bodies, Some(b"local two".to_vec())).unwrap();
+        txn.commit(bodies).unwrap();
         drop(journal);
         std::fs::read(path).unwrap()
     }
 
     /// Damages one frame's message (keeping its CRC valid, so the damage
-    /// reaches the decoders), and sometimes the file itself.
+    /// reaches the decoders), and sometimes the file itself: a bit, a cut, a
+    /// zeroed or random run, or a run copied elsewhere.
     fn damage(rng: &mut XorShift, bytes: &[u8]) -> Vec<u8> {
         let header = read_header(bytes).unwrap();
         let frames = scan(&bytes[header.len..], header.len).frames;
@@ -1390,22 +1704,57 @@ mod tests {
             }
             encode_frame(&mut out, ty, &message);
         }
-        match rng.below(8) {
+        let run = |rng: &mut XorShift, len: usize, max: u64| {
+            let at = rng.below(len as u64) as usize;
+            (at, (at + 1 + rng.below(max) as usize).min(len))
+        };
+        match rng.below(12) {
             0 => {
                 let at = rng.below(out.len() as u64) as usize;
                 out[at] ^= 1 << rng.below(8);
             }
             1 => out.truncate(rng.below(out.len() as u64) as usize),
+            2 => {
+                // Zeros, as from writes persisted out of order.
+                let (at, end) = run(rng, out.len(), 64);
+                out[at..end].fill(0);
+            }
+            3 => {
+                let (at, end) = run(rng, out.len(), 64);
+                for byte in &mut out[at..end] {
+                    *byte = rng.next() as u8;
+                }
+            }
+            4 => {
+                // A run copied elsewhere, as from a misdirected write: it may
+                // duplicate whole frames, snapshots included.
+                let (from, end) = run(rng, out.len(), 256);
+                let copied = out[from..end].to_vec();
+                let at = rng.below(out.len() as u64 + 1) as usize;
+                out.splice(at..at, copied);
+            }
             _ => {}
         }
         out
+    }
+
+    /// Removes what opening `path` may leave beside it (`.prev`,
+    /// `.damaged-*`, `.local`, temp files), but not the lock.
+    fn clear_siblings(path: &Path) {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        for entry in std::fs::read_dir(path.parent().unwrap()).unwrap().flatten() {
+            let other = entry.file_name().to_string_lossy().into_owned();
+            if other.starts_with(&format!("{name}.")) && !other.ends_with(".lock") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Everything a reader of `bytes` might do. Errors are fine; panics
     /// are not, and what this build reads it can write and read back.
     fn use_damaged(bytes: &[u8], path: &Path, open: bool) {
         let _ = inspect(bytes);
-        if let Ok((doc, _)) = Journal::read(bytes) {
+        if let Ok(doc) = Journal::read(bytes) {
             doc.with_descendants(doc.nodes.keys().copied().collect());
             for (&id, node) in &doc.nodes {
                 doc.effective_group(id);
@@ -1414,9 +1763,9 @@ mod tests {
                     node.get(def.no);
                 }
             }
-            let mut again = header_bytes(1);
+            let mut again = header_bytes(1, 0);
             again.extend(snapshot_bytes(&doc));
-            let (back, _) = Journal::read(&again).expect("a decoded document's snapshot reads back");
+            let back = Journal::read(&again).expect("a decoded document's snapshot reads back");
             assert_eq!((&back.nodes, &back.version), (&doc.nodes, &doc.version));
             let text = serde_json::to_string(&crate::store::json::doc_to_json(&doc)).unwrap();
             let json: crate::store::json::JsonDoc = serde_json::from_str(&text).unwrap();
@@ -1432,10 +1781,15 @@ mod tests {
             if let Ok(mut journal) = Journal::open(path, ActorId(3)) {
                 if let Ok(mut txn) = journal.begin() {
                     let (_, create) = create_tab(&mut txn, "https://z.example/");
-                    let _ = txn.commit(vec![create], None);
+                    let _ = txn.commit(vec![create]);
                 }
-                let _ = journal.close();
+                let may_compact = !journal.keep_unknown && !journal.read_only;
+                if journal.close().is_ok() && may_compact {
+                    let mut again = Journal::open(path, ActorId(4)).expect("a repaired file opens");
+                    assert!(again.take_recovery().is_none(), "a compacting close left damage behind");
+                }
             }
+            clear_siblings(path);
         }
     }
 
@@ -1464,13 +1818,49 @@ mod tests {
         drop(Journal::open(&path, ActorId(1)).unwrap());
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[4] = 2; // format_version 2
+        let crc = crc32c(&bytes[..21]);
+        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
         let mut journal = Journal::open(&path, ActorId(2)).unwrap();
         assert!(journal.read_only());
         let txn = journal.begin().unwrap();
-        assert!(matches!(txn.commit(vec![], Some(vec![1])), Err(JournalError::ReadOnly)));
+        assert!(matches!(txn.commit(vec![]), Err(JournalError::ReadOnly)));
+        assert!(matches!(journal.write_local(b"x"), Err(JournalError::ReadOnly)));
+        assert!(!local::path_for(&path).exists());
         journal.close().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn the_header_is_checked_and_names_the_file_kept_as_prev() {
+        let dir = temp_dir("header");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let first = read_header(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!((first.len, first.prev_generation, first.damaged), (25, 0, false));
+        assert!(!prev_path(&path).exists());
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://h.example/");
+        txn.commit(vec![create]).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        journal.close().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(read_header(&after).unwrap().prev_generation, first.generation);
+        assert_eq!(std::fs::read(prev_path(&path)).unwrap(), before);
+
+        // Save As keeps no `.prev` and links none, dropping a stale one.
+        let copy = dir.join("copy.mnf");
+        std::fs::write(prev_path(&copy), b"stale").unwrap();
+        journal.save_copy(&copy, None).unwrap();
+        assert!(!prev_path(&copy).exists());
+        assert_eq!(read_header(&std::fs::read(&copy).unwrap()).unwrap().prev_generation, 0);
+
+        // A flipped bit anywhere after the magic is caught.
+        for at in 4..25 {
+            let mut flipped = after.clone();
+            flipped[at] ^= 0x10;
+            assert!(!matches!(read_header(&flipped), Ok(h) if !h.damaged), "byte {at}");
+        }
     }
 
     #[test]
@@ -1483,6 +1873,118 @@ mod tests {
     }
 
     #[test]
+    fn every_frame_reads_on_its_own() {
+        // Each frame carries its own actor table, author first, so any
+        // frame decodes without the frames before it.
+        let dir = temp_dir("self-contained");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = a.begin().unwrap();
+        let group = txn.next_id();
+        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://f.example/");
+        txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        let header = read_header(&bytes).unwrap();
+        let frames = scan(&bytes[header.len..], header.len).frames;
+        assert_eq!(frames.iter().map(|f| f.ty).collect::<Vec<_>>(), [frame::SNAPSHOT, frame::OPS, frame::OPS]);
+        assert!(decode_snapshot(frames[0].message).is_ok());
+        let theirs = frames[2].message;
+        assert_eq!(read_table(theirs, 1).unwrap().list, [ActorId(2), ActorId(1)]);
+        let ops = decode_ops(theirs).unwrap();
+        assert!(ops.iter().all(|op| op.id.actor == ActorId(2)));
+        assert!(ops.iter().any(|op| op.body == OpBody::Move { node: tab, group: Some(group) }));
+
+        // A frame with no table has no author.
+        assert!(decode_ops(&[]).is_err());
+        assert!(![frame::SNAPSHOT, frame::OPS].iter().any(|ty| frame::RETIRED.contains(ty)));
+    }
+
+    #[test]
+    fn personal_state_lives_beside_the_journal() {
+        let dir = temp_dir("sidecar");
+        let path = dir.join("session.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        assert_eq!(journal.read_local().unwrap(), None);
+        journal.write_local(b"view").unwrap();
+        journal.write_local(b"view two").unwrap();
+        let reopened = Journal::open(&path, ActorId(2)).unwrap();
+        assert_eq!(reopened.read_local().unwrap().as_deref(), Some(&b"view two"[..]));
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(inspect(&bytes).unwrap().frames.iter().all(|f| f.1 == frame::SNAPSHOT || f.1 == frame::OPS));
+        assert!(!with_suffix(&local::path_for(&path), ".tmp").exists());
+    }
+
+    #[test]
+    fn another_documents_personal_state_is_ignored() {
+        let dir = temp_dir("sidecar-doc");
+        let path = dir.join("session.mnf");
+        let copy = dir.join("copy.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"mine").unwrap();
+        journal.save_copy(&copy, Some(b"copied")).unwrap();
+        let copied = Journal::open(&copy, ActorId(2)).unwrap();
+        assert_eq!(copied.read_local().unwrap().as_deref(), Some(&b"copied"[..]));
+        // A sidecar moved beside another document isn't read.
+        std::fs::copy(local::path_for(&path), local::path_for(&copy)).unwrap();
+        assert_eq!(copied.read_local().unwrap(), None);
+        assert_eq!(journal.read_local().unwrap().as_deref(), Some(&b"mine"[..]));
+    }
+
+    #[test]
+    fn a_damaged_or_newer_sidecar_is_not_read_and_is_replaced() {
+        let dir = temp_dir("sidecar-bad");
+        let path = dir.join("session.mnf");
+        let side = local::path_for(&path);
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"state").unwrap();
+        let clean = std::fs::read(&side).unwrap();
+        let mut damaged = clean.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        std::fs::write(&side, &damaged).unwrap();
+        assert!(matches!(journal.read_local(), Err(JournalError::Corrupt(_))));
+        let mut newer = clean.clone();
+        newer[4] = 2; // format_version 2
+        std::fs::write(&side, &newer).unwrap();
+        assert_eq!(journal.read_local().unwrap(), None);
+        journal.write_local(b"again").unwrap();
+        assert_eq!(journal.read_local().unwrap().as_deref(), Some(&b"again"[..]));
+    }
+
+    #[test]
+    fn damaged_personal_state_never_panics_or_reads_wrong() {
+        let dir = temp_dir("local-damaged");
+        let path = dir.join("session.mnf");
+        let journal = Journal::open(&path, ActorId(1)).unwrap();
+        journal.write_local(b"some personal state").unwrap();
+        let clean = std::fs::read(local::path_for(&path)).unwrap();
+        let mut rng = XorShift(0x10CA1);
+        for _ in 0..2000 {
+            let mut bytes = clean.clone();
+            for _ in 0..1 + rng.below(3) {
+                if bytes.is_empty() {
+                    break;
+                }
+                let at = rng.below(bytes.len() as u64) as usize;
+                match rng.below(3) {
+                    0 => bytes[at] ^= 1 << rng.below(8),
+                    1 => bytes.truncate(at),
+                    _ => bytes.insert(at, rng.next() as u8),
+                }
+            }
+            std::fs::write(local::path_for(&path), &bytes).unwrap();
+            // The frame's CRC means any state read is the one written.
+            if let Ok(Some(state)) = journal.read_local() {
+                assert_eq!(state, b"some personal state");
+            }
+        }
+    }
+
+    #[test]
     fn inspect_reports_frames_and_the_torn_tail() {
         let dir = temp_dir("inspect");
         let path = dir.join("session.mnf");
@@ -1491,7 +1993,332 @@ mod tests {
         let clean = bytes.len();
         bytes.extend_from_slice(&[0; 16]);
         let report = inspect(&bytes).unwrap();
-        assert_eq!(report.frames.iter().map(|f| f.1).collect::<Vec<_>>(), [frame::ACTORS, frame::SNAPSHOT]);
+        assert_eq!(report.frames.iter().map(|f| f.1).collect::<Vec<_>>(), [frame::SNAPSHOT]);
         assert_eq!(report.torn, Some((clean, Stop::ZeroLength)));
+    }
+
+    #[test]
+    fn closing_without_changes_leaves_the_file_alone() {
+        let dir = temp_dir("idle");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://idle.example/");
+        txn.commit(vec![create]).unwrap();
+        journal.close().unwrap(); // changed: compacts
+        let compacted = std::fs::read(&path).unwrap();
+        for actor in 2..5 {
+            let mut idle = Journal::open(&path, ActorId(actor)).unwrap();
+            drop(idle.begin().unwrap());
+            idle.close().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), compacted, "launch {actor} rewrote an unchanged file");
+        }
+        let frames = |path: &Path| {
+            inspect(&std::fs::read(path).unwrap()).unwrap().frames.iter().map(|f| f.1).collect::<Vec<_>>()
+        };
+
+        // A replica that appended and died without closing: the next close compacts.
+        let mut crashed = Journal::open(&path, ActorId(5)).unwrap();
+        let txn = crashed.begin().unwrap();
+        txn.commit(vec![OpBody::Delete { node: tab }]).unwrap();
+        drop(crashed);
+        Journal::open(&path, ActorId(6)).unwrap().close().unwrap();
+        assert_eq!(frames(&path), [frame::SNAPSHOT]);
+        assert!(!Journal::read(&std::fs::read(&path).unwrap()).unwrap().nodes.get(&tab).is_some_and(Node::is_live));
+
+        // Another live replica's frames count too.
+        let mut idle = Journal::open(&path, ActorId(7)).unwrap();
+        let mut other = Journal::open(&path, ActorId(8)).unwrap();
+        let mut txn = other.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://other.example/");
+        txn.commit(vec![create]).unwrap();
+        idle.close().unwrap();
+        assert_eq!(frames(&path), [frame::SNAPSHOT]);
+
+        // So does a torn tail.
+        OpenOptions::new().append(true).open(&path).unwrap().write_all(&[7, 0, 0, 0, 1, 2]).unwrap();
+        Journal::open(&path, ActorId(9)).unwrap().close().unwrap();
+        assert_eq!(inspect(&std::fs::read(&path).unwrap()).unwrap().torn, None);
+    }
+
+    /// Three tabs compacted into a snapshot (its `.prev` holds the file
+    /// before), then three ops frames of one tab each from another replica.
+    fn layered_file(path: &Path) -> Vec<u8> {
+        let mut journal = Journal::open(path, ActorId(1)).unwrap();
+        for i in 0..3 {
+            let mut txn = journal.begin().unwrap();
+            let (_, create) = create_tab(&mut txn, &format!("https://s{i}.example/"));
+            txn.commit(vec![create]).unwrap();
+        }
+        journal.close().unwrap();
+        let mut journal = Journal::open(path, ActorId(2)).unwrap();
+        for i in 0..3 {
+            let mut txn = journal.begin().unwrap();
+            let (_, create) = create_tab(&mut txn, &format!("https://o{i}.example/"));
+            txn.commit(vec![create]).unwrap();
+        }
+        drop(journal);
+        std::fs::read(path).unwrap()
+    }
+
+    /// `(offset, size)` of each whole frame.
+    fn frame_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
+        let header = read_header(bytes).unwrap();
+        scan(&bytes[header.len..], header.len).frames.iter().map(|f| (f.offset, f.size)).collect()
+    }
+
+    #[test]
+    fn a_damaged_ops_frame_loses_only_its_own_ops() {
+        let dir = temp_dir("resync");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let spans = frame_spans(&bytes);
+        assert_eq!(spans.len(), 4);
+        for &(offset, size) in &spans[1..] {
+            let mut without = bytes[..offset].to_vec();
+            without.extend_from_slice(&bytes[offset + size..]);
+            let expected = shown(&Journal::read(&without).unwrap());
+            let last = offset + size == bytes.len();
+            // A flipped bit (the frame fails its CRC), or a zeroed frame
+            // (writes persisted out of order).
+            for zeroed in [false, true] {
+                let mut damaged = bytes.clone();
+                if zeroed {
+                    damaged[offset..offset + size].fill(0);
+                } else {
+                    damaged[offset + size - 1] ^= 1;
+                }
+                std::fs::write(&path, &damaged).unwrap();
+                let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+                assert_eq!(shown(journal.doc()), expected, "frame at {offset}, zeroed {zeroed}");
+                if zeroed && last {
+                    // Zeros at the end are a torn tail: an append that never landed.
+                    assert!(journal.take_recovery().is_none());
+                    continue;
+                }
+                assert_eq!(inspect(&damaged).unwrap().damaged, [(offset, offset + size)]);
+                let recovery = journal.take_recovery().expect("damage is reported");
+                assert_eq!(recovery.damaged, [(offset, offset + size)]);
+                let saved = recovery.saved.expect("the file as it was is kept");
+                assert_eq!(std::fs::read(&saved).unwrap(), damaged);
+                std::fs::remove_file(saved).unwrap();
+                assert_eq!(frame_spans(&std::fs::read(&path).unwrap()).len(), 1);
+                assert!(Journal::open(&path, ActorId(4)).unwrap().take_recovery().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn a_lost_snapshot_is_rebuilt_from_prev() {
+        let dir = temp_dir("from-prev");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let original = Journal::read(&bytes).unwrap();
+        let prev = std::fs::read(prev_path(&path)).unwrap();
+        let (offset, size) = frame_spans(&bytes)[0];
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(shown(journal.doc()), shown(&original));
+        assert_eq!(journal.doc().id, original.id);
+        let recovery = journal.take_recovery().unwrap();
+        assert!(recovery.from_prev && !recovery.new_document);
+        // A repair leaves `.prev` as it was, and still linked.
+        assert_eq!(std::fs::read(prev_path(&path)).unwrap(), prev);
+        let header = read_header(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(header.prev_generation, read_header(&prev).unwrap().generation);
+
+        // Without `.prev`: a new document holding what the surviving ops made.
+        std::fs::remove_file(prev_path(&path)).unwrap();
+        std::fs::write(&path, &damaged).unwrap();
+        let mut journal = Journal::open(&path, ActorId(5)).unwrap();
+        assert!(journal.take_recovery().unwrap().new_document);
+        assert_ne!(journal.doc().id, original.id);
+        let urls: Vec<FieldValue> = journal.doc().live().map(|(id, _)| url(journal.doc(), id)).collect();
+        assert_eq!(urls, (0..3).map(|i| FieldValue::Str(format!("https://o{i}.example/"))).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_prev_with_the_wrong_generation_is_not_used() {
+        let dir = temp_dir("prev-mismatch");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let original = Journal::read(&bytes).unwrap();
+        let (offset, size) = frame_spans(&bytes)[0];
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // `.prev` from another journal entirely: a different generation,
+        // and its tabs are foreign to this document.
+        let foreign_dir = temp_dir("prev-mismatch-foreign");
+        let foreign_bytes = layered_file(&foreign_dir.join("other.mnf"));
+        std::fs::write(prev_path(&path), &foreign_bytes).unwrap();
+
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        let recovery = journal.take_recovery().unwrap();
+        assert!(!recovery.from_prev && recovery.new_document);
+        assert_ne!(journal.doc().id, original.id);
+        assert_ne!(journal.doc().id, Journal::read(&foreign_bytes).unwrap().id);
+        let urls: Vec<FieldValue> = journal.doc().live().map(|(id, _)| url(journal.doc(), id)).collect();
+        assert_eq!(urls, (0..3).map(|i| FieldValue::Str(format!("https://o{i}.example/"))).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn damage_found_while_catching_up_is_repaired_not_cut() {
+        let dir = temp_dir("live-damage");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (x, create_x) = create_tab(&mut txn, "https://x.example/");
+        txn.commit(vec![create_x]).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (y, create_y) = create_tab(&mut txn, "https://y.example/");
+        txn.commit(vec![create_y]).unwrap();
+        // X's frame is damaged on disk; Y's, after it, is whole.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let (offset, size) = frame_spans(&bytes)[1];
+        bytes[offset + size - 1] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut txn = a.begin().unwrap();
+        assert!(txn.remote.contains(&y));
+        let (z, create_z) = create_tab(&mut txn, "https://z.example/");
+        txn.commit(vec![create_z]).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(doc.nodes[&y].is_live() && doc.nodes[&z].is_live());
+        assert!(!doc.nodes.contains_key(&x));
+        assert!(a.take_recovery().is_some_and(|r| r.saved.is_some()));
+        // B held X only in memory: it learns X is gone (spec: accepted).
+        let txn = b.begin().unwrap();
+        assert!(txn.remote.contains(&x) && !txn.doc().nodes.contains_key(&x));
+    }
+
+    #[test]
+    fn a_frame_that_does_not_decode_is_skipped_and_kept_aside() {
+        let dir = temp_dir("undecodable");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://ok.example/");
+        txn.commit(vec![create]).unwrap();
+        drop(journal);
+        let mut bytes = std::fs::read(&path).unwrap();
+        encode_frame(&mut bytes, frame::OPS, &[]); // CRC-valid, but no actor table
+        std::fs::write(&path, &bytes).unwrap();
+        let mut journal = Journal::open(&path, ActorId(2)).unwrap();
+        assert!(journal.doc().nodes[&tab].is_live());
+        let recovery = journal.take_recovery().unwrap();
+        assert_eq!((recovery.skipped_frames, recovery.damaged.len()), (1, 0));
+        assert_eq!(std::fs::read(recovery.saved.unwrap()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_damaged_header_is_rewritten() {
+        let dir = temp_dir("bad-header");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let expected = shown(&Journal::read(&bytes).unwrap());
+        let mut damaged = bytes.clone();
+        damaged[8] ^= 1; // inside the generation
+        std::fs::write(&path, &damaged).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(shown(journal.doc()), expected);
+        let recovery = journal.take_recovery().unwrap();
+        assert!(recovery.header_damaged && !recovery.from_prev);
+        let saved = recovery.saved.unwrap();
+        assert!(saved.to_string_lossy().ends_with(&format!(".damaged-{:016x}", crc32c(&damaged))));
+        assert!(!read_header(&std::fs::read(&path).unwrap()).unwrap().damaged);
+    }
+
+    #[test]
+    fn a_failed_save_blocks_rewrite_and_truncation_until_retried() {
+        let dir = temp_dir("unsaved-damage");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1]; // not the file's last frame
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // Block `save_damaged`'s temp file with a directory of the same name.
+        let saved = damaged_path(&path, &damaged);
+        let tmp = with_suffix(&saved, ".tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), damaged); // the repair's rewrite never ran
+        let recovery = journal.take_recovery().unwrap();
+        assert!(recovery.saved.is_none());
+
+        // A commit is refused rather than truncating the unsaved original away.
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://blocked.example/");
+        assert!(txn.commit(vec![create]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+
+        // Once the save can succeed, the next operation retries it and proceeds.
+        std::fs::remove_dir(&tmp).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://ok.example/");
+        txn.commit(vec![create]).unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), damaged);
+        assert_ne!(std::fs::read(&path).unwrap(), damaged);
+    }
+
+    #[test]
+    fn a_clean_reload_clears_unsaved_damage() {
+        let dir = temp_dir("unsaved-damage-cleared");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1]; // not the file's last frame
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+
+        // Block this journal's own save, so it opens with the damage
+        // unsaved and never rewritten.
+        let saved = damaged_path(&path, &damaged);
+        let tmp = with_suffix(&saved, ".tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        journal.take_recovery();
+
+        // Another replica repairs the file cleanly.
+        std::fs::remove_dir(&tmp).unwrap();
+        drop(Journal::open(&path, ActorId(4)).unwrap());
+        assert_eq!(std::fs::read(&saved).unwrap(), damaged);
+        assert_ne!(std::fs::read(&path).unwrap(), damaged);
+        let count = |dir: &Path| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".damaged-"))
+                .count()
+        };
+        let before = count(&dir);
+
+        // The stale journal's next commit sees the file is now clean and
+        // doesn't save a spurious, already-clean copy aside.
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://ok.example/");
+        txn.commit(vec![create]).unwrap();
+        assert_eq!(count(&dir), before);
+    }
+
+    #[test]
+    fn take_recovery_returns_none_the_second_time() {
+        let dir = temp_dir("recovery-once");
+        let path = dir.join("session.mnf");
+        let bytes = layered_file(&path);
+        let (offset, size) = frame_spans(&bytes)[1];
+        let mut damaged = bytes.clone();
+        damaged[offset + size - 1] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let mut journal = Journal::open(&path, ActorId(3)).unwrap();
+        assert!(journal.take_recovery().is_some());
+        assert!(journal.take_recovery().is_none());
     }
 }

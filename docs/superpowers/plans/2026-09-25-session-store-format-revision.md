@@ -19,15 +19,16 @@ Nothing outside `store/` uses the module yet (`#![allow(dead_code)]`).
 
 ## Global Constraints
 
-- Work on `dev`. Never push. Commit at the end of each task with the message given, ending with the trailer line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- **Never run `cargo fmt`** (the crate has hand-formatted regions). Match the surrounding style: long lines are fine, and comments are sparse and full sentences.
+- Work on the branch `store-format-revision` (from `dev`; it merges back into `dev`). Never push. Commit at the end of each task with the message given, ending with the trailer line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Run `cargo fmt --all` before each commit (style: `rustfmt.toml`, width 120). Keep the surrounding comment style: sparse, full sentences. `OpBody` is `#[rustfmt::skip]`; keep its variants on one line each.
 - Build and test with `-j 12`.
-- Every task ends with both of these green:
+- Every task ends with all of these green:
   - `cargo test -q -p manifold -j 12 store::` (the task gives the expected count);
-  - `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'` prints nothing.
+  - `cargo clippy -q -j 12 -p manifold -p ipc-protocol --all-targets -- -D warnings` passes (the pre-commit hook runs it and `cargo fmt --all --check`; never bypass it with `--no-verify`);
+  - `cargo fmt --all --check`.
 - Tests touch files only under `store::testutil::temp_dir`. Nothing touches `%APPDATA%`, and no task runs the app.
 - `FORMAT_VERSION` stays `1` although the header and frames change. The format is unshipped, and nothing outside tests has written a `.mnf` file. (Assumption: verify with `git grep -n "Journal::open" -- crates/manifold/src ':!crates/manifold/src/store'`, which prints nothing.)
-- **This plan's code was not compiled before it was written**, unlike Plan A's. The blocks are complete and were checked by reading against the current source (`fd6b036`). Compile errors are transcription or plan defects: fix them minimally and note them in the report. Behaviour that differs from the tests is a real finding. Report it; don't weaken a test.
+- **This plan's code was not compiled before it was written**, unlike Plan A's. The blocks are complete and were checked by reading against the source at `fd6b036`. The workspace was reformatted afterwards (`db79f32`), so code this plan quotes as "replace this" may now be wrapped differently: match it by content, not by line breaks. Compile errors are transcription or plan defects: fix them minimally and note them in the report. Behaviour that differs from the tests is a real finding. Report it; don't weaken a test.
 - Frame types 1 and 4 are retired and never reused. Field numbers are never reused either.
 
 ## Why these changes (one line each; Task 1 puts the full text in the spec)
@@ -57,7 +58,7 @@ Nothing outside `store/` uses the module yet (`#![allow(dead_code)]`).
 | 13 | Resync cost | Linear in practice: most offsets fail on a zero or oversized length. Quadratic only for adversarial files, which aren't attacker-written | — |
 | 14 | Another replica's frames are damaged, found by `catch_up` under the lock | Full reload plus repair, never a cut. That replica loses the in-memory ops that sat in the damaged region; its next `begin` reports them in `remote` as missing | T7 test |
 | 15 | A `BadCrc` tail in a file this build can't compact (`keep_unknown`/read-only) | Each `begin` reloads it until the next append cuts it. Rare, bounded | — |
-| 16 | The damaged copy can't be saved (disk full) | No rewrite. Appends go after the last valid frame, so nothing more is cut. A `BadCrc` tail is still cut at the next append, like a torn tail | code comment |
+| 16 | The damaged copy can't be saved (disk full) | No rewrite. An append that would cut unsaved damaged bytes (a torn tail, or a `BadCrc` tail on the file's own truncating append) is refused until a retried save of the damaged original succeeds | code comment |
 | 17 | The repair rewrite fails | `compaction_failed` and `stale` are set; the next `begin` reloads and retries | code |
 | 18 | No hard links (FAT/exFAT, some network drives) | Fall back to copying. If the copy fails too, there is no `.prev`; it is a best-effort safety net | code |
 | 19 | Crash between creating `.prev` and the rename | `.prev` then has the current generation, not the linked one, so it is ignored | by construction |
@@ -595,8 +596,7 @@ In `write_ops`, delete the whole `new_actors` block, from `let mut new_actors` t
 Run: `cargo test -q -p manifold -j 12 store::`
 Expected: 48 passed (47 + 1).
 
-Run: `cargo clippy -q -p manifold -j 12 --all-targets 2>&1 | grep -F 'src\store'`
-Expected: nothing.
+Run clippy as in Global Constraints. Expected: it passes.
 
 - [ ] **Step 10: Commit**
 
@@ -941,7 +941,7 @@ Check nothing is left: `grep -n "None)\|Some(b\"local\|(doc, _)\|\.local()" crat
 Run: `cargo test -q -p manifold -j 12 store::`
 Expected: 51 passed (48 + 3).
 
-Run clippy as in Global Constraints. Expected: nothing.
+Run clippy as in Global Constraints. Expected: it passes.
 
 - [ ] **Step 8: Commit**
 
@@ -2097,7 +2097,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```markdown
 ## Outcome (executed YYYY-MM-DD)
 
-Landed on `dev` as <first>..<last>: N `store::` tests; clippy clean in `store/`. Deviations from the blocks above: <list, or "none">.
+Landed on `dev` as <first>..<last>: N `store::` tests; clippy clean. Deviations from the blocks above: <list, or "none">.
 ```
 
 Fill in the real commits, the count and the deviations.
@@ -2110,3 +2110,15 @@ git commit -m "Plan: record the format revision's outcome and Plan B contracts
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Outcome (executed 2026-09-26)
+
+Executed on branch `store-format-revision` as 587babf.. through the final-review fixes: 66 `store::` tests; clippy clean. Deviations from the blocks above:
+- Task 1: kept the spec's two unknown-frame-type bullets that the brief's replacement range would have deleted; also changed a leftover "written to `Local`" to the personal-state file.
+- Global Constraints: the per-task clippy check became the pre-commit hook's (`-D warnings`), not a grep of `src\store`.
+- Task 4: rewrapped `close`'s doc comment (308ab38).
+- Task 7: review found that a failed save of damaged bytes still let compaction or an append destroy them; fixed with an `unsaved_damage` flag and an `ensure_saved` guard before every rewrite or truncation, plus two tests (1c5b2fd). Hence 64 tests, not 62.
+- Final review: `save_copy` removes a stale `.prev`; a clean reload clears `unsaved_damage`; spec and contract wording aligned; two tests. Hence 66 tests, not 64.
+- Otherwise the blocks were applied as written.
