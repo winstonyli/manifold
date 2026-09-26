@@ -872,13 +872,88 @@ impl App {
 
     /// The session as a JSON snapshot (Export Session), saved first so it
     /// holds every edit; if that save didn't commit, it exports anyway and
-    /// warns. `None` without a store.
+    /// warns. Carries this profile's personal state as `local` (spec
+    /// "Personal state"), same as a named session's own `.mnf.local`.
+    /// `None` without a store.
     pub(crate) fn export_session_json(&mut self) -> Option<JsonDoc> {
         self.journal.as_ref()?;
         if !self.save_session() {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
-        Some(crate::store::json::doc_to_json(self.journal.as_ref()?.doc()))
+        let mut json = crate::store::json::doc_to_json(self.journal.as_ref()?.doc());
+        json.local = Some(serde_json::to_value(self.local_state()).expect("personal state serializes"));
+        Some(json)
+    }
+
+    /// A group's own subtree as a JSON snapshot (Export Group; spec "JSON
+    /// snapshots"), root first (`store::json::subtree_to_json`'s own
+    /// contract), saved first like `export_session_json`. Only *saved*
+    /// nodes are exported -- a synthetic "Expand as Graph" group
+    /// (`from_json`) is itself a saved node since Task 5, so it exports
+    /// too, unlike the old per-group export format, which walked live
+    /// nodes and always skipped it. `None` without a store or for an
+    /// unknown group.
+    pub(crate) fn export_group_json(&mut self, group: &str) -> Option<JsonDoc> {
+        self.journal.as_ref()?;
+        let root: NodeId = group.parse().ok()?;
+        if !self.save_session() {
+            self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
+        }
+        Some(crate::store::json::subtree_to_json(self.journal.as_ref()?.doc(), root))
+    }
+
+    /// Imports a group export at the level currently being viewed (Import
+    /// Group): every node gets a fresh id (`store::json::import`), the
+    /// file's root (first node -- `subtree_to_json`'s contract; a bare
+    /// tab/note file with no group root is imported the same way) lands at
+    /// a jittered position around `GRAPH_WORLD_CENTER`, under
+    /// `self.current_group`. Every other member keeps its file position
+    /// exactly: `pos` is always local to a node's own immediate group, so
+    /// a member's position is already relative to the root (or a group
+    /// nested under it) and needs no translation, only the re-parented
+    /// root itself does. A `group` link only within this file's own nodes
+    /// is kept; anything else (the root, or a member whose group was
+    /// outside the exported subtree) is dropped to `None`/the new root as
+    /// appropriate. Ends with `save_session`, same as
+    /// `replace_running_session`/`reopen_closed`.
+    pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
+        let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
+            Ok(imported) => imported,
+            Err(err) => {
+                self.queue_toast(format!("Couldn't import the group: {err}"));
+                return;
+            }
+        };
+        let Some(root) = imported.first().map(|i| i.id) else { return };
+        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
+        // A node's `pos` is always within its own immediate group's local
+        // space (contract "The graph's world-space center" -- see
+        // `GRAPH_WORLD_CENTER`'s own doc comment), so only the root -- the
+        // one node whose group is changing, from wherever it was exported
+        // to `self.current_group` -- needs a fresh position; every other
+        // member's file position is already relative to its own (possibly
+        // nested) group and stays as-is, same as the old per-group export
+        // format's own import behavior.
+        let root_pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
+
+        let mut imported = imported;
+        imported.sort_by_key(|i| i.kind != Kind::Group);
+        for node in imported {
+            let group = if node.id == root {
+                self.current_group.clone()
+            } else {
+                match node.fields.get(&field::GROUP) {
+                    Some(FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
+                    _ => None,
+                }
+            };
+            let mut fields = imported_fields(node.kind, &node.fields);
+            if node.id == root {
+                fields.insert(field::POS, FieldValue::Pos(root_pos.x, root_pos.y));
+            }
+            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::New, None);
+        }
+        self.save_session();
     }
 
     /// Writes `export_session_json` to `path` (Export Session, headless
@@ -1499,5 +1574,25 @@ pub(crate) mod tests {
         app.close_store();
         let after = (std::fs::read(&path).unwrap(), std::fs::read(crate::store::local::path_for(&path)).unwrap());
         assert!(before == after, "an idle launch rewrote the session or its personal state");
+    }
+
+    /// A group export round-trips as a JSON snapshot: `export_group_json`
+    /// gives the group and its one member, root first, and `import_group_
+    /// json` recreates both under fresh ids, leaving the originals in
+    /// place (so the level now holds four nodes, not two).
+    #[test]
+    fn a_group_export_imports_as_fresh_nodes() {
+        let dir = crate::store::testutil::temp_dir("group-json");
+        let mut app = app_on(&dir.join("session.mnf"), 1);
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), egui::vec2(0.0, 0.0));
+        let n = app.alloc_node_id();
+        app.insert_note_at(n.clone(), egui::vec2(10.0, 0.0));
+        app.nodes.get_mut(&n).unwrap().group = Some(g.clone());
+        let json = app.export_group_json(&g).unwrap();
+        assert_eq!(json.nodes.len(), 2);
+        assert_eq!(json.nodes[0].kind, "group");
+        app.import_group_json(&json);
+        assert_eq!(app.shared_nodes().len(), 4, "the import added a second group and note");
     }
 }

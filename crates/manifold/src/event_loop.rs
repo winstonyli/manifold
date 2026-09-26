@@ -756,6 +756,11 @@ impl App {
             DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
             DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
             DebugCommand::SessionNameText(text) => self.session_name_draft = text,
+            DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
+            DebugCommand::OpenSession(name) => {
+                self.load_named_session(&name);
+                self.close_settings_page();
+            }
             DebugCommand::GraphFilterText(text) => self.graph_filter = text,
             DebugCommand::HistoryFilterText(text) => self.history_filter = text,
             DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
@@ -843,15 +848,17 @@ impl App {
                     .clone()
                     .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
                 {
-                    if let Some(export) = self.export_group(&group_id) {
-                        group_export::save_to(&export, std::path::Path::new(&path));
+                    if let Some(json) = self.export_group_json(&group_id) {
+                        write_json_export(&json, std::path::Path::new(&path), "group");
                     }
                 }
             }
-            DebugCommand::ImportGroup(path) => match group_export::load_from(std::path::Path::new(&path)) {
-                Ok(export) => self.import_group_export(export),
-                Err(err) => self.queue_toast(err),
-            },
+            DebugCommand::ImportGroup(path) => {
+                match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
+                    Ok(json) => self.import_group_json(&json),
+                    Err(err) => self.queue_toast(err),
+                }
+            }
             DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
             DebugCommand::ExportBookmarks(path) => {
                 bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));

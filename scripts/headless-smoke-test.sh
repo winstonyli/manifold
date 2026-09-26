@@ -301,9 +301,10 @@ drag() {
 
 # A two-tab group from a file, entered by double-clicking its card.
 cat >"$out_dir/pair.group.json" <<'EOF'
-{"name": "Pair", "color": null, "tabs": [
- {"id": "a", "parent": null, "url": "manifold://welcome", "engine": "webview2", "pos_x": -150.0, "pos_y": 0.0},
- {"id": "b", "parent": null, "url": "manifold://welcome", "engine": "webview2", "pos_x": 150.0, "pos_y": 0.0}]}
+{"nodes": [
+ {"id": "g", "kind": "group", "name": "Pair"},
+ {"id": "a", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 EOF
 before=$(query group_out 'groups')
 send "IMPORTGROUP $out_dir_win\pair.group.json"
@@ -358,8 +359,8 @@ check_query ejected "ejecting a selected tab also drops it from the selection" \
 send "CLICK 22 17"
 python - "$out_dir/nine.group.json" <<'EOF'
 import json, sys
-tab = lambda i: {"id": f"t{i}", "parent": None, "url": "manifold://welcome", "engine": "webview2", "pos_x": 0.0, "pos_y": 0.0}
-json.dump({"name": "Nine", "color": None, "tabs": [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
+tab = lambda i: {"id": f"t{i}", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "group": "g"}
+json.dump({"nodes": [{"id": "g", "kind": "group", "name": "Nine"}] + [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
 EOF
 settle top
 before_nine=$(query top 'groups')

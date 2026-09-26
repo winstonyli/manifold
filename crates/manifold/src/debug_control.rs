@@ -175,6 +175,13 @@ pub enum DebugCommand {
     /// same "direct call, not a synthetic key event" reason as
     /// `FindText`.
     SessionNameText(String),
+    /// "Save Session As..." with an explicit name instead of reading the
+    /// name field a real click would use, same "bypass the dialog/UI
+    /// entirely" reason as `ExportSession`. See `App::save_named_session`.
+    SaveSessionAs(String),
+    /// A saved name's "Open" button with an explicit name, same reason as
+    /// `SaveSessionAs`. See `App::load_named_session`.
+    OpenSession(String),
     /// Sets the Graph view toolbar's filter box directly, same "direct
     /// call, not a synthetic key event" reason as `FindText`.
     GraphFilterText(String),
@@ -383,6 +390,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row"),
     ("QUICKSWITCHESCAPE", "Close the quick switcher"),
     ("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field"),
+    ("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)"),
+    ("OPENSESSION name", "Open the named save `name`, replacing the running session"),
     ("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box"),
     ("HISTORYFILTERTEXT text", "Set the History popup's own filter box"),
     ("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box"),
@@ -619,6 +628,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
         "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
         "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
+        "SAVESESSIONAS" => non_empty(DebugCommand::SaveSessionAs),
+        "OPENSESSION" => non_empty(DebugCommand::OpenSession),
         "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
         "HISTORYFILTERTEXT" => Some(DebugCommand::HistoryFilterText(rest.to_string())),
         "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),

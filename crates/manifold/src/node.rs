@@ -174,7 +174,7 @@ pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
 /// first new kind added on top of the unified `GraphNode`/`NodePayload`
 /// model, rather than another migration of a pre-existing type -- proof the
 /// model actually supports "arrange anything" the way it was built to.
-/// Persisted in `session.json` (`session::SessionNote`) since a note is
+/// Persisted in the session store (`field::TEXT`) since a note is
 /// user-authored content, not a display preference like `TabPayload::pinned`
 /// or a group's own membership -- losing it on restart would defeat the
 /// point of writing one down.
@@ -185,8 +185,9 @@ pub(crate) struct NotePayload {
     /// read-only, with the whole card (not just its header strip) clickable
     /// to switch back to editing -- the same "click to edit, blur to
     /// render" split Obsidian/Notion use, since a rendered view has no
-    /// natural place to put a text cursor. Session-only -- not persisted (`session::SessionNote` has no
-    /// `editing`), so a restored note always starts rendered regardless of
+    /// natural place to put a text cursor. Session-only -- not persisted
+    /// (the store's note fields have no `editing`), so a restored note
+    /// always starts rendered regardless of
     /// what it was showing when the app last closed. A freshly created
     /// note starts `true` instead, so typing into it works immediately
     /// with no extra click.
@@ -204,7 +205,7 @@ pub(crate) struct NotePayload {
 /// never changes after that. `width`/`height` are the *decoded* image's
 /// real pixel dimensions, kept so the card can size itself to the image's
 /// own aspect ratio instead of stretching/squashing it into a fixed box.
-/// Persisted in `session.json` (`session::SessionImage`) as just the file
+/// Persisted in the session store (`field::PATH`) as just the file
 /// path -- same "re-derive, don't duplicate the bytes" posture a restored
 /// tab's fresh navigation already has, rather than embedding the picture's
 /// own bytes a second time. If the file has since moved or been deleted,
@@ -214,8 +215,8 @@ pub(crate) struct ImagePayload {
     pub(crate) path: String,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    /// `Some` for a card restored from `session.json` whose file couldn't
-    /// be opened: no texture, `width`/`height` 0, drawn like a failed PDF
+    /// `Some` for a card restored from the session store whose file
+    /// couldn't be opened: no texture, `width`/`height` 0, drawn like a failed PDF
     /// with this message as its tooltip. It stays in the session, so the
     /// next launch tries the file again.
     pub(crate) error: Option<String>,
@@ -233,7 +234,7 @@ pub(crate) struct ImagePayload {
 /// use. Only the first page is ever rendered -- no page-navigation UI yet,
 /// same "start with the simplest useful slice" scope Notes' own initial cut
 /// had for its context menu/drag-into-group (both added in a later step).
-/// Persisted in `session.json` (`session::SessionPdf`) as just the file
+/// Persisted in the session store (`field::PATH`) as just the file
 /// path, same "re-derive, don't duplicate" posture `ImagePayload` already
 /// has -- restoring re-renders the first page from scratch rather than
 /// caching the rendered bitmap anywhere.
@@ -344,7 +345,7 @@ pub(crate) struct TabPayload {
     /// `graph_layout::step` already gives a node currently being dragged),
     /// so it stays exactly where the user put it instead of drifting under
     /// repulsion/centering forces as siblings come and go. Saved as
-    /// `SessionTab::pinned`.
+    /// `field::PINNED`.
     pub(crate) pinned: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes

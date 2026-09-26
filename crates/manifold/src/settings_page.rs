@@ -327,7 +327,7 @@ impl App {
         if req.save_as_requested {
             let name = sanitize_session_name(&self.session_name_draft);
             if !name.is_empty() {
-                self.queue_toast("Named sessions are unavailable until the session store work lands".into());
+                self.save_named_session(&name);
             }
         }
         if let Some(name) = &req.open_session_name {

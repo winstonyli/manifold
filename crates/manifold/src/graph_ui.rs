@@ -323,8 +323,8 @@ impl App {
             }
             GraphAction::ImportGroup => {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Group", &["json"]).pick_file() {
-                    match group_export::load_from(&path) {
-                        Ok(export) => self.import_group_export(export),
+                    match crate::json_file::load::<crate::store::json::JsonDoc>(&path, "group") {
+                        Ok(json) => self.import_group_json(&json),
                         Err(err) => self.queue_toast(err),
                     }
                 }

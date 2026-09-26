@@ -8,7 +8,6 @@ mod favicon_fetch;
 mod gpu;
 mod graph_layout;
 mod graph_ui;
-mod group_export;
 mod image_view;
 mod input;
 mod json_file;
@@ -87,7 +86,7 @@ const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 /// `None` -> red -> orange -> ... -> purple -> `None`, matching how the pin
 /// dot's own binary toggle needs no separate popup/menu to operate.
 /// Strips a "Save Session As..." name down to characters safe to use
-/// verbatim as a filename (`sessions/<name>.json`) -- alphanumeric, space,
+/// verbatim as a filename (`sessions/<name>.mnf`) -- alphanumeric, space,
 /// hyphen, underscore only. No path separators or `.` survive, so there's
 /// no path-traversal or extension-confusion risk from typed input, and no
 /// separate validation step is needed before treating the result as a bare
@@ -454,6 +453,24 @@ fn save_dialog_with_toast(
     Some((path, toast))
 }
 
+/// Writes a JSON snapshot (spec "JSON snapshots") to `path`, pretty-
+/// printed, logging (not toasting) a failure -- shared by every Export
+/// Group site (headless `EXPORTGROUP`, the node menu's own "Export
+/// Group..." and the popup's), matching the old per-group export file's
+/// own save, which likewise only logged. `what` names the file's kind for
+/// the log line, matching `json_file::load`'s own `what`.
+fn write_json_export(json: &store::json::JsonDoc, path: &std::path::Path, what: &str) {
+    let written = serde_json::to_string_pretty(json).map_err(|e| e.to_string()).and_then(|text| {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(path, text).map_err(|e| e.to_string())
+    });
+    if let Err(err) = written {
+        eprintln!("{what}: couldn't export to {}: {err}", path.display());
+    }
+}
+
 /// The bare filename portion of a download's full path, for display --
 /// shared by the graph card's own label and the "Downloads (N)" toolbar
 /// dropdown so the two never show it differently. Falls back to the whole
@@ -565,7 +582,7 @@ const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
 /// toward — independent of screen/window coordinates now that the graph is
 /// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
 /// positions doubled as screen coordinates directly.
-const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
+pub(crate) const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
 /// Initial visible world-space rect for the graph's `egui::Scene`, before
 /// any user panning/zooming — generous enough to show a handful of settled
 /// nodes around `GRAPH_WORLD_CENTER` at 1:1 zoom.
@@ -869,8 +886,8 @@ enum ViewMode {
     Graph,
     /// One node shown full-screen ("maximized"): a Tab's live page, or --
     /// while `App::viewed_image` is `Some` -- an Image. Was `Tab` before a
-    /// second kind could enter it; `session::Session::view_mode_tab` keeps
-    /// the old name on disk.
+    /// second kind could enter it; personal state's own `LocalState::
+    /// view_item` keeps the generic name on disk.
     Item,
     /// The gear-icon Settings page -- a real `ViewMode`, not a popup
     /// overlaid on Tab/Graph, since the popup's fixed 200pt width
@@ -1159,7 +1176,7 @@ enum SpawnPurpose {
     /// whether `tab_id` is still the focused tab by the time the spawn
     /// actually completes (checked at handling time, not capture time).
     Respawn,
-    /// Startup session restore (see `session::Session`) — one of
+    /// Startup session restore (see `App::restore_session`) — one of
     /// potentially many concurrent spawns kicked off together, so (like
     /// `Respawn`) visibility/focus is decided at completion time against
     /// whatever `self.focused` was set to before any of them were issued,
@@ -2209,10 +2226,59 @@ impl App {
         self.settings_fingerprint = settings::fingerprint();
     }
 
-    /// "Open Session" (settings popup). Named sessions move to the store in
-    /// a later step of the session-store work; until then Open only says so.
-    fn load_named_session(&mut self, _name: &str) {
-        self.queue_toast("Named sessions are unavailable until the session store work lands".into());
+    /// "Save Session As..." (settings popup) / headless `SAVESESSIONAS` --
+    /// a full compacted copy of the running store (spec "Named sessions"),
+    /// with this profile's own personal state, saved to `sessions/<name>
+    /// .mnf`. Saves the running session first so the copy isn't missing
+    /// recent edits; a failure there or in the copy itself is toasted, not
+    /// fatal (the running session is untouched either way).
+    fn save_named_session(&mut self, name: &str) {
+        let Some(path) = session::named_session_path(name) else {
+            self.queue_toast("No session file".into());
+            return;
+        };
+        if !self.save_session() {
+            self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());
+        }
+        let Some(journal) = self.journal.as_ref() else { return };
+        if let Err(err) = journal.save_copy(&path, Some(&self.local_state().to_bytes())) {
+            self.queue_toast(format!("Couldn't save as {name}: {err}"));
+        }
+    }
+
+    /// "Open Session" (settings popup) / headless `OPENSESSION` -- reads a
+    /// named save's store file and personal state, then replaces the
+    /// running session with it via `replace_running_session` (same path
+    /// Import Session uses). A read error, including one from a file
+    /// written by a newer manifold (`JournalError::ReadOnly` -- `Journal::
+    /// read` still reads it, just says so in its `Display`), is toasted
+    /// and leaves the running session untouched.
+    fn load_named_session(&mut self, name: &str) {
+        let Some(path) = session::named_session_path(name) else {
+            self.queue_toast("No session file".into());
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                return;
+            }
+        };
+        let doc = match store::journal::Journal::read(&bytes) {
+            Ok(doc) => doc,
+            Err(err) => {
+                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                return;
+            }
+        };
+        let local = store::local::read(&path, doc.id)
+            .ok()
+            .flatten()
+            .and_then(|bytes| local_state::LocalState::from_bytes(&bytes));
+        let mut json = store::json::doc_to_json(&doc);
+        json.local = local.map(|l| serde_json::to_value(l).expect("personal state serializes"));
+        self.replace_running_session(&json);
     }
 
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -3825,7 +3891,7 @@ impl App {
     /// the headless `ADDIMAGE <path>` debug command. Returns `false` (doing
     /// nothing) if the file doesn't exist or isn't a decodable image, same
     /// "never let one bad file stop everything else" posture
-    /// `Settings::load`/`session::Session::load` already have. Doesn't
+    /// `Settings::load`/`App::restore_session` already have. Doesn't
     /// itself call `save_session` -- both callers mutate persisted state
     /// and save themselves right after.
     /// A download node for `path`, started from tab `tab_id`: placed next
@@ -4685,150 +4751,6 @@ impl App {
         }
     }
 
-    /// Builds an exportable snapshot of `group_id`'s own subtree -- its
-    /// name, tag color, the groups nested in it at any depth, and every
-    /// tab in any of them (url/engine/position), with `parent` links
-    /// preserved only between those tabs (see `group_export::
-    /// GroupExportTab`'s own doc comment). "Expand as Graph" groups
-    /// (`GroupPayload::from_json`) are left out as in a session; their
-    /// members go in the nearest exported group around them. `None` if the
-    /// group doesn't exist.
-    fn export_group(&self, group_id: &str) -> Option<group_export::GroupExport> {
-        let group_node = self.nodes.get(group_id)?;
-        let group = group_node.as_group()?;
-        let group_color = group_node.color;
-        // `group_id` and every group inside it, at any depth.
-        let mut inside: HashSet<&str> = HashSet::from([group_id]);
-        loop {
-            let before = inside.len();
-            for (id, node) in &self.nodes {
-                if node.as_group().is_some() && node.group.as_deref().is_some_and(|g| inside.contains(g)) {
-                    inside.insert(id.as_str());
-                }
-            }
-            if inside.len() == before {
-                break;
-            }
-        }
-        // The exported group a node in `group` goes in: `None` for
-        // `group_id` itself, else the nearest group that isn't `from_json`.
-        let export_group = |group: Option<&str>| -> Option<String> {
-            // Re-borrowed from `self.nodes` so the walk up can reassign it.
-            let mut group = group.and_then(|g| self.nodes.get_key_value(g)).map(|(id, _)| id.as_str());
-            while let Some(id) = group.filter(|&id| id != group_id) {
-                let node = self.nodes.get(id)?;
-                match node.as_group() {
-                    Some(g) if !g.from_json => return Some(id.to_string()),
-                    _ => group = node.group.as_deref(),
-                }
-            }
-            None
-        };
-        let groups = self
-            .node_order
-            .iter()
-            .filter(|id| id.as_str() != group_id && inside.contains(id.as_str()))
-            .filter_map(|id| {
-                let node = self.nodes.get(id)?;
-                let nested = node.as_group().filter(|g| !g.from_json)?;
-                Some(group_export::GroupExportGroup {
-                    id: id.clone(),
-                    name: nested.name.clone(),
-                    color: node.color.map(|c| (c.r(), c.g(), c.b())),
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                    group: export_group(node.group.as_deref()),
-                })
-            })
-            .collect();
-        let member_ids: HashSet<&str> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.group.as_deref().is_some_and(|g| inside.contains(g)))
-            .map(|(id, _)| id.as_str())
-            .collect();
-        let tabs = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| member_ids.contains(id.as_str()))
-            .filter_map(|(id, node)| {
-                let (url, engine) = node.payload.saved_tab()?;
-                Some(group_export::GroupExportTab {
-                    id: id.clone(),
-                    parent: node.parent.clone().filter(|p| member_ids.contains(p.as_str())),
-                    url: url.to_string(),
-                    engine,
-                    pos_x: node.pos.x,
-                    pos_y: node.pos.y,
-                    group: export_group(node.group.as_deref()),
-                })
-            })
-            .collect();
-        Some(group_export::GroupExport {
-            name: group.name.clone(),
-            color: group_color.map(|c| (c.r(), c.g(), c.b())),
-            tabs,
-            groups,
-        })
-    }
-
-    /// Recreates an exported group at the level being viewed -- a new group
-    /// `GraphNode`, its nested groups, and each member tab, spawned via the
-    /// normal async path. Every tab and group gets a freshly allocated id
-    /// (`alloc_node_id`) rather than reusing the exported
-    /// one, since importing into an already-running session can't assume
-    /// the old ids are free; `parent` and `group` links are remapped
-    /// through the old-id -> new-id maps built while allocating them. Uses
-    /// `SpawnPurpose::Restore` so imported tabs never steal focus, same as
-    /// startup session restore.
-    fn import_group_export(&mut self, export: group_export::GroupExport) {
-        let group_id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&group_id);
-        let color = export.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b));
-        self.nodes.insert(
-            group_id.clone(),
-            GraphNode {
-                parent: None,
-                group: self.current_group.clone(),
-                pos,
-                vel: egui::Vec2::ZERO,
-                color,
-                payload: NodePayload::Group(GroupPayload { name: export.name, from_json: false }),
-            },
-        );
-        self.node_order.push(group_id.clone());
-
-        let group_map: HashMap<String, String> =
-            export.groups.iter().map(|g| (g.id.clone(), self.alloc_node_id())).collect();
-        // A link to a group the file doesn't have lands in the imported group itself.
-        let new_group = |old: Option<String>| {
-            Some(old.and_then(|g| group_map.get(&g).cloned()).unwrap_or_else(|| group_id.clone()))
-        };
-        for nested in export.groups {
-            let Some(new_id) = group_map.get(&nested.id).cloned() else { continue };
-            let node = GraphNode {
-                parent: None,
-                group: new_group(nested.group),
-                pos: egui::vec2(nested.pos_x, nested.pos_y),
-                vel: egui::Vec2::ZERO,
-                color: nested.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)),
-                payload: NodePayload::Group(GroupPayload { name: nested.name, from_json: false }),
-            };
-            self.nodes.insert(new_id.clone(), node);
-            self.node_order.push(new_id);
-        }
-        let id_map: HashMap<String, String> =
-            export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_node_id())).collect();
-        for tab in export.tabs {
-            let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
-            let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
-            let pos = egui::vec2(tab.pos_x, tab.pos_y);
-            let spawn =
-                TabSpawn::new(new_id, tab.url, tab.engine, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
-            self.spawn_tab_async(TabSpawn { parent, group: new_group(tab.group), ..spawn });
-        }
-    }
-
     /// The one right-click context menu for every node card. Fades via the
     /// shared `node_menu`/`node_menu_cache` (one fade Id for all kinds --
     /// per-kind Ids would go unpolled while another kind's menu is open,
@@ -4961,9 +4883,10 @@ impl App {
             NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
-                if let Some(export) = self.export_group(id) {
-                    if let Some((path, toast)) = save_dialog_with_toast(format!("{}.json", export.name), "Group") {
-                        group_export::save_to(&export, &path);
+                let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
+                if let Some(json) = self.export_group_json(id) {
+                    if let Some((path, toast)) = save_dialog_with_toast(format!("{name}.json"), "Group") {
+                        write_json_export(&json, &path, "group");
                         self.queue_toast(toast.0);
                     }
                 }
