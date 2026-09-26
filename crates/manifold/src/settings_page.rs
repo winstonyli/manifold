@@ -242,7 +242,7 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
         ui.label(heading_text("Sessions"));
-        if ui.button("Save Now").on_hover_text("Write the auto-restore session.json immediately").clicked() {
+        if ui.button("Save Now").on_hover_text("Write the auto-restored session (session.mnf) now").clicked() {
             req.save_now_requested = true;
         }
         let last_saved = match self.last_session_save {

@@ -992,7 +992,7 @@ impl App {
             }
             // Committed on blur, not on every keystroke -- a note is
             // persisted (unlike every other per-node display state
-            // in `session.json`, see `NotePayload`'s own doc
+            // in the session store, see `NotePayload`'s own doc
             // comment), and `save_session` is real file I/O, so
             // writing it once per edit *session* rather than once
             // per character avoids hammering disk while typing.

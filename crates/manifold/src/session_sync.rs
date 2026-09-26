@@ -287,8 +287,10 @@ impl App {
     /// Makes live node `id` show `fields`. A new node is inserted, and a
     /// new tab is spawned with `purpose` (it joins `spawning`). A node whose
     /// spawn is in flight keeps the change for when it lands
-    /// (`remote_in_flight`). An existing node is updated in place:
-    /// - `pos` moves only when the shared pos changed (`shared_pos`);
+    /// (`remote_in_flight`). An existing node is updated in place, but only
+    /// in the fields (and group) where the store differs from what this
+    /// replica last saw of it (`last_shared`), so an unsaved local value in
+    /// another field survives:
     /// - a tab's url change navigates without marking `url`;
     /// - an engine change swaps engines.
     ///
@@ -310,41 +312,60 @@ impl App {
         }
         let pos = pos_of(fields);
         let color = fields.get(&field::COLOR).and_then(color_of);
-        let pos_changed = self.shared_pos.insert(id.clone(), pos) != Some(pos);
+        let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
+        let seen = self.last_shared.insert(id.clone(), now.clone());
         if let Some(node) = self.nodes.get_mut(&id) {
-            node.group = group;
-            node.color = color;
-            if pos_changed {
+            let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
+            if seen.as_ref().is_none_or(|s| s.group != now.group) {
+                node.group = group;
+            }
+            if changed(field::COLOR) {
+                node.color = color;
+            }
+            if changed(field::POS) {
                 node.pos = pos;
                 node.vel = egui::Vec2::ZERO;
             }
-            if kind == Kind::Tab {
+            if kind == Kind::Tab && changed(field::PARENT) {
                 node.parent = id_of(fields, field::PARENT);
             }
             let mut swap = None;
             match &mut node.payload {
                 NodePayload::Tab(tab) => {
-                    tab.pinned = bool_of(fields, field::PINNED);
+                    if changed(field::PINNED) {
+                        tab.pinned = bool_of(fields, field::PINNED);
+                    }
                     let url = str_of(fields, field::URL);
-                    if tab.url != url {
+                    if changed(field::URL) && tab.url != url {
                         tab.url = url.clone();
                         tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
                     }
                     let want = engine_field(fields);
-                    if tab.swap_target.unwrap_or(tab.tab.kind) != want {
+                    if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
                         swap = Some(want);
                     }
                 }
                 NodePayload::FailedTab(tab) => {
-                    tab.pinned = bool_of(fields, field::PINNED);
-                    tab.url = str_of(fields, field::URL);
-                    tab.kind = engine_field(fields);
+                    if changed(field::PINNED) {
+                        tab.pinned = bool_of(fields, field::PINNED);
+                    }
+                    if changed(field::URL) {
+                        tab.url = str_of(fields, field::URL);
+                    }
+                    if changed(field::ENGINE) {
+                        tab.kind = engine_field(fields);
+                    }
                 }
                 NodePayload::Group(g) => {
-                    g.name = str_of(fields, field::NAME);
-                    g.from_json = bool_of(fields, field::FROM_JSON);
+                    if changed(field::NAME) {
+                        g.name = str_of(fields, field::NAME);
+                    }
+                    if changed(field::FROM_JSON) {
+                        g.from_json = bool_of(fields, field::FROM_JSON);
+                    }
                 }
-                NodePayload::Note(n) => n.text = str_of(fields, field::TEXT),
+                NodePayload::Note(n) if changed(field::TEXT) => n.text = str_of(fields, field::TEXT),
+                NodePayload::Note(_) => {}
                 // Paths, keys and values never change after creation.
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
             }
@@ -438,7 +459,7 @@ impl App {
                     self.remote_in_flight.insert(key, None);
                 }
                 None => {
-                    self.shared_pos.remove(&key);
+                    self.last_shared.remove(&key);
                     self.remove_remotely_deleted(&key);
                 }
             }
@@ -495,7 +516,7 @@ impl App {
                 self.materialize(id.to_string(), kind, &fields, group, SpawnPurpose::Restore)
             }
             Some(None) => {
-                self.shared_pos.remove(id);
+                self.last_shared.remove(id);
                 self.remove_remotely_deleted(id);
             }
             None => {}
@@ -505,8 +526,10 @@ impl App {
     /// Saves local edits (spec "Local edits become ops"): take the lock,
     /// show what other replicas wrote, diff the live graph against the
     /// document, and commit. On error the explicit marks stay for the next
-    /// save, which re-diffs (contract "Transactions").
-    pub(crate) fn save_session(&mut self) {
+    /// save, which re-diffs (contract "Transactions"). `true` when the
+    /// store now holds every local edit: `false` read-only, on error, and
+    /// when another instance kept writing.
+    pub(crate) fn save_session(&mut self) -> bool {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
         // at the next save point (or frame: `poll_store`) rather than spin.
@@ -514,10 +537,13 @@ impl App {
             // Projected before `begin`, since the `Txn` borrows the journal.
             let live = self.shared_nodes();
             let keep: BTreeSet<NodeId> = self.spawning.iter().filter_map(|id| id.parse().ok()).collect();
-            let Some(journal) = self.journal.as_mut() else { return };
+            let Some(journal) = self.journal.as_mut() else { return false };
             let txn = match journal.begin() {
                 Ok(txn) => txn,
-                Err(err) => return self.store_error(err),
+                Err(err) => {
+                    self.store_error(err);
+                    return false;
+                }
             };
             if !txn.remote.is_empty() {
                 let changes = Self::remote_changes(txn.doc(), &txn.remote);
@@ -528,7 +554,8 @@ impl App {
             }
             if txn.read_only() {
                 drop(txn);
-                return self.take_store_recovery();
+                self.take_store_recovery();
+                return false;
             }
             let ops = diff(txn.doc(), &live, &self.explicit, &keep);
             let result = if ops.is_empty() {
@@ -540,24 +567,29 @@ impl App {
             self.take_store_recovery();
             match result {
                 Ok(()) => {
-                    // A committed `pos` is the node's shared pos from now on.
-                    for (id, shared) in &live {
-                        if let Some(FieldValue::Pos(x, y)) = shared.fields.get(&field::POS) {
-                            let (key, pos) = (id.to_string(), egui::vec2(*x, *y));
-                            if self.explicit.contains(&(*id, field::POS)) {
-                                self.shared_pos.insert(key, pos);
-                            } else {
-                                self.shared_pos.entry(key).or_insert(pos);
-                            }
+                    // What the store now holds is what this replica last
+                    // saw: every diffed field as live, but an explicit one
+                    // only if it was marked (an unmarked `pos` stays).
+                    if let Some(journal) = &self.journal {
+                        let doc = journal.doc();
+                        for &id in live.keys() {
+                            let Some(node) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
+                            let seen =
+                                Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+                            self.last_shared.insert(id.to_string(), seen);
                         }
                     }
                     self.explicit.clear();
                     self.last_session_save = Some(std::time::Instant::now());
+                    return true;
                 }
-                Err(err) => self.store_error(err),
+                Err(err) => {
+                    self.store_error(err);
+                    return false;
+                }
             }
-            return;
         }
+        false
     }
 
     /// Startup: shows the document (Task 7 adds personal state). `false`
@@ -611,9 +643,13 @@ impl App {
     }
 
     /// The session as a JSON snapshot (Export Session), saved first so it
-    /// holds every edit. `None` without a store.
+    /// holds every edit; if that save didn't commit, it exports anyway and
+    /// warns. `None` without a store.
     pub(crate) fn export_session_json(&mut self) -> Option<JsonDoc> {
-        self.save_session();
+        self.journal.as_ref()?;
+        if !self.save_session() {
+            self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
+        }
         Some(crate::store::json::doc_to_json(self.journal.as_ref()?.doc()))
     }
 
@@ -709,7 +745,7 @@ impl App {
         self.failed_tab_retries.clear();
         self.spawning.clear();
         self.remote_in_flight.clear();
-        self.shared_pos.clear();
+        self.last_shared.clear();
         self.session_generation += 1;
     }
 
@@ -760,9 +796,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::journal::Journal;
     use crate::store::model::{ActorId, DocId, Hlc};
     use crate::store::ops::Op;
-    use crate::store::testutil::XorShift;
+    use crate::store::testutil::{temp_dir, XorShift};
 
     const A: ActorId = ActorId(0xA);
 
@@ -1027,6 +1064,115 @@ mod tests {
         assert_eq!(app.nodes[&local].group, outer, "the local-only member moves to the effective group");
         assert_eq!(app.current_group, outer, "the view leaves the removed level");
         assert!(app.nodes.values().all(|n| n.group.as_deref() != Some(inner.as_str())));
+    }
+
+    /// A windowless app saving to `path` as `actor`.
+    fn app_on(path: &std::path::Path, actor: u64) -> App {
+        App { journal: Some(Journal::open(path, ActorId(actor)).unwrap()), ..App::default() }
+    }
+
+    fn add(app: &mut App, payload: NodePayload) -> String {
+        let id = app.alloc_node_id();
+        app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, payload);
+        id
+    }
+
+    /// Another replica sets one field of `node`.
+    fn remote_set(other: &mut Journal, node: &str, no: u32, value: FieldValue) {
+        let node = node.parse().unwrap();
+        other.begin().unwrap().commit(vec![OpBody::Set { node, field: no, enc: encode_field(no, &value) }]).unwrap();
+    }
+
+    fn stored(app: &App, node: &str, no: u32) -> FieldValue {
+        app.journal.as_ref().unwrap().doc().nodes[&node.parse().unwrap()].get(no)
+    }
+
+    #[test]
+    fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
+        let path = temp_dir("sync-fields").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false }));
+        let failed = FailedTabPayload {
+            url: "https://u0/".into(),
+            kind: EngineKind::Servo,
+            error: "x".into(),
+            pinned: false,
+            zoom_factor: 1.0,
+            retrying: false,
+        };
+        let tab = add(&mut app, NodePayload::FailedTab(failed));
+        assert!(app.save_session());
+        let mut other = Journal::open(&path, ActorId(2)).unwrap();
+
+        // Unsaved here: typing in the note, and a navigation (`url` is
+        // explicit and unmarked, so saves don't write it).
+        if let NodePayload::Note(n) = &mut app.nodes.get_mut(&note).unwrap().payload {
+            n.text = "typing".into();
+        }
+        if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+            t.url = "https://u1/".into();
+        }
+        let red = color_value(Some(egui::Color32::RED));
+        remote_set(&mut other, &note, field::COLOR, red.clone());
+        remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
+
+        // The remote round applies, then the next round commits.
+        assert!(app.save_session());
+        let live = &app.nodes[&note];
+        assert_eq!(live.color, Some(egui::Color32::RED));
+        assert!(matches!(&live.payload, NodePayload::Note(n) if n.text == "typing"));
+        assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("typing".into()));
+        assert!(matches!(&app.nodes[&tab].payload, NodePayload::FailedTab(t) if t.pinned && t.url == "https://u1/"));
+        assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://u0/".into()));
+
+        // A later remote edit to the same field does apply.
+        remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
+        assert!(app.save_session());
+        assert!(matches!(&app.nodes[&note].payload, NodePayload::Note(n) if n.text == "theirs"));
+        assert_eq!(app.nodes[&note].color, Some(egui::Color32::RED));
+    }
+
+    #[test]
+    fn a_failed_commit_keeps_the_explicit_marks() {
+        let path = temp_dir("sync-fail").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        assert!(app.save_session());
+        app.nodes.get_mut(&note).unwrap().pos = egui::vec2(5.0, 6.0);
+        let mark = (note.parse().unwrap(), field::POS);
+        app.explicit.insert(mark);
+        let set_readonly = |readonly: bool| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            // Toggles the Windows read-only attribute, which is what makes
+            // the append fail; on Unix this would make the file writable
+            // by everyone, but it's a temp file this test owns.
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(readonly);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        set_readonly(true);
+        let saved = app.save_session();
+        set_readonly(false);
+        assert!(!saved);
+        assert!(app.explicit.contains(&mark), "kept for the next save");
+        assert!(app.save_session());
+        assert!(app.explicit.is_empty());
+        assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(5.0, 6.0));
+    }
+
+    #[test]
+    fn a_read_only_store_saves_nothing() {
+        let path = temp_dir("sync-readonly").join("session.mnf");
+        drop(Journal::open(&path, ActorId(1)).unwrap());
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[4] = 2; // a newer format version, as in `journal`'s own test
+        let crc = crate::store::crc32c::crc32c(&bytes[..21]);
+        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        let mut app = app_on(&path, 2);
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        assert!(!app.save_session());
+        assert_eq!(app.journal.as_ref().unwrap().doc().live().count(), 0);
     }
 
     #[test]

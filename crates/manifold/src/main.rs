@@ -1407,9 +1407,11 @@ struct App {
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
-    /// The shared `pos` each live node last had, so a remote change moves a
-    /// node only when its `pos` changed (`materialize`).
-    shared_pos: HashMap<String, egui::Vec2>,
+    /// What the store held for each node when this replica last read or
+    /// committed it. `materialize` applies a field only where the store
+    /// now differs, so a remote change to one field doesn't overwrite
+    /// another field's unsaved local value.
+    last_shared: HashMap<String, session_sync::Shared>,
     tabs_spawned_waiters: Vec<std::sync::mpsc::Sender<()>>,
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
@@ -1757,7 +1759,7 @@ impl Default for App {
             spawning: HashSet::new(),
             remote_in_flight: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
-            shared_pos: HashMap::new(),
+            last_shared: HashMap::new(),
             tabs_spawned_waiters: Vec::new(),
             session_generation: 0,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),

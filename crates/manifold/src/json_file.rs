@@ -1,5 +1,5 @@
-//! Loading the app's JSON files (`session.json`, `settings.json`,
-//! `bookmarks.json`, and imported/named copies of them) with errors that
+//! Loading the app's JSON files (`settings.json`, session exports,
+//! `bookmarks.json`, and imported copies of them) with errors that
 //! say which file failed and why. The returned error names just the file,
 //! short enough for a toast; the full paths go to stderr.
 

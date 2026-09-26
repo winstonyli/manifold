@@ -110,7 +110,7 @@ pub struct Settings {
     /// settings.json at all) -- so upgrading from a build that predates
     /// this field never replays the demo for an existing user, only a
     /// brand-new one. Deliberately a `Settings` field rather than living in
-    /// `session.json`: it needs to survive exactly the case `session.json`
+    /// the session store: it needs to survive exactly the case the session
     /// doesn't (a user with zero saved tabs), and `Settings` is the one
     /// file already guaranteed to persist across an empty session the same
     /// way `home_page`/`default_starting_engine` do.

@@ -190,7 +190,7 @@ pub enum DebugCommand {
     /// headless mode has no OS/human to answer one, so this bypasses it
     /// entirely and calls the same underlying save directly.
     ExportSession(String),
-    /// `EXPORTSTATE path` -- writes UI state that `session.json` doesn't
+    /// `EXPORTSTATE path` -- writes UI state that the session store doesn't
     /// hold (and shouldn't: it's the user's saved session) as JSON, for a
     /// test to check: `tab_view`, `transition`, `focused_url`,
     /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
@@ -423,7 +423,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
 ];
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
-/// convention (`settings.json`/`session.json` use the same strings) --
+/// convention (`settings.json` and session exports use the same strings) --
 /// `SPLIT`'s one argument.
 fn parse_engine_kind(name: &str) -> Option<EngineKind> {
     match name.to_ascii_lowercase().as_str() {
