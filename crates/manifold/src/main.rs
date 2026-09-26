@@ -1473,6 +1473,15 @@ struct App {
     /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
     /// currently hovered (drives the peek-preview popup).
     dragging: Option<String>,
+    /// Every node the current drag is moving (a lone card, or the whole
+    /// selection when the dragged card is selected — see `take_drag_unit`
+    /// and the `dragged()` branch that fills this in). Read and cleared at
+    /// release, where each one's `pos` is marked exactly once (spec "Local
+    /// edits become ops"): marking every frame of the drag instead would
+    /// let an intermediate position reach the store, since a save can fire
+    /// mid-drag from an unrelated event (`poll_store`, or a url change
+    /// batched through `drain_tab_events`), independent of the gesture.
+    drag_moved: Vec<String>,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -1775,6 +1784,7 @@ impl Default for App {
             redirect_fetcher: RedirectFetcher::new(),
             favicon_resolved: HashSet::new(),
             dragging: None,
+            drag_moved: Vec::new(),
             hovered: None,
             peek_suppressed: None,
             rect_select_start: None,
@@ -2575,6 +2585,12 @@ impl App {
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
+            // The drag this cancels never reaches card.rs's own release
+            // branch (the id it was dragging is gone), so nothing marks
+            // `drag_moved`'s pending positions -- drop them rather than
+            // leaving them to be marked, wrongly, by some later, unrelated
+            // drag's release.
+            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -2702,6 +2718,9 @@ impl App {
     fn forget_removed_group(&mut self, id: &str) {
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
+            // See `remove_node`'s own comment on why an aborted drag's
+            // pending moves are dropped here rather than marked.
+            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -3476,6 +3495,9 @@ impl App {
         }
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
+            // See `remove_node`'s own comment on why an aborted drag's
+            // pending moves are dropped here rather than marked.
+            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(id) {
             self.hovered = None;
@@ -3539,6 +3561,9 @@ impl App {
         // instant the respawned node starts rendering again.
         if self.dragging.as_deref() == Some(tab_id) {
             self.dragging = None;
+            // See `remove_node`'s own comment on why an aborted drag's
+            // pending moves are dropped here rather than marked.
+            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
@@ -3996,6 +4021,9 @@ impl App {
         }
         if self.dragging.as_deref() == Some(tab_id) {
             self.dragging = None;
+            // See `remove_node`'s own comment on why an aborted drag's
+            // pending moves are dropped here rather than marked.
+            self.drag_moved.clear();
         }
         if self.hovered.as_deref() == Some(tab_id) {
             self.hovered = None;
@@ -4146,6 +4174,11 @@ impl App {
             }
             for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(json_node_id)) {
                 node.parent = Some(root_id.clone());
+            }
+            if self.dragging.as_deref() == Some(json_node_id) {
+                // See `remove_node`'s own comment on why an aborted drag's
+                // pending moves are dropped here rather than marked.
+                self.drag_moved.clear();
             }
             for slot in [&mut self.dragging, &mut self.hovered, &mut self.json_viewer_node] {
                 if slot.as_deref() == Some(json_node_id) {

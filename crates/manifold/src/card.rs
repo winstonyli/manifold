@@ -720,17 +720,32 @@ impl App {
         if response.dragged() {
             self.dragging = Some(id.to_string());
             // Dragging one selected tab moves the whole selection, as one
-            // unit (see `take_drag_unit`).
+            // unit (see `take_drag_unit`). Recomputed (and overwritten)
+            // every dragged frame rather than only at drag start: cheap,
+            // and it's always exactly this frame's moved set, so whatever
+            // `drag_moved` holds when the drag ends is the full, correct
+            // set to mark -- see the release branch below.
             let delta = response.drag_delta();
-            let moved = if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
-            for moved_id in moved {
-                if let Some(node) = self.nodes.get_mut(&moved_id) {
+            let moved: Vec<String> =
+                if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            for moved_id in &moved {
+                if let Some(node) = self.nodes.get_mut(moved_id) {
                     node.pos += delta;
-                    self.mark(&moved_id, field::POS);
                 }
             }
+            self.drag_moved = moved;
         } else if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
+            // Marked once, here at release, not every dragged frame above:
+            // `explicit` is drained by any successful `save_session()`, and
+            // saves fire independently of this gesture mid-drag (e.g.
+            // `poll_store`, or a url change batched through
+            // `drain_tab_events`), so marking every frame could commit an
+            // intermediate position as its own op, repeatedly, before the
+            // drag even ends.
+            for moved_id in std::mem::take(&mut self.drag_moved) {
+                self.mark(&moved_id, field::POS);
+            }
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
             pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });
