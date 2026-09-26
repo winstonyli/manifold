@@ -50,18 +50,5 @@ pub fn save(bookmarks: &[Bookmark]) {
 
 /// Same write as `save`, just to an arbitrary path.
 pub fn save_to(bookmarks: &[Bookmark], path: &Path) {
-    if let Some(dir) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            eprintln!("bookmarks: failed to create {}: {err}", dir.display());
-            return;
-        }
-    }
-    match serde_json::to_string_pretty(bookmarks) {
-        Ok(json) => {
-            if let Err(err) = std::fs::write(path, json) {
-                eprintln!("bookmarks: failed to write {}: {err}", path.display());
-            }
-        }
-        Err(err) => eprintln!("bookmarks: failed to serialize: {err}"),
-    }
+    crate::json_file::save(bookmarks, path, "bookmarks");
 }

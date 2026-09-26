@@ -199,19 +199,6 @@ impl Settings {
     /// save_settings` to redirect a fingerprint-conflicted save to `settings::
     /// conflict_path()` instead of overwriting the real `settings.json`.
     pub fn save_to(&self, path: &std::path::Path) {
-        if let Some(dir) = path.parent() {
-            if let Err(err) = std::fs::create_dir_all(dir) {
-                eprintln!("settings: failed to create {}: {err}", dir.display());
-                return;
-            }
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(path, json) {
-                    eprintln!("settings: failed to write {}: {err}", path.display());
-                }
-            }
-            Err(err) => eprintln!("settings: failed to serialize: {err}"),
-        }
+        crate::json_file::save(self, path, "settings");
     }
 }

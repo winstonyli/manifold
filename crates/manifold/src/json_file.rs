@@ -1,4 +1,4 @@
-//! Loading the app's JSON files (`settings.json`, session exports,
+//! Loading and saving the app's JSON files (`settings.json`, session exports,
 //! `bookmarks.json`, and imported copies of them) with errors that
 //! say which file failed and why. The returned error names just the file,
 //! short enough for a toast; the full paths go to stderr.
@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// `path`'s file name, for a toast -- the full path is logged instead.
 pub fn file_name(path: &Path) -> String {
@@ -55,6 +56,26 @@ pub fn load_or_move_aside<T: DeserializeOwned>(path: &Path, what: &str) -> Resul
     }
 }
 
+/// Writes `value` as pretty JSON over `path` (creating its directory) so a
+/// crash mid-write leaves the old file whole rather than a truncated one
+/// that the next launch moves aside. Failures go to stderr: these files
+/// are rewritten on the next change anyway.
+pub fn save<T: Serialize + ?Sized>(value: &T, path: &Path, what: &str) {
+    if let Some(dir) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            eprintln!("{what}: failed to create {}: {err}", dir.display());
+            return;
+        }
+    }
+    let json = match serde_json::to_string_pretty(value) {
+        Ok(json) => json,
+        Err(err) => return eprintln!("{what}: failed to serialize: {err}"),
+    };
+    if let Err(err) = crate::store::local::replace(path, json.as_bytes()) {
+        eprintln!("{what}: failed to write {}: {err}", path.display());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +97,29 @@ mod tests {
         std::fs::write(&path, "[1, 2]").unwrap();
         assert_eq!(load_or_move_aside::<Vec<u32>>(&path, "thing"), Ok(Some(vec![1, 2])));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_replaces_whole_or_not_at_all() {
+        let dir = crate::store::testutil::temp_dir("json-save");
+        let path = dir.join("sub").join("thing.json");
+        save(&[1, 2], &path, "thing");
+        save(&[3], &path, "thing");
+        assert_eq!(load::<Vec<u32>>(&path, "thing"), Ok(vec![3]));
+        let set_readonly = |readonly: bool| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            // The Windows read-only attribute makes the rename over it
+            // fail; on Unix this is a temp file this test owns.
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(readonly);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        set_readonly(true);
+        save(&[4, 5, 6], &path, "thing");
+        set_readonly(false);
+        assert_eq!(load::<Vec<u32>>(&path, "thing"), Ok(vec![3]), "a failed save leaves the old file");
+        let names: Vec<_> =
+            std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["thing.json"], "no temp file left behind");
     }
 }

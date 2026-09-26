@@ -1952,7 +1952,11 @@ The whole-branch review's fix pass (brief: `.superpowers/sdd/2026-09-26-session-
 - **Quit or crash while tabs were still spawning lost them**: `App::spawning` is now a map to each in-flight tab's `Shared` (`session_sync::spawn_shared`, built from the `TabSpawn`), and `save_session` creates the ones the store doesn't hold yet (any id the document has, live or tombstone, is only kept). A spawn that fails without a card now saves, so a tab created while in flight doesn't linger.
 - `history::load` kept the oldest 200 entries when capping; it now keeps the newest. `export_group_json` returns `None` and toasts when the store doesn't hold the group live. `local_state()` keeps a still-spawning node's `pending_local` entry and a failed card's zoom.
 
-Windowless tests park spawns in a `#[cfg(test)]` `App::test_spawns` (no event loop) so they can fail them through `handle_tab_spawn_result`. Tests: `cargo test -q -j 12 -p manifold` 136 passed, 2 ignored (8 new); clippy clean; `headless-smoke-test.sh` all PASS; `two-instance-test.sh` all 3 scenarios ok. Parked (out of scope): `save_session`'s 4-round give-up flag, the per-load nonce redirect bounce, `last_shared` lingering, the resurrection race, the mid-swap engine change, landing at the top level after a remote group removal, and the release-path drag test.
+Windowless tests park spawns in a `#[cfg(test)]` `App::test_spawns` (no event loop) so they can fail them through `handle_tab_spawn_result`. Tests: `cargo test -q -j 12 -p manifold` 136 passed, 2 ignored (8 new); clippy clean; `headless-smoke-test.sh` all PASS; `two-instance-test.sh` all 3 scenarios ok. Parked (out of scope): the per-load nonce redirect bounce, `last_shared` lingering, the resurrection race, the mid-swap engine change, landing at the top level after a remote group removal, and the release-path drag test.
+
+After the merge into `dev`, two follow-ups:
+- **A save that didn't commit is retried.** That covers a commit error, a `begin` error, or four rounds of remote frames. Before, local edits waited for the next local action or remote write. Now `save_session` sets `App::save_retry_at` to 1 s later (`SAVE_RETRY`), `poll_store` saves once it's due, and a successful commit clears it. A read-only store isn't retried. The test is `a_failed_commit_keeps_the_explicit_marks`.
+- **Atomic writes.** `settings.json`, `bookmarks.json` (including exports) and `history.json` are now written through `json_file::save`: a temp file beside the target, fsynced, then renamed over it (`store::local::replace`). A crash mid-write leaves the old file whole instead of a truncated one that the next launch moves aside. The temp name carries the process id, since instances write these files without a lock. The test is `save_replaces_whole_or_not_at_all`.
 
 ### Rulings made during execution (from `progress.md`)
 
@@ -1988,8 +1992,8 @@ From `progress.md`'s own parked items (rare, or explicitly owned by a later/out-
 | Engine swap or crash recovery removes a tab's node, then respawns it under the same id | `spawning` keeps the id out of `Delete`s | Ruling 8, Task 5 Step 1 |
 | A save during startup restore, with tabs still spawning | Same: spawning ids are kept | Task 5 |
 | A live node names a group another instance deleted | `apply_remote` re-homes it (effective group) before the diff; the diff writes a missing group as none | Tasks 3, 5 |
-| Another instance keeps appending during our save | Up to 4 apply-and-retry rounds, then the next save point | Task 5 `save_session` |
-| Commit fails (disk full, lock I/O) | Marks kept, deduped notice, next save re-diffs from a fresh `begin` | Tasks 5, 10 |
+| Another instance keeps appending during our save | Up to 4 apply-and-retry rounds, then `poll_store` retries after `SAVE_RETRY` (1 s) | Task 5 `save_session` |
+| Commit fails (disk full, lock I/O) | Marks kept, deduped notice, `poll_store` retries after `SAVE_RETRY`; each save re-diffs from a fresh `begin` | Tasks 5, 10 |
 | The file becomes read-only mid-session (a newer build compacted it) | `txn.read_only()` checked after `begin`; notice once; no commits | Tasks 2, 5, 10 |
 | Image/JSON file missing at restore | Card kept in its error state, so it isn't deleted from the store | Task 5 Step 3 |
 | In-progress download | Not in the store; a completed one is | Task 5 Step 2 |

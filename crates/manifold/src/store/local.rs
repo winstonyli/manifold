@@ -74,9 +74,12 @@ pub fn write(session: &Path, doc: DocId, state: &[u8]) -> Result<(), JournalErro
 }
 
 /// Writes `bytes` to a temp file beside `path`, fsyncs it, and renames it
-/// over `path`. A failure leaves `path` as it was.
-fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = with_suffix(path, ".tmp");
+/// over `path`. A failure leaves `path` as it was. The temp file is named
+/// per process: instances write the app's JSON files (`json_file::save`)
+/// without a lock, and a shared name would let one rename the other's
+/// half-written file.
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = with_suffix(path, &format!(".{}.tmp", std::process::id()));
     let written = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);

@@ -3,7 +3,7 @@
 //! file just means empty, never fails to start" posture `settings.rs`/
 //! `bookmarks.rs` already have (a corrupt one is moved aside first).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
@@ -53,24 +53,7 @@ fn cap(entries: &mut Vec<HistoryEntry>) {
 
 pub fn save(history: &[HistoryEntry]) {
     let Some(path) = history_path() else { return };
-    save_to(history, &path);
-}
-
-fn save_to(history: &[HistoryEntry], path: &Path) {
-    if let Some(dir) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            eprintln!("history: failed to create {}: {err}", dir.display());
-            return;
-        }
-    }
-    match serde_json::to_string_pretty(history) {
-        Ok(json) => {
-            if let Err(err) = std::fs::write(path, json) {
-                eprintln!("history: failed to write {}: {err}", path.display());
-            }
-        }
-        Err(err) => eprintln!("history: failed to serialize: {err}"),
-    }
+    crate::json_file::save(history, &path, "history");
 }
 
 #[cfg(test)]
