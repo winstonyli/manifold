@@ -2522,6 +2522,7 @@ mod tests {
             println!("{tabs} tabs: snapshot {snapshot} B, largest file {largest} B ({k} saves in the tail)");
 
             report("open (startup)", timed(10, || drop(Journal::open(&path, ActorId::random()).unwrap())));
+            let largest_bytes = std::fs::read(&path).unwrap();
             report("changed_on_disk, unchanged (per frame)", timed(N, || assert!(!a.changed_on_disk())));
             report("begin, nothing new (per save)", timed(N, || drop(a.begin().unwrap())));
             // Stay below compaction: ~30 B per op against an 8 KB margin.
@@ -2584,6 +2585,37 @@ mod tests {
             report("  of which: decode the snapshot", timed(10, || drop(decode_snapshot(snapshot.message).unwrap())));
             let doc = decode_snapshot(snapshot.message).unwrap();
             report("  of which: re-encode it (unknown-field check)", timed(10, || drop(snapshot_message(&doc))));
+
+            // `open`'s share: the tail it replays on top of the snapshot.
+            let header = read_header(&largest_bytes).unwrap();
+            let frames = scan_all(&largest_bytes[header.len..], header.len).frames;
+            report("open: read the file", timed(10, || drop(std::fs::read(&path).unwrap())));
+            report(
+                "open: load (all but read, lock, repair)",
+                timed(10, || Journal::blank(&path, ActorId(9)).load(&largest_bytes).unwrap()),
+            );
+            report("open: lock", timed(10, || drop(lock_file(&path).unwrap())));
+            report("open: scan frames (CRC)", timed(10, || drop(scan_all(&largest_bytes[header.len..], header.len))));
+            let tail = &frames[1..];
+            let decoded: Vec<Vec<Op>> = tail.iter().map(|f| decode_ops(f.message).unwrap()).collect();
+            report(
+                "open: decode tail ops",
+                timed(10, || tail.iter().for_each(|f| drop(decode_ops(f.message).unwrap()))),
+            );
+            report(
+                "open: re-encode tail ops (unknown check)",
+                timed(10, || decoded.iter().for_each(|o| drop(ops_message(o)))),
+            );
+            let base = decode_snapshot(frames[0].message).unwrap();
+            report(
+                "open: apply tail ops",
+                timed(10, || {
+                    let mut doc = base.clone();
+                    decoded.iter().flatten().for_each(|op| drop(doc.apply(op)));
+                }),
+            );
+            report("  (clone of the base doc, included above)", timed(10, || drop(base.clone())));
+            println!("  tail: {} frames, {} ops", tail.len(), decoded.iter().map(Vec::len).sum::<usize>());
         }
     }
 }
