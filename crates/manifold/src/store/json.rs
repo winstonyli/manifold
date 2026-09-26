@@ -47,22 +47,29 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
     })
 }
 
-/// `node` as JSON, its group given separately (the effective one).
-fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
-    let mut fields = Map::new();
+/// A node as JSON from its field values, `group` given separately: what
+/// `doc_to_json` writes for a document node, for callers holding values
+/// rather than a `Node` (Recently Closed, `session_sync`).
+pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group: Option<NodeId>) -> JsonNode {
+    let mut out = Map::new();
     let mut put = |no: u32, value: &FieldValue| {
         if let (Some(def), Some(json)) = (field_def(no), value_to_json(value)) {
-            fields.insert(def.name.to_owned(), json);
+            out.insert(def.name.to_owned(), json);
         }
     };
-    for &no in node.fields.keys() {
-        if field_def(no).is_some() && no != field::GROUP {
-            put(no, &node.get(no));
+    for (&no, value) in fields {
+        if no != field::GROUP {
+            put(no, value);
         }
     }
     put(field::GROUP, &FieldValue::Id(group));
-    let kind = node.kind.name().expect("live nodes have known kinds").to_owned();
-    JsonNode { id: id.to_string(), kind, fields }
+    JsonNode { id: id.to_owned(), kind: kind.name().expect("a known kind").to_owned(), fields: out }
+}
+
+/// `node` as JSON, its group given separately (the effective one).
+fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
+    let fields = node.fields.keys().filter(|&&no| field_def(no).is_some()).map(|&no| (no, node.get(no))).collect();
+    node_json(&id.to_string(), node.kind, &fields, group)
 }
 
 /// Every live node, in id order, each under its effective group.
@@ -98,6 +105,8 @@ pub struct Imported {
 /// naming a node in the file are rewritten to its fresh id; others are
 /// kept when they are real node ids and dropped otherwise. Unknown field
 /// names are ignored (a newer build's export); a bad value is an error.
+/// The result is in `json.nodes` order, so `imported[i]` is `json.nodes[i]`
+/// (callers map labels to fresh ids by index).
 pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId) -> Result<Vec<Imported>, String> {
     let mut fresh = HashMap::new();
     for node in &json.nodes {
@@ -251,5 +260,29 @@ mod tests {
         bad(r#"{"nodes": [{"id": "a", "kind": "tab", "engine": "gecko"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "kind": "tab", "color": "red"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "kind": "tab"}, {"id": "a", "kind": "tab"}]}"#);
+    }
+
+    #[test]
+    fn node_json_matches_a_document_nodes_json() {
+        let mut fields = BTreeMap::new();
+        fields.insert(field::URL, FieldValue::Str("https://a.example/".into()));
+        fields.insert(field::PINNED, FieldValue::Bool(true));
+        fields.insert(field::COLOR, FieldValue::Color(None));
+        let json = node_json("n1", Kind::Tab, &fields, None);
+        assert_eq!(json.kind, "tab");
+        assert_eq!(json.fields.get("url"), Some(&Value::String("https://a.example/".into())));
+        assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
+        assert!(!json.fields.contains_key("color"), "defaults are left out");
+        assert!(!json.fields.contains_key("group"));
+    }
+
+    #[test]
+    fn import_keeps_file_order() {
+        let json: JsonDoc =
+            serde_json::from_str(r#"{"nodes":[{"id":"b","kind":"note"},{"id":"a","kind":"note"}]}"#).unwrap();
+        let mut next = ids(7);
+        let first = next();
+        let imported = import(&json, ids(7)).unwrap();
+        assert_eq!(imported[0].id, first, "the first node in the file gets the first fresh id");
     }
 }

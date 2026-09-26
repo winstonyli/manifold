@@ -1165,6 +1165,12 @@ impl Txn<'_> {
         self.journal.next_id()
     }
 
+    /// A newer build compacted the file: commits are refused. Check it
+    /// after `begin` (contract "Read-only").
+    pub fn read_only(&self) -> bool {
+        self.journal.read_only
+    }
+
     /// Stamps `bodies` as this replica's next ops, applies them, and
     /// appends them to the file. After an error the ops may or may not be
     /// in the file; the next `begin` re-reads it, so diff again against
