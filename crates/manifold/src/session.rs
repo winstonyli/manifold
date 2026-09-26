@@ -194,6 +194,11 @@ fn session_path() -> Option<PathBuf> {
     Some(session_dir()?.join("session.json"))
 }
 
+/// Where the session store (spec "Journal") lives, beside `session.json`.
+pub fn store_path() -> Option<PathBuf> {
+    Some(session_dir()?.join("session.mnf"))
+}
+
 /// Where a named "Save Session As..." save lands — a subdirectory of the
 /// same app-data folder the auto-restore `session.json` already lives in,
 /// so both are covered by the same "just a file, back it up/delete it

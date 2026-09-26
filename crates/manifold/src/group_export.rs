@@ -13,7 +13,7 @@ use crate::process_manager::{engine_kind_serde, EngineKind};
 pub struct GroupExportTab {
     /// The exporting session's own tab id -- reused only to resolve
     /// `parent` links between tabs within this same export, never reused
-    /// as-is on import (which allocates fresh ids via `App::alloc_tab_id`,
+    /// as-is on import (which allocates fresh ids via `App::alloc_node_id`,
     /// since importing into an already-running session can't assume the
     /// old ids are free).
     pub id: String,

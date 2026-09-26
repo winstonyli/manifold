@@ -1160,7 +1160,7 @@ impl App {
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
-        let id = self.alloc_json_id();
+        let id = self.alloc_node_id();
         let path = dir.join(format!("{id}.bin"));
         if std::fs::write(&path, body).is_err() {
             return;

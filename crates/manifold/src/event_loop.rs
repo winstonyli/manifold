@@ -58,6 +58,7 @@ impl ApplicationHandler<UserEvent> for App {
             None,
         ));
         self.window = Some(window);
+        self.open_store();
         if !self.restore_session() {
             if self.settings.has_shown_first_launch_demo {
                 self.spawn_root_tab();

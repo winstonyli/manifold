@@ -392,39 +392,6 @@ fn load_app_icon() -> Option<Icon> {
     Icon::from_rgba(img.into_raw(), width, height).ok()
 }
 
-/// Shared body for the six `App::alloc_*_id` methods -- each owns a
-/// separate monotonic counter field (a distinct id space per node kind, so
-/// e.g. a tab and a note can both be "id 3" without colliding) and only
-/// ever differed in which counter and which string prefix it used.
-/// The next id `next_id` hands out for each node kind (`tab-3`, `grp-0`, ...).
-/// `apply_session` restores the kinds a session saves; groups and downloads
-/// aren't saved, so theirs keep counting across a session load.
-#[derive(Default)]
-struct NodeIds {
-    tab: u64,
-    download: u64,
-    group: u64,
-    note: u64,
-    image: u64,
-    pdf: u64,
-    json: u64,
-}
-
-fn next_id(counter: &mut u64, prefix: &str) -> String {
-    let id = format!("{prefix}-{counter}");
-    *counter += 1;
-    id
-}
-
-/// Raises `counter` past `id` when `id` is one `next_id(counter, prefix)`
-/// could produce, so it's never handed out again.
-fn bump_past_id(counter: &mut u64, id: &str, prefix: &str) {
-    let n = id.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-'));
-    if let Some(n) = n.and_then(|n| n.parse::<u64>().ok()) {
-        *counter = (*counter).max(n.saturating_add(1));
-    }
-}
-
 /// One deferred `overlay_painter` paint call, queued during `Scene::show`'s
 /// content closure and actually painted only after it returns -- see
 /// `DeferredOverlays`'s own doc comment for why this exists at all. Takes
@@ -1418,8 +1385,12 @@ struct App {
     /// closes out from under the split -- see `close_split`.
     split_tab: Option<String>,
     view_mode: ViewMode,
-    /// Counters for new node ids, one per kind.
-    ids: NodeIds,
+    /// The session store (spec "Journal"): `None` before `open_store`, when
+    /// `%APPDATA%` is unset, or when the file couldn't be opened (toasted).
+    journal: Option<store::journal::Journal>,
+    /// Ids for nodes made while there is no journal (unit tests, a failed
+    /// open): this launch's own actor, so they parse as store ids.
+    fallback_ids: (store::model::ActorId, u64),
     /// Tab spawns started by `spawn_tab_async` whose `TabSpawned` result
     /// hasn't been handled yet. Read by the headless `WAITTABS` command,
     /// whose waiting senders sit in `tabs_spawned_waiters` until this
@@ -1433,9 +1404,8 @@ struct App {
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an
     /// older one: it belongs to the replaced session, and inserting it would
-    /// add a stray tab to the new scene or, when its id matches one the new
-    /// session uses (both count from `tab-0`), replace that tab's node and
-    /// leave two engine hosts fighting over one id.
+    /// add a stray tab to the new scene, so a spawn from a replaced session
+    /// never lands in it.
     session_generation: u64,
     /// Shared across every note's own rendered (non-`editing`) view --
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
@@ -1770,7 +1740,8 @@ impl Default for App {
             image_view: ImageViewState::default(),
             split_tab: None,
             view_mode: ViewMode::Item,
-            ids: NodeIds::default(),
+            journal: None,
+            fallback_ids: (store::model::ActorId::random(), 0),
             tab_spawns_in_flight: 0,
             restore_spawns_in_flight: 0,
             tabs_spawned_waiters: Vec::new(),
@@ -2047,12 +2018,12 @@ impl App {
         let mut ids = std::collections::HashMap::new();
         for node in &entry.nodes {
             let id = match node.piece {
-                ClosedPiece::Tab { .. } => self.alloc_tab_id(),
-                ClosedPiece::Group { .. } => self.alloc_group_id(),
-                ClosedPiece::Note(_) => self.alloc_note_id(),
-                ClosedPiece::Image(_) => self.alloc_image_id(),
-                ClosedPiece::Pdf(_) => self.alloc_pdf_id(),
-                ClosedPiece::Json(_) | ClosedPiece::JsonLeaf { .. } => self.alloc_json_id(),
+                ClosedPiece::Tab { .. } => self.alloc_node_id(),
+                ClosedPiece::Group { .. } => self.alloc_node_id(),
+                ClosedPiece::Note(_) => self.alloc_node_id(),
+                ClosedPiece::Image(_) => self.alloc_node_id(),
+                ClosedPiece::Pdf(_) => self.alloc_node_id(),
+                ClosedPiece::Json(_) | ClosedPiece::JsonLeaf { .. } => self.alloc_node_id(),
             };
             ids.insert(node.id.clone(), id);
         }
@@ -2370,12 +2341,16 @@ impl App {
             // corrections), so a snapshot taken from Settings must not
             // write a `viewed_image` alongside `view_mode_tab: false`.
             viewed_image: self.viewed_image.clone().filter(|_| self.view_mode == ViewMode::Item),
-            next_tab_id: self.ids.tab,
-            next_note_id: self.ids.note,
-            next_image_id: self.ids.image,
-            next_pdf_id: self.ids.pdf,
-            next_json_id: self.ids.json,
-            next_group_id: self.ids.group,
+            // Ids now come from the journal's counter (`alloc_node_id`), not
+            // a per-kind counter these fields could round-trip -- kept only
+            // so an older build reading this file still finds the fields it
+            // expects. Task 5 removes them along with `session.json` itself.
+            next_tab_id: 0,
+            next_note_id: 0,
+            next_image_id: 0,
+            next_pdf_id: 0,
+            next_json_id: 0,
+            next_group_id: 0,
         }
     }
 
@@ -2425,32 +2400,6 @@ impl App {
     /// runtime load, for tearing down whatever was open before calling
     /// this.
     fn apply_session(&mut self, session: session::Session) {
-        self.ids.tab = session.next_tab_id;
-        self.ids.note = session.next_note_id;
-        self.ids.image = session.next_image_id;
-        self.ids.pdf = session.next_pdf_id;
-        self.ids.json = session.next_json_id;
-        self.ids.group = session.next_group_id;
-        // A file with a counter missing (they all default to 0) or behind
-        // its own ids would otherwise let the next new node reuse an id.
-        for tab in &session.tabs {
-            bump_past_id(&mut self.ids.tab, &tab.id, "tab");
-        }
-        for note in &session.notes {
-            bump_past_id(&mut self.ids.note, &note.id, "note");
-        }
-        for image in &session.images {
-            bump_past_id(&mut self.ids.image, &image.id, "img");
-        }
-        for pdf in &session.pdfs {
-            bump_past_id(&mut self.ids.pdf, &pdf.id, "pdf");
-        }
-        for json in &session.jsons {
-            bump_past_id(&mut self.ids.json, &json.id, "json");
-        }
-        for group in &session.groups {
-            bump_past_id(&mut self.ids.group, &group.id, "grp");
-        }
         // A node naming a group the file doesn't have lands at the top level.
         let saved_groups: HashSet<String> = session.groups.iter().map(|g| g.id.clone()).collect();
         let place = |p: &session::SessionPlace| {
@@ -2588,7 +2537,7 @@ impl App {
     /// starts in Tab view (preserves "opens straight into a usable
     /// browser" from before M5 — Graph view is reached explicitly).
     fn spawn_root_tab(&mut self) {
-        let id = self.alloc_tab_id();
+        let id = self.alloc_node_id();
         let home_page = self.settings.home_page.clone();
         self.tab_spawn_error = None;
         let kind = self.settings.default_starting_engine;
@@ -2615,13 +2564,13 @@ impl App {
         let kind = self.settings.default_starting_engine;
         let zoom = self.settings.zoom_factor;
 
-        let welcome_id = self.alloc_tab_id();
+        let welcome_id = self.alloc_node_id();
         self.focused = Some(welcome_id.clone());
         self.view_mode = ViewMode::Graph;
         let welcome = "manifold://welcome".to_string();
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
-        let note_id = self.alloc_note_id();
+        let note_id = self.alloc_node_id();
         self.nodes.insert(
             note_id.clone(),
             GraphNode {
@@ -2640,7 +2589,7 @@ impl App {
         );
         self.node_order.push(note_id);
 
-        let group_id = self.alloc_group_id();
+        let group_id = self.alloc_node_id();
         let group_pos = egui::vec2(300.0, 0.0);
         self.nodes.insert(
             group_id.clone(),
@@ -2665,7 +2614,7 @@ impl App {
         for (url, offset) in
             [("manifold://welcome", egui::vec2(-40.0, 40.0)), ("manifold://tips", egui::vec2(40.0, 40.0))]
         {
-            let id = self.alloc_tab_id();
+            let id = self.alloc_node_id();
             let pos = group_pos + offset;
             let spawn = TabSpawn::new(id, url.to_string(), kind, pos, SpawnPurpose::Restore, zoom);
             self.spawn_tab_async(TabSpawn { group: Some(group_id.clone()), ..spawn });
@@ -2680,7 +2629,7 @@ impl App {
         // same "inherited path, no real ownership" reasoning `key: Some`
         // leaves use, though this node uses `key: None` since it's a
         // genuine standalone JSON node, not an exploded leaf).
-        let json_id = self.alloc_json_id();
+        let json_id = self.alloc_node_id();
         self.nodes.insert(
             json_id.clone(),
             GraphNode {
@@ -2936,8 +2885,31 @@ impl App {
         }
     }
 
-    fn alloc_tab_id(&mut self) -> String {
-        next_id(&mut self.ids.tab, "tab")
+    /// A fresh node id: the journal's counter (contract "Actors and ids"),
+    /// or this launch's fallback actor without one.
+    fn alloc_node_id(&mut self) -> String {
+        match &mut self.journal {
+            Some(journal) => journal.next_id().to_string(),
+            None => {
+                let (actor, counter) = &mut self.fallback_ids;
+                let id = store::model::NodeId { actor: *actor, counter: *counter };
+                *counter += 1;
+                id.to_string()
+            }
+        }
+    }
+
+    /// Opens `session.mnf` under a fresh actor. A failure is toasted and
+    /// leaves the app running without a store.
+    fn open_store(&mut self) {
+        let Some(path) = session::store_path() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match store::journal::Journal::open(&path, store::model::ActorId::random()) {
+            Ok(journal) => self.journal = Some(journal),
+            Err(err) => self.queue_toast(format!("Couldn't open the session file {}: {err}", path.display())),
+        }
     }
 
     /// Removes a download or note node from the graph -- a download's file
@@ -3007,13 +2979,6 @@ impl App {
         }
     }
 
-    /// Distinct prefix from `alloc_tab_id`/the `"dl-"` download-id prefix —
-    /// group ids share the same flat id space at the top level
-    /// (`graph_layout::step` again sees ids only, not node kinds).
-    fn alloc_group_id(&mut self) -> String {
-        next_id(&mut self.ids.group, "grp")
-    }
-
     /// Memoized `favicon_fetch::url_origin(url)` -- that function is a
     /// couple of string scans plus a `format!` allocation, and both of
     /// this app's per-frame callers (the Graph-view tab card, the Tab-
@@ -3036,32 +3001,8 @@ impl App {
         origin
     }
 
-    /// Same reasoning as `alloc_group_id` -- a distinct `"note-"` prefix in
-    /// the same flat id space.
-    fn alloc_note_id(&mut self) -> String {
-        next_id(&mut self.ids.note, "note")
-    }
-
-    /// Same reasoning as `alloc_note_id` -- a distinct `"img-"` prefix in
-    /// the same flat id space.
-    fn alloc_image_id(&mut self) -> String {
-        next_id(&mut self.ids.image, "img")
-    }
-
-    /// Same reasoning as `alloc_image_id` -- a distinct `"pdf-"` prefix in
-    /// the same flat id space.
-    fn alloc_pdf_id(&mut self) -> String {
-        next_id(&mut self.ids.pdf, "pdf")
-    }
-
-    /// Same reasoning as `alloc_pdf_id` -- a distinct `"json-"` prefix in
-    /// the same flat id space.
-    fn alloc_json_id(&mut self) -> String {
-        next_id(&mut self.ids.json, "json")
-    }
-
     /// A fresh group's default display name -- derived from its own id's
-    /// numeric suffix (`alloc_group_id`'s own monotonic, never-reused
+    /// numeric suffix (`alloc_node_id`'s own monotonic, never-reused
     /// counter) rather than `self.groups.len() + 1`, which the three call
     /// sites all used until this was found live: dissolving/closing a
     /// group shrinks `len()`, so a later new group's default name could
@@ -3206,7 +3147,7 @@ impl App {
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
-                let group = self.alloc_group_id();
+                let group = self.alloc_node_id();
                 let pos = self.nodes.get(&other).map_or(egui::Vec2::ZERO, |n| n.pos);
                 self.insert_group_at(group.clone(), pos);
                 let unit = self.take_drag_unit(id);
@@ -3583,7 +3524,7 @@ impl App {
         kind: EngineKind,
         purpose: SpawnPurpose,
     ) -> String {
-        let id = self.alloc_tab_id();
+        let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
         // the toolbar's "+ New Tab" passes `self.current_group` as `group`
         // but `self.focused` (unconditionally) as `parent`, and those can
@@ -4139,7 +4080,7 @@ impl App {
     /// viewed, nested under `current_group` if that's not the top level
     /// (see `GroupPayload`'s own doc comment on nesting).
     fn new_group_shortcut(&mut self) {
-        let id = self.alloc_group_id();
+        let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_group_at(id, pos);
         self.save_session();
@@ -4169,7 +4110,7 @@ impl App {
     /// "+ New Group" itself, since a note is a
     /// plain member of a level's subgraph like a tab or download is.
     fn new_note_shortcut(&mut self) {
-        let id = self.alloc_note_id();
+        let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_note_at(id, pos);
     }
@@ -4209,13 +4150,10 @@ impl App {
     /// engine download, so headless runs had no way to get one). A no-op
     /// if `tab_id` is gone. Downloads aren't persisted, so no save.
     fn insert_download_node(&mut self, tab_id: String, path: String, total_bytes: Option<u64>) {
-        // "dl-" prefix so a download node's id can never collide with a
-        // tab's -- both share the same graph/edge id space
-        // (`graph_layout::step` sees them as one flat set of nodes).
         let Some((node_pos, node_group)) = self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone())) else {
             return;
         };
-        let id = next_id(&mut self.ids.download, "dl");
+        let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
         self.nodes.insert(
             id.clone(),
@@ -4316,7 +4254,7 @@ impl App {
     }
 
     fn insert_image_node(&mut self, path: String) -> bool {
-        let id = self.alloc_image_id();
+        let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
         self.insert_image_node_with_id(id, path, pos, group).is_ok()
@@ -4406,7 +4344,7 @@ impl App {
             }
             self.find.close();
         }
-        let id = self.alloc_image_id();
+        let id = self.alloc_node_id();
         // Failure is already toasted; the tab it replaces is gone either way.
         let _ = self.insert_image_node_with_id(id, path, pos, group);
         self.save_session();
@@ -4425,7 +4363,7 @@ impl App {
     /// way a bad image file does. Doesn't itself call `save_session` --
     /// both callers mutate persisted state and save themselves right after.
     fn insert_pdf_node(&mut self, path: String) {
-        let id = self.alloc_pdf_id();
+        let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
         self.insert_pdf_node_with_id(id, path, pos, group);
@@ -4462,7 +4400,7 @@ impl App {
     /// `save_session` -- both callers mutate persisted state and save
     /// themselves right after.
     fn insert_json_node(&mut self, path: String) -> bool {
-        let id = self.alloc_json_id();
+        let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         let group = self.current_group.clone();
         self.insert_json_node_with_id(id, path, pos, group).is_ok()
@@ -4557,7 +4495,7 @@ impl App {
         let parent_pos = self.nodes.get(parent_group_id).map(|n| n.pos).unwrap_or(GRAPH_WORLD_CENTER);
         for (key, entry_value) in entries {
             if matches!(entry_value, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
-                let id = self.alloc_group_id();
+                let id = self.alloc_node_id();
                 let pos = parent_pos + graph_layout::spawn_jitter(&id);
                 self.nodes.insert(
                     id.clone(),
@@ -4573,7 +4511,7 @@ impl App {
                 self.node_order.push(id.clone());
                 self.expand_json_entries(&id, entry_value, path);
             } else {
-                let id = self.alloc_json_id();
+                let id = self.alloc_node_id();
                 let pos = parent_pos + graph_layout::spawn_jitter(&id);
                 self.nodes.insert(
                     id.clone(),
@@ -4629,7 +4567,7 @@ impl App {
             std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
         let inserted = match (extension.as_deref(), pos) {
             (Some("pdf"), Some(pos)) => {
-                let id = self.alloc_pdf_id();
+                let id = self.alloc_node_id();
                 let group = self.current_group.clone();
                 self.insert_pdf_node_with_id(id, path, pos, group);
                 true
@@ -4639,13 +4577,13 @@ impl App {
                 true
             }
             (Some("json"), Some(pos)) => {
-                let id = self.alloc_json_id();
+                let id = self.alloc_node_id();
                 let group = self.current_group.clone();
                 self.insert_json_node_with_id(id, path, pos, group).is_ok()
             }
             (Some("json"), None) => self.insert_json_node(path),
             (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), Some(pos)) => {
-                let id = self.alloc_image_id();
+                let id = self.alloc_node_id();
                 let group = self.current_group.clone();
                 self.insert_image_node_with_id(id, path, pos, group).is_ok()
             }
@@ -5136,14 +5074,14 @@ impl App {
     /// Recreates an exported group at the level being viewed -- a new group
     /// `GraphNode`, its nested groups, and each member tab, spawned via the
     /// normal async path. Every tab and group gets a freshly allocated id
-    /// (`alloc_tab_id`/`alloc_group_id`) rather than reusing the exported
+    /// (`alloc_node_id`) rather than reusing the exported
     /// one, since importing into an already-running session can't assume
     /// the old ids are free; `parent` and `group` links are remapped
     /// through the old-id -> new-id maps built while allocating them. Uses
     /// `SpawnPurpose::Restore` so imported tabs never steal focus, same as
     /// startup session restore.
     fn import_group_export(&mut self, export: group_export::GroupExport) {
-        let group_id = self.alloc_group_id();
+        let group_id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&group_id);
         let color = export.color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b));
         self.nodes.insert(
@@ -5160,7 +5098,7 @@ impl App {
         self.node_order.push(group_id.clone());
 
         let group_map: HashMap<String, String> =
-            export.groups.iter().map(|g| (g.id.clone(), self.alloc_group_id())).collect();
+            export.groups.iter().map(|g| (g.id.clone(), self.alloc_node_id())).collect();
         // A link to a group the file doesn't have lands in the imported group itself.
         let new_group = |old: Option<String>| {
             Some(old.and_then(|g| group_map.get(&g).cloned()).unwrap_or_else(|| group_id.clone()))
@@ -5179,7 +5117,7 @@ impl App {
             self.node_order.push(new_id);
         }
         let id_map: HashMap<String, String> =
-            export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_tab_id())).collect();
+            export.tabs.iter().map(|tab| (tab.id.clone(), self.alloc_node_id())).collect();
         for tab in export.tabs {
             let Some(new_id) = id_map.get(&tab.id).cloned() else { continue };
             let parent = tab.parent.and_then(|p| id_map.get(&p).cloned());
@@ -5866,15 +5804,13 @@ mod tests {
     }
 
     #[test]
-    fn bump_past_id_clears_restored_ids() {
-        let mut counter = 0;
-        bump_past_id(&mut counter, "tab-10", "tab");
-        bump_past_id(&mut counter, "tab-3", "tab");
-        assert_eq!(counter, 11);
-        bump_past_id(&mut counter, "note-50", "tab");
-        bump_past_id(&mut counter, "tabby-50", "tab");
-        bump_past_id(&mut counter, "tab-x", "tab");
-        assert_eq!(counter, 11);
-        assert_eq!(next_id(&mut counter, "tab"), "tab-11");
+    fn node_ids_without_a_store_are_unique_store_ids() {
+        let mut app = App::default();
+        let a = app.alloc_node_id();
+        let b = app.alloc_node_id();
+        assert_ne!(a, b);
+        let a: crate::store::model::NodeId = a.parse().expect("a store node id");
+        let b: crate::store::model::NodeId = b.parse().unwrap();
+        assert_eq!((a.actor, a.counter + 1), (b.actor, b.counter));
     }
 }

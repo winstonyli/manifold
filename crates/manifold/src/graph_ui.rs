@@ -267,11 +267,11 @@ impl App {
                 self.spawn_new_tab(parent, group, &home_page);
             }
             GraphAction::NewNote(pos) => {
-                let id = self.alloc_note_id();
+                let id = self.alloc_node_id();
                 self.insert_note_at(id, pos);
             }
             GraphAction::NewGroup(pos) => {
-                let id = self.alloc_group_id();
+                let id = self.alloc_node_id();
                 self.insert_group_at(id, pos);
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
@@ -279,7 +279,7 @@ impl App {
                 if self.selected_tabs.is_empty() {
                     return;
                 }
-                let id = self.alloc_group_id();
+                let id = self.alloc_node_id();
                 // Centroid of the selected cards, rather than the usual
                 // world-center-plus-jitter spawn point: these tabs already have
                 // real positions the user just drew a box around, so the new
