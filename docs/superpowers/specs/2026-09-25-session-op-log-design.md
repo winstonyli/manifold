@@ -74,7 +74,11 @@ and Import Session create a new document id; only sync shares one.
 - A **node id** is `(actor, counter)`; the counter starts at 0 each
   launch and is shared by all kinds. Printed as `1f3a9c…-17`.
 - The per-kind `NodeIds` counters and the `next_*_id` fields go away.
-- An **op id** is also `(actor, counter)` from the same counter.
+- An **op id** is also `(actor, counter)` from the same counter. A
+  `Create`'s op id differs from the node id it creates: the node id is
+  drawn when the node is made, op ids when ops are stamped.
+- Every op's stamp `(hlc, actor)` is unique (`Clock::tick`); merge
+  order depends on it.
 
 ### Hybrid logical clock
 
@@ -103,7 +107,7 @@ A set of nodes. Each node has:
 | Field | Kinds | Emitted | Notes |
 |---|---|---|---|
 | `pos` | all | explicit | drag end, placement of a new node, drop, import (see Positions) |
-| `color` | all | diffed | `None` = untagged |
+| `color` | all | diffed | `None` = untagged; black is `Some(0)` and is encoded |
 | `group` | all | diffed, as `Move` | the tree edge |
 | `parent` | Tab | diffed | "opened from" link, a plain register |
 | `url` | Tab | explicit | the target of the last user-started navigation (typed, clicked, back/forward). Redirects and script navigation never set it, so replicas whose logins redirect differently don't bounce each other's tabs. The page a tab actually shows is personal state. |
@@ -184,16 +188,19 @@ body = Create { node, kind, fields }
   whatever the arrival order. The value is encoded exactly as that field
   is inside a node message, so one field table drives encoding, merging
   and materializing. A `Set` for an unknown field number is stored raw.
-- **Delete**: tombstone; later `Set`/`Move` on it are ignored.
+- **Delete**: tombstone; its registers are cleared and later `Set`s on
+  it are ignored. `Move`s still apply (below).
 - **Move**: the replicated tree-move algorithm (Kleppmann et al., "A
   highly-available move operation for replicated trees"). The Move log
   is kept sorted by `(hlc, actor)`. Applying a move that would put a node
   inside itself (or its descendant) is a no-op. Tombstoned nodes keep
   their `group` edges in the tree the cycle check walks, so the check
   gives the same answer on every replica whatever it has deleted; only
-  display skips them. A `Move` of a tombstoned node is ignored; a `Move`
-  of a live node into a tombstoned group applies, and display re-homes
-  it. A move arriving earlier
+  display skips them. Moves apply to tombstoned nodes like any other, so
+  whether a `Delete` arrived first never changes the tree (ignoring them
+  broke convergence: undo and redo of later moves differed between
+  replicas). A node in a tombstoned group is displayed at its nearest
+  live ancestor. A move arriving earlier
   than already-applied ones undoes those, applies, and redoes them, so
   every replica ends with the same acyclic tree. Single-player and
   in-order, the undo path is never taken.
@@ -263,21 +270,29 @@ values are written with `-0.0` normalized to `0.0`; NaN is never
 stored (a NaN position is not saved). Field numbers are never reused; retired ones go in a `RESERVED`
 list checked by a test. Encodings of shared values:
 
-- node id: nested `{1: actor index, 2: counter}`. The actor index is
-  local to the file (into its `Actors` table) and is renumbered at
-  compaction; anything leaving the file (JSON, and sync later) uses the
-  full 64-bit actor id.
-- `pos`: two `f32`; `color`: varint `0xRRGGBB`, absent when untagged;
+- node id in a frame's own structure (op targets, `Move` groups,
+  snapshot node keys and group edges, stamps): nested `{1: actor index,
+  2: counter}`, the index into the file's `Actors` table, renumbered at
+  compaction.
+- node id inside a field value (`parent`): nested `{1: actor (fixed64),
+  2: counter}`, the full actor. A field this build does not know is kept
+  as raw bytes and could not be renumbered, so field values never hold
+  file-local indexes. JSON (and sync later) also uses the full actor.
+- `pos`: two `f32`; `color`: varint `0xRRGGBB`, absent when untagged
+  (black is `Some(0)`, present). A field is omitted only when it holds
+  exactly what absence decodes to;
 - `engine`, kind: enum varints.
 
 ### File and frames
 
 ```
-file  = magic "MNF\0" | format_version (varint) | frame*
+file  = magic "MNF\0" | format_version (varint) | generation (u64 LE) | frame*
 frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
         (len counts frame_type + message)
 ```
 
+- `generation` is random, new at each compaction: a reader holding an
+  offset into the old file sees it change and re-reads from the start.
 - `crc` is CRC-32C over `len ‖ frame_type ‖ message`, so an all-zero
   region never parses as a frame. `len = 0` and `frame_type = 0` are
   invalid.
@@ -294,11 +309,12 @@ frame = len: u32 LE | crc: u32 LE | frame_type (varint) | message
   torn tail, so an older build cannot truncate a newer build's data. An
   `Ops` frame holding an op kind this build does not know is kept the
   same way.
-- A build that opened a file containing unknown frame types or op kinds,
-  or a `format_version` newer than its own, **never compacts** that
-  file (compaction would drop what it cannot represent). It still
-  appends its own ops. With a newer `format_version` it opens the file
-  read-only and says so.
+- A build that opened a file containing unknown frame types, op kinds,
+  or fields in the file's own structure (a frame that does not re-encode
+  to the same bytes), or a `format_version` newer than its own, **never
+  compacts** that file (compaction would drop what it cannot represent).
+  It still appends its own ops. With a newer `format_version` it opens
+  the file read-only and says so.
 
 CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
 `std::arch` checked against the table path by a test.
@@ -309,20 +325,24 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   `Snapshot`, apply later `Ops`, take the latest `Local`.
 - **Append**: at a save point, diff → one `Ops` frame; personal-state
   changes → one `Local` frame. `fsync` is debounced to ~1 s and forced on
-  exit; a crash loses at most that second and never leaves an
-  unreadable file.
+  exit (on Windows the handle must be opened for writing, or
+  `FlushFileBuffers` fails); a crash loses at most that second and never
+  leaves an unreadable file. A write that fails partway leaves the
+  replica out of step with the file, so it re-reads the file whole
+  before its next write.
 - **Compact** when the ops since the last snapshot exceed twice its size
   and at least 64 KB, and on a clean exit (unless a rule above forbids
-  it): write `magic, Actors, Snapshot, Local` to a temp
-  file, fsync, rename over the journal (atomic on Windows). Unknown raw
-  fields and tombstones carry over; the Move-log tail field stays empty
-  single-player.
+  it): write a header with a new generation, then `Actors, Snapshot,
+  Local`, to a temp file, fsync, rename over the journal (atomic on
+  Windows). Unknown node fields (kept as raw registers) and tombstones
+  carry over; the Move-log tail field stays empty single-player.
 - **Two instances on one profile**: each append takes an exclusive lock
   on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
   the journal itself would be lost when compaction renames a new file
-  over it). Under the lock it opens `session.mnf` by path; if its file
-  id differs from the one it read last (another instance compacted), it
-  re-reads the file from scratch, otherwise it reads only the frames
+  over it). Under the lock it opens `session.mnf` by path; if its
+  header's generation differs from the one it read last, or the file is
+  shorter than its offset (another instance compacted), it re-reads the
+  file from scratch, otherwise it reads only the frames
   appended since its last offset. It merges them, appends its own frame,
   then unlocks. Compaction also runs under the lock. The rename must
   succeed while the other instance holds the old file open; the
