@@ -254,7 +254,7 @@ each other forever. Instead the sites of the named user actions (drag
 end, placement, drop, import, a typed or clicked navigation, back or
 forward) mark the node, and the next save emits a `Set` for marked
 fields only. Personal fields (settled positions, current url, title,
-zoom, mute, note editing) are written to `Local`.
+zoom, mute, note editing) are written to the personal-state file.
 
 ### Positions
 
