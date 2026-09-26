@@ -926,6 +926,7 @@ impl App {
         };
         let Some(root) = imported.first().map(|i| i.id) else { return };
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
+        let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         // A node's `pos` is always within its own immediate group's local
         // space (contract "The graph's world-space center" -- see
         // `GRAPH_WORLD_CENTER`'s own doc comment), so only the root -- the
@@ -948,6 +949,11 @@ impl App {
                 }
             };
             let mut fields = imported_fields(node.kind, &node.fields);
+            // A parent outside the file keeps its id through `import`; it
+            // names some other session's tab, or an unrelated live one.
+            if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
+                *parent = parent.filter(|p| ids.contains(p));
+            }
             if node.id == root {
                 fields.insert(field::POS, FieldValue::Pos(root_pos.x, root_pos.y));
             }
