@@ -27,6 +27,7 @@ pub mod frame {
     pub const OPS: u64 = 3;
     /// Never reused: 1 was a file-wide actor table (each frame now
     /// carries its own), 4 was personal state (now `<session>.local`).
+    #[cfg(test)]
     pub const RETIRED: [u64; 2] = [1, 4];
 }
 
@@ -779,10 +780,7 @@ impl Journal {
         &self.doc
     }
 
-    pub fn actor(&self) -> ActorId {
-        self.actor
-    }
-
+    #[cfg(test)]
     pub fn read_only(&self) -> bool {
         self.read_only
     }

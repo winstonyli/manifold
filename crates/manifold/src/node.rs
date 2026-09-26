@@ -337,7 +337,7 @@ pub(crate) struct TabPayload {
     /// picks up "whatever the default is right now", unchanged), then
     /// tracked per-tab from there -- carried through a respawn/engine
     /// swap/crash recovery the same way `pinned`/`color` already are. Not
-    /// persisted to `session.json`: a restored tab starts at
+    /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
     /// Graph view's pin toggle — a pinned node is excluded from the

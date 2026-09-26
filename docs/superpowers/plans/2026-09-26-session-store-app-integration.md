@@ -1925,6 +1925,51 @@ git commit -m "Plan B cleanup: store in use (no dead-code allow), docs describe 
 
 ---
 
+## Outcome (executed 2026-09-26)
+
+Landed on `session-store-app` as 524a706..PENDING (BASE for Task 14 was `ac9249e`): `cargo test -q -j 12 -p manifold` reports 128 passed, 2 ignored (timing probes), and clippy is clean with no `dead_code` allow anywhere in `store/` or `session_sync.rs`. `cargo build -p manifold`, `scripts/headless-smoke-test.sh` (26 checks, all PASS), and `scripts/two-instance-test.sh` (all 3 scenarios ok) all pass against the freshly built exe.
+
+Task 14 itself removed `store/mod.rs`'s `#![allow(dead_code)]` and resolved every warning it had been hiding:
+- `Journal::actor()` — deleted; nothing calls it and nothing in the spec's sub-project 2 notes names a use for it.
+- `Journal::read_only()` — `#[cfg(test)]`: only `a_newer_format_version_opens_read_only` calls it (the live path uses `Txn::read_only()`, which was already reachable).
+- `Inspect::file_len` — kept and used: `--dump` now prints it alongside version/generation.
+- `frame::RETIRED`, `model::RESERVED` — `#[cfg(test)]`: both are guard-rail constants ("never reuse a retired number") whose only consumer is the test that asserts live values never collide with them.
+- `Node::message()`, `tlv::Writer::raw()` — `#[cfg(test)]`: `message()`'s only caller is the journal fuzz test's `use_damaged` helper, which pulled `raw()` along as its only other caller (besides a `tlv` test).
+- `session_sync.rs`'s Task 3 `cfg_attr` allow was already gone by the time this task ran (removed in an earlier commit on this branch) — nothing left to do there.
+
+No item needed a bare `#[allow(dead_code)] // sub-project 2: …` — everything left over either had a real caller, was deleted, or was test-only and moved under `#[cfg(test)]`.
+
+The docs sweep found the brief's specific line numbers (`card.rs:995`, `debug_control.rs:193/426`, `json_file.rs:1`, `main.rs:1631`, `node.rs:177/207`) already clean — those had been fixed by earlier tasks on this branch, and the brief's snapshot of them was stale. The only surviving stale doc comment was `node.rs:340` ("Not persisted to `session.json`" → "Not persisted to the session store"). `settings_page.rs:341`'s `"session.json"` was left alone: it is the *default filename for Export Session's JSON snapshot*, which is a real, currently-correct `.json` interchange format, not a reference to the old store.
+
+README's session-persistence paragraph was rewritten to describe `session.mnf` / `.mnf.local` / `.mnf.prev` / `.mnf.damaged-<generation-hex>`, that an old `session.json` is left in place and ignored, `sessions/<name>.mnf` for named sessions, `history.json`, Export/Import's JSON snapshot format, and the `--dump`/`--check`/`--import-json` CLI tools. The two-instance-test.sh section from Task 13 was left as written — it was already accurate and needed no extension.
+
+### Rulings made during execution (from `progress.md`)
+
+- **Diff/apply contract**: `diff` writes a dangling group as `None` rather than walking to the nearest live ancestor; safe only because `save_session` always applies `remote` before diffing (a caller contract, not enforced in `diff` itself — kept that way to keep `diff` simple).
+- **Personal-state "missing/explicit" semantics**: generalized `shared_pos` into a per-node snapshot of every last-*shared* field value; `materialize` applies a remote field only when the store's value differs from that snapshot, so a remote touch to an unrelated field never clobbers local state.
+- Also fixed while in the area: `save_session` gained tests against a real `Journal` (including a remote update to an existing node); the Save Now hover text and stale comments were corrected; `export_session_json`/`export_group_json` now toast when the preceding save didn't commit.
+- **Drag/positions**: `pos` is marked once at release for every node the drag moved ("drag ends", per the brief), with the filter-at-release simplification applied in the controller instead of clearing `drag_moved` on every dragged frame.
+- **Store notices**: `last_store_notice` (one slot) was replaced with `store_notices` (a set, cleared on commit), so two different repeating notices (e.g. read-only and a repair) don't silently overwrite each other; a notice identical to one already shown this uncommitted stretch stays silent (intended).
+- **Group import**: `import_group_json` keeps every member's file position untouched (`pos` is local to a node's own immediate group, matching the old per-group export format); a `parent` outside the imported file is dropped, mirroring `replace_running_session`'s existing parent policy.
+- **Two-instance test**: instance B was made to wait for A's `.prev` to appear before B edits, so the compaction-mid-run scenario can't race.
+- Several one-line/mechanical fixes were applied without a separate re-review pass (a clippy `?`-rewrite, a stray `drag_moved` clear) since they were trivial and covered by the existing test/smoke suite.
+
+### Deferred
+
+From the brief:
+- Remote `pos` easing (a remotely-moved node jumps instead of animating into place).
+- Per-level cameras (Graph view's camera is one global value, not saved per group).
+- The URL cause from engines (redirect vs. user-initiated) — needed before sub-project 2 can narrow `url` to user-started navigations per the spec's own sub-project 2 notes.
+- The save loop's own cost (`shared_nodes` + `diff`) at 300 and 3000 tabs was not (re-)measured this task. The store side alone was measured before Task 5 (store-core plan, Deferred → Performance): a save's `begin` + commit is 0.14 ms at 300 tabs and 0.4–0.75 ms at 3000.
+
+From `progress.md`'s own parked items (rare, or explicitly owned by a later/out-of-scope task):
+- A one-frame local-delete resurrection; a mid-swap remote engine change getting lost (converges on its own); a spawning tab landing at the top level when its remote group was deleted concurrently.
+- `last_shared` entries for locally-deleted nodes linger until teardown (ids are never reused, so this is harmless memory growth only).
+- The drag-release marking path has no automated test (`card.rs`'s UI isn't drivable headless); a regression there would be caught only by review or a two-instance test.
+- Pre-existing teardown leftovers, and two `FailedTab`/closed-determinism coverage gaps flagged for the final review's fix pass rather than fixed inline.
+- The three import loops (`replace_running_session`, `reopen_closed`, `import_group_json`) are near-copies differing in purpose/parent policy/placement; flagged for a future consolidation pass rather than merged now. `export_group_json`'s empty-doc case is a parked minor.
+- `import_keeps_file_order` (Task 2) checks only `imported[0]`, which is weak but true for the cases it covers.
+
 ## Edge cases and where each is handled
 
 | Case | Handling | Where |

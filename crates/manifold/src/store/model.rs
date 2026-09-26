@@ -220,6 +220,7 @@ pub static FIELDS: [FieldDef; 13] = [
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
+#[cfg(test)]
 pub const RESERVED: [u32; 0] = [];
 
 pub fn field_def(no: u32) -> Option<&'static FieldDef> {
@@ -381,6 +382,7 @@ impl Node {
 
     /// This node as a plain node message, `group` included: what a
     /// `Create` carries.
+    #[cfg(test)]
     pub fn message(&self) -> Vec<u8> {
         let mut w = Writer::new();
         let group = encode_field(field::GROUP, &FieldValue::Id(self.group));

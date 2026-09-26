@@ -2,9 +2,6 @@
 //! format. Pure (no egui, no `App`); `session_sync` adapts it to the live
 //! graph. See docs/superpowers/specs/2026-09-25-session-op-log-design.md.
 
-// Nothing outside `store` uses it until the app integration lands.
-#![allow(dead_code)]
-
 pub mod crc32c;
 pub mod journal;
 pub mod json;

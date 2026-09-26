@@ -101,6 +101,7 @@ impl Writer {
     }
 
     /// Appends an already encoded field, key and value, as a register holds it.
+    #[cfg(test)]
     pub fn raw(&mut self, encoded: &[u8]) {
         self.buf.extend_from_slice(encoded);
     }

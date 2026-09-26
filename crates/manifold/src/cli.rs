@@ -37,7 +37,10 @@ pub(crate) fn run(args: &[String]) -> Option<i32> {
 fn dump(path: &Path) -> Result<i32, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let info = inspect(&bytes).map_err(|e| e.to_string())?;
-    println!("version {} generation {} prev_generation {}", info.version, info.generation, info.prev_generation);
+    println!(
+        "version {} generation {} prev_generation {} file_len {}",
+        info.version, info.generation, info.prev_generation, info.file_len
+    );
     for (offset, ty, size) in &info.frames {
         println!("frame at {offset}: type {ty}, {size} bytes");
     }
