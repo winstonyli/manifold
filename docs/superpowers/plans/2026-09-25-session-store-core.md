@@ -3325,7 +3325,7 @@ Landed on `dev` as 832da97..25e9dce: 46 `store::` tests, 81 in the crate, and cl
   - Diff and commit only inside a `Txn`, against `txn.doc()`.
   - After any `Err`, don't retry the same bodies. `begin` again and re-diff.
   - Don't trust `Journal::doc()` after an error until a `begin` succeeds.
-- **In-flight spawns.** A tab whose spawn is in flight (restore, engine swap, crash recovery) has no live node. The diff must treat its id as present (`App::spawning`), or it deletes the node and can never recreate it.
+- **In-flight spawns.** A tab whose spawn is in flight (restore, engine swap, crash recovery) has no live node. The diff must treat its id as present (`App::spawning`), or it deletes the node and can never recreate it. A save creates one the store doesn't hold yet (a new, imported or reopened tab) as it was started, so a quit before it lands keeps it.
 - **The lock.** `begin` blocks on the lock and does I/O (a whole-file read, and maybe an fsync or a compaction), so keep a `Txn` short.
 - **Read-only.** `read_only()` can become true mid-session, when a newer build compacts the file. Check it after `begin`.
 - **Flushing.** Call `sync_if_due()` every frame and `close()` on a clean exit.

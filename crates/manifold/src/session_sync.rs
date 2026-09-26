@@ -13,7 +13,7 @@ use crate::node::{
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
-use crate::store::json::JsonDoc;
+use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CLOSED};
@@ -192,6 +192,14 @@ pub(crate) fn recovery_notice(r: &Recovery) -> String {
 /// group, or `None` when it is no longer live (deleted or pruned).
 pub(crate) type RemoteChange = (NodeId, Option<(Kind, Fields, Option<NodeId>)>);
 
+/// Where `App::materialize_imported` puts an imported file's root (its
+/// first node): the level it's brought into, and optionally a fresh
+/// position there.
+pub(crate) struct ImportRoot {
+    pub group: Option<String>,
+    pub pos: Option<egui::Vec2>,
+}
+
 /// A node's kind, fields and group, as `materialize` takes them.
 pub(crate) type RemoteNode = (Kind, Fields, Option<String>);
 
@@ -227,6 +235,27 @@ fn engine_field(fields: &Fields) -> EngineKind {
     })
 }
 
+/// `pos` as the store keeps it: never non-finite (contract "Fields").
+fn pos_value(pos: egui::Vec2) -> FieldValue {
+    if pos.x.is_finite() && pos.y.is_finite() {
+        FieldValue::Pos(pos.x, pos.y)
+    } else {
+        FieldValue::Pos(0.0, 0.0)
+    }
+}
+
+fn parse_id(id: &Option<String>) -> Option<NodeId> {
+    id.as_deref().and_then(|id| id.parse().ok())
+}
+
+/// The tab `spawn` starts, as `Shared`: what `save_session` writes for a
+/// tab whose spawn hasn't landed yet (`App::spawning`).
+pub(crate) fn spawn_shared(spawn: &TabSpawn) -> Shared {
+    let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
+    let kind = tab_fields(&mut fields, &spawn.url, spawn.kind, spawn.carry.pinned, parse_id(&spawn.parent));
+    Shared { kind, group: parse_id(&spawn.group), fields }
+}
+
 /// A tab's fields beyond `pos` and `color`, live or failed.
 fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, parent: Option<NodeId>) -> Kind {
     fields.insert(field::URL, FieldValue::Str(url.to_owned()));
@@ -238,9 +267,8 @@ fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, 
 
 /// `raw` (an imported node's field values, as `store::json::import` gave
 /// them) shaped like `Shared::fields`: exactly `kind_fields(kind)`, with
-/// any field the file left out filled in as absent. Shared by
-/// `replace_running_session` and `App::reopen_closed` (main.rs), which
-/// both materialize nodes `store::json::import` produced.
+/// any field the file left out filled in as absent, for
+/// `App::materialize_imported`.
 pub(crate) fn imported_fields(kind: Kind, raw: &BTreeMap<u32, FieldValue>) -> Fields {
     kind_fields(kind)
         .iter()
@@ -256,23 +284,19 @@ impl App {
     /// in-progress download (it can't resume), and a node whose id isn't a
     /// store id (only hand-built test nodes).
     pub(crate) fn shared_nodes(&self) -> BTreeMap<NodeId, Shared> {
-        let parse = |id: &Option<String>| id.as_deref().and_then(|id| id.parse::<NodeId>().ok());
         let str = |s: &str| FieldValue::Str(s.to_owned());
         let mut out = BTreeMap::new();
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
-            // Never a non-finite `pos` (contract "Fields").
-            let finite = node.pos.x.is_finite() && node.pos.y.is_finite();
-            let pos = if finite { FieldValue::Pos(node.pos.x, node.pos.y) } else { FieldValue::Pos(0.0, 0.0) };
-            let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(node.color))]);
+            let mut fields = Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, color_value(node.color))]);
             let kind = match &node.payload {
                 // A swap in progress already shows its target engine, so a
                 // save meanwhile doesn't write the old one back.
                 NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, .. }) => {
-                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse(&node.parent))
+                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent))
                 }
                 NodePayload::FailedTab(FailedTabPayload { url, kind, pinned, .. }) => {
-                    tab_fields(&mut fields, url, *kind, *pinned, parse(&node.parent))
+                    tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent))
                 }
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
@@ -313,7 +337,7 @@ impl App {
                 want.sort();
                 want
             });
-            out.insert(id, Shared { kind, group: parse(&node.group), fields });
+            out.insert(id, Shared { kind, group: parse_id(&node.group), fields });
         }
         out
     }
@@ -347,7 +371,7 @@ impl App {
         purpose: SpawnPurpose,
         initial_pos: Option<egui::Vec2>,
     ) {
-        if self.spawning.contains(&id) {
+        if self.spawning.contains_key(&id) {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
@@ -496,7 +520,7 @@ impl App {
                 Some((kind, fields, group)) => {
                     self.materialize(key, kind, &fields, group.map(|g| g.to_string()), SpawnPurpose::Restore, None)
                 }
-                None if self.spawning.contains(&key) => {
+                None if self.spawning.contains_key(&key) => {
                     self.remote_in_flight.insert(key, None);
                 }
                 None => {
@@ -596,8 +620,8 @@ impl App {
         // at the next save point (or frame: `poll_store`) rather than spin.
         for _ in 0..4 {
             // Projected before `begin`, since the `Txn` borrows the journal.
-            let live = self.shared_nodes();
-            let keep: BTreeSet<NodeId> = self.spawning.iter().filter_map(|id| id.parse().ok()).collect();
+            let mut live = self.shared_nodes();
+            let keep: BTreeSet<NodeId> = self.spawning.keys().filter_map(|id| id.parse().ok()).collect();
             let Some(journal) = self.journal.as_mut() else {
                 self.flush_history();
                 return false;
@@ -623,6 +647,15 @@ impl App {
                 self.take_store_recovery();
                 self.flush_history();
                 return false;
+            }
+            // A tab still spawning that the store doesn't hold yet is
+            // created as it was started; one it does hold is only kept, so
+            // other replicas' edits to it stand.
+            for (id, shared) in &self.spawning {
+                let Ok(id) = id.parse::<NodeId>() else { continue };
+                if !txn.doc().nodes.contains_key(&id) {
+                    live.entry(id).or_insert_with(|| shared.clone());
+                }
             }
             let ops = diff(txn.doc(), &live, &self.explicit, &keep);
             let result = if ops.is_empty() {
@@ -665,7 +698,8 @@ impl App {
 
     /// Startup: shows the document, then applies personal state
     /// (`session.mnf.local`) on top. `false` when it has no live node, so
-    /// the caller starts fresh.
+    /// the caller starts fresh; Recently Closed is still restored then,
+    /// or the next personal-state write would drop it.
     pub(crate) fn restore_session(&mut self) -> bool {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
@@ -680,6 +714,8 @@ impl App {
             _ => LocalState::default(),
         };
         if nodes.is_empty() {
+            self.restore_closed(local.closed);
+            self.local_written = Some(self.local_state());
             return false;
         }
         nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
@@ -704,10 +740,13 @@ impl App {
     }
 
     /// This profile's personal state as the live graph currently shows it
-    /// (spec "Personal state"): what to write to `session.mnf.local`.
+    /// (spec "Personal state"): what to write to `session.mnf.local`. A
+    /// node still spawning keeps its `pending_local` entry, so a quit
+    /// before restored tabs land doesn't lose their placement and zoom.
     pub(crate) fn local_state(&self) -> LocalState {
         let item = self.view_mode == ViewMode::Item;
-        let nodes = self
+        let zoom = |factor: f64| (factor != self.settings.zoom_factor).then_some(factor);
+        let mut nodes: BTreeMap<String, LocalNode> = self
             .nodes
             .iter()
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
@@ -717,16 +756,22 @@ impl App {
                     NodePayload::Tab(tab) => {
                         local.title = tab.title.clone();
                         local.muted = tab.muted;
-                        if tab.zoom_factor != self.settings.zoom_factor {
-                            local.zoom = Some(tab.zoom_factor);
-                        }
+                        local.zoom = zoom(tab.zoom_factor);
                     }
+                    NodePayload::FailedTab(tab) => local.zoom = zoom(tab.zoom_factor),
                     NodePayload::Note(n) => local.editing = n.editing,
                     _ => {}
                 }
                 (id.clone(), local)
             })
             .collect();
+        if let Some(pending) = &self.pending_local {
+            for (id, node) in &pending.nodes {
+                if self.spawning.contains_key(id) && !nodes.contains_key(id) {
+                    nodes.insert(id.clone(), node.clone());
+                }
+            }
+        }
         let rect = self.camera.rect;
         LocalState {
             focused: self.focused.clone(),
@@ -749,7 +794,7 @@ impl App {
     /// for `handle_tab_spawn_result` to apply once it lands.
     pub(crate) fn apply_local(&mut self, state: LocalState) {
         let exists = |id: &Option<String>| {
-            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawning.contains(id))
+            id.as_deref().is_some_and(|id| self.nodes.contains_key(id) || self.spawning.contains_key(id))
         };
         if exists(&state.focused) {
             self.focused = state.focused;
@@ -765,16 +810,7 @@ impl App {
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
-        // Oldest first, like `state.closed` itself; a blank entry (a
-        // format this build doesn't recognize inside `doc.nodes`, or one
-        // some other bug produced) is dropped rather than shown as an
-        // empty row.
-        let mut closed: Vec<ClosedEntry> =
-            state.closed.into_iter().filter(|doc| !doc.nodes.is_empty()).map(|doc| ClosedEntry { doc }).collect();
-        if closed.len() > MAX_CLOSED {
-            closed.drain(..closed.len() - MAX_CLOSED);
-        }
-        self.closed = closed;
+        self.restore_closed(state.closed);
         // Item view showing a tab still spawning (`focused` names it, but
         // it's not in `self.nodes` yet -- a tab's restore is always async):
         // `build_tab_view_ui` bounces an unknown-tab Item view back to
@@ -795,7 +831,7 @@ impl App {
         for (id, node) in state.nodes {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
-            } else if self.spawning.contains(&id) {
+            } else if self.spawning.contains_key(&id) {
                 pending.insert(id, node);
             }
         }
@@ -809,6 +845,19 @@ impl App {
                 self.camera.frame_restored = false;
             }
         }
+    }
+
+    /// Recently Closed from personal state, oldest first like `closed`
+    /// itself, capped at `MAX_CLOSED`. A blank entry (a format this build
+    /// doesn't recognize inside `doc.nodes`, or one some other bug
+    /// produced) is dropped rather than shown as an empty row.
+    fn restore_closed(&mut self, closed: Vec<JsonDoc>) {
+        let mut closed: Vec<ClosedEntry> =
+            closed.into_iter().filter(|doc| !doc.nodes.is_empty()).map(|doc| ClosedEntry { doc }).collect();
+        if closed.len() > MAX_CLOSED {
+            closed.drain(..closed.len() - MAX_CLOSED);
+        }
+        self.closed = closed;
     }
 
     /// One node's share of `apply_local`: settled position, and whatever
@@ -932,14 +981,20 @@ impl App {
     /// (`from_json`) is itself a saved node since Task 5, so it exports
     /// too, unlike the old per-group export format, which walked live
     /// nodes and always skipped it. `None` without a store or for an
-    /// unknown group.
+    /// unknown group; toasted when the store doesn't hold the group live
+    /// (its save failed), rather than exporting an empty file.
     pub(crate) fn export_group_json(&mut self, group: &str) -> Option<JsonDoc> {
         self.journal.as_ref()?;
         let root: NodeId = group.parse().ok()?;
         if !self.save_session() {
             self.queue_toast("The export may miss recent edits: the session couldn't be saved first".into());
         }
-        Some(crate::store::json::subtree_to_json(self.journal.as_ref()?.doc(), root))
+        let doc = self.journal.as_ref()?.doc();
+        if !doc.nodes.get(&root).is_some_and(|n| n.is_live()) {
+            self.queue_toast("Couldn't export the group: it isn't saved in the session".into());
+            return None;
+        }
+        Some(crate::store::json::subtree_to_json(doc, root))
     }
 
     /// Imports a group export at the level currently being viewed (Import
@@ -952,10 +1007,9 @@ impl App {
     /// a member's position is already relative to the root (or a group
     /// nested under it) and needs no translation, only the re-parented
     /// root itself does. A `group` link only within this file's own nodes
-    /// is kept; anything else (the root, or a member whose group was
-    /// outside the exported subtree) is dropped to `None`/the new root as
-    /// appropriate. Ends with `save_session`, same as
-    /// `replace_running_session`/`reopen_closed`.
+    /// is kept; a member whose group was outside the exported subtree
+    /// lands with the root (`materialize_imported`). Ends with
+    /// `save_session`, same as `replace_running_session`/`reopen_closed`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
             Ok(imported) => imported,
@@ -965,8 +1019,6 @@ impl App {
             }
         };
         let Some(root) = imported.first().map(|i| i.id) else { return };
-        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
-        let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         // A node's `pos` is always within its own immediate group's local
         // space (contract "The graph's world-space center" -- see
         // `GRAPH_WORLD_CENTER`'s own doc comment), so only the root -- the
@@ -975,31 +1027,58 @@ impl App {
         // member's file position is already relative to its own (possibly
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
-        let root_pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
+        let pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
+        let root = ImportRoot { group: self.current_group.clone(), pos: Some(pos) };
+        self.materialize_imported(imported, Some(root), false);
+        self.save_session();
+    }
 
+    /// Materializes the nodes `store::json::import` produced, for Import
+    /// Session, Import Group and Reopen Closed. Groups come first, so no
+    /// member names a group that doesn't exist yet, and a `group` link is
+    /// kept only when it names a group in the same file.
+    /// - With `root`, the file's first node lands at `root.group` (at
+    ///   `root.pos`, when given), and so does every other node whose group
+    ///   isn't in the file. Without it (a whole session replacing the old
+    ///   one), such a node goes to the top level.
+    /// - A `parent` outside the file keeps its id through `import`: it
+    ///   names some other session's tab, or an unrelated live one. It's
+    ///   dropped, unless `keep_live_parents` and that node is live.
+    ///
+    /// Tabs spawn as `Restore` (none of these ids is `focused`, so it
+    /// matches `New` except on failure): a tab whose engine won't start
+    /// stays as a failed card rather than vanishing. Toasts from missing
+    /// files are collapsed into one.
+    pub(crate) fn materialize_imported(
+        &mut self,
+        imported: Vec<Imported>,
+        root: Option<ImportRoot>,
+        keep_live_parents: bool,
+    ) {
+        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
+        let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
+        let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
+        let (dest, root_pos) = root.map_or((None, None), |r| (r.group, r.pos));
         let mut imported = imported;
         imported.sort_by_key(|i| i.kind != Kind::Group);
+        let toasts = self.save_toast_queue.len();
         for node in imported {
-            let group = if node.id == root {
-                self.current_group.clone()
-            } else {
-                match node.fields.get(&field::GROUP) {
-                    Some(FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
-                    _ => None,
-                }
+            let is_root = Some(node.id) == root_id;
+            let group = match node.fields.get(&field::GROUP) {
+                Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(g.to_string()),
+                _ => dest.clone(),
             };
             let mut fields = imported_fields(node.kind, &node.fields);
-            // A parent outside the file keeps its id through `import`; it
-            // names some other session's tab, or an unrelated live one.
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
-                *parent = parent.filter(|p| ids.contains(p));
+                let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(&p.to_string());
+                *parent = parent.filter(|p| ids.contains(p) || live(p));
             }
-            if node.id == root {
-                fields.insert(field::POS, FieldValue::Pos(root_pos.x, root_pos.y));
+            if let (true, Some(pos)) = (is_root, root_pos) {
+                fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::New, None);
+            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore, None);
         }
-        self.save_session();
+        self.collapse_toasts_since(toasts);
     }
 
     /// Writes `export_session_json` to `path` (Export Session, headless
@@ -1042,26 +1121,10 @@ impl App {
         self.teardown_running_session();
         let map: HashMap<String, String> =
             json.nodes.iter().zip(&imported).map(|(node, i)| (node.id.clone(), i.id.to_string())).collect();
-        // A group or parent outside the file (import keeps real node ids)
-        // names nothing once the old session is gone.
-        let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
-        let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
-        let mut imported = imported;
-        imported.sort_by_key(|i| i.kind != Kind::Group);
         let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());
-        let toasts = self.save_toast_queue.len();
-        for node in imported {
-            let group = match node.fields.get(&field::GROUP) {
-                Some(FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
-                _ => None,
-            };
-            let mut fields = imported_fields(node.kind, &node.fields);
-            if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
-                *parent = parent.filter(|p| ids.contains(p));
-            }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore, None);
-        }
-        self.collapse_toasts_since(toasts);
+        // No root: a group or parent outside the file (import keeps real
+        // node ids) names nothing once the old session is gone.
+        self.materialize_imported(imported, None, false);
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
@@ -1613,7 +1676,7 @@ pub(crate) mod tests {
         // is exactly the shape a real tab restore has before its spawn
         // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
         app.nodes.remove(&tab);
-        app.spawning.insert(tab.clone());
+        app.spawning.insert(tab.clone(), shared(Kind::Tab, None, &[]));
         let state = LocalState { focused: Some(tab.clone()), view_item: true, ..LocalState::default() };
         app.apply_local(state);
         assert_eq!(app.view_mode, ViewMode::Item);
@@ -1662,5 +1725,158 @@ pub(crate) mod tests {
         assert_eq!(json.nodes[0].kind, "group");
         app.import_group_json(&json);
         assert_eq!(app.shared_nodes().len(), 4, "the import added a second group and note");
+    }
+
+    fn failed_tab(url: &str, zoom_factor: f64) -> NodePayload {
+        let kind = EngineKind::Servo;
+        NodePayload::FailedTab(FailedTabPayload {
+            url: url.into(),
+            kind,
+            error: "x".into(),
+            pinned: false,
+            zoom_factor,
+            retrying: false,
+        })
+    }
+
+    /// Fails every spawn parked in `test_spawns`, as a missing engine would.
+    fn fail_spawns(app: &mut App) {
+        for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
+            let result = Err(std::io::Error::other("no engine"));
+            app.handle_tab_spawn_result(crate::TabSpawnOutcome { spawn, generation, result });
+        }
+    }
+
+    fn json_node(id: &str, kind: &str, fields: serde_json::Value) -> crate::store::json::JsonNode {
+        let serde_json::Value::Object(fields) = fields else { panic!("fields are an object") };
+        crate::store::json::JsonNode { id: id.into(), kind: kind.into(), fields }
+    }
+
+    /// A reopened tab whose engine won't start stays as a failed card,
+    /// keeping its zoom, like a restored one, rather than vanishing.
+    #[test]
+    fn a_reopened_tab_that_fails_to_spawn_stays_as_a_failed_card() {
+        let mut app = app_on(&temp_dir("reopen-fail").join("session.mnf"), 1);
+        let tab = add(&mut app, failed_tab("https://r/", 1.5));
+        let entry = crate::closed_entry(&app, &tab).unwrap();
+        app.nodes.remove(&tab);
+        app.node_order.retain(|t| t != &tab);
+        app.reopen_closed(entry);
+        assert_eq!(app.test_spawns.len(), 1);
+        fail_spawns(&mut app);
+        let cards: Vec<&FailedTabPayload> = app.nodes.values().filter_map(|n| n.as_failed_tab()).collect();
+        assert!(matches!(&cards[..], [t] if t.url == "https://r/" && t.zoom_factor == 1.5), "no failed card");
+    }
+
+    /// Same for a tab in an imported group: it stays in the new group.
+    #[test]
+    fn an_imported_groups_tab_that_fails_to_spawn_stays_as_a_failed_card() {
+        let mut app = app_on(&temp_dir("import-fail").join("session.mnf"), 1);
+        let g = add(&mut app, NodePayload::Group(GroupPayload { name: "G".into(), from_json: false }));
+        let tab = add(&mut app, failed_tab("https://i/", 1.0));
+        app.nodes.get_mut(&tab).unwrap().group = Some(g.clone());
+        let json = app.export_group_json(&g).unwrap();
+        app.import_group_json(&json);
+        fail_spawns(&mut app);
+        let copy = app.nodes.iter().find(|(id, n)| **id != tab && n.as_failed_tab().is_some()).expect("a failed card");
+        let group = copy.1.group.as_deref().expect("in a group");
+        assert!(group != g && app.nodes[group].as_group().is_some(), "in the imported group");
+    }
+
+    /// A member whose group isn't part of the imported file lands where
+    /// the file's root does (the level being viewed), not at the top level.
+    #[test]
+    fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
+        let mut app = app_on(&temp_dir("import-outside").join("session.mnf"), 1);
+        let level = add(&mut app, NodePayload::Group(GroupPayload { name: "L".into(), from_json: false }));
+        let elsewhere = add(&mut app, NodePayload::Group(GroupPayload { name: "E".into(), from_json: false }));
+        app.current_group = Some(level.clone());
+        let json = JsonDoc {
+            nodes: vec![
+                json_node("a", "group", serde_json::json!({ "name": "G" })),
+                json_node("b", "note", serde_json::json!({ "text": "t", "group": elsewhere })),
+            ],
+            local: None,
+        };
+        app.import_group_json(&json);
+        let note = app.nodes.values().find(|n| matches!(&n.payload, NodePayload::Note(_))).expect("imported");
+        assert_eq!(note.group.as_deref(), Some(level.as_str()));
+    }
+
+    /// A session with no nodes still keeps Recently Closed: the launch
+    /// starts fresh, but the next personal-state write carries the list.
+    #[test]
+    fn an_empty_session_keeps_recently_closed_across_a_launch() {
+        let path = temp_dir("empty-closed").join("session.mnf");
+        let entry = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+        {
+            let journal = Journal::open(&path, ActorId(1)).unwrap();
+            let state = LocalState { closed: vec![entry.clone()], ..LocalState::default() };
+            journal.write_local(&state.to_bytes()).unwrap();
+        }
+        let mut app = app_on(&path, 2);
+        assert!(!app.restore_session(), "no nodes: the caller starts fresh");
+        assert_eq!(app.closed.len(), 1);
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        app.maybe_write_local(true);
+        let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
+        assert_eq!(LocalState::from_bytes(&bytes).unwrap().closed, vec![entry]);
+    }
+
+    /// Quitting while an imported session's tabs are still spawning keeps
+    /// them: each is saved as it was started, and the replaced session's
+    /// nodes are gone.
+    #[test]
+    fn tabs_still_spawning_at_quit_are_saved() {
+        let path = temp_dir("spawning-quit").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        add(&mut app, NodePayload::Note(NotePayload { text: "old".into(), editing: false }));
+        assert!(app.save_session());
+        let json =
+            JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
+        app.replace_running_session(&json);
+        assert_eq!(app.test_spawns.len(), 1, "the tab is still spawning");
+        app.save_session();
+        app.close_store();
+        drop(app);
+        let journal = Journal::open(&path, ActorId(3)).unwrap();
+        let live: Vec<(Kind, FieldValue)> = journal.doc().live().map(|(_, n)| (n.kind, n.get(field::URL))).collect();
+        assert_eq!(live, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
+    }
+
+    /// Personal state written before restored tabs land keeps theirs
+    /// (position, title, zoom), and a failed card's zoom is kept too.
+    #[test]
+    fn personal_state_keeps_spawning_tabs_entries_and_a_failed_cards_zoom() {
+        let path = temp_dir("local-spawning").join("session.mnf");
+        let tab = {
+            let mut app = app_on(&path, 1);
+            let tab = add(&mut app, failed_tab("https://s/", 1.0));
+            app.close_store();
+            tab
+        };
+        let entry = LocalNode { pos: [7.0, 8.0], title: "T".into(), zoom: Some(2.0), ..LocalNode::default() };
+        {
+            let journal = Journal::open(&path, ActorId(2)).unwrap();
+            let state = LocalState { nodes: BTreeMap::from([(tab.clone(), entry.clone())]), ..LocalState::default() };
+            journal.write_local(&state.to_bytes()).unwrap();
+        }
+        let mut app = app_on(&path, 3);
+        assert!(app.restore_session());
+        assert_eq!(app.test_spawns.len(), 1, "the restored tab is still spawning");
+        let card = add(&mut app, failed_tab("https://f/", 1.5));
+        let state = app.local_state();
+        assert_eq!(state.nodes.get(&tab), Some(&entry));
+        assert_eq!(state.nodes[&card].zoom, Some(1.5));
+    }
+
+    /// Export Group of a group the store doesn't hold gives nothing (and
+    /// says so) rather than an empty file.
+    #[test]
+    fn exporting_a_group_the_store_lacks_gives_none() {
+        let mut app = app_on(&temp_dir("export-missing").join("session.mnf"), 1);
+        let g = app.alloc_node_id();
+        assert!(app.export_group_json(&g).is_none());
+        assert!(!app.save_toast_queue.is_empty(), "toasted");
     }
 }

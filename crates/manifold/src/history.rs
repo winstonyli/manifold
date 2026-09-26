@@ -36,13 +36,18 @@ pub fn load() -> (Vec<HistoryEntry>, Option<String>) {
     match crate::json_file::load_or_move_aside(&path, "history") {
         Ok(history) => {
             let mut entries: Vec<HistoryEntry> = history.unwrap_or_default();
-            // Truncate to MAX_HISTORY_ENTRIES in case it grew beyond our limit.
-            if entries.len() > MAX_HISTORY_ENTRIES {
-                entries.truncate(MAX_HISTORY_ENTRIES);
-            }
+            cap(&mut entries);
             (entries, None)
         }
         Err(err) => (Vec::new(), Some(err)),
+    }
+}
+
+/// Drops the oldest entries past `MAX_HISTORY_ENTRIES`, in case the file
+/// grew beyond the limit. The list is most-recent-last, like `App::history`.
+fn cap(entries: &mut Vec<HistoryEntry>) {
+    if entries.len() > MAX_HISTORY_ENTRIES {
+        entries.drain(..entries.len() - MAX_HISTORY_ENTRIES);
     }
 }
 
@@ -79,5 +84,16 @@ mod tests {
         let back: Vec<HistoryEntry> = serde_json::from_str(&text).unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].url, "https://a.example/");
+    }
+
+    /// The list is most-recent-last, so a cap keeps the newest entries.
+    #[test]
+    fn capping_keeps_the_newest_entries() {
+        let entry = |i: usize| HistoryEntry { title: String::new(), url: format!("https://{i}/") };
+        let mut entries: Vec<HistoryEntry> = (0..MAX_HISTORY_ENTRIES + 5).map(entry).collect();
+        cap(&mut entries);
+        assert_eq!(entries.len(), MAX_HISTORY_ENTRIES);
+        assert_eq!(entries[0].url, entry(5).url);
+        assert_eq!(entries.last().unwrap().url, entry(MAX_HISTORY_ENTRIES + 4).url);
     }
 }

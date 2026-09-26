@@ -29,7 +29,7 @@ mod suggestions;
 mod tab_view;
 mod theme;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
@@ -1392,10 +1392,13 @@ struct App {
     /// whose waiting senders sit in `tabs_spawned_waiters` until this
     /// reaches zero.
     tab_spawns_in_flight: usize,
-    /// Ids whose tab spawn is in flight (every `SpawnPurpose`): no live
+    /// Ids whose tab spawn is in flight (every `SpawnPurpose`), each with
+    /// the tab it was started as (`session_sync::spawn_shared`). No live
     /// node yet, so `save_session` keeps them in the store rather than
-    /// deleting them (contract "In-flight spawns").
-    spawning: HashSet<String>,
+    /// deleting them (contract "In-flight spawns"), and creates one the
+    /// store doesn't hold yet (a new, imported or reopened tab), so a quit
+    /// before it lands doesn't lose it.
+    spawning: HashMap<String, session_sync::Shared>,
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`None`: deleted). The spawn itself carries only
     /// what it was started with.
@@ -1734,6 +1737,12 @@ struct App {
     /// gone. Set in `retry_failed_tab`, cleared by that outcome in
     /// `handle_tab_spawn_result`.
     failed_tab_retries: HashSet<String>,
+
+    /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
+    /// parks each spawn here (with its `session_generation`) for the test
+    /// to hand `handle_tab_spawn_result` an outcome itself.
+    #[cfg(test)]
+    test_spawns: Vec<(TabSpawn, u64)>,
 }
 
 impl Default for App {
@@ -1782,7 +1791,7 @@ impl Default for App {
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
             tab_spawns_in_flight: 0,
-            spawning: HashSet::new(),
+            spawning: HashMap::new(),
             remote_in_flight: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
@@ -1846,6 +1855,8 @@ impl Default for App {
             event_proxy: None,
             pending_respawn_focus: None,
             failed_tab_retries: HashSet::new(),
+            #[cfg(test)]
+            test_spawns: Vec::new(),
         };
         for err in [settings_err, bookmarks_err, history_err].into_iter().flatten() {
             app.queue_toast(err);
@@ -2063,9 +2074,10 @@ impl App {
     /// `parent` outside the entry kept only if that node still exists.
     /// The root's group becomes `self.current_group` (it's written as
     /// `None` in the doc -- see `closed_entry`); every other node keeps
-    /// the group `closed_entry` recorded, if it's still part of this
-    /// entry. Tabs spawn as new tabs (`SpawnPurpose::New`, nothing
-    /// focused). An image or JSON file that's gone since is toasted and
+    /// the group `closed_entry` recorded if it's still part of this entry,
+    /// and otherwise joins the root (`materialize_imported`). Nothing
+    /// gains focus, and a tab whose engine won't start stays as a failed
+    /// card. An image or JSON file that's gone since is toasted and
     /// skipped; a PDF reopens as its error card. Ends with `save_session`.
     fn reopen_closed(&mut self, entry: ClosedEntry) {
         let imported = match store::json::import(&entry.doc, || self.alloc_node_id().parse().expect("a store id")) {
@@ -2075,13 +2087,13 @@ impl App {
                 return;
             }
         };
-        let Some(root_id) = imported.first().map(|i| i.id) else { return };
-        let ids: BTreeSet<store::model::NodeId> = imported.iter().map(|i| i.id).collect();
-        let groups: BTreeSet<store::model::NodeId> =
-            imported.iter().filter(|i| i.kind == store::model::Kind::Group).map(|i| i.id).collect();
+        if imported.is_empty() {
+            return;
+        }
         // Old label (the id `closed_entry` recorded it under) -> zoom,
         // read from `doc.local`, then carried over to the fresh id below
-        // (`imported[i]` is `entry.doc.nodes[i]`, per `import`'s contract).
+        // (`imported[i]` is `entry.doc.nodes[i]`, per `import`'s contract)
+        // as a `pending_local` entry, applied once that tab lands.
         let zoom_by_label: std::collections::BTreeMap<&str, f64> = entry
             .doc
             .local
@@ -2090,41 +2102,25 @@ impl App {
             .and_then(|v| v.as_object())
             .map(|map| map.iter().filter_map(|(k, v)| Some((k.as_str(), v.as_f64()?))).collect())
             .unwrap_or_default();
-        let zoom: HashMap<store::model::NodeId, f64> = entry
+        let zooms: Vec<(String, local_state::LocalNode)> = entry
             .doc
             .nodes
             .iter()
             .zip(&imported)
-            .filter_map(|(n, i)| zoom_by_label.get(n.id.as_str()).map(|&z| (i.id, z)))
-            .collect();
-
-        let mut imported = imported;
-        imported.sort_by_key(|i| i.kind != store::model::Kind::Group);
-        for node in imported {
-            let group = if node.id == root_id {
-                self.current_group.clone()
-            } else {
-                match node.fields.get(&field::GROUP) {
-                    Some(store::model::FieldValue::Id(Some(g))) if groups.contains(g) => Some(g.to_string()),
-                    _ => None,
-                }
-            };
-            let mut fields = session_sync::imported_fields(node.kind, &node.fields);
-            if let Some(store::model::FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
-                *parent = parent.filter(|p| ids.contains(p) || self.nodes.contains_key(&p.to_string()));
-            }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::New, None);
-            if let Some(&factor) = zoom.get(&node.id) {
-                let pos = match fields.get(&field::POS) {
+            .filter_map(|(n, i)| {
+                let &factor = zoom_by_label.get(n.id.as_str())?;
+                let pos = match i.fields.get(&field::POS) {
                     Some(store::model::FieldValue::Pos(x, y)) => [*x, *y],
                     _ => [0.0, 0.0],
                 };
-                let local = local_state::LocalNode { pos, zoom: Some(factor), ..local_state::LocalNode::default() };
-                self.pending_local
-                    .get_or_insert_with(local_state::LocalState::default)
-                    .nodes
-                    .insert(node.id.to_string(), local);
-            }
+                Some((i.id.to_string(), local_state::LocalNode { pos, zoom: Some(factor), ..Default::default() }))
+            })
+            .collect();
+
+        let root = session_sync::ImportRoot { group: self.current_group.clone(), pos: None };
+        self.materialize_imported(imported, Some(root), true);
+        if !zooms.is_empty() {
+            self.pending_local.get_or_insert_with(local_state::LocalState::default).nodes.extend(zooms);
         }
         self.save_session();
     }
@@ -2405,10 +2401,15 @@ impl App {
     /// synchronous `Ok`/`Err` branches used to do, once the result actually
     /// arrives.
     fn spawn_tab_async(&mut self, spawn: TabSpawn) {
-        let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         self.tab_spawns_in_flight += 1;
-        self.spawning.insert(spawn.id.clone());
+        self.spawning.insert(spawn.id.clone(), session_sync::spawn_shared(&spawn));
         let generation = self.session_generation;
+        #[cfg(test)]
+        if self.event_proxy.is_none() {
+            self.test_spawns.push((spawn, generation));
+            return;
+        }
+        let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         std::thread::spawn(move || {
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
@@ -2619,6 +2620,9 @@ impl App {
                     SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
                     SpawnPurpose::Restore => format!("Couldn't restore tab: {err}"),
                 });
+                // A save while it was in flight may have created it
+                // (`spawning`); it's gone now.
+                self.save_session();
             }
         }
     }

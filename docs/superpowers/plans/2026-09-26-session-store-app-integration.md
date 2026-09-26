@@ -1943,6 +1943,17 @@ The docs sweep found the brief's specific line numbers (`card.rs:995`, `debug_co
 
 README's session-persistence paragraph was rewritten to describe `session.mnf` / `.mnf.local` / `.mnf.prev` / `.mnf.damaged-<generation-hex>`, that an old `session.json` is left in place and ignored, `sessions/<name>.mnf` for named sessions, `history.json`, Export/Import's JSON snapshot format, and the `--dump`/`--check`/`--import-json` CLI tools. The two-instance-test.sh section from Task 13 was left as written — it was already accurate and needed no extension.
 
+### Final review
+
+The whole-branch review's fix pass (brief: `.superpowers/sdd/2026-09-26-session-store-app-integration/final-fix-brief.md`) fixed:
+- **Import Group and Reopen Closed dropped a tab whose spawn failed** (they spawned as `New`; only `Respawn`/`Restore` keep a failed card). The three import loops are now one helper, `App::materialize_imported`, which always spawns `Restore` and collapses toasts; callers pass only the root's level/position and whether a live parent outside the file is kept (Reopen only).
+- **A member whose group is outside the file** now lands with the root (the level being viewed), as the doc comments said, instead of at the top level. Import Session is unchanged (no root: such a node goes to the top level).
+- **An empty session lost Recently Closed on the next launch**: `restore_session` now restores the closed list (shared `restore_closed`, same filter and cap) and sets `local_written` before returning `false`.
+- **Quit or crash while tabs were still spawning lost them**: `App::spawning` is now a map to each in-flight tab's `Shared` (`session_sync::spawn_shared`, built from the `TabSpawn`), and `save_session` creates the ones the store doesn't hold yet (any id the document has, live or tombstone, is only kept). A spawn that fails without a card now saves, so a tab created while in flight doesn't linger.
+- `history::load` kept the oldest 200 entries when capping; it now keeps the newest. `export_group_json` returns `None` and toasts when the store doesn't hold the group live. `local_state()` keeps a still-spawning node's `pending_local` entry and a failed card's zoom.
+
+Windowless tests park spawns in a `#[cfg(test)]` `App::test_spawns` (no event loop) so they can fail them through `handle_tab_spawn_result`. Tests: `cargo test -q -j 12 -p manifold` 136 passed, 2 ignored (8 new); clippy clean; `headless-smoke-test.sh` all PASS; `two-instance-test.sh` all 3 scenarios ok. Parked (out of scope): `save_session`'s 4-round give-up flag, the per-load nonce redirect bounce, `last_shared` lingering, the resurrection race, the mid-swap engine change, landing at the top level after a remote group removal, and the release-path drag test.
+
 ### Rulings made during execution (from `progress.md`)
 
 - **Diff/apply contract**: `diff` writes a dangling group as `None` rather than walking to the nearest live ancestor; safe only because `save_session` always applies `remote` before diffing (a caller contract, not enforced in `diff` itself — kept that way to keep `diff` simple).
@@ -1967,7 +1978,7 @@ From `progress.md`'s own parked items (rare, or explicitly owned by a later/out-
 - `last_shared` entries for locally-deleted nodes linger until teardown (ids are never reused, so this is harmless memory growth only).
 - The drag-release marking path has no automated test (`card.rs`'s UI isn't drivable headless); a regression there would be caught only by review or a two-instance test.
 - Pre-existing teardown leftovers, and two `FailedTab`/closed-determinism coverage gaps flagged for the final review's fix pass rather than fixed inline.
-- The three import loops (`replace_running_session`, `reopen_closed`, `import_group_json`) are near-copies differing in purpose/parent policy/placement; flagged for a future consolidation pass rather than merged now. `export_group_json`'s empty-doc case is a parked minor.
+- The three import loops (`replace_running_session`, `reopen_closed`, `import_group_json`) were near-copies; merged in the final review (see "Final review"), which also fixed `export_group_json`'s empty-doc case.
 - `import_keeps_file_order` (Task 2) checks only `imported[0]`, which is weak but true for the cases it covers.
 
 ## Edge cases and where each is handled
