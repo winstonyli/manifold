@@ -949,7 +949,9 @@ impl Journal {
 
     /// Reads the frames other processes appended, or the whole file again
     /// if another process compacted it or damage turned up. Returns the
-    /// nodes they touched.
+    /// nodes they touched. After a whole-file read, that is the nodes that
+    /// differ from before, so another replica's compaction alone reports
+    /// nothing (pruning a tombstone changes nothing a replica shows).
     fn catch_up(&mut self) -> Result<Vec<NodeId>, JournalError> {
         let bytes = std::fs::read(&self.path)?;
         let header = read_header(&bytes)?;
@@ -982,10 +984,16 @@ impl Journal {
             }
         }
         if reload {
-            let before: Vec<NodeId> = self.doc.nodes.keys().copied().collect();
+            let before = std::mem::take(&mut self.doc.nodes);
             self.load(&bytes)?;
             self.repair(&bytes);
-            touched = before.into_iter().chain(self.doc.nodes.keys().copied()).collect();
+            let after = &self.doc.nodes;
+            let changed = |(id, old): (&NodeId, &Node)| match after.get(id) {
+                Some(new) => new != old,
+                None => old.is_live(),
+            };
+            touched = before.iter().filter(|&n| changed(n)).map(|(id, _)| *id).collect();
+            touched.extend(after.keys().filter(|id| !before.contains_key(id)));
         }
         self.note_seen();
         Ok(self.doc.with_descendants(touched.into_iter().collect()).into_iter().collect())
@@ -1620,18 +1628,25 @@ mod tests {
         let path = dir.join("session.mnf");
         let mut a = Journal::open(&path, ActorId(1)).unwrap();
         let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut c = Journal::open(&path, ActorId(3)).unwrap();
         let mut txn = a.begin().unwrap();
         let (gone, create_gone) = create_tab(&mut txn, "https://gone.example/");
         let (kept, create_kept) = create_tab(&mut txn, "https://kept.example/");
         txn.commit(vec![create_gone, create_kept]).unwrap();
+        drop(c.begin().unwrap()); // c holds `gone` live
         let txn = a.begin().unwrap();
         txn.commit(vec![OpBody::Delete { node: gone }]).unwrap();
         drop(b.begin().unwrap()); // b holds the tombstone
         a.close().unwrap();
         let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
         assert!(!doc.nodes.contains_key(&gone) && doc.nodes[&kept].is_live());
+        let txn = c.begin().unwrap();
+        assert_eq!(txn.remote, vec![gone]); // missing from the document: deleted
+        assert!(!txn.doc().nodes.contains_key(&gone));
+        drop(txn);
+        // b saw the delete already: the prune shows it nothing new.
         let txn = b.begin().unwrap();
-        assert!(txn.remote.contains(&gone)); // missing from the document: deleted
+        assert_eq!(txn.remote, vec![]);
         assert!(!txn.doc().nodes.contains_key(&gone));
     }
 
@@ -2547,8 +2562,9 @@ mod tests {
                 compact.push(start.elapsed());
                 drop(txn);
                 let start = Instant::now();
-                drop(a.begin().unwrap());
+                let txn = a.begin().unwrap();
                 reload.push(start.elapsed());
+                assert_eq!(txn.remote, vec![], "a compaction alone changes nothing A shows");
             }
             for (what, mut v) in [
                 ("begin after another appended one op", incremental),
@@ -2558,6 +2574,12 @@ mod tests {
                 v.sort();
                 report(what, (v[0], v[v.len() / 2]));
             }
+            let bytes = std::fs::read(&path).unwrap();
+            let header = read_header(&bytes).unwrap();
+            let snapshot = &scan_all(&bytes[header.len..], header.len).frames[0];
+            report("  of which: decode the snapshot", timed(10, || drop(decode_snapshot(snapshot.message).unwrap())));
+            let doc = decode_snapshot(snapshot.message).unwrap();
+            report("  of which: re-encode it (unknown-field check)", timed(10, || drop(snapshot_message(&doc))));
         }
     }
 }
