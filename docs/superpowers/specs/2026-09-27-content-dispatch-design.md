@@ -57,6 +57,15 @@ valid UTF-8 for plain text, otherwise `application/octet-stream`. The
 extension breaks ties only between text types (`.md` and `.txt` are
 plain text; `.json` that fails to parse is plain text, not refused).
 
+Hand-written rather than a crate (surveyed 2026-09-27): `infer` and
+`file-format` know hundreds of binary formats, all of which land in
+"anything else" here, and `infer` doesn't do text, HTML or JSON at all.
+`tree_magic_mini` needs freedesktop's database (absent on Windows) or its
+GPL-licensed embedded copy. `mime_guess` is extension-only. The checks
+above must decode or parse the bytes anyway, and `image` and
+`serde_json` are already dependencies. Web pages need no sniffing: the
+engine reports the type it already settled on.
+
 ## One insert path
 
 `App::insert_content(source, pos, group)` takes a `ContentSource`:
