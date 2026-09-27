@@ -1988,6 +1988,7 @@ From the brief:
 - Per-level cameras (Graph view's camera is one global value, not saved per group).
 - The URL cause from engines (redirect vs. user-initiated) — needed before sub-project 2 can narrow `url` to user-started navigations per the spec's own sub-project 2 notes.
 - The save loop's own cost (`shared_nodes` + `diff`) at 300 and 3000 tabs was not (re-)measured this task. The store side alone was measured before Task 5 (store-core plan, Deferred → Performance): a save's `begin` + commit is 0.14 ms at 300 tabs and 0.4–0.75 ms at 3000.
+- Merging two instances' Recently Closed lists (parked 2026-09-26). Personal state is last-writer-wins, so a node closed in the instance that didn't save last can't be reopened after a restart, and a closed node is gone from the shared session. Sketch: before each personal-state write, join the list on disk with the live one, dedupe, cap at `MAX_CLOSED`. Needs a close time per entry (`ClosedEntry` has none, so a merged list can't be ordered) and a rule so an entry reopened elsewhere doesn't come back (drop one whose root node exists in the session again). Worth it only if two windows on one profile is common.
 
 From `progress.md`'s own parked items (rare, or explicitly owned by a later/out-of-scope task):
 - A one-frame local-delete resurrection; a mid-swap remote engine change getting lost (converges on its own); a spawning tab landing at the top level when its remote group was deleted concurrently.
