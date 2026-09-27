@@ -585,6 +585,9 @@ const MIN_LABEL_CARD_SCREEN_WIDTH: f32 = 40.0;
 const GRAPH_THUMB_MARGIN: f32 = 6.0;
 const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
 const FAVICON_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+/// World-space room `bounds_for_level` leaves around a level's cards, so
+/// a fit doesn't leave one flush against the viewport edge.
+const GRAPH_FIT_MARGIN: f32 = 60.0;
 /// The graph's world-space center that the physics centering force pulls
 /// toward — independent of screen/window coordinates now that the graph is
 /// pannable/zoomable (`egui::Scene`), unlike pre-pan/zoom where node
@@ -3090,7 +3093,6 @@ impl App {
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
     fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        const MARGIN: f32 = 60.0;
         let bounds = ids
             .into_iter()
             .filter_map(|id| self.nodes.get(id))
@@ -3098,7 +3100,7 @@ impl App {
         if !bounds.is_finite() {
             return default_graph_scene_rect();
         }
-        bounds.expand(MARGIN)
+        bounds.expand(GRAPH_FIT_MARGIN)
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,

@@ -573,8 +573,7 @@ impl App {
 
         self.camera.advance();
 
-        let (minimap_rect, world_bounds, minimap_scale) =
-            self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
+        let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
         // Compared against after `Scene`'s own closure runs, below --
         // an actual pan drag or scroll-wheel zoom this frame changes this,
         // and dismisses `pending_new_node` the same as every other camera
@@ -629,7 +628,9 @@ impl App {
 
         self.track_pan_momentum(ui, scene_rect);
 
-        self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
+        if let Some((minimap_rect, world_bounds, minimap_scale)) = minimap {
+            self.handle_minimap_click(ui, minimap_rect, world_bounds, minimap_scale);
+        }
 
         for action in actions {
             self.apply_graph_action(ui.ctx(), action);
@@ -1106,20 +1107,26 @@ impl App {
     /// main view always agree on "the whole graph". Clicking anywhere in
     /// it recenters the main viewport there without changing zoom.
     /// Returns the minimap's screen rect, the world bounds it shows and
-    /// its world-to-minimap scale, for `handle_minimap_click`.
+    /// its world-to-minimap scale, for `handle_minimap_click`. Not drawn
+    /// (`None`) while every card at this level is in view: there's nowhere
+    /// off screen to navigate to, and it would only cover the cards in
+    /// its corner.
     pub(crate) fn draw_graph_minimap(
         &self,
         ui: &egui::Ui,
         overlay_painter: &egui::Painter,
         scene_outer_rect: egui::Rect,
         at_level: &[Vec<String>],
-    ) -> (egui::Rect, egui::Rect, f32) {
+    ) -> Option<(egui::Rect, egui::Rect, f32)> {
+        let world_bounds = self.bounds_for_level(at_level.iter().flatten());
+        if self.camera.rect.contains_rect(world_bounds.shrink(GRAPH_FIT_MARGIN)) {
+            return None;
+        }
         let minimap_size = egui::vec2(160.0, 110.0);
         let minimap_rect = egui::Rect::from_min_size(
             scene_outer_rect.right_bottom() - minimap_size - egui::Vec2::splat(12.0),
             minimap_size,
         );
-        let world_bounds = self.bounds_for_level(at_level.iter().flatten());
         let minimap_scale = (minimap_rect.width() / world_bounds.width().max(1.0))
             .min(minimap_rect.height() / world_bounds.height().max(1.0));
         let world_to_minimap =
@@ -1154,7 +1161,7 @@ impl App {
             egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
             egui::StrokeKind::Inside,
         );
-        (minimap_rect, world_bounds, minimap_scale)
+        Some((minimap_rect, world_bounds, minimap_scale))
     }
 
     /// Pan momentum bookkeeping -- see `PanMomentum`'s own doc
