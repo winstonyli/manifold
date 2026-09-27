@@ -552,8 +552,9 @@ impl App {
     /// without a Recently Closed entry (`remove_remotely_deleted`), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
-    /// exist yet. A new tab spawns (`TabStart::Spawn`), so a spawn failure
-    /// keeps it as a failed card rather than dropping it from the store.
+    /// exist yet. A new tab arrives asleep (`TabStart::Sleep`, spec "Lazy
+    /// tabs"): another replica opening a big session mustn't start an
+    /// engine here for every tab in it.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
         changes.sort_by_key(|(_, c)| !matches!(c, Some((Kind::Group, ..))));
         let toasts = self.save_toast_queue.len();
@@ -561,7 +562,7 @@ impl App {
             let key = id.to_string();
             match change {
                 Some((kind, fields, group)) => {
-                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), TabStart::Spawn, None)
+                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), TabStart::Sleep, None)
                 }
                 None if self.spawning.contains_key(&key) => {
                     self.remote_in_flight.insert(key, None);
@@ -621,7 +622,7 @@ impl App {
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
             Some(Some((kind, fields, group))) => {
-                self.materialize(id.to_string(), kind, &fields, group, TabStart::Spawn, None)
+                self.materialize(id.to_string(), kind, &fields, group, TabStart::Sleep, None)
             }
             Some(None) => {
                 self.last_shared.remove(id);
@@ -2162,6 +2163,17 @@ pub(crate) mod tests {
         assert!(app.test_spawns.is_empty());
     }
 
+    /// A tab another replica creates arrives asleep at its url, so another
+    /// instance opening a big session starts no engines here.
+    #[test]
+    fn a_remote_new_tab_arrives_asleep() {
+        let url = FieldValue::Str("https://new/".into());
+        let app = app_with(&BTreeMap::from([(id(1), shared(Kind::Tab, None, &[(field::URL, url)]))]));
+        assert!(app.test_spawns.is_empty());
+        let tab = app.nodes[&id(1).to_string()].as_unloaded().unwrap();
+        assert_eq!((tab.url.as_str(), &tab.state), ("https://new/", &UnloadedState::Sleeping));
+    }
+
     /// Saving a sleeping tab writes what its live tab would: a restore
     /// followed by a save changes nothing in the store.
     #[test]
@@ -2346,16 +2358,10 @@ pub(crate) mod tests {
 
     /// Personal state written before a restored tab's wake lands still
     /// keeps theirs (position, title, zoom), and a fresh failed card's zoom
-    /// is kept too. Renamed from `personal_state_keeps_spawning_tabs_
-    /// entries_and_a_failed_cards_zoom` (final-review, "Tests to add or
-    /// fix"): a restored tab now materializes as an `Unloaded` card
-    /// straight away (`TabStart::Sleep`), so `apply_local` finds it in
-    /// `self.nodes` and applies `entry` directly -- it no longer goes
-    /// through the `pending_local`/`self.spawning`-only path this test's
-    /// old name and "the restored tab is still spawning" comment
-    /// described (that path is still real, just for a tab a *different*
-    /// replica creates or a group/Recently-Closed import, which still
-    /// spawn immediately -- `TabStart::Spawn` -- and aren't covered here).
+    /// is kept too. A restored tab is an `Unloaded` card at once, so
+    /// `apply_local` applies its entry directly; the `pending_local` path
+    /// for a node still spawning (a group import, Recently Closed) isn't
+    /// covered here.
     #[test]
     fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_cards_zoom() {
         let path = temp_dir("local-spawning").join("session.mnf");

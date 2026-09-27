@@ -181,6 +181,28 @@ sa "SLEEP 3"
 sa "ADDRESSBAR http://127.0.0.1:$port/r"
 sa "SLEEP 1"
 sa ENTER
+# B's copy of A's new tab arrives asleep (spec "Lazy tabs"): once A's url
+# has reached it, open it there, so B loads it and follows from then on
+# (scenario 4 too). Its landing is a host-started load, which is what
+# keeps B's own redirect local below.
+for _ in $(seq 50); do
+    rm -f "$out/b3.json"
+    tick sb
+    sb "EXPORTSESSION $(win "$out/b3.json")"
+    wait_file "$out/b3.json"
+    grep -q "127.0.0.1:$port" "$out/b3.json" && break
+    sleep 0.2
+done
+grep -q "127.0.0.1:$port" "$out/b3.json" || {
+    echo "FAIL: scenario 3: A's url never reached B"
+    exit 1
+}
+sb QUICKSWITCHOPEN
+sb "QUICKSWITCHTEXT 127.0.0.1:$port"
+sb QUICKSWITCHENTER
+# Back to Graph view, where B was: C restores B's personal state, and
+# scenario 6 toggles C into Tab view from Graph.
+sb TOGGLEVIEW
 # A's load (a redirect, then the page), then B's (the same, as its copy
 # follows): at least 4 requests.
 for _ in $(seq 150); do [ "$(hits)" -ge 4 ] && break; sleep 0.2; done
