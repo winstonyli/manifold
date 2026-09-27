@@ -1109,17 +1109,21 @@ impl App {
             }
         }
 
-        for result in self.redirect_fetcher.tick() {
-            // The tab may have been closed, or navigated somewhere else,
-            // while this fetch was still in flight -- only convert it if
-            // it's still the same tab still showing the same url that
-            // triggered the fetch in the first place.
-            let still_current =
-                self.nodes.get(&result.tab_id).and_then(|n| n.as_tab()).is_some_and(|t| t.url == result.url);
-            if let (true, Some(path)) = (still_current, result.path) {
-                match result.kind {
-                    RedirectKind::Image => self.redirect_tab_to_image(&result.tab_id, path),
+        for FetchResult { job, body } in self.redirect_fetcher.tick() {
+            let Some(body) = body else { continue };
+            match job.target {
+                // The tab may have been closed, or navigated somewhere else,
+                // while this fetch was still in flight -- only convert it if
+                // it's still the same tab still showing the same url that
+                // triggered the fetch in the first place.
+                FetchTarget::Tab(tab_id) => {
+                    let still_current =
+                        self.nodes.get(&tab_id).and_then(|n| n.as_tab()).is_some_and(|t| t.url == job.url);
+                    if still_current {
+                        self.redirect_tab_to_content(&tab_id, job.node_id, job.url, body);
+                    }
                 }
+                FetchTarget::Node(_) => {}
             }
         }
 
@@ -1278,9 +1282,27 @@ impl App {
                     tab.audio_playing = playing;
                 }
             }
+            // The engine's own in-memory page text, already sent over IPC --
+            // still kept on the tab (so a tab kept via "Open as tab" still
+            // offers "View as JSON"), then saved and converted right away,
+            // same as any other content kind. Written on the UI thread,
+            // unlike every other kind's fetch: it's already in hand, so
+            // there's nothing to background.
             EngineToHost::JsonBody { body } => {
-                if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
-                    tab.json_body = Some(body);
+                let url = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).map(|tab| {
+                    tab.json_body = Some(body.clone());
+                    tab.url.clone()
+                });
+                if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
+                    let node_id = self.alloc_node_id();
+                    if let Some(web) = crate::redirect_fetch::save(
+                        &dir,
+                        &node_id,
+                        crate::content::ContentKind::Json,
+                        body.into_bytes(),
+                    ) {
+                        self.redirect_tab_to_content(tab_id, node_id, url, web);
+                    }
                 }
             }
             // See `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
@@ -1289,9 +1311,13 @@ impl App {
             // once that completes, in `redirect_fetcher`'s own `tick()` drain
             // in `drain_tab_events`, not here.
             EngineToHost::RedirectableContent { content_type } => {
+                use crate::content::ContentKind as K;
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
-                if let (Some(url), Some(kind)) = (url, redirect_fetch::classify(&content_type)) {
-                    self.redirect_fetcher.request(tab_id.to_string(), url, kind);
+                let kind = crate::content::kind_of(&content_type);
+                if let (Some(url), K::Image | K::Pdf | K::Json | K::Note) = (url, kind) {
+                    let node_id = self.alloc_node_id();
+                    let target = FetchTarget::Tab(tab_id.to_string());
+                    self.redirect_fetcher.request(FetchJob { target, node_id, url, kind });
                 }
             }
             EngineToHost::ContextMenuLink { x, y, href } => {

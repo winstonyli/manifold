@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
 use pdf_fetch::PdfFetcher;
-use redirect_fetch::{RedirectFetcher, RedirectKind};
+use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
 use card::*;
@@ -1189,19 +1189,13 @@ pub(crate) enum ContentSource {
     /// A file on this machine. Sniffed; the node points at it where it is.
     Local(std::path::PathBuf),
     /// Checked content from `url` (see `redirect_fetch`).
-    // constructed from Task 4's web conversion
-    #[cfg_attr(not(test), allow(dead_code))]
     Web { url: String, body: WebBody },
 }
 
 pub(crate) enum WebBody {
     /// Saved in the content dir as `<id>.<ext>`; `id` is the node's id.
-    // constructed from Task 4's web conversion
-    #[cfg_attr(not(test), allow(dead_code))]
     File { kind: content::ContentKind, path: String },
     /// A note's text.
-    // constructed from Task 4's web conversion
-    #[cfg_attr(not(test), allow(dead_code))]
     Text(String),
 }
 
@@ -1899,7 +1893,7 @@ impl Default for App {
             address_bar: AddressBar::new(settings.home_page.clone()),
             favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
             pdf_fetcher: PdfFetcher::new(),
-            redirect_fetcher: RedirectFetcher::new(),
+            redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
             dragging: None,
             drag_moved: Vec::new(),
@@ -4314,17 +4308,16 @@ impl App {
         Ok(())
     }
 
-    /// Converts a tab whose page turned out to be a raw image response into
-    /// a real `Image` graph node at the same position -- see `ipc_protocol::
-    /// EngineToHost::RedirectableContent`'s own doc comment. `path` is
-    /// wherever `redirect_fetch` already saved the downloaded bytes; reuses
-    /// `insert_image_node_with_id` verbatim, so a redirected image is
-    /// indistinguishable from one added via "+ Image" from this point on.
-    /// Reparents the tab's own children to its own parent and clears the
-    /// same dragging/hovered/focused guards `destroy_tab` does -- but doesn't
-    /// push to `closed_tabs`, since this isn't a user-initiated close to
-    /// remember as reopenable.
-    fn redirect_tab_to_image(&mut self, tab_id: &str, path: String) {
+    /// Converts a tab whose page is content the table maps to a node --
+    /// see `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
+    /// comment. `body` is wherever `redirect_fetch` already saved the
+    /// downloaded bytes (or a note's text); goes through `insert_content`,
+    /// so a converted node is indistinguishable from one added by hand from
+    /// this point on. Reparents the tab's own children to its own parent
+    /// and clears the same dragging/hovered/focused guards `destroy_tab`
+    /// does -- but doesn't push to `closed_tabs`, since this isn't a
+    /// user-initiated close to remember as reopenable.
+    fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
         let Some((parent, group, pos)) = self.nodes.get(tab_id).map(|n| (n.parent.clone(), n.group.clone(), n.pos))
         else {
             return;
@@ -4354,9 +4347,8 @@ impl App {
             }
             self.find.close();
         }
-        let id = self.alloc_node_id();
         // Failure is already toasted; the tab it replaces is gone either way.
-        let _ = self.insert_image_node_with_id(id, path, pos, group);
+        let _ = self.insert_content(ContentSource::Web { url, body }, node_id, pos, group);
         self.save_session();
     }
 
@@ -5429,9 +5421,6 @@ mod tests {
         assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 3, "each refusal toasts");
     }
 
-    /// `ContentSource::Web` isn't constructed by any real code path until
-    /// Task 4's web conversion, but `insert_content`'s dispatch for it is
-    /// this task's own -- covered here rather than left untested until then.
     #[test]
     fn insert_content_dispatches_web_content_and_keeps_its_url() {
         let dir = crate::store::testutil::temp_dir("insert_content_web");
@@ -5453,6 +5442,33 @@ mod tests {
         let source = ContentSource::Web { url: "https://x.test/note.txt".into(), body: WebBody::Text("hi".into()) };
         app.insert_content(source, note_id.clone(), egui::Vec2::ZERO, None).unwrap();
         assert_eq!(app.nodes[&note_id].source_url(), Some("https://x.test/note.txt"));
+    }
+
+    /// The tab has no live engine in a windowless test, so this builds an
+    /// `Unloaded` node (`session_sync::tests::sleeping_tab`) rather than a
+    /// real `Tab` payload -- `redirect_tab_to_content` only ever reads
+    /// `parent`/`group`/`pos` off the node being replaced, so it doesn't
+    /// care which tab-shaped payload it is.
+    #[test]
+    fn a_converted_tab_keeps_its_place_and_url() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+
+        let dir = crate::store::testutil::temp_dir("redirect_convert");
+        let mut app = App::default();
+        let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
+        app.nodes.get_mut(&tab).unwrap().pos = egui::vec2(5.0, 6.0);
+        app.nodes.get_mut(&tab).unwrap().group = Some("g".into());
+        let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+        app.nodes.get_mut(&child).unwrap().parent = Some(tab.clone());
+
+        let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+        app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.json".into(), body);
+
+        assert!(!app.nodes.contains_key(&tab));
+        let node = &app.nodes["n"];
+        assert_eq!((node.pos, node.group.as_deref()), (egui::vec2(5.0, 6.0), Some("g")));
+        assert_eq!(node.source_url(), Some("https://x.test/a.json"));
+        assert!(app.nodes.values().all(|n| n.parent.as_deref() != Some(tab.as_str())), "children moved up");
     }
 
     #[test]

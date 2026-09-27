@@ -1084,10 +1084,12 @@ impl App {
     /// Full-screen popup showing one node's JSON content as a real
     /// collapsible tree -- either a tab's own `TabPayload::json_body`
     /// (opened from Tab view's toolbar button or Graph view's tab context
-    /// menu's "View as JSON") or a `JsonPayload::value` (opened by double-
-    /// clicking a JSON node's card). Not tied to whichever view is
-    /// currently active (see `json_viewer_node`'s own doc comment), so this
-    /// renders every frame regardless of `view_mode`.
+    /// menu's "View as JSON", kept for a JSON tab reopened via "Open as
+    /// tab" -- an ordinary JSON page converts to a node on its own, see
+    /// `EngineToHost::JsonBody`'s own doc comment) or a `JsonPayload::value`
+    /// (opened by double-clicking a JSON node's card). Not tied to
+    /// whichever view is currently active (see `json_viewer_node`'s own doc
+    /// comment), so this renders every frame regardless of `view_mode`.
     pub(crate) fn build_json_viewer(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.json_viewer_node.clone() else { return };
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1113,16 +1115,7 @@ impl App {
             self.json_viewer_node = None;
             return;
         };
-        // Only a tab's own live `json_body` is worth offering "Save as
-        // Node" for -- a JSON node's own popup is already a saved node,
-        // nothing to save. Cloned out before `source` is moved into the
-        // render match below.
-        let raw_body = match &source {
-            Source::Raw(body) => Some(body.clone()),
-            Source::Parsed(_) => None,
-        };
         let mut close = false;
-        let mut save_as_node = false;
         egui::Area::new(egui::Id::new("json_viewer"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -1132,24 +1125,6 @@ impl App {
                     ui.set_height(520.0);
                     ui.horizontal(|ui| {
                         ui.label(heading_text("JSON"));
-                        // See `ipc_protocol::EngineToHost::
-                        // RedirectableContent`'s own doc comment for
-                        // why this is the *only* opt-in, user-
-                        // triggered way a JSON tab ever becomes a
-                        // node -- unlike image/etc., which redirect
-                        // automatically, a JSON response is often a
-                        // live, refetchable API call worth keeping as
-                        // an ordinary tab.
-                        if raw_body.is_some()
-                            && ui
-                                .button("Save as Node")
-                                .on_hover_text(
-                                    "Keep this JSON as a permanent graph node -- the tab keeps navigating normally",
-                                )
-                                .clicked()
-                        {
-                            save_as_node = true;
-                        }
                         if ui.button("Close").clicked() {
                             close = true;
                         }
@@ -1167,39 +1142,8 @@ impl App {
                     });
                 });
             });
-        if save_as_node {
-            if let Some(body) = raw_body {
-                self.save_json_body_as_node(&body);
-            }
-        }
         if close {
             self.json_viewer_node = None;
-        }
-    }
-
-    /// The JSON viewer popup's "Save as Node" button -- materializes the
-    /// *currently showing* tab's own `json_body` as a real, permanent JSON
-    /// node, without touching the tab itself (it keeps navigating/
-    /// refreshing normally). Writes `body` to a real temp file first and
-    /// reuses `insert_json_node_with_id` completely unchanged, same
-    /// "downloaded bytes become a real file first" pattern `redirect_fetch`
-    /// uses for the automatic kinds -- a node made this way is
-    /// indistinguishable from one added via "+ JSON" from this point on.
-    pub(crate) fn save_json_body_as_node(&mut self, body: &str) {
-        let dir = std::env::temp_dir().join("manifold-redirects");
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        let id = self.alloc_node_id();
-        let path = dir.join(format!("{id}.bin"));
-        if std::fs::write(&path, body).is_err() {
-            return;
-        }
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        let group = self.current_group.clone();
-        if self.insert_json_node_with_id(id, path.to_string_lossy().into_owned(), pos, group).is_ok() {
-            self.save_session();
-            self.queue_toast("Saved as JSON node".to_string());
         }
     }
 }

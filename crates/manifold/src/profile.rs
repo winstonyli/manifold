@@ -33,7 +33,6 @@ pub fn favicon_cache_dir() -> Option<PathBuf> {
 
 /// Where content fetched from the web lives: each file is named
 /// `<node id>.<ext>` (see `content`). `None` like `dir()`.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on (a fetch saves here); removed there.
 pub fn content_dir() -> Option<PathBuf> {
     Some(dir()?.join("content"))
 }

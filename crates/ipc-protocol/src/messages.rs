@@ -320,7 +320,10 @@ pub enum EngineToHost {
     /// return a value at all (see `manifold-engine-cef`'s `render_process_
     /// handler.rs`). Cleared (an empty page) whenever the same tab's own
     /// URL changes for real, same as any other per-navigation state — see
-    /// `App::json_body`'s own doc comment.
+    /// `App::json_body`'s own doc comment. The host also converts the tab
+    /// to a `Json` node from this same body, right away -- see
+    /// `RedirectableContent`'s own doc comment for why JSON takes this
+    /// separate route instead of that message's own refetch-and-check path.
     JsonBody { body: String },
     /// The page that just finished loading is a raw, non-JSON response --
     /// detected the exact same way as `JsonBody` (once the load finishes, a
@@ -330,28 +333,11 @@ pub enum EngineToHost {
     /// out of the engine for this message -- it does its own independent
     /// `GET` of the tab's current url (same "manifold does its own
     /// uniform HTTP fetch, engine-agnostic" posture `favicon_fetch` already
-    /// established for favicons), classifies `content_type` against a
-    /// small, explicit allowlist (`redirect_fetch::classify` -- currently
-    /// just an `image/` prefix), and, once that fetch succeeds, replaces
-    /// the tab with a real graph node of the matching kind at the same
-    /// position -- turning "navigated straight to a picture" into the same
-    /// outcome a user picking that same file by hand would get, rather than
-    /// leaving it sitting there as an ordinary tab showing whichever native
-    /// viewer page each engine happens to render for it. Generalized from
-    /// an image-only, payload-less version specifically so a future
-    /// redirectable kind only ever means widening that one allowlist
-    /// function -- no engine-host needs to change, since every engine
-    /// already forwards the real content-type string regardless of what it
-    /// says. Sent by all four engines (the same detection path `JsonBody`
-    /// uses on each) for any content-type that isn't `application/json` --
-    /// `manifold`'s own allowlist is what actually decides whether it
-    /// means anything; an ordinary `text/html` page just gets classified as
-    /// "nothing to do" and ignored. JSON deliberately isn't classified into
-    /// this same automatic path despite being detected identically -- a
-    /// JSON response is often a live, refetchable API call worth keeping as
-    /// an ordinary tab, unlike an image or similar, which has nothing left
-    /// to offer once redirected; converting one into a permanent node is a
-    /// user-initiated action instead (`build_json_viewer`'s own "Save as
-    /// Node" button), not something a plain navigation should silently do.
+    /// established for favicons), classifies `content_type` with
+    /// `content::kind_of` (the host's one MIME table), refetches the url,
+    /// checks the bytes and, when they pass, replaces the tab with the node
+    /// the table names at the same position. Sent by all four engines for
+    /// any content type but `application/json`, which comes as `JsonBody`
+    /// instead and converts from that body.
     RedirectableContent { content_type: String },
 }
