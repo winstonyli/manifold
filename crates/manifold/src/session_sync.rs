@@ -2032,4 +2032,96 @@ pub(crate) mod tests {
         assert!(app.export_group_json(&g).is_none());
         assert!(!app.save_toast_queue.is_empty(), "toasted");
     }
+
+    /// What the app's side of a save costs at realistic session sizes: the
+    /// live projection (`shared_nodes`), a whole `save_session` (projection,
+    /// `begin`, `diff`, commit, `last_shared` refresh) with nothing and with
+    /// one url to save, and the personal-state build and write. The store
+    /// side alone is `journal::tests::save_path_costs`. Timing, not
+    /// correctness, so ignored:
+    /// `cargo test --release -j 12 -p manifold -- --ignored --nocapture app_save_costs`
+    #[test]
+    #[ignore]
+    fn app_save_costs() {
+        use std::time::{Duration, Instant};
+        fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
+            let mut times: Vec<Duration> = (0..n)
+                .map(|_| {
+                    let start = Instant::now();
+                    f();
+                    start.elapsed()
+                })
+                .collect();
+            times.sort();
+            (times[0], times[n / 2])
+        }
+        fn report(what: &str, (best, median): (Duration, Duration)) {
+            println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
+        }
+        const N: usize = 40;
+        for tabs in [300usize, 3000] {
+            let dir = temp_dir(&format!("app-cost-{tabs}"));
+            let mut app = app_on(&dir.join("session.mnf"), 1);
+            let groups: Vec<String> = (0..tabs / 10)
+                .map(|i| {
+                    add(&mut app, NodePayload::Group(GroupPayload { name: format!("Group {i}"), from_json: false }))
+                })
+                .collect();
+            let mut ids = Vec::new();
+            for i in 0..tabs {
+                let url =
+                    format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
+                let id = add(&mut app, failed_tab(&url, 1.0));
+                let node = app.nodes.get_mut(&id).unwrap();
+                node.group = Some(groups[i % groups.len()].clone());
+                node.pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
+                ids.push(id);
+            }
+            assert!(app.save_session());
+            println!("{tabs} tabs, {} groups:", groups.len());
+
+            report("shared_nodes (per save)", timed(N, || drop(app.shared_nodes())));
+            let live = app.shared_nodes();
+            let doc = app.journal.as_ref().unwrap().doc();
+            report(
+                "diff, nothing changed",
+                timed(N, || assert!(diff(doc, &live, &app.explicit, &BTreeSet::new()).is_empty())),
+            );
+            report(
+                "last_shared refresh (after a commit)",
+                timed(N, || {
+                    for &id in live.keys() {
+                        let node = &doc.nodes[&id];
+                        let seen = Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+                        std::hint::black_box(seen);
+                    }
+                }),
+            );
+            report("save_session, nothing changed", timed(N, || assert!(app.save_session())));
+            let mut k = 0;
+            report(
+                "save_session, one url changed",
+                timed(N, || {
+                    let id = &ids[k % tabs];
+                    if let NodePayload::FailedTab(f) = &mut app.nodes.get_mut(id).unwrap().payload {
+                        f.url = format!("https://moved.example/{k}");
+                    }
+                    app.mark(id, field::URL);
+                    k += 1;
+                    assert!(app.save_session());
+                }),
+            );
+            report("local_state (every 30 s, and at exit)", timed(N, || drop(app.local_state())));
+            report(
+                "maybe_write_local, changed (build + write)",
+                timed(N, || {
+                    app.nodes.get_mut(&ids[k % tabs]).unwrap().pos.x += 1.0;
+                    k += 1;
+                    app.maybe_write_local(true);
+                }),
+            );
+            let bytes = app.local_state().to_bytes().len();
+            println!("  session.mnf.local: {bytes} B");
+        }
+    }
 }
