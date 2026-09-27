@@ -42,9 +42,9 @@ browsers restore tabs unloaded.
   waking card (`NodeAction::Open` → `focus_tab`), choosing it in the
   Quick Switcher, next/previous-tab, and any other path that makes it the
   focused tab in Tab view. A failed card's click is the one exception --
-  it retries through `retry_missing_file`'s tab branch instead, which is
-  now `SpawnPurpose::Wake` too (final-review Fix, see Outcome), so it
-  also gets `note_host_load`. Waking is a host-started load, so its
+  it retries through `retry_missing_file`'s tab branch instead. That
+  retry goes through `wake_tab` too, so since Task 2 it is a
+  `SpawnPurpose::Wake` (it was `Respawn`) and also gets `note_host_load`. Waking is a host-started load, so its
   redirects stay local (`note_host_load`), like a restore.
 - **What does not.** Saving, exporting, closing, moving, grouping,
   coloring and pinning act on the card as they do on a failed card now.
@@ -114,7 +114,7 @@ swap, crash respawn) still produces `Failed`.
   and `replace_running_session` pass `Sleep`; a tab another instance
   created, Recently Closed and group import pass `Spawn`.
 - `restore_session`, after `apply_local` has set `focused` (and
-  `split_tab`), wakes each of those it is unloaded (`wake_focused`); so
+  `split_tab`), wakes each of them that is asleep (`wake_focused`); so
   does `replace_running_session`. No focused tab wakes nothing; without
   personal state the first tab is focused. `wake_focused` also wakes a
   saved split tab (final-review Fix 2): `apply_local` restores
@@ -141,7 +141,9 @@ swap, crash respawn) still produces `Failed`.
 - Every path that opens a tab funnels into it:
   - `focus_tab` (and so `focus_item`) on an `Unloaded` node sets
     `focused`, Tab view and `pending_respawn_focus`, and wakes it;
-  - a click on the card (`retry_missing_file`'s tab branch);
+  - a click on a sleeping or waking card (`NodeAction::Open` →
+    `focus_tab`); a failed card's click retries through
+    `retry_missing_file`'s tab branch;
   - `quick_switcher_confirm`;
   - `cycle_focused_tab`.
 
@@ -222,7 +224,7 @@ Scripts:
 ## Outcome
 
 Implemented 2026-09-27 (plan `docs/superpowers/plans/2026-09-27-lazy-tabs.md`,
-commits 270f2f4..the Task 5 commit on `dev`). Measured with
+commits 270f2f4 through 2055140, the final-review fixes, on `dev`). Measured with
 `scripts/scale-test.sh` (debug build, CPU ~23% busy from other work,
 Defender real-time protection off), memory 15 s after the restore
 settled:
