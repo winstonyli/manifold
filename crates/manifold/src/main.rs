@@ -5035,7 +5035,8 @@ impl App {
 
     /// A brief bottom-left toast, for `self.save_toast` — cleared once
     /// `SAVE_TOAST_DURATION` elapses. No dismiss interaction (unlike the
-    /// context menu): it just times out. Fades in over its first
+    /// context menu): it just times out, and clicks pass through it to the
+    /// card or page underneath. Fades in over its first
     /// `TOAST_FADE_IN` and out over its last `TOAST_FADE_OUT` rather than
     /// popping on and cutting off instantly -- driven directly off
     /// `shown_at.elapsed()` (this app's winit loop runs `ControlFlow::Poll`,
@@ -5077,6 +5078,7 @@ impl App {
         egui::Area::new(egui::Id::new("save_toast"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
+            .interactable(false)
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(opacity);
                 // Same ACCENT-tinted glow the graph cards use, tying the

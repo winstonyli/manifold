@@ -233,7 +233,9 @@ ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays 
 # `cards` (by id), `tabs` (live or asleep) and `groups` (sorted ids),
 # `xy(id)` and `lt(id)` (a card's center and top-left corner, where its
 # eject button sits, as "x y") and `bbox` (every tab's rects' bounds grown
-# by 20, as "x0 y0 x1 y1").
+# by 20 and kept inside the window, as "x0 y0 x1 y1"). `xy` and `lt` say
+# on stderr when the point is off the graph canvas (under the toolbar or
+# outside the window), where a click can't reach the card.
 query() {
     python - "$out_dir/$1.json" "$2" <<'EOF'
 import json, os, sys
@@ -241,11 +243,18 @@ s = json.load(open(sys.argv[1], encoding="utf-8"))
 cards = {c["id"]: c for c in s["cards"]}
 tabs = sorted(i for i, c in cards.items() if c["kind"] in ("Tab", "Unloaded"))
 groups = sorted(i for i, c in cards.items() if c["kind"] == "Group")
-xy = lambda i: "%.0f %.0f" % tuple(cards[i]["screen"])
-lt = lambda i: "%.0f %.0f" % (cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
+W, H, TOP = 816, 639, 40  # RESIZE below; the graph toolbar's height, rounded up
+
+def pt(i, x, y):
+    if not (0 <= x < W and TOP <= y < H):
+        sys.stderr.write(f"query: {x:.0f},{y:.0f} ({cards[i]['kind']} {i}) is off the graph canvas\n")
+    return "%.0f %.0f" % (x, y)
+
+xy = lambda i: pt(i, *cards[i]["screen"])
+lt = lambda i: pt(i, cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
 r = [cards[i]["rect"] for i in tabs]
-bbox = "%.0f %.0f %.0f %.0f" % (max(0, min(x[0] for x in r) - 20), max(40, min(x[1] for x in r) - 20),
-                                max(x[2] for x in r) + 20, max(x[3] for x in r) + 20) if r else ""
+bbox = "%.0f %.0f %.0f %.0f" % (max(0, min(x[0] for x in r) - 20), max(TOP, min(x[1] for x in r) - 20),
+                                min(W - 1, max(x[2] for x in r) + 20), min(H - 1, max(x[3] for x in r) + 20)) if r else ""
 env = os.environ
 print(eval(sys.argv[2]))
 EOF
@@ -274,9 +283,11 @@ settle() {
 # Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
 # NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
 # button leaves it. The card is found by its reported position: spawn
-# jitter comes from the id, and ids are random per launch. DOUBLECLICK
-# rather than two CLICKs, which a slow frame can push past egui's
-# double-click delay.
+# jitter comes from the id, and ids are random per launch, so it can
+# land at the window's edge or under the minimap: Reset View (the
+# toolbar's fit button) first brings every card into view, which also
+# hides the minimap. DOUBLECLICK rather than two CLICKs, which a slow
+# frame can push past egui's double-click delay.
 send "ESCAPE"
 send "NEWGROUP"
 sleep 1 # Tab-to-Graph transition, layout settle
@@ -285,6 +296,7 @@ check_screenshot "$out_dir/group_card.png" "group card"
 # A "Saved <path>" toast would cover the bottom-left of the window, and a
 # card placed there would take the next click on the toast instead.
 check_state group_card "a headless screenshot shows no toast" 's["toast"] is None'
+send "CLICK 326 17"
 settle group_card
 first_group=$(query group_card 'groups[0]')
 send "DOUBLECLICK $(query group_card "xy('$first_group')")"
@@ -330,9 +342,10 @@ settle reparented
 check_query reparented "a tab dropped on a sibling tab inside a group is reparented under it" \
     "cards['$m1']['parent'] == '$m2'"
 # The pair now overlaps exactly, and which is on top follows spawn order,
-# so move whichever the press picks up onto empty canvas first.
+# so move whichever the press picks up onto empty canvas first, toward
+# the window's middle so it stays in view.
 read -r x y <<<"$(query reparented "xy('$m1')")"
-drag "$x" "$y" $((x - 250)) $((y - 150))
+drag "$x" "$y" $((x > 408 ? x - 250 : x + 250)) $((y > 340 ? y - 150 : y + 150))
 settle apart
 drag $(query apart "xy('$m2')") $(query apart "xy('$m1')")
 settle cycle
