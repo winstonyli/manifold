@@ -1128,6 +1128,15 @@ impl App {
         }
 
         for update in frame_updates.into_values() {
+            // A `JsonBody`/`RedirectableContent` conversion earlier in this
+            // same drain (or a plain tab close) can remove `update.tab_id`
+            // before its `FrameReady` -- collected up front, above -- gets
+            // here. Uploading it anyway would recreate a `tab_textures`
+            // entry for a tab that no longer exists and that nothing ever
+            // frees again (`remove_tab`'s `free_tab_texture` already ran).
+            if !self.nodes.contains_key(&update.tab_id) {
+                continue;
+            }
             let format = match update.kind {
                 EngineKind::Servo | EngineKind::Webkit => wgpu::TextureFormat::Rgba8UnormSrgb,
                 EngineKind::Cef | EngineKind::Webview2 => wgpu::TextureFormat::Bgra8UnormSrgb,

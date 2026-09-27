@@ -4313,40 +4313,21 @@ impl App {
     /// comment. `body` is wherever `redirect_fetch` already saved the
     /// downloaded bytes (or a note's text); goes through `insert_content`,
     /// so a converted node is indistinguishable from one added by hand from
-    /// this point on. Reparents the tab's own children to its own parent
-    /// and clears the same dragging/hovered/focused guards `destroy_tab`
-    /// does -- but doesn't push to `closed_tabs`, since this isn't a
-    /// user-initiated close to remember as reopenable.
+    /// this point on. The tab itself goes through `remove_tab` -- the same
+    /// "close that isn't remembered" primitive `remove_remotely_deleted`
+    /// already uses -- so a converted tab drops every stale reference a
+    /// hand-rolled removal here could otherwise miss (this used to hand-
+    /// copy a subset of `remove_tab`'s cleanup and, notably, never freed a
+    /// focused tab's full GPU texture, only its thumbnail -- now every
+    /// JSON/PDF/image/text navigation converts, so that leaked constantly).
+    /// `remove_tab` doesn't push to `closed_tabs` (that's `close_node`'s own
+    /// job), matching this not being a user-initiated close to remember as
+    /// reopenable.
     fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
-        let Some((parent, group, pos)) = self.nodes.get(tab_id).map(|n| (n.parent.clone(), n.group.clone(), n.pos))
-        else {
+        let Some((group, pos)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos)) else {
             return;
         };
-        for node in self.nodes.values_mut() {
-            if node.parent.as_deref() == Some(tab_id) {
-                node.parent = parent.clone();
-            }
-        }
-        self.nodes.remove(tab_id);
-        self.node_order.retain(|t| t != tab_id);
-        if let Some(gpu) = &mut self.gpu {
-            gpu.free_tab_thumbnail(tab_id);
-        }
-        if self.dragging.as_deref() == Some(tab_id) {
-            self.dragging = None;
-        }
-        if self.hovered.as_deref() == Some(tab_id) {
-            self.hovered = None;
-        }
-        if self.focused.as_deref() == Some(tab_id) {
-            self.focused = None;
-            // Same "only a Tab showing actually leaves to Graph" guard as
-            // `destroy_tab` -- see its own comment.
-            if self.showing_tab_view() {
-                self.view_mode = ViewMode::Graph;
-            }
-            self.find.close();
-        }
+        self.remove_tab(tab_id);
         // Failure is already toasted; the tab it replaces is gone either way.
         let _ = self.insert_content(ContentSource::Web { url, body }, node_id, pos, group);
         self.save_session();
@@ -5469,6 +5450,37 @@ mod tests {
         assert_eq!((node.pos, node.group.as_deref()), (egui::vec2(5.0, 6.0), Some("g")));
         assert_eq!(node.source_url(), Some("https://x.test/a.json"));
         assert!(app.nodes.values().all(|n| n.parent.as_deref() != Some(tab.as_str())), "children moved up");
+    }
+
+    /// A converted tab goes through `remove_tab`, not a hand-rolled subset
+    /// of its cleanup -- this pins down every stale reference that a
+    /// partial copy previously left behind once every JSON/PDF/image/text
+    /// navigation started converting automatically: a focused tab stuck as
+    /// `self.focused`/`split_tab` (with `view_mode` never dropping back to
+    /// Graph), a selected tab stuck in `selected_tabs`, and a pending
+    /// crash-respawn focus stuck on `pending_respawn_focus`.
+    #[test]
+    fn a_converted_tab_clears_every_stale_reference() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+
+        let dir = crate::store::testutil::temp_dir("redirect_convert_stale");
+        let mut app = App::default();
+        let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
+        app.view_mode = ViewMode::Item;
+        app.focused = Some(tab.clone());
+        app.split_tab = Some(tab.clone());
+        app.selected_tabs.insert(tab.clone());
+        app.pending_respawn_focus = Some(tab.clone());
+
+        let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+        app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.json".into(), body);
+
+        assert!(!app.nodes.contains_key(&tab));
+        assert_eq!(app.focused, None, "focused cleared");
+        assert_eq!(app.split_tab, None, "split cleared");
+        assert!(!app.selected_tabs.contains(&tab), "selected_tabs cleared");
+        assert_eq!(app.pending_respawn_focus, None, "pending respawn focus cleared");
+        assert_eq!(app.view_mode, ViewMode::Graph, "falls back to Graph like any other close of the focused tab");
     }
 
     #[test]
