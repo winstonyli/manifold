@@ -1498,6 +1498,12 @@ struct App {
     /// split closes, `focused` changes to a different tab, or this tab
     /// closes out from under the split -- see `close_split`.
     split_tab: Option<String>,
+    /// Files dropped on the window since the last frame -- each one's
+    /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
+    /// drop_batch`, so several dropped in the same frame fan out instead of
+    /// stacking exactly on top of each other. Reset to 0 at the top of
+    /// `render_frame`.
+    drop_batch: u32,
     view_mode: ViewMode,
     /// The session store (spec "Journal"): `None` before `open_store`, when
     /// `%APPDATA%` is unset, or when the file couldn't be opened (toasted).
@@ -1926,6 +1932,7 @@ impl Default for App {
             viewed_image: None,
             image_view: ImageViewState::default(),
             split_tab: None,
+            drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
             fallback_ids: (store::model::ActorId::random(), 0),
@@ -4794,6 +4801,34 @@ impl App {
         self.insert_content(ContentSource::Local(path), id, pos, group)
     }
 
+    /// A file dropped on the window (spec "Drag and drop"): `point` is the
+    /// drop location in window points. In Tab view, beside the focused
+    /// tab, in its group -- `insert_content` directly, since that group may
+    /// not be `current_group`. Otherwise (Graph view, or Tab view with no
+    /// focused tab, which lands near world center at the current level the
+    /// same as any other point there would) the world position under
+    /// `point`, via `add_file_at` (`current_group`). Several drops in one
+    /// frame fan out by `drop_batch`, reset each frame in `render_frame`.
+    fn drop_file(&mut self, path: std::path::PathBuf, point: egui::Pos2) {
+        let fan_out = egui::vec2(24.0, 24.0) * self.drop_batch as f32;
+        self.drop_batch += 1;
+        let beside_focused = self
+            .showing_tab_view()
+            .then(|| self.focused.as_ref().and_then(|id| self.nodes.get(id)))
+            .flatten()
+            .map(|node| (node.pos + egui::vec2(240.0, 0.0), node.group.clone()));
+        match beside_focused {
+            Some((pos, group)) => {
+                let id = self.alloc_node_id();
+                let _ = self.insert_content(ContentSource::Local(path), id, pos + fan_out, group);
+            }
+            None => {
+                let pos = self.graph_screen_point_to_world(point);
+                let _ = self.add_file_at(path, Some(pos + fan_out));
+            }
+        }
+    }
+
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
     /// view isn't currently showing. Tab -> Graph reuses `leave_to_graph`'s
     /// own shrink animation. Graph -> Tab jumps to `self.focused` directly
@@ -5655,6 +5690,21 @@ mod tests {
             assert!(!app.nodes.contains_key(&id));
         }
         assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 3, "each refusal toasts");
+    }
+
+    #[test]
+    fn several_drops_in_a_frame_fan_out() {
+        let dir = crate::store::testutil::temp_dir("drop_fan");
+        let mut app = App::default();
+        let mut ids = Vec::new();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+            let before: HashSet<String> = app.nodes.keys().cloned().collect();
+            app.drop_file(dir.join(name), egui::pos2(300.0, 300.0));
+            ids.extend(app.nodes.keys().filter(|k| !before.contains(*k)).cloned());
+        }
+        let (a, b) = (app.nodes[&ids[0]].pos, app.nodes[&ids[1]].pos);
+        assert_eq!(b - a, egui::vec2(24.0, 24.0));
     }
 
     #[test]

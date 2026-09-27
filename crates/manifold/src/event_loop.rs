@@ -199,6 +199,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            // The page never receives the drop (spec "Drag and drop").
+            // winit 0.30 sends no `CursorMoved` during an OLE drag, so the
+            // drop point is read from the OS (`cursor_point`), falling back
+            // to the last real `CursorMoved` off Windows or if that read
+            // fails.
+            WindowEvent::DroppedFile(path) => {
+                let point = self.cursor_point().unwrap_or_else(|| self.last_pointer_point());
+                self.drop_file(path, point);
+                self.save_session();
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
                 let (x, y) = self.cursor_pos;
@@ -452,6 +462,12 @@ impl App {
     /// `RedrawRequested`: draws the content panes and the egui output,
     /// taking a pending screenshot (and print-to-PDF) along the way.
     pub(crate) fn render_frame(&mut self, egui_output: Option<egui::FullOutput>) {
+        // Reset here, at the very top, rather than after this frame's own
+        // drop handling -- this is the one call every frame is guaranteed
+        // to make, so a stale nonzero count left over from a batch that
+        // landed a frame ago can never survive to offset a later, unrelated
+        // single drop (see `drop_file`'s own doc comment).
+        self.drop_batch = 0;
         let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
         let content_panes_pts = self.content_panes_points(ppp);
         let content_panes_px: Vec<(gpu::PxRect, &str)> = content_panes_pts
@@ -494,6 +510,39 @@ impl App {
                 self.handle_screenshot_result(screenshot_path, outcome.screenshot_result);
             }
         }
+    }
+
+    /// The pointer's position (window points) straight from the OS, for
+    /// `WindowEvent::DroppedFile` -- winit 0.30 sends no `CursorMoved`
+    /// during an OLE drag (confirmed live: `self.cursor_pos` still holds
+    /// wherever the pointer was *before* the drag started), so the drop
+    /// point has to be read some other way. `None` off Windows, or if the
+    /// window handle/OS call fails; `last_pointer_point` is the fallback.
+    #[cfg(target_os = "windows")]
+    fn cursor_point(&self) -> Option<egui::Pos2> {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::{
+            Foundation::POINT, Graphics::Gdi::ScreenToClient, UI::WindowsAndMessaging::GetCursorPos,
+        };
+        let RawWindowHandle::Win32(handle) = self.window.as_ref()?.window_handle().ok()?.as_raw() else { return None };
+        let mut p = POINT { x: 0, y: 0 };
+        // SAFETY: plain Win32 calls on our own window handle and a local
+        // POINT that outlives them both.
+        let ok = unsafe { GetCursorPos(&mut p) != 0 && ScreenToClient(handle.hwnd.get() as _, &mut p) != 0 };
+        let ppp = self.ppp() as f32;
+        ok.then(|| egui::pos2(p.x as f32 / ppp, p.y as f32 / ppp))
+    }
+    #[cfg(not(target_os = "windows"))]
+    fn cursor_point(&self) -> Option<egui::Pos2> {
+        None
+    }
+
+    /// `self.cursor_pos` (physical pixels, last real `CursorMoved`) as
+    /// window points -- the fallback `WindowEvent::DroppedFile` uses when
+    /// `cursor_point` can't read the OS cursor position directly.
+    fn last_pointer_point(&self) -> egui::Pos2 {
+        let ppp = self.ppp() as f32;
+        egui::pos2(self.cursor_pos.0 as f32 / ppp, self.cursor_pos.1 as f32 / ppp)
     }
 
     /// A screenshot `render_frame` just took: toasts where it went, or
@@ -889,11 +938,10 @@ impl App {
                     self.save_session();
                 }
             }
-            // Placed like a drop at that window point (Task 7).
-            DebugCommand::AddFile(path, Some(_point)) => {
-                if self.add_file_at(path.into(), None).is_ok() {
-                    self.save_session();
-                }
+            // Placed like a real drop at that window point.
+            DebugCommand::AddFile(path, Some((x, y))) => {
+                self.drop_file(path.into(), egui::pos2(x, y));
+                self.save_session();
             }
             // Only ever intercepted by the stdin reader itself.
             DebugCommand::WaitTabs(_) => {}

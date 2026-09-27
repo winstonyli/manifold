@@ -449,6 +449,42 @@ else
         "s['current_group'] == '$inner' and len(tabs) == 2"
 fi
 
+# Task 7: drag and drop. Headless `ADDFILE <path> X Y` places a file the
+# same way a real drop does (`drop_file`) -- Graph view here (Tab view is
+# never entered in this whole "Recently Closed" section above), at the
+# world position under the dropped point, so its on-screen center should
+# land back near that point. The two ADDFILEs below are sent back to back
+# with no pointer command between them, which is the one thing headless
+# mode redraws a frame for on its own (see `user_event`'s own comment) --
+# so they usually land in the same frame and fan out (`drop_batch`), but
+# aren't guaranteed to: if their positions come back identical, they landed
+# in separate frames (each with its own reset `drop_batch == 0`), and the
+# fan-out check is skipped rather than asserted on a coin flip. The exact
+# fan-out math is the unit test's job (`several_drops_in_a_frame_fan_out`).
+printf 'a dropped note\n' >"$out_dir/drop.txt"
+printf '{"a": 1}\n' >"$out_dir/drop.json"
+state before_drop 1 >/dev/null
+before_drop_ids=$(query before_drop 'sorted(cards)')
+send "ADDFILE $out_dir_win\\drop.txt 400 300"
+send "ADDFILE $out_dir_win\\drop.json 400 300"
+settle after_drop
+note_id=$(BEFORE="$before_drop_ids" query after_drop \
+    '([i for i, c in cards.items() if c["kind"] == "Note" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+json_id=$(BEFORE="$before_drop_ids" query after_drop \
+    '([i for i, c in cards.items() if c["kind"] == "Json" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+check_query after_drop "a dropped .txt becomes a Note card" "'$note_id' != 'none'"
+check_query after_drop "a dropped .json becomes a Json card" "'$json_id' != 'none'"
+check_query after_drop "the dropped note's screen center is within 60px of (400, 300)" \
+    "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
+check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
+    "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
+if [ "$(query after_drop "cards['$note_id']['screen'] == cards['$json_id']['screen']")" = True ]; then
+    echo "SKIP: fan-out check (the two ADDFILEs landed in separate frames this run)"
+else
+    check_query after_drop "two drops in the same frame land at different spots (fan out)" \
+        "cards['$note_id']['screen'] != cards['$json_id']['screen']"
+fi
+
 send "QUIT"
 if wait "$browser_pid"; then
     pass "process exited cleanly"

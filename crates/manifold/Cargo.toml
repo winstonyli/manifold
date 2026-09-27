@@ -92,6 +92,11 @@ windows = { version = "0.62", features = ["Win32_UI_HiDpi"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # For `App::cursor_point` (Task 7, drag and drop): the drop point isn't
+    # reported by winit's own `DroppedFile` (see that arm's own comment in
+    # event_loop.rs), so it's read straight from the OS instead.
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
     # For the engine-host Job Object (see `process_manager::engine_job`'s own
     # doc comment) -- `Win32_Security`/`Win32_System_Threading` aren't used
     # directly, but `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` embeds types from

@@ -273,6 +273,21 @@ impl App {
         )
     }
 
+    /// Inverse of `graph_world_rect_to_screen`: where a screen point
+    /// (window points, Graph view) lands in world space right now -- the
+    /// same projection a click there is hit-tested against (see
+    /// `handle_rect_select`'s own `world_pos`). Used to place a file
+    /// dropped on the window (`drop_file`).
+    pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
+        let screen = self.screen_size_points();
+        let scene_outer_rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
+            egui::vec2(screen.x, (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+        );
+        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        (point.to_vec2() - translation) / scale
+    }
+
     /// Applies one of `build_graph_ui`'s collected clicks. Called in click
     /// order; no two of these depend on each other's order (a group rename
     /// carries its own name, see `NodeAction::CommitRename`).
