@@ -184,7 +184,7 @@ for _ in $(seq 150); do [ "$(hits)" -ge 4 ] && break; sleep 0.2; done
     echo "FAIL: scenario 3: only $(hits) requests; B never followed A's navigation"
     exit 1
 }
-# Past STORE_LOAD_GRACE (5 s), then a window as long again: a bounce is a
+# Past HOST_LOAD_GRACE (5 s), then a window as long again: a bounce is a
 # round trip every second or two, so the count would keep climbing.
 sleep 6
 settled="$(hits)"

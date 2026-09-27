@@ -1407,7 +1407,7 @@ struct App {
     /// Tabs loading a url the store gave them, with when each was last seen
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
-    store_loads: HashMap<String, std::time::Instant>,
+    host_loads: HashMap<String, std::time::Instant>,
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
@@ -1803,7 +1803,7 @@ impl Default for App {
             tab_spawns_in_flight: 0,
             spawning: HashMap::new(),
             remote_in_flight: HashMap::new(),
-            store_loads: HashMap::new(),
+            host_loads: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
             local_written: None,
@@ -2160,7 +2160,10 @@ impl App {
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });
-            self.store_loads.remove(tab_id);
+            // Until the engine labels the navigation, a report can still
+            // carry the old url (CEF reported loading before the new address,
+            // unlabelled): that isn't the user's either.
+            self.note_host_load(tab_id);
             self.mark(tab_id, field::URL);
             // Now, while `node.url` is still the typed url: a save writes the
             // live value, and the page's own redirect or script navigation
@@ -2575,7 +2578,7 @@ impl App {
                         }
                     }
                     SpawnPurpose::Restore => {
-                        self.note_store_load(&id);
+                        self.note_host_load(&id);
                         self.send_zoom_to(&id);
                         if is_focused {
                             self.address_bar.text = url;

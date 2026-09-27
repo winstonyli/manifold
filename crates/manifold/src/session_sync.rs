@@ -23,11 +23,11 @@ use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CL
 /// disk isn't retried every frame.
 const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// How long after a store-started load last reported loading its tab's url
+/// How long after a host-started load last reported loading its tab's url
 /// changes stay local (`App::shares_url_change`), when the engine doesn't
 /// say how they started: a script redirect can come just after the page
 /// reports loaded.
-const STORE_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+const HOST_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
@@ -448,7 +448,7 @@ impl App {
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
             }
             if store_load {
-                self.note_store_load(&id);
+                self.note_host_load(&id);
             }
             if let Some(target) = swap {
                 self.start_swap_to(&id, target);
@@ -604,40 +604,41 @@ impl App {
         }
     }
 
-    /// Tab `id` is loading a url the store gave it (another replica's
-    /// `url`, or a restore): its url changes stay local until the load
-    /// settles (`shares_url_change`).
-    pub(crate) fn note_store_load(&mut self, id: &str) {
-        self.store_loads.insert(id.to_string(), std::time::Instant::now());
+    /// Tab `id` is loading a url the host gave it (another replica's `url`,
+    /// a restore, or a typed url, which `navigate_tab` marks itself): its
+    /// unlabelled url changes stay local until the load settles
+    /// (`shares_url_change`).
+    pub(crate) fn note_host_load(&mut self, id: &str) {
+        self.host_loads.insert(id.to_string(), std::time::Instant::now());
     }
 
     /// Whether tab `id`'s reported url change is shared (ruling 3), given
     /// how the engine says its navigation started (`user_started`). One a
     /// person started is; a page script's or the host's own `Navigate` (a
     /// typed url, which `navigate_tab` marks itself, or another replica's)
-    /// isn't. Otherwise, not while it follows a load the store started, nor
-    /// for `STORE_LOAD_GRACE` after the tab was last seen loading. Either
+    /// isn't. Otherwise, not while it follows a load the host started, nor
+    /// for `HOST_LOAD_GRACE` after the tab was last seen loading. Either
     /// way a site that redirects to a fresh url on every load (a nonce, a
     /// session token) can't have two instances navigate each other back
     /// and forth forever: the url stays local.
     pub(crate) fn shares_url_change(&mut self, id: &str, user_started: Option<bool>) -> bool {
         match user_started {
             Some(true) => {
-                self.store_loads.remove(id);
+                self.host_loads.remove(id);
                 return true;
             }
             Some(false) => return false,
             None => {}
         }
-        let Some(since) = self.store_loads.get_mut(id) else { return true };
+        let Some(since) = self.host_loads.get_mut(id) else { return true };
         if self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.loading) {
             *since = std::time::Instant::now();
             return false;
         }
-        if since.elapsed() < STORE_LOAD_GRACE {
+        if since.elapsed() < HOST_LOAD_GRACE {
             return false;
         }
-        self.store_loads.remove(id);
+        self.host_loads.remove(id);
         true
     }
 
@@ -1218,7 +1219,7 @@ impl App {
         self.graph_settled_key = None;
         self.failed_tab_retries.clear();
         self.spawning.clear();
-        self.store_loads.clear();
+        self.host_loads.clear();
         self.remote_in_flight.clear();
         self.last_shared.clear();
         self.pending_local = None;
@@ -1632,15 +1633,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn url_changes_after_a_store_started_load_stay_local_until_it_settles() {
+    fn url_changes_after_a_host_started_load_stay_local_until_it_settles() {
         let mut app = App::default();
         assert!(app.shares_url_change("7", None), "an ordinary tab shares");
-        app.note_store_load("7");
-        assert!(!app.shares_url_change("7", None), "a redirect right after the store's navigation");
+        app.note_host_load("7");
+        assert!(!app.shares_url_change("7", None), "a redirect right after the host's navigation");
         assert!(!app.shares_url_change("7", None), "still within the grace");
-        app.store_loads.insert("7".into(), std::time::Instant::now() - STORE_LOAD_GRACE);
+        app.host_loads.insert("7".into(), std::time::Instant::now() - HOST_LOAD_GRACE);
         assert!(app.shares_url_change("7", None), "settled: the next navigation is shared");
-        assert!(app.store_loads.is_empty());
+        assert!(app.host_loads.is_empty());
     }
 
     /// An engine that says how a navigation started overrides the grace.
@@ -1648,9 +1649,9 @@ pub(crate) mod tests {
     fn the_engines_cause_decides_whether_a_url_change_is_shared() {
         let mut app = App::default();
         assert!(!app.shares_url_change("7", Some(false)), "a script's navigation stays local");
-        app.note_store_load("7");
-        assert!(app.shares_url_change("7", Some(true)), "a click right after the store's load is shared");
-        assert!(app.store_loads.is_empty(), "and ends the store's load");
+        app.note_host_load("7");
+        assert!(app.shares_url_change("7", Some(true)), "a click right after the host's load is shared");
+        assert!(app.host_loads.is_empty(), "and ends the host's load");
     }
 
     #[test]
