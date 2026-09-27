@@ -14,6 +14,8 @@
 #      keep navigating each other (the site's request count settles).
 #   4. A clicks a link on that site: B follows. A's page then navigates
 #      by script: B doesn't (the engine reports how a navigation started).
+#      Likewise a single-page app's url change: from a click, B follows;
+#      from a timer, it doesn't.
 #   5. A adds a note and is killed; a fresh instance still has it.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
@@ -194,8 +196,9 @@ sleep 10
 echo "scenario 3: ok ($settled requests)"
 
 echo "=== scenario 4: a click is shared, a script's navigation isn't ==="
-# "<r-repeats> <dest-repeats> <dests>", see nonce_server.py.
-repeats() { cat "$out/hits.repeats" 2>/dev/null || echo "0 0 0"; }
+# "<r-repeats> <dest-repeats> <dests> <spa-clicks> <spa-timers>", see
+# nonce_server.py.
+repeats() { cat "$out/hits.repeats" 2>/dev/null || echo "0 0 0 0 0"; }
 field() { repeats | tr -d '\r\n' | cut -d' ' -f"$1"; }
 before="$(field 1)"
 sa "ADDRESSBAR http://127.0.0.1:$port/link"
@@ -227,6 +230,23 @@ sleep 5
     sa "EXPORTSESSION $(win "$out/a4.json")"; sb "EXPORTSESSION $(win "$out/b4.json")"
     wait_file "$out/a4.json"; wait_file "$out/b4.json"
     grep -o '"url": *"[^"]*"' "$out/a4.json" "$out/b4.json"
+    exit 1
+}
+# A single-page app: a click's pushState is shared, a timer's isn't. Only
+# B's load of a shared url asks the server for /spa/c or /spa/t.
+sa "ADDRESSBAR http://127.0.0.1:$port/spa"
+sa "SLEEP 1"
+sa ENTER
+sa "SLEEP 3"
+sa "CLICK 400 300"
+for _ in $(seq 75); do [ "$(field 4)" -ge 1 ] && break; sleep 0.2; done
+[ "$(field 4)" -ge 1 ] || {
+    echo "FAIL: scenario 4: B never followed A's pushState from a click"
+    exit 1
+}
+sleep 5
+[ "$(field 5)" -eq 0 ] || {
+    echo "FAIL: scenario 4: B followed A's pushState from a timer"
     exit 1
 }
 echo "scenario 4: ok"

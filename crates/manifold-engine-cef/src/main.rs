@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use cef::args::Args;
 use cef::*;
-use ipc_protocol::{EngineToHost, HostToEngine, TabState};
+use ipc_protocol::{EngineToHost, HostToEngine, InputEvent, TabState};
 
 use app::{AppBuilder, EngineApp};
 use client::{new_shared_audio_playing, new_shared_json_body, new_shared_redirect_content_type, ClientBuilder};
@@ -242,6 +242,9 @@ fn main() {
                     // only way to avoid writing/reporting mismatched sizes.
                 }
                 HostToEngine::Input(event) => {
+                    if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
+                        nav_state.borrow_mut().last_input = Some(std::time::Instant::now());
+                    }
                     input::send_input(&browser, event);
                 }
                 HostToEngine::SetZoom { factor } => {
