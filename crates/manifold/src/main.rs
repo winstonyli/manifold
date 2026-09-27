@@ -2495,14 +2495,23 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color) = if self.wakes_in_flight.remove(&id) {
-            match self.nodes.get(&id).filter(|n| n.as_unloaded().is_some()) {
-                Some(card) => (card.parent.clone(), card.group.clone(), card.pos, card.color),
-                // Closed while waking (see `wakes_in_flight`).
-                None => return,
+        let (parent, group, pos, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
+            match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
+                Some((card, tab)) => {
+                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted)
+                }
+                // Closed while waking (see `wakes_in_flight`): `spawning`
+                // no longer holds this id (removed above), so the save
+                // actually deletes it -- without this, a save taken while
+                // the wake was still in flight had kept it (`spawning`),
+                // and nothing else ever saves it again.
+                None => {
+                    self.save_session();
+                    return;
+                }
             }
         } else {
-            (parent, group, pos, color)
+            (parent, group, pos, color, pinned, muted)
         };
         let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
@@ -3644,6 +3653,9 @@ impl App {
         // "Group Selected"'s centroid (divides by a count that includes
         // dead ids) and overcounts the toolbar's own "(N)" labels.
         self.selected_tabs.remove(id);
+        if self.pending_respawn_focus.as_deref() == Some(id) {
+            self.pending_respawn_focus = None;
+        }
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
@@ -4621,20 +4633,26 @@ impl App {
     /// `keep_id`, regardless of any already-muted state, without touching
     /// `keep_id`'s own mute state either way. A one-shot action, not a
     /// toggle -- a second click would just mute everything again, a no-op
-    /// for anything already muted.
+    /// for anything already muted. Includes sleeping and waking tabs (no
+    /// engine to send `SetMuted` to, but a wake's landing already sends it
+    /// from the card's own `muted`, and personal state saves it either
+    /// way -- see `UnloadedTabPayload::muted`).
     fn mute_all_except(&mut self, keep_id: &str) {
         let other_ids: Vec<String> = self
             .nodes
             .iter()
-            .filter(|(id, n)| id.as_str() != keep_id && n.as_tab().is_some())
+            .filter(|(id, n)| id.as_str() != keep_id && n.payload.saved_tab().is_some())
             .map(|(id, _)| id.clone())
             .collect();
         for id in other_ids {
-            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                if !node.muted {
-                    node.muted = true;
-                    node.tab.send(&HostToEngine::SetMuted { muted: true });
+            let Some(node) = self.nodes.get_mut(&id) else { continue };
+            match &mut node.payload {
+                NodePayload::Tab(tab) if !tab.muted => {
+                    tab.muted = true;
+                    tab.tab.send(&HostToEngine::SetMuted { muted: true });
                 }
+                NodePayload::Unloaded(tab) => tab.muted = true,
+                _ => {}
             }
         }
     }

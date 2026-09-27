@@ -552,13 +552,23 @@ pub(crate) fn node_card_rect(node: &GraphNode) -> egui::Rect {
 pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
     match payload {
         NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
-        NodePayload::Unloaded(tab) => vec![&tab.url],
+        NodePayload::Unloaded(tab) => vec![&tab.title, &tab.url],
         NodePayload::Download(download) => vec![&download.path],
         NodePayload::Note(note) => vec![&note.text],
         NodePayload::Image(image) => vec![download_filename(&image.path)],
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
         NodePayload::Group(group) => vec![&group.name],
+    }
+}
+
+/// The Sleeping/Waking half of an unloaded card's tooltip -- Failed's
+/// tooltip needs the engine and error message too, so `paint_unloaded_tab_body`
+/// builds that one itself rather than through this helper.
+pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str {
+    match state {
+        UnloadedState::Waking => "Loading…",
+        _ => "Sleeping — click to load",
     }
 }
 
@@ -833,7 +843,7 @@ impl App {
             UnloadedState::Failed(error) => {
                 format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
             }
-            UnloadedState::Sleeping | UnloadedState::Waking => "Sleeping — click to load".to_string(),
+            UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
         if self.graph_lod_simplified {
             return body;
@@ -1847,6 +1857,20 @@ mod tests {
             card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })),
             ["Reading"]
         );
+        // Like a live tab: title and url, so the Graph filter can match a
+        // sleeping card by its saved title, not just its url.
+        assert_eq!(
+            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
+                url: "https://example.org/".into(),
+                title: "Example".into(),
+                kind: EngineKind::Cef,
+                pinned: true,
+                muted: false,
+                zoom_factor: 1.5,
+                state: UnloadedState::Failed("no binary".into()),
+            })),
+            ["Example", "https://example.org/"]
+        );
         assert_eq!(
             card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
@@ -1857,8 +1881,14 @@ mod tests {
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
             })),
-            ["https://example.org/"]
+            ["", "https://example.org/"]
         );
+    }
+
+    #[test]
+    fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
+        assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Sleeping), "Sleeping — click to load");
+        assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Waking), "Loading…");
     }
 
     #[test]

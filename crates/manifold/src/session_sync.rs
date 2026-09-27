@@ -639,13 +639,27 @@ impl App {
         self.host_loads.insert(id.to_string(), std::time::Instant::now());
     }
 
-    /// Starts the focused tab if it's asleep: the one engine a restored
-    /// session starts (spec "Lazy tabs").
+    /// Starts the engines a restored session starts (spec "Lazy tabs"): the
+    /// focused tab's, and the saved split tab's too when the session was
+    /// saved split -- otherwise `apply_local` restores `split_tab` onto a
+    /// card that never wakes, leaving the split pane empty forever.
     pub(crate) fn wake_focused(&mut self) {
-        let Some(id) = self.focused.clone() else { return };
-        let asleep = self.nodes.get(&id).and_then(|n| n.as_unloaded()).filter(|t| t.state == UnloadedState::Sleeping);
-        if let Some(kind) = asleep.map(|t| t.kind) {
-            self.wake_tab(&id, kind);
+        let asleep = |id: &str, this: &Self| {
+            this.nodes
+                .get(id)
+                .and_then(|n| n.as_unloaded())
+                .filter(|t| t.state == UnloadedState::Sleeping)
+                .map(|t| t.kind)
+        };
+        if let Some(id) = self.focused.clone() {
+            if let Some(kind) = asleep(&id, self) {
+                self.wake_tab(&id, kind);
+            }
+        }
+        if let Some(id) = self.split_tab.clone() {
+            if let Some(kind) = asleep(&id, self) {
+                self.wake_tab(&id, kind);
+            }
         }
     }
 
@@ -1994,6 +2008,37 @@ pub(crate) mod tests {
         assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
     }
 
+    /// A restored split session wakes both halves -- the focused tab and
+    /// the saved split tab -- leaving every other tab asleep (Fix 2,
+    /// final-review: `apply_local` restores `split_tab` even though only
+    /// `wake_focused` used to actually start an engine, leaving the split
+    /// pane empty).
+    #[test]
+    fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
+        let path = temp_dir("lazy-restore-split").join("session.mnf");
+        let (a, b, c) = {
+            let mut app = app_on(&path, 1);
+            let a = add(&mut app, sleeping_tab("https://a/", "A"));
+            let b = add(&mut app, sleeping_tab("https://b/", "B"));
+            let c = add(&mut app, sleeping_tab("https://c/", "C"));
+            app.focused = Some(a.clone());
+            app.split_tab = Some(b.clone());
+            assert!(app.save_session());
+            app.maybe_write_local(true);
+            app.close_store();
+            (a, b, c)
+        };
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        let mut spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
+        spawned.sort();
+        let mut expected = [a.as_str(), b.as_str()];
+        expected.sort();
+        assert_eq!(spawned, expected);
+        assert!(app.test_spawns.iter().all(|(s, _)| matches!(s.purpose, SpawnPurpose::Wake)));
+        assert_eq!(app.nodes[&c].as_unloaded().unwrap().state, UnloadedState::Sleeping);
+    }
+
     /// Opening a sleeping tab, by any path, wakes it once: focused, in Tab
     /// view (showing the respawning placeholder), one spawn. A second open
     /// while it wakes issues none.
@@ -2047,6 +2092,60 @@ pub(crate) mod tests {
         assert_eq!(app.nodes[&a].as_unloaded().unwrap().title, "A", "the wake carried its title");
         assert_eq!(app.pending_respawn_focus, None);
         assert!(app.wakes_in_flight.is_empty());
+    }
+
+    /// Closing a tab while its wake is in flight deletes it from the store
+    /// once the (now-moot) spawn result lands -- the landing's "closed
+    /// while waking" branch used to return without saving, and a save
+    /// while the wake was in flight kept the id anyway (`spawning`), so it
+    /// lingered in the store forever (Fix 3, final-review).
+    #[test]
+    fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
+        let path = temp_dir("close-waking").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+        assert!(app.save_session());
+        app.focus_tab(&tab);
+        assert_eq!(app.test_spawns.len(), 1, "the wake is in flight, parked");
+        assert!(app.spawning.contains_key(&tab));
+        app.destroy_tab(&tab);
+        assert!(!app.nodes.contains_key(&tab), "closed");
+        // Deliver the parked wake's result -- a failed one, the only kind a
+        // unit test can produce (no fake `EngineTab` for a success).
+        fail_spawns(&mut app);
+        let still_live = app.journal.as_ref().unwrap().doc().live().any(|(id, _)| id.to_string() == tab);
+        assert!(!still_live, "should have been deleted once the wake landed on a closed tab");
+    }
+
+    /// Closing a waking tab clears `pending_respawn_focus` when it names
+    /// the removed id -- otherwise it keeps pointing at a gone node, which
+    /// `build_tab_view_ui`'s guard reads to decide whether Item view stays
+    /// put during a respawn (Fix 6, final-review).
+    #[test]
+    fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
+        let mut app = app_on(&temp_dir("remove-pending-focus").join("session.mnf"), 1);
+        let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+        app.focus_tab(&tab);
+        assert_eq!(app.pending_respawn_focus.as_deref(), Some(tab.as_str()));
+        app.destroy_tab(&tab);
+        assert_eq!(app.pending_respawn_focus, None);
+    }
+
+    /// "Mute Others" mutes a sleeping or waking card too -- it has no
+    /// engine to send `SetMuted` to, but the landing already sends it
+    /// (`TabCarry::muted`) and personal state saves it either way, so a
+    /// woken tab comes back muted like every other tab "Mute Others" hit
+    /// (Fix 8, final-review).
+    #[test]
+    fn mute_all_except_also_mutes_sleeping_tabs() {
+        let mut app = app_on(&temp_dir("mute-others-sleeping").join("session.mnf"), 1);
+        let keep = add(&mut app, sleeping_tab("https://keep/", "Keep"));
+        let other = add(&mut app, sleeping_tab("https://other/", "Other"));
+        app.mute_all_except(&keep);
+        assert!(!app.nodes[&keep].as_unloaded().unwrap().muted, "kept tab untouched");
+        assert!(app.nodes[&other].as_unloaded().unwrap().muted);
+        let entry = app.local_state().nodes[&other].clone();
+        assert!(entry.muted, "personal state saves the sleeping card's mute");
     }
 
     /// Another replica's url change moves a sleeping tab without waking it.
@@ -2196,10 +2295,69 @@ pub(crate) mod tests {
         assert_eq!(live, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
     }
 
-    /// Personal state written before restored tabs land keeps theirs
-    /// (position, title, zoom), and a failed card's zoom is kept too.
+    /// Open Session (`replace_running_session`) restores every tab asleep,
+    /// same as a launch, and wakes only the focused (first) one -- the
+    /// existing `tabs_still_spawning_at_quit_are_saved` uses a single tab,
+    /// which can't tell "asleep" from "still spawning" apart.
     #[test]
-    fn personal_state_keeps_spawning_tabs_entries_and_a_failed_cards_zoom() {
+    fn open_session_restores_asleep_and_wakes_only_the_focused_tab() {
+        let mut app = app_on(&temp_dir("open-session-lazy").join("session.mnf"), 1);
+        let json = JsonDoc {
+            nodes: vec![
+                json_node("t1", "tab", serde_json::json!({ "url": "https://a/" })),
+                json_node("t2", "tab", serde_json::json!({ "url": "https://b/" })),
+                json_node("t3", "tab", serde_json::json!({ "url": "https://c/" })),
+            ],
+            local: None,
+        };
+        app.replace_running_session(&json);
+        assert_eq!(app.test_spawns.len(), 1, "only the focused (first) tab wakes");
+        assert!(matches!(app.test_spawns[0].0.purpose, SpawnPurpose::Wake));
+        let focused = app.focused.clone().unwrap();
+        assert_eq!(app.test_spawns[0].0.id, focused);
+        let asleep: Vec<&UnloadedTabPayload> =
+            app.nodes.iter().filter(|(id, _)| **id != focused).filter_map(|(_, n)| n.as_unloaded()).collect();
+        assert_eq!(asleep.len(), 2);
+        assert!(asleep.iter().all(|t| t.state == UnloadedState::Sleeping));
+    }
+
+    /// Without personal state, restore focuses the first tab (as it always
+    /// has) and wakes only that one.
+    #[test]
+    fn restore_without_personal_state_focuses_and_wakes_the_first_tab() {
+        let path = temp_dir("no-local-restore").join("session.mnf");
+        let (a, b) = {
+            let mut app = app_on(&path, 1);
+            let a = add(&mut app, sleeping_tab("https://a/", "A"));
+            let b = add(&mut app, sleeping_tab("https://b/", "B"));
+            assert!(app.save_session());
+            // No `maybe_write_local`: no `session.mnf.local` at all, the
+            // literal "without personal state" case, not just one whose
+            // `focused` field happens to be unset.
+            (a, b)
+        };
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+        let spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
+        assert_eq!(spawned, [a.as_str()]);
+        assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Sleeping);
+    }
+
+    /// Personal state written before a restored tab's wake lands still
+    /// keeps theirs (position, title, zoom), and a fresh failed card's zoom
+    /// is kept too. Renamed from `personal_state_keeps_spawning_tabs_
+    /// entries_and_a_failed_cards_zoom` (final-review, "Tests to add or
+    /// fix"): a restored tab now materializes as an `Unloaded` card
+    /// straight away (`TabStart::Sleep`), so `apply_local` finds it in
+    /// `self.nodes` and applies `entry` directly -- it no longer goes
+    /// through the `pending_local`/`self.spawning`-only path this test's
+    /// old name and "the restored tab is still spawning" comment
+    /// described (that path is still real, just for a tab a *different*
+    /// replica creates or a group/Recently-Closed import, which still
+    /// spawn immediately -- `TabStart::Spawn` -- and aren't covered here).
+    #[test]
+    fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_cards_zoom() {
         let path = temp_dir("local-spawning").join("session.mnf");
         let tab = {
             let mut app = app_on(&path, 1);
@@ -2215,7 +2373,10 @@ pub(crate) mod tests {
         }
         let mut app = app_on(&path, 3);
         assert!(app.restore_session());
-        assert_eq!(app.test_spawns.len(), 1, "the restored tab is still spawning");
+        // Still waking, not landed -- `entry` is applied straight onto the
+        // live `Unloaded` card (`apply_local_node`), not carried through
+        // `pending_local`.
+        assert_eq!(app.test_spawns.len(), 1, "the restored tab's wake is still in flight");
         let card = add(&mut app, failed_tab("https://f/", 1.5));
         let state = app.local_state();
         assert_eq!(state.nodes.get(&tab), Some(&entry));

@@ -787,6 +787,15 @@ impl App {
         }
     }
 
+    /// A tab list row's label for `id`: its title, or its url when the
+    /// title is empty (live or unloaded alike, via `listed_tab`) -- factored
+    /// out so `build_quick_switcher`'s row loop and its own test agree on
+    /// exactly what a sleeping tab's row shows.
+    pub(crate) fn quick_switcher_row_label(&self, id: &str) -> Option<String> {
+        let (title, url) = self.nodes.get(id)?.payload.listed_tab()?;
+        Some(if title.is_empty() { url.to_string() } else { title.to_string() })
+    }
+
     /// `self.node_order`, filtered by a case-insensitive substring match
     /// against title-or-url — factored out so the quick-switcher's render
     /// function and its Enter-key jump always agree on the exact same list
@@ -921,8 +930,7 @@ impl App {
                     }
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                         for (i, id) in matches.iter().enumerate() {
-                            let Some(node) = self.nodes.get(id).and_then(|n| n.as_tab()) else { continue };
-                            let label = if node.title.is_empty() { node.url.clone() } else { node.title.clone() };
+                            let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             if is_live {
                                 if ui.selectable_label(i == selected_index, label).clicked() {
                                     jump_to = Some(id.clone());
@@ -1230,5 +1238,18 @@ mod tests {
         assert!(!take_focus(&mut pending, FocusTarget::AddressBar));
         assert!(take_focus(&mut pending, FocusTarget::FindBar));
         assert!(!take_focus(&mut pending, FocusTarget::FindBar));
+    }
+
+    /// A sleeping tab's Quick Switcher row shows its title, or its url when
+    /// untitled -- same as a live tab's row, unlike the raw `as_tab` lookup
+    /// this used to skip an unloaded match with (Fix 1, final-review).
+    #[test]
+    fn quick_switcher_label_uses_title_or_url_for_a_sleeping_tab() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-label").join("session.mnf"), 1);
+        let titled = add(&mut app, sleeping_tab("https://a/", "Alpha"));
+        let untitled = add(&mut app, sleeping_tab("https://b/", ""));
+        assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
+        assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
     }
 }

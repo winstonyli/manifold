@@ -38,10 +38,14 @@ browsers restore tabs unloaded.
   when personal state has one for the current shared url (as today),
   otherwise the stored url; its saved title, engine, zoom and pinned
   flag. Then the focused tab, if there is one, wakes.
-- **What wakes a tab.** Anything that opens it: a click on its card,
-  choosing it in the Quick Switcher, next/previous-tab, and any other
-  path that makes it the focused tab in Tab view. Waking is a host-started
-  load, so its redirects stay local (`note_host_load`), like a restore.
+- **What wakes a tab.** Anything that opens it: a click on a sleeping or
+  waking card (`NodeAction::Open` → `focus_tab`), choosing it in the
+  Quick Switcher, next/previous-tab, and any other path that makes it the
+  focused tab in Tab view. A failed card's click is the one exception --
+  it retries through `retry_missing_file`'s tab branch instead, which is
+  now `SpawnPurpose::Wake` too (final-review Fix, see Outcome), so it
+  also gets `note_host_load`. Waking is a host-started load, so its
+  redirects stay local (`note_host_load`), like a restore.
 - **What does not.** Saving, exporting, closing, moving, grouping,
   coloring and pinning act on the card as they do on a failed card now.
   Another instance's url change updates a sleeping tab's url without
@@ -61,8 +65,8 @@ browsers restore tabs unloaded.
   whole session as a launch does, so its tabs restore asleep and the
   focused one wakes. Group import and Recently Closed still spawn.
 - **Cards.** Sleeping: dimmed, title and host, tooltip "Sleeping — click
-  to load". Waking: the spinner a retry shows now. Failed: unchanged
-  (warning icon, error tooltip).
+  to load". Waking: the spinner a retry shows now, tooltip "Loading…".
+  Failed: unchanged (warning icon, error tooltip).
 
 ## Design
 
@@ -109,10 +113,13 @@ swap, crash respawn) still produces `Failed`.
   parameter, which every caller passed as `Restore`. `restore_session`
   and `replace_running_session` pass `Sleep`; a tab another instance
   created, Recently Closed and group import pass `Spawn`.
-- `restore_session`, after `apply_local` has set `focused`, wakes that
-  tab if it is unloaded (`wake_focused`); so does
-  `replace_running_session`. No focused tab wakes nothing; without
-  personal state the first tab is focused.
+- `restore_session`, after `apply_local` has set `focused` (and
+  `split_tab`), wakes each of those it is unloaded (`wake_focused`); so
+  does `replace_running_session`. No focused tab wakes nothing; without
+  personal state the first tab is focused. `wake_focused` also wakes a
+  saved split tab (final-review Fix 2): `apply_local` restores
+  `split_tab` regardless, so without this the split pane came back
+  empty, showing a sleeping card no one had woken.
 - `apply_local` copies personal state's `title` into an unloaded card, as
   it does into a live tab now; its existing zoom arm stays.
 - `materialize` updating an existing unloaded card sets its url (and
@@ -177,11 +184,36 @@ Unit tests (windowless `App`, spawns parked in `test_spawns`):
 - Open Session restores asleep; closing an unloaded card reparents its
   children; personal state keeps an unloaded tab's title and mute; a
   failed wake leaves a failed card with the title.
+- A restored split session wakes both the focused tab and the saved
+  split tab, leaving every other tab asleep (final-review Fix 2). Open
+  Session (`replace_running_session`) restores several tabs asleep and
+  wakes only the focused one, and without personal state a restore
+  focuses and wakes the first tab (final-review, filling in for
+  `tabs_still_spawning_at_quit_are_saved`'s single-tab case, which can't
+  tell "asleep" from "still spawning" apart).
+- Quick Switcher, Graph-filter and mute-others coverage for sleeping
+  tabs (final-review Fixes 1, 4, 8); closing a tab whose wake is still in
+  flight removes it from the store once the (necessarily failed, see
+  below) landing arrives (Fix 3); closing a tab clears a stale
+  `pending_respawn_focus` naming it (Fix 6).
+- A successful landing can't be unit-tested (no fake `EngineTab`), so a
+  pin or mute toggled while a tab wakes surviving onto the landed live
+  tab (Fix 5) is verified by code inspection only -- the `wakes_in_flight`
+  branch now reads `pinned`/`muted` from the card itself, not the stale
+  `TabCarry` captured when the wake started.
 
 Scripts:
 
 - `scripts/scale-test.sh 100`: one engine's processes plus the host
   (against 206 processes and 8.3 GB before).
+- The Wake landing's `note_host_load` call is exercised by
+  `two-instance-test.sh` scenario 6 (a restart reopens a tab's live url:
+  the restored tab is the only one, so it's focused and wakes). Scenario
+  3 (a url that changes on every load stays local) opens its tab with
+  `NEWTAB` and types the url in, never restoring or waking one -- its
+  `note_host_load` comes from `navigate_tab`'s own direct call for a
+  typed navigation, not from any spawn landing, so it does not exercise
+  the Wake landing at all.
 - `two-instance-test.sh` (both engines) and `headless-smoke-test.sh`
   still pass. Scenario 6 (a restart reopens a tab's live url) expects the
   next instance to load C's tab; that tab must be the focused one, or the
@@ -216,14 +248,41 @@ the live-url restore disabled and with `wake_focused` disabled.
 Seen in the visual check: a url with no host (`file:`) shows its url on
 both lines of the sleeping card.
 
+**Known limitation.** A tab another instance creates, and a Recently
+Closed group's members, still spawn at once (`TabStart::Spawn`) rather
+than sleeping -- so another instance's Open Session of a big file starts
+every engine here too, if this instance is the one applying the remote
+change. Making remote-created tabs sleep is deferred (below).
+
+Final-review pass (2026-09-27, `.superpowers/sdd/2026-09-27-lazy-tabs/
+final-fix-brief.md`): eight fixes found by a whole-branch code review --
+Quick Switcher rows for a sleeping tab (title/url, not skipped), a
+restored split session waking both halves, a tab closed while waking
+being deleted from the store once its (necessarily failed) landing
+arrives, the Graph filter matching a sleeping tab's title, a pin or mute
+toggled while waking surviving the landing, a stale
+`pending_respawn_focus` cleared on close, the waking tooltip ("Loading…"
+distinct from Sleeping's), and "Mute Others" reaching sleeping tabs too.
+
 ## Deferred
 
 - **Cached thumbnails.** Save each tab's last picture as a small image
   in the profile and show it, dimmed, on its sleeping card. Needs a
   cache with cleanup, and stores images of visited pages on disk.
 - **Sleeping again.** A manual "Sleep" action (tab and group menus), and
-  sleeping after idle (skipping tabs playing audio).
+  sleeping after idle (skipping tabs playing audio). Until then, waking
+  is one-way: `Ctrl+Tab` (`cycle_focused_tab`) wakes every sleeping tab
+  it passes through on its way to the one the user stops on, and each
+  stays loaded rather than sleeping again; opening a failed card retries
+  it (`retry_missing_file`'s tab branch), and a second failure returns it
+  to Graph view with a toast rather than leaving Tab view on a dead
+  placeholder.
 - **Waking neighbours ahead of time**, e.g. the tabs next to the focused
   one, if opening a tab feels slow in use.
+- **Making remote-created tabs sleep.** A tab another instance creates
+  (`land_remote_in_flight`/`apply_changes`) and a Recently Closed or
+  imported group's members (`materialize_imported`) still use
+  `TabStart::Spawn`; only `restore_session` and `replace_running_session`
+  sleep theirs.
 - **A sleeping tab's favicon.** `cached_favicon_origin` works from the
   url alone, so a sleeping card could show it.
