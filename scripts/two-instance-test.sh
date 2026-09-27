@@ -5,7 +5,7 @@
 # Headless). Never touches the real %APPDATA%\manifold. Build first:
 # cargo build -j 12 -p manifold.
 # ENGINE (default webview2) is the engine new tabs start in, which
-# scenarios 3 and 4 navigate.
+# scenarios 3, 4 and 6 navigate.
 #   1. A imports a group, B adds a note: both EXPORTSESSION node sets agree.
 #   2. A imports enough notes to compact while B stays open; B edits
 #      after: both agree and nothing is lost.
@@ -17,6 +17,9 @@
 #      Likewise a single-page app's url change: from a click, B follows;
 #      from a timer, it doesn't.
 #   5. A adds a note and is killed; a fresh instance still has it.
+#   6. That instance, now alone, types a url whose page navigates by
+#      script, and quits: the next instance reopens the tab where the
+#      script took it (the personal-state live_url), not at the typed url.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -43,9 +46,10 @@ out_win="$(win "$out")"
 a_winpid=""
 b_winpid=""
 c_winpid=""
+d_winpid=""
 cleanup() {
     local status=$?
-    for wp in "$a_winpid" "$b_winpid" "$c_winpid"; do
+    for wp in "$a_winpid" "$b_winpid" "$c_winpid" "$d_winpid"; do
         [ -n "$wp" ] && taskkill //F //PID "$wp" >/dev/null 2>&1
     done
     rm -rf "$profile" "$out"
@@ -279,9 +283,56 @@ c_winpid="$(winpid_of "$C_PID")"
 sc "EXPORTSESSION $(win "$out/c.json")"
 wait_file "$out/c.json"
 assert_py has_id "$out/c.json" "$new_id"
+echo "scenario 5: ok"
+
+echo "=== scenario 6: a restart reopens a tab's live url ==="
+# C is the only instance, so its personal state is the one on disk after
+# it quits (two instances would each overwrite the other's on save).
+js_loads() { grep -c ' /js$' "$out/hits.log" || true; }
+dests="$(field 3)"
+sc NEWTAB
+sc WAITTABS
+sc TOGGLEVIEW
+sc "SLEEP 3"
+sc "ADDRESSBAR http://127.0.0.1:$port/js"
+sc "SLEEP 1"
+sc ENTER
+for _ in $(seq 75); do [ "$(field 3)" -gt "$dests" ] && break; sleep 0.2; done
+[ "$(field 3)" -gt "$dests" ] || {
+    echo "FAIL: scenario 6: C's /js page never navigated to /dest"
+    exit 1
+}
+# Let C see its tab settle on /dest before quitting saves it.
+sc "SLEEP 2"
+js_before="$(js_loads)"
+dest_repeats="$(field 2)"
 sc QUIT
 wait "$C_PID" 2>/dev/null || true
 c_winpid=""
-echo "scenario 5: ok"
+
+coproc D { "$exe" --headless; }
+sd() { echo "$1" >&"${D[1]}"; }
+sleep 1
+d_winpid="$(winpid_of "$D_PID")"
+[ -n "$d_winpid" ] || {
+    echo "FAIL: couldn't find D's manifold.exe Windows PID"
+    exit 1
+}
+sd WAITTABS
+# D asks again for the /dest?n= C's script chose (a dest repeat).
+for _ in $(seq 75); do [ "$(field 2)" -gt "$dest_repeats" ] && break; sleep 0.2; done
+[ "$(field 2)" -gt "$dest_repeats" ] || {
+    echo "FAIL: scenario 6: D didn't reopen C's /dest url"
+    cat "$out/hits.log"
+    exit 1
+}
+[ "$(js_loads)" -eq "$js_before" ] || {
+    echo "FAIL: scenario 6: D loaded the typed /js again"
+    exit 1
+}
+sd QUIT
+wait "$D_PID" 2>/dev/null || true
+d_winpid=""
+echo "scenario 6: ok"
 
 echo "two-instance test: ok"
