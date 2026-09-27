@@ -239,8 +239,15 @@ restart reopens a tab's live url) needed no change: the next instance's
 focused tab is the one C typed into. It fails, as it should, both with
 the live-url restore disabled and with `wake_focused` disabled.
 
-Seen in the visual check: a url with no host (`file:`) shows its url on
-both lines of the sleeping card.
+**Sleeping-card polish** (added after the review). A url with no host
+(`file:`, `about:`) showed its url on both lines; `url_host` now returns
+`None` for it and the card skips the host line. A sleeping or waking
+card also draws its origin's favicon, dimmed. Favicons live in memory
+only, and before this only a live tab's url change fetched one, so the
+card requests its own origin through the same `favicon_resolved` /
+`FaviconFetcher` dedupe. Only on-screen cards drawn in full detail do
+this (culled and LOD-simplified cards return earlier), so a big
+restored session fetches once per origin in view, not for every tab.
 
 A whole-branch review then found eight gaps, fixed in 2055140: Quick
 Switcher rows skipped sleeping tabs; a split session came back with an
@@ -279,5 +286,3 @@ imported group's tabs still start at once (`TabStart::Spawn`).
 - **Group import and Recently Closed sleeping their tabs.** Both still
   use `TabStart::Spawn` (`materialize_imported`), so reopening or
   importing a big group starts every member's engine.
-- **A sleeping tab's favicon.** `cached_favicon_origin` works from the
-  url alone, so a sleeping card could show it.

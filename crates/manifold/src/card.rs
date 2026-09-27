@@ -572,12 +572,11 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
     }
 }
 
-/// What a sleeping card names its page by: the url's `host[:port]`, or the
-/// whole url when it has none (`about:`, `data:`).
-pub(crate) fn url_host(url: &str) -> String {
-    crate::favicon_fetch::url_origin(url)
-        .and_then(|origin| origin.split_once("://").map(|(_, host)| host.to_string()))
-        .unwrap_or_else(|| url.to_string())
+/// What a sleeping card names its page by under the title: the url's
+/// `host[:port]`, or `None` when it has none (`about:`, `file:`), whose
+/// url the title line already shows.
+pub(crate) fn url_host(url: &str) -> Option<String> {
+    crate::favicon_fetch::url_origin(url).and_then(|origin| origin.split_once("://").map(|(_, host)| host.to_string()))
 }
 
 impl App {
@@ -908,26 +907,41 @@ impl App {
                         );
                     }));
 
-                    let host_font = egui::FontId::proportional(13.0);
-                    let host_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                    let host = truncate_to_width(
-                        &mut self.truncate_cache,
-                        ui.ctx(),
-                        &url_host(&url),
-                        &host_font,
-                        host_max_width,
-                    );
-                    let host_pos = rect.center_bottom();
-                    let host_color = dim_color;
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(host_pos) + egui::vec2(0.0, -8.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            host,
-                            host_font,
-                            host_color,
+                    if let Some(host) = url_host(&url) {
+                        let host_font = egui::FontId::proportional(13.0);
+                        let host_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                        let host =
+                            truncate_to_width(&mut self.truncate_cache, ui.ctx(), &host, &host_font, host_max_width);
+                        let host_pos = rect.center_bottom();
+                        let host_color = dim_color;
+                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                            overlay_painter.text(
+                                project(host_pos) + egui::vec2(0.0, -8.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                host,
+                                host_font,
+                                host_color,
+                            );
+                        }));
+                    }
+                }
+                // Favicons aren't kept across restarts and no engine loads
+                // a sleeping tab's url, so the card asks for its own. Only
+                // on-screen cards drawn in full detail get here (culled and
+                // LOD-simplified ones don't), so a big restored session
+                // fetches for what's in view, once per origin.
+                if let Some(origin) = self.cached_favicon_origin(&url) {
+                    if !self.favicon_resolved.contains(&origin) {
+                        self.favicon_fetcher.request(origin.clone());
+                    }
+                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)) {
+                        let favicon_rect = egui::Rect::from_min_size(
+                            rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                            FAVICON_SIZE * inv_zoom,
                         );
-                    }));
+                        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                        ui.painter().image(tex_id, favicon_rect, uv, egui::Color32::WHITE.gamma_multiply(0.5));
+                    }
                 }
             }
         }
@@ -1893,7 +1907,8 @@ mod tests {
 
     #[test]
     fn url_host_is_the_authority_or_the_whole_url() {
-        assert_eq!(url_host("https://example.org:8080/a?b#c"), "example.org:8080");
-        assert_eq!(url_host("about:blank"), "about:blank");
+        assert_eq!(url_host("https://example.org:8080/a?b#c").as_deref(), Some("example.org:8080"));
+        assert_eq!(url_host("about:blank"), None);
+        assert_eq!(url_host("file:///C:/notes.txt"), None);
     }
 }
