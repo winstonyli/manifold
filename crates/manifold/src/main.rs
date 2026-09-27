@@ -4170,22 +4170,43 @@ impl App {
 
     /// Deletes content-dir files nothing uses (spec "Where fetched files
     /// live"), on a thread. Called once at launch, after restore.
+    ///
+    /// Bails with no journal (the store failed to open, or this is a fresh
+    /// profile with nothing stored yet): `restore_session` itself bails
+    /// before loading any node or Recently Closed entry in that case, so
+    /// `content_keep`'s set would be built from whatever a fresh session
+    /// spawned (a demo/root tab, no Image/Pdf/Json/Download nodes at all)
+    /// -- not "nothing is used", just "nothing was loaded". Pruning against
+    /// that empty-ish set would delete every real content file still owned
+    /// by the session the store actually holds on disk.
     fn prune_content_dir(&self) {
+        if self.journal.is_none() {
+            return;
+        }
         let Some(dir) = profile::content_dir() else { return };
         let keep = self.content_keep();
+        // Taken now, before the thread below (and its `read_dir`) even
+        // starts, so another instance's file that lands after this moment
+        // is never a candidate -- see `content::prune`'s own doc comment.
+        let snapshot = std::time::SystemTime::now();
         std::thread::spawn(move || {
-            let n = content::prune(&dir, keep);
+            let n = content::prune(&dir, snapshot, keep);
             if n > 0 {
                 eprintln!("content: pruned {n} unused file(s)");
             }
         });
     }
 
-    /// Tries a placeholder's file again (a click on the card). Loaded, the
-    /// real card takes the placeholder's place: same id, position, group,
-    /// color and draw order. Still failing, it stays a placeholder with the
-    /// new error, which the insert has already toasted. A failed PDF card
-    /// just renders again (back to its spinner).
+    /// Tries a placeholder's file again (a click on the card). A node with
+    /// a known source URL (spec "Where fetched files live") refetches
+    /// through `refresh_node` instead of retrying the same local path --
+    /// covers a missing file synced from another replica, and a Refresh
+    /// that failed, either way with no local copy to fall back to. Without
+    /// a URL, the real card takes the placeholder's place: same id,
+    /// position, group, color and draw order. Still failing, it stays a
+    /// placeholder with the new error, which the insert has already
+    /// toasted. A failed PDF card just renders again (back to its
+    /// spinner).
     fn retry_missing_file(&mut self, id: &str) {
         if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
             self.wake_tab(id, kind);
@@ -5714,7 +5735,7 @@ mod tests {
             },
         });
         let keep = app.content_keep();
-        assert_eq!(crate::content::prune(&dir, keep), 1);
+        assert_eq!(crate::content::prune(&dir, std::time::SystemTime::now(), keep), 1);
         assert!(!dir.join("orphan.png").exists());
         assert!(dir.join("a.png").exists());
         assert!(dir.join("1-7.json").exists());

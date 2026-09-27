@@ -1106,12 +1106,15 @@ impl App {
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
                         pdf.outcome = Some(Err(err));
                     }
-                    // Missing file, URL known: refetch instead of leaving
-                    // the error card up (spec "Where fetched files live").
-                    // A no-op for a picked/dropped PDF with no URL.
-                    if self.nodes.get(&id).is_some_and(|n| n.source_url().is_some()) {
-                        self.refresh_node(&id);
-                    }
+                    // No refetch here: a missing file plus a known URL is
+                    // already handled before this can ever be reached --
+                    // `materialize`'s own `exists()` check inserts the
+                    // placeholder directly (never starting a render) and
+                    // `retry_missing_file`'s URL branch covers a click on
+                    // the card. Refetching here too would double-fetch a
+                    // restore-time miss (two threads writing the same
+                    // `<id>.pdf`) and loop forever on a `%PDF-`-shaped file
+                    // that simply fails to render.
                 }
             }
         }

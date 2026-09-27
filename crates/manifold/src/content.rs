@@ -168,14 +168,23 @@ pub(crate) fn owned_content_file(dir: &Path, id: &str, path: &Path) -> bool {
     path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem == id)
 }
 
-/// Deletes each file in `dir` whose name `keep` rejects; returns how many.
-/// A missing `dir` deletes nothing.
-pub(crate) fn prune(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
+/// Deletes each file in `dir` whose name `keep` rejects and whose modified
+/// time is before `snapshot`; returns how many. A missing `dir` deletes
+/// nothing.
+///
+/// `snapshot` should be taken when `keep`'s own name set was built, before
+/// this runs (typically on a thread, some time later): several instances
+/// can share one profile, and another instance's freshly fetched file,
+/// whose node this instance hasn't learned about yet, must survive a sweep
+/// built from a keep set that predates it. A file modified at or after
+/// `snapshot` is never a candidate, whatever `keep` says.
+pub(crate) fn prune(dir: &Path, snapshot: std::time::SystemTime, keep: impl Fn(&str) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter(|e| !keep(&e.file_name().to_string_lossy()))
+        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < snapshot))
         .filter(|e| std::fs::remove_file(e.path()).is_ok())
         .count()
 }
@@ -277,9 +286,32 @@ mod tests {
         for name in ["1-2.png", "3-4.json", "old.bin"] {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
-        assert_eq!(prune(&dir, |name| name != "old.bin"), 1);
+        let snapshot = std::time::SystemTime::now();
+        assert_eq!(prune(&dir, snapshot, |name| name != "old.bin"), 1);
         assert!(dir.join("1-2.png").exists() && !dir.join("old.bin").exists());
-        assert_eq!(prune(&dir.join("missing"), |_| false), 0);
+        assert_eq!(prune(&dir.join("missing"), snapshot, |_| false), 0);
+    }
+
+    #[test]
+    fn prune_skips_a_file_modified_at_or_after_the_snapshot() {
+        // Simulates another instance's fetch landing after this instance's
+        // keep set was built but before the sweep runs: `new.bin` isn't in
+        // `keep` either, but its mtime is at/after `snapshot`, so it must
+        // survive regardless.
+        let dir = crate::store::testutil::temp_dir("content_prune_race");
+        let old = dir.join("old.bin");
+        std::fs::write(&old, b"x").unwrap();
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::OpenOptions::new().write(true).open(&old).unwrap().set_modified(old_time).unwrap();
+
+        let snapshot = std::time::SystemTime::now();
+        let new = dir.join("new.bin");
+        std::fs::write(&new, b"x").unwrap();
+        std::fs::OpenOptions::new().write(true).open(&new).unwrap().set_modified(snapshot).unwrap();
+
+        assert_eq!(prune(&dir, snapshot, |_| false), 1);
+        assert!(!old.exists(), "older than the snapshot and unkept: pruned");
+        assert!(new.exists(), "modified at the snapshot moment: kept despite being unkept");
     }
 
     #[test]

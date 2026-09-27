@@ -9,8 +9,8 @@ use ipc_protocol::HostToEngine;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload, UnloadedState,
-    UnloadedTabPayload,
+    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, TabPayload,
+    UnloadedState, UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
@@ -486,6 +486,17 @@ impl App {
         let content_path = matches!(kind, Kind::Image | Kind::Pdf | Kind::Json).then(|| {
             crate::resolve_content_path(crate::profile::content_dir().as_deref(), &id, &str_of(fields, field::PATH))
         });
+        // Missing file, URL known (spec "Where fetched files live"):
+        // refetched instead of shown as an error, whether it's genuinely
+        // missing here or this is a node synced from another replica whose
+        // path was never on this machine. Checked before the insert
+        // helpers below run, so a known miss never reaches their own
+        // "Couldn't open ..." toast (or, for Pdf, starts a doomed render)
+        // in the first place -- a placeholder goes in directly instead,
+        // and `refresh_node` (after this match) replaces it once the fetch
+        // lands.
+        let missing_with_url =
+            content_path.as_deref().is_some_and(|p| !std::path::Path::new(p).exists()) && url_of(fields).is_some();
         match kind {
             Kind::Tab => {
                 let shared = str_of(fields, field::URL);
@@ -513,17 +524,30 @@ impl App {
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
-                if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
+                if missing_with_url {
+                    let payload = ImagePayload { path, width: 0, height: 0, error: None, url: None };
+                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
+                } else if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
                     let payload = ImagePayload { path, width: 0, height: 0, error: Some(error), url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
                 }
             }
             Kind::Pdf => {
-                self.insert_pdf_node_with_id(id.clone(), content_path.clone().unwrap_or_default(), pos, None);
+                let path = content_path.clone().unwrap_or_default();
+                if missing_with_url {
+                    let payload = PdfPayload { path, outcome: None, url: None };
+                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Pdf(payload));
+                } else {
+                    self.insert_pdf_node_with_id(id.clone(), path, pos, None);
+                }
             }
             Kind::Json => {
                 let path = content_path.clone().unwrap_or_default();
-                if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
+                if missing_with_url {
+                    let payload =
+                        JsonPayload { path, value: serde_json::Value::Null, key: None, error: None, url: None };
+                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
+                } else if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
                     let payload =
                         JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error), url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
@@ -552,16 +576,9 @@ impl App {
                 *url = url_of(fields);
             }
         }
-        // Missing file, URL known (spec "Where fetched files live"):
-        // refetch instead of showing an error, whether it's genuinely
-        // missing here or this is a node synced from another replica whose
-        // path was never on this machine. `content_path` above already
-        // tried this machine's own copy in the content dir, so this fires
-        // only when neither exists. The placeholder card (or, for Pdf, its
-        // spinner) shows until the fetch lands.
-        if content_path.is_some_and(|p| !std::path::Path::new(&p).exists())
-            && self.nodes.get(&id).is_some_and(|n| n.source_url().is_some())
-        {
+        // The placeholder just inserted above (see `missing_with_url`)
+        // shows until this fetch lands.
+        if missing_with_url {
             self.refresh_node(&id);
         }
     }
@@ -1379,6 +1396,7 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::redirect_fetch::{FetchResult, FetchTarget};
     use crate::store::journal::Journal;
     use crate::store::model::{ActorId, DocId, Hlc};
     use crate::store::ops::Op;
@@ -1386,6 +1404,21 @@ pub(crate) mod tests {
     use crate::SpawnPurpose;
 
     const A: ActorId = ActorId(0xA);
+
+    /// Drains `app.redirect_fetcher` until it reports something (or gives
+    /// up after ~1 s): under test, `RedirectFetcher::new(None)` (no
+    /// content dir) still spawns a real background thread per `request`,
+    /// but it resolves at once with no I/O, so this is fast in practice.
+    fn drain_fetches(app: &App) -> Vec<FetchResult> {
+        for _ in 0..200 {
+            let results = app.redirect_fetcher.tick();
+            if !results.is_empty() {
+                return results;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Vec::new()
+    }
 
     #[test]
     fn alternating_store_notices_are_each_shown_once_until_a_commit() {
@@ -1648,6 +1681,59 @@ pub(crate) mod tests {
             ),
         ]);
         assert_eq!(app_with(&nodes).shared_nodes(), nodes);
+    }
+
+    #[test]
+    fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches() {
+        let nodes = BTreeMap::from([(
+            id(0),
+            shared(
+                Kind::Json,
+                None,
+                &[
+                    (field::PATH, FieldValue::Str(r"Z:\gone.json".into())),
+                    (field::URL, FieldValue::Str("https://x.test/a.json".into())),
+                ],
+            ),
+        )]);
+        let app = app_with(&nodes);
+        let node_id = id(0).to_string();
+        match &app.nodes[&node_id].payload {
+            NodePayload::Json(p) => {
+                assert!(p.error.is_none(), "a known-URL miss never reaches insert_json_node_with_id's own toast");
+                assert_eq!(p.url.as_deref(), Some("https://x.test/a.json"));
+            }
+            _ => panic!("expected a Json placeholder"),
+        }
+        assert!(app.save_toast_queue.is_empty() && app.save_toast.is_none(), "no 'Couldn't open' toast");
+        let results = drain_fetches(&app);
+        assert_eq!(results.len(), 1, "materialize's own refresh_node queued exactly one fetch");
+        assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
+        assert!(results[0].body.is_none(), "no content dir under test, so the fetch itself fails");
+    }
+
+    #[test]
+    fn retry_missing_file_refetches_a_node_with_a_url_instead_of_retrying_its_local_path() {
+        let nodes = BTreeMap::from([(
+            id(0),
+            shared(
+                Kind::Json,
+                None,
+                &[
+                    (field::PATH, FieldValue::Str(r"Z:\gone.json".into())),
+                    (field::URL, FieldValue::Str("https://x.test/a.json".into())),
+                ],
+            ),
+        )]);
+        let mut app = app_with(&nodes);
+        let node_id = id(0).to_string();
+        // `materialize` already queued one refetch on its own; drain and
+        // discard it so the assertion below reflects only the click.
+        drain_fetches(&app);
+        app.retry_missing_file(&node_id);
+        let results = drain_fetches(&app);
+        assert_eq!(results.len(), 1, "the URL branch queued exactly one fetch");
+        assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
     }
 
     #[test]
