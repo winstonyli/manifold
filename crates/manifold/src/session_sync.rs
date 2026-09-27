@@ -2013,6 +2013,28 @@ pub(crate) mod tests {
         assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
     }
 
+    /// Tab lists (Quick Switcher, Ctrl+Tab, graph navigation, Close All,
+    /// pinning) include sleeping tabs, and opening one from them wakes it.
+    #[test]
+    fn tab_lists_include_sleeping_tabs() {
+        let mut app = app_on(&temp_dir("lazy-lists").join("session.mnf"), 1);
+        let a = add(&mut app, sleeping_tab("https://a/", "Alpha"));
+        let b = add(&mut app, sleeping_tab("https://b/", "Beta"));
+        assert_eq!(app.quick_switcher_matches("beta"), std::slice::from_ref(&b));
+        app.quick_switcher = Some(crate::QuickSwitcher { query: "beta".into(), selected: 0 });
+        app.quick_switcher_confirm();
+        assert_eq!(app.focused.as_deref(), Some(b.as_str()));
+        assert_eq!(app.test_spawns.len(), 1);
+        app.cycle_focused_tab(true);
+        assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+        assert_eq!(app.test_spawns.len(), 2);
+        assert_eq!(app.tabs_at_current_level(), [a.clone(), b.clone()]);
+        app.set_all_pinned(true);
+        assert!(app.nodes[&a].payload.pinned() && app.nodes[&b].payload.pinned());
+        app.close_all_at_current_level();
+        assert!(app.nodes.is_empty());
+    }
+
     /// A failed wake leaves a failed card, still focused, and ends the
     /// respawning placeholder (Tab view then falls back to Graph).
     #[test]

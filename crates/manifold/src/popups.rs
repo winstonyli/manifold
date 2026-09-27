@@ -590,7 +590,8 @@ impl App {
         let mut mute_others = false;
         let mut close_others = false;
         let mut toggle_pin_all = false;
-        let tab_pin_states: Vec<bool> = self.nodes.values().filter_map(|n| n.as_tab()).map(|t| t.pinned).collect();
+        let tab_pin_states: Vec<bool> =
+            self.nodes.values().filter(|n| n.payload.saved_tab().is_some()).map(|n| n.payload.pinned()).collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())
@@ -796,8 +797,8 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| {
-                self.nodes.get(id.as_str()).and_then(|n| n.as_tab()).is_some_and(|n| {
-                    query.is_empty() || n.title.to_lowercase().contains(&query) || n.url.to_lowercase().contains(&query)
+                self.nodes.get(id.as_str()).and_then(|n| n.payload.listed_tab()).is_some_and(|(title, url)| {
+                    query.is_empty() || title.to_lowercase().contains(&query) || url.to_lowercase().contains(&query)
                 })
             })
             .cloned()

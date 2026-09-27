@@ -800,7 +800,7 @@ impl App {
                             "group": node.group,
                             "parent": node.parent,
                             "color": node.color.is_some(),
-                            "pinned": node.as_tab().is_some_and(|t| t.pinned),
+                            "pinned": node.payload.pinned(),
                             "screen": [screen.center().x, screen.center().y],
                             "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                         }))

@@ -53,6 +53,33 @@ impl NodePayload {
         }
     }
 
+    /// A live or unloaded tab's title and url: what tab lists (Quick
+    /// Switcher, Ctrl+Tab, the address bar's open tabs) show and match.
+    pub(crate) fn listed_tab(&self) -> Option<(&str, &str)> {
+        match self {
+            NodePayload::Tab(t) => Some((&t.title, &t.url)),
+            NodePayload::Unloaded(t) => Some((&t.title, &t.url)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pinned_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            NodePayload::Tab(t) => Some(&mut t.pinned),
+            NodePayload::Unloaded(t) => Some(&mut t.pinned),
+            _ => None,
+        }
+    }
+
+    /// Whether a live or unloaded tab is pinned in place on the graph.
+    pub(crate) fn pinned(&self) -> bool {
+        match self {
+            NodePayload::Tab(t) => t.pinned,
+            NodePayload::Unloaded(t) => t.pinned,
+            _ => false,
+        }
+    }
+
     pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
         match self {
             NodePayload::Download(d) => Some(d),

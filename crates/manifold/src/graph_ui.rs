@@ -1079,7 +1079,7 @@ impl App {
                         ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
                     );
                     self.selected_tabs = self
-                        .nodes_at_current_level(ItemNodeKind::Tab)
+                        .tabs_at_current_level()
                         .into_iter()
                         .filter(|id| {
                             self.nodes.get(id).is_some_and(|node| {

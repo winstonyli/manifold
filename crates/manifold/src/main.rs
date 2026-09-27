@@ -2212,13 +2212,13 @@ impl App {
         self.node_order
             .iter()
             .filter(|id| id.as_str() != exclude)
-            .filter_map(|id| self.nodes.get(id).and_then(|n| n.as_tab()).map(|node| (id, node)))
-            .filter(|(_, node)| node.url.to_lowercase().contains(&query) || node.title.to_lowercase().contains(&query))
+            .filter_map(|id| self.nodes.get(id).and_then(|n| n.payload.listed_tab()).map(|tab| (id, tab)))
+            .filter(|(_, (title, url))| url.to_lowercase().contains(&query) || title.to_lowercase().contains(&query))
             .take(5)
-            .map(|(id, node)| Suggestion::OpenTab {
+            .map(|(id, (title, url))| Suggestion::OpenTab {
                 tab_id: id.clone(),
-                url: node.url.clone(),
-                title: node.title.clone(),
+                url: url.to_string(),
+                title: title.to_string(),
             })
             .collect()
     }
@@ -2894,6 +2894,18 @@ impl App {
             .collect()
     }
 
+    /// The live and unloaded tabs at the level being viewed, in draw order:
+    /// what graph navigation, selection and Close All act on.
+    fn tabs_at_current_level(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| {
+                self.nodes.get(*id).is_some_and(|n| n.group == self.current_group && n.payload.saved_tab().is_some())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Where the dragged card `id` would drop right now, and what that
     /// would do (`drop_action`). The back button is tested first, by
     /// pointer, since it's a screen-space toolbar widget. Then the card at
@@ -2913,7 +2925,7 @@ impl App {
             return drop_action(dragged, DropTarget::BackButton, inside_group).map(|effect| (effect, None));
         }
         let center = egui::Pos2::new(node.pos.x, node.pos.y);
-        [ItemNodeKind::Group, ItemNodeKind::Tab].into_iter().find_map(|kind| {
+        [ItemNodeKind::Group, ItemNodeKind::Tab, ItemNodeKind::Unloaded].into_iter().find_map(|kind| {
             let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
             let target = self.nodes_at_current_level(kind).into_iter().find(|other| {
                 other != id && self.nodes.get(other).is_some_and(|n| node_card_rect(n).contains(center))
@@ -3144,7 +3156,7 @@ impl App {
     /// sites an id type they don't expect.
     fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
         let mut best: Option<(String, f32)> = None;
-        for id in self.nodes_at_current_level(ItemNodeKind::Tab) {
+        for id in self.tabs_at_current_level() {
             let Some(node) = self.nodes.get(&id) else { continue };
             let delta = node.pos - from;
             let along = delta.dot(dir);
@@ -3183,7 +3195,7 @@ impl App {
                 }
             }
             None => {
-                if let Some(first) = self.nodes_at_current_level(ItemNodeKind::Tab).into_iter().next() {
+                if let Some(first) = self.tabs_at_current_level().into_iter().next() {
                     self.focused = Some(first);
                 }
             }
@@ -3275,7 +3287,7 @@ impl App {
         let pinned: HashSet<String> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.group == self.current_group && n.as_tab().is_some_and(|t| t.pinned))
+            .filter(|(_, n)| n.group == self.current_group && n.payload.pinned())
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -3304,11 +3316,9 @@ impl App {
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip.
     fn duplicate_tab(&mut self, id: &str) {
-        let Some((parent, group, url, kind)) = self
-            .nodes
-            .get(id)
-            .and_then(|n| n.as_tab().map(|t| (n.parent.clone(), n.group.clone(), t.url.clone(), t.tab.kind)))
-        else {
+        let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
+            n.payload.saved_tab().map(|(url, kind)| (n.parent.clone(), n.group.clone(), url.to_string(), kind))
+        }) else {
             return;
         };
         self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New);
@@ -3861,8 +3871,8 @@ impl App {
     /// Pin/Unpin entry.
     fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-            node.pinned = !node.pinned;
+        if let Some(pinned) = self.nodes.get_mut(&id).and_then(|n| n.payload.pinned_mut()) {
+            *pinned = !*pinned;
         }
     }
 
@@ -4555,7 +4565,7 @@ impl App {
     /// normal `close_node` path, same "just that action run once per tab"
     /// shape `close_all_except` already has.
     fn close_all_at_current_level(&mut self) {
-        for id in self.nodes_at_current_level(ItemNodeKind::Tab) {
+        for id in self.tabs_at_current_level() {
             self.close_node(&id);
         }
     }
@@ -4637,7 +4647,9 @@ impl App {
         let other_ids: Vec<String> = self
             .node_order
             .iter()
-            .filter(|id| id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.as_tab().is_some()))
+            .filter(|id| {
+                id.as_str() != keep_id && self.nodes.get(id.as_str()).is_some_and(|n| n.payload.saved_tab().is_some())
+            })
             .cloned()
             .collect();
         for id in other_ids {
@@ -4652,8 +4664,8 @@ impl App {
     /// has no natural tab to exclude the way muting excludes the one
     /// they're presumably still listening to.
     fn set_all_pinned(&mut self, pin: bool) {
-        for node in self.nodes.values_mut().filter_map(|n| n.as_tab_mut()) {
-            node.pinned = pin;
+        for pinned in self.nodes.values_mut().filter_map(|n| n.payload.pinned_mut()) {
+            *pinned = pin;
         }
     }
 
@@ -4882,7 +4894,7 @@ impl App {
             kind: item_node_kind(&node.payload),
             has_group: node.group.is_some(),
             color: node.color,
-            pinned: tab.is_some_and(|t| t.pinned),
+            pinned: node.payload.pinned(),
             has_json: tab.is_some_and(|t| t.json_body.is_some()),
             other_default_engine: node
                 .payload
@@ -4920,8 +4932,8 @@ impl App {
                 self.save_session();
             }
             NodeAction::TogglePin => {
-                if let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
-                    tab.pinned = !tab.pinned;
+                if let Some(pinned) = self.nodes.get_mut(id).and_then(|n| n.payload.pinned_mut()) {
+                    *pinned = !*pinned;
                 }
             }
             NodeAction::Duplicate => self.duplicate_tab(id),
@@ -5048,14 +5060,16 @@ impl App {
     /// with zero or one tab open.
     fn cycle_focused_tab(&mut self, forward: bool) {
         // `node_order` holds every graph node (tabs, notes, images, PDFs,
-        // JSON files), not just tabs -- filter to tabs first (same filter
-        // `quick_switcher_matches` applies) so this never lands on a
-        // non-tab node, which `focus_tab` -> `render_tab_toolbar_content`
-        // assumes can't happen (`as_tab().unwrap()`).
+        // JSON files), not just tabs -- filter to live and unloaded tabs
+        // first (same filter `quick_switcher_matches` applies) so this
+        // never lands on a non-tab node. Landing on an unloaded tab is
+        // fine: `focus_tab` wakes it, and `render_tab_toolbar_content`
+        // shows the respawning placeholder until it's live rather than
+        // assuming `as_tab().unwrap()`.
         let tab_ids: Vec<&String> = self
             .node_order
             .iter()
-            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.as_tab()).is_some())
+            .filter(|id| self.nodes.get(id.as_str()).and_then(|n| n.payload.listed_tab()).is_some())
             .collect();
         if tab_ids.len() < 2 {
             return;

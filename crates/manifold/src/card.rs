@@ -213,16 +213,17 @@ impl CardControl {
 }
 
 /// The buttons `view`'s card shows, in registration order (see
-/// `CardControl`): the swatch on every card, a tab's pin, and its audio
-/// indicator while playing or muted, eject on a grouped one, and the ✕
-/// last, so it wins over anything under it.
+/// `CardControl`): the swatch on every card, a tab's (live or unloaded)
+/// pin, and a live tab's audio indicator while playing or muted, eject on
+/// a grouped one, and the ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     let mut controls = vec![CardControl::Swatch];
-    if view.kind == ItemNodeKind::Tab {
+    if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded) {
         controls.push(CardControl::Pin);
         // Also while muted after audio stops, so a mute can always be
-        // seen and undone from Graph view.
-        if view.audio_playing || view.muted {
+        // seen and undone from Graph view. An unloaded card has no engine
+        // to be playing or muted, so it never gets this control.
+        if view.kind == ItemNodeKind::Tab && (view.audio_playing || view.muted) {
             controls.push(CardControl::Audio);
         }
     }
@@ -259,13 +260,13 @@ pub(crate) enum DropEffect {
 
 /// Every drag-and-drop rule in Graph view, for every kind.
 pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
-    use ItemNodeKind::{Group, Tab};
+    use ItemNodeKind::{Group, Tab, Unloaded};
     match (dragged, target, inside_group) {
         (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
         (Group, DropTarget::Card(Group), _) => Some(DropEffect::Merge),
         (_, DropTarget::Card(Group), _) => Some(DropEffect::Join),
-        (Tab, DropTarget::Card(Tab), false) => Some(DropEffect::GroupWith),
-        (Tab, DropTarget::Card(Tab), true) => Some(DropEffect::Reparent),
+        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), false) => Some(DropEffect::GroupWith),
+        (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), true) => Some(DropEffect::Reparent),
         _ => None,
     }
 }
@@ -591,7 +592,7 @@ impl App {
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
             focused: self.focused.as_deref() == Some(id),
-            pinned: tab.is_some_and(|t| t.pinned),
+            pinned: node.payload.pinned(),
             muted: tab.is_some_and(|t| t.muted),
             audio_playing: tab.is_some_and(|t| t.audio_playing),
             selected: self.selected_tabs.contains(id),
@@ -1639,13 +1640,20 @@ mod tests {
     #[test]
     fn card_controls_list_each_cards_buttons_in_pointer_order() {
         use CardControl::*;
-        for kind in GRAPH_DRAW_ORDER.into_iter().filter(|&k| k != ItemNodeKind::Tab) {
+        for kind in GRAPH_DRAW_ORDER.into_iter().filter(|&k| !matches!(k, ItemNodeKind::Tab | ItemNodeKind::Unloaded)) {
             assert_eq!(card_controls(&test_view(kind)), vec![Swatch, Close], "{kind:?}");
             let grouped = CardView { in_group: true, ..test_view(kind) };
             assert_eq!(card_controls(&grouped), vec![Swatch, Eject, Close], "{kind:?}");
             let close = if kind == ItemNodeKind::Group { NodeAction::Dissolve } else { NodeAction::Delete };
             assert_eq!(Close.action(kind), close, "{kind:?}");
         }
+        // An unloaded card shows its pin too, but never the audio
+        // indicator -- it has no engine to be playing or muted.
+        assert_eq!(card_controls(&test_view(ItemNodeKind::Unloaded)), vec![Swatch, Pin, Close]);
+        assert_eq!(
+            card_controls(&CardView { audio_playing: true, muted: true, ..test_view(ItemNodeKind::Unloaded) }),
+            vec![Swatch, Pin, Close]
+        );
         // A tab always shows its pin; its audio indicator while playing or
         // muted. Close still registers last: it overlaps the indicator.
         let tab = |f: fn(&mut CardView)| {
@@ -1719,8 +1727,21 @@ mod tests {
                 assert_eq!(drop_action(kind, card(K::Group), inside_group), Some(onto_group), "{kind:?}");
             }
         }
-        assert_eq!(drop_action(K::Tab, card(K::Tab), false), Some(DropEffect::GroupWith));
-        assert_eq!(drop_action(K::Tab, card(K::Tab), true), Some(DropEffect::Reparent));
+        // An unloaded card is a tab on both sides of the drop.
+        for (dragged, target) in
+            [(K::Tab, K::Tab), (K::Tab, K::Unloaded), (K::Unloaded, K::Tab), (K::Unloaded, K::Unloaded)]
+        {
+            assert_eq!(
+                drop_action(dragged, card(target), false),
+                Some(DropEffect::GroupWith),
+                "{dragged:?} -> {target:?}"
+            );
+            assert_eq!(
+                drop_action(dragged, card(target), true),
+                Some(DropEffect::Reparent),
+                "{dragged:?} -> {target:?}"
+            );
+        }
         // Only a tab drops onto a tab, and nothing drops onto the file kinds.
         assert_eq!(drop_action(K::Note, card(K::Tab), false), None);
         assert_eq!(drop_action(K::Group, card(K::Tab), true), None);
