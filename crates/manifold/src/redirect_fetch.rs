@@ -33,8 +33,6 @@ pub enum FetchTarget {
     /// Convert this tab, if it still shows `url`.
     Tab(String),
     /// Reload this node's file (Refresh, or a missing file; Task 5/6).
-    // constructed by Refresh (Task 5); not yet built anywhere, test included.
-    #[allow(dead_code)]
     Node(String),
 }
 

@@ -133,6 +133,10 @@ enum NodeAction {
     CopyText,
     Reveal,
     CopyPath,
+    /// Fetches a node's source URL again, in place.
+    Refresh,
+    /// A new tab at the node's source URL, beside it.
+    OpenAsTab,
     ExpandAsGraph,
     TogglePin,
     Duplicate,
@@ -309,6 +313,18 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     use NodeAction as A;
     use NodeMenuItem::{Button, Colors, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
+    // Refresh (Image/Pdf/Json only) and Open as Tab (any kind with a url),
+    // first in the menu.
+    let url_items = |refresh: bool| {
+        let mut items = Vec::new();
+        if view.has_url && refresh {
+            items.push(Button("Refresh", A::Refresh));
+        }
+        if view.has_url {
+            items.push(Button("Open as Tab", A::OpenAsTab));
+        }
+        items
+    };
     // Every menu ends in the Colors row, Remove from Group (when the node
     // is grouped), then the kind's delete items.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
@@ -324,12 +340,23 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     match view.kind {
         ItemNodeKind::Download => finish("download_context_menu", 170.0, file_items(), delete("Remove from List")),
         ItemNodeKind::Note => {
-            finish("note_context_menu", 150.0, vec![Button("Copy Text", A::CopyText)], delete("Delete"))
+            let mut items = url_items(false);
+            items.push(Button("Copy Text", A::CopyText));
+            finish("note_context_menu", 150.0, items, delete("Delete"))
         }
-        ItemNodeKind::Image => finish("image_context_menu", 170.0, file_items(), delete("Delete")),
-        ItemNodeKind::Pdf => finish("pdf_context_menu", 170.0, file_items(), delete("Delete")),
+        ItemNodeKind::Image => {
+            let mut items = url_items(true);
+            items.extend(file_items());
+            finish("image_context_menu", 170.0, items, delete("Delete"))
+        }
+        ItemNodeKind::Pdf => {
+            let mut items = url_items(true);
+            items.extend(file_items());
+            finish("pdf_context_menu", 170.0, items, delete("Delete"))
+        }
         ItemNodeKind::Json => {
-            let mut items = file_items();
+            let mut items = url_items(true);
+            items.extend(file_items());
             items.push(Button("Expand as Graph", A::ExpandAsGraph));
             finish("json_context_menu", 170.0, items, delete("Delete"))
         }
@@ -376,6 +403,9 @@ struct NodeMenuView {
     kind: ItemNodeKind,
     has_group: bool,
     color: Option<egui::Color32>,
+    /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
+    /// (Image/Pdf/Json) and Open as Tab (any of the four).
+    has_url: bool,
     /// Tab only.
     pinned: bool,
     /// Tab only.
@@ -1819,6 +1849,11 @@ struct App {
     /// by that outcome in `handle_tab_spawn_result`.
     wakes_in_flight: HashSet<String>,
 
+    /// Tabs opened by "Open as tab": their first `RedirectableContent` or
+    /// `JsonBody` report doesn't convert them. Left on a real url change
+    /// or when the tab goes.
+    skip_convert: HashSet<String>,
+
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
     /// parks each spawn here (with its `session_generation`) for the test
     /// to hand `handle_tab_spawn_result` an outcome itself.
@@ -1939,6 +1974,7 @@ impl Default for App {
             event_proxy: None,
             pending_respawn_focus: None,
             wakes_in_flight: HashSet::new(),
+            skip_convert: HashSet::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
         };
@@ -3691,6 +3727,7 @@ impl App {
         }
         self.nodes.remove(id);
         self.node_order.retain(|t| t != id);
+        self.skip_convert.remove(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
@@ -4128,6 +4165,84 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    /// Fetches a node's source URL again; `reload_fetched_node` swaps it
+    /// in once it passes its check. Refresh, and a missing file.
+    fn refresh_node(&mut self, id: &str) {
+        use content::ContentKind as K;
+        let Some(node) = self.nodes.get(id) else { return };
+        let kind = match &node.payload {
+            NodePayload::Image(_) => K::Image,
+            NodePayload::Pdf(_) => K::Pdf,
+            NodePayload::Json(j) if j.key.is_none() => K::Json,
+            _ => return,
+        };
+        let Some(url) = node.source_url().map(str::to_string) else { return };
+        let job = FetchJob { target: FetchTarget::Node(id.to_string()), node_id: id.to_string(), url, kind };
+        self.redirect_fetcher.request(job);
+    }
+
+    /// Reloads node `id` from freshly fetched content: same id, position,
+    /// group, color and draw order. If the new content fails to load, the
+    /// node isn't lost -- a placeholder of the same kind (mirroring
+    /// `retry_missing_file`'s own failure handling, and `session_sync`'s
+    /// restore-time placeholder) takes its place, carrying the error and
+    /// the url.
+    fn reload_fetched_node(&mut self, id: &str, body: WebBody) {
+        use content::ContentKind as K;
+        let Some(node) = self.nodes.get(id) else { return };
+        let WebBody::File { kind, path } = &body else { return };
+        let (kind, path) = (*kind, path.clone());
+        let (pos, group, parent, color) = (node.pos, node.group.clone(), node.parent.clone(), node.color);
+        let Some(url) = node.source_url().map(str::to_string) else { return };
+        let at = self.node_order.iter().position(|n| n == id);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_image(id);
+        }
+        self.nodes.remove(id);
+        self.node_order.retain(|n| n != id);
+        let source = ContentSource::Web { url: url.clone(), body };
+        let result = self.insert_content(source, id.to_string(), pos, group.clone());
+        if let Err(error) = &result {
+            let payload = match kind {
+                K::Image => NodePayload::Image(ImagePayload {
+                    path,
+                    width: 0,
+                    height: 0,
+                    error: Some(error.clone()),
+                    url: Some(url),
+                }),
+                K::Json => NodePayload::Json(JsonPayload {
+                    path,
+                    value: serde_json::Value::Null,
+                    key: None,
+                    error: Some(error.clone()),
+                    url: Some(url),
+                }),
+                _ => return,
+            };
+            self.insert_placeholder_node(id.to_string(), pos, payload);
+        }
+        if let Some(node) = self.nodes.get_mut(id) {
+            (node.parent, node.color, node.group) = (parent, color, group);
+        }
+        if let (Some(at), Some(last)) = (at, self.node_order.pop()) {
+            self.node_order.insert(at.min(self.node_order.len()), last);
+        }
+        if result.is_ok() {
+            self.save_session();
+        }
+    }
+
+    /// A tab at the node's source URL beside it, which stays a tab on its
+    /// first load (`skip_convert`), e.g. to read a PDF past page 1.
+    fn open_as_tab(&mut self, id: &str) {
+        let Some(node) = self.nodes.get(id) else { return };
+        let Some(url) = node.source_url().map(str::to_string) else { return };
+        let (pos, group) = (node.pos + egui::vec2(40.0, 40.0), node.group.clone());
+        let tab = self.spawn_tab_at(&url, pos, group);
+        self.skip_convert.insert(tab);
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.
@@ -4990,6 +5105,7 @@ impl App {
             kind: item_node_kind(&node.payload),
             has_group: node.group.is_some(),
             color: node.color,
+            has_url: node.source_url().is_some(),
             pinned: node.payload.pinned(),
             has_json: tab.is_some_and(|t| t.json_body.is_some()),
             other_default_engine: node
@@ -5023,6 +5139,8 @@ impl App {
                     ctx.copy_text(path);
                 }
             }
+            NodeAction::Refresh => self.refresh_node(id),
+            NodeAction::OpenAsTab => self.open_as_tab(id),
             NodeAction::ExpandAsGraph => {
                 self.expand_json_as_graph(id);
                 self.save_session();
@@ -5425,6 +5543,91 @@ mod tests {
         assert_eq!(app.nodes[&note_id].source_url(), Some("https://x.test/note.txt"));
     }
 
+    #[test]
+    fn a_refetched_file_reloads_the_node_in_place() {
+        let dir = crate::store::testutil::temp_dir("refresh_reload");
+        let mut app = App::default();
+        let first = crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+        app.insert_content(
+            ContentSource::Web { url: "https://x.test/j".into(), body: first },
+            "r".into(),
+            egui::vec2(1.0, 2.0),
+            None,
+        )
+        .unwrap();
+        app.nodes.get_mut("r").unwrap().color = Some(egui::Color32::RED);
+        let order = app.node_order.clone();
+        let second =
+            crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[2]".to_vec()).unwrap();
+        app.reload_fetched_node("r", second);
+        let node = &app.nodes["r"];
+        assert_eq!(node.as_json().unwrap().value, serde_json::json!([2]));
+        assert_eq!(
+            (node.pos, node.color, node.source_url()),
+            (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("https://x.test/j"))
+        );
+        assert_eq!(app.node_order, order);
+    }
+
+    /// A failed refetch (bad file) doesn't lose the node -- a placeholder
+    /// of the same kind takes its place, carrying the error and the url,
+    /// same as `retry_missing_file`'s own failure handling and
+    /// `session_sync`'s restore-time placeholder. Also covers `group`,
+    /// which a first draft of `reload_fetched_node` dropped on this path
+    /// (it only restored `parent`/`color`).
+    #[test]
+    fn a_failed_refetch_keeps_a_placeholder_with_group_and_error() {
+        let dir = crate::store::testutil::temp_dir("refresh_reload_fail");
+        let mut app = App::default();
+        let first = crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+        app.insert_content(
+            ContentSource::Web { url: "https://x.test/j".into(), body: first },
+            "r".into(),
+            egui::vec2(1.0, 2.0),
+            Some("g".into()),
+        )
+        .unwrap();
+        app.nodes.get_mut("r").unwrap().color = Some(egui::Color32::RED);
+        let order = app.node_order.clone();
+        let bad = WebBody::File {
+            kind: crate::content::ContentKind::Json,
+            path: dir.join("missing.json").to_string_lossy().into_owned(),
+        };
+        app.reload_fetched_node("r", bad);
+        let node = &app.nodes["r"];
+        assert!(node.as_json().unwrap().error.is_some());
+        assert_eq!(
+            (node.pos, node.color, node.group.as_deref(), node.source_url()),
+            (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("g"), Some("https://x.test/j"))
+        );
+        assert_eq!(app.node_order, order);
+    }
+
+    /// Windowless tests can't spawn a real tab (see `test_spawns`), but
+    /// `open_as_tab` allocates the new tab's id and marks it in
+    /// `skip_convert` before that async spawn even starts, so both are
+    /// checkable without one.
+    #[test]
+    fn open_as_tab_marks_the_new_tab_to_skip_its_first_conversion() {
+        let dir = crate::store::testutil::temp_dir("open_as_tab");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let path = dir.join("a.png");
+        std::fs::write(&path, png.into_inner()).unwrap();
+
+        let mut app = App::default();
+        let source = ContentSource::Web {
+            url: "https://x.test/a.png".into(),
+            body: WebBody::File { kind: content::ContentKind::Image, path: path.to_string_lossy().into_owned() },
+        };
+        app.insert_content(source, "n".into(), egui::Vec2::ZERO, None).unwrap();
+        app.open_as_tab("n");
+        assert_eq!(app.test_spawns.len(), 1);
+        let tab_id = app.test_spawns[0].0.id.clone();
+        assert_eq!(app.test_spawns[0].0.url, "https://x.test/a.png");
+        assert!(app.skip_convert.contains(&tab_id));
+    }
+
     /// The tab has no live engine in a windowless test, so this builds an
     /// `Unloaded` node (`session_sync::tests::sleeping_tab`) rather than a
     /// real `Tab` payload -- `redirect_tab_to_content` only ever reads
@@ -5601,6 +5804,19 @@ mod tests {
     // before the tab and group menus joined them.
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
+        fn view_of(kind: ItemNodeKind) -> NodeMenuView {
+            NodeMenuView {
+                kind,
+                has_group: false,
+                color: None,
+                has_url: false,
+                pinned: false,
+                has_json: false,
+                other_default_engine: false,
+                failed: false,
+                renaming: None,
+            }
+        }
         fn menu_of(view: &NodeMenuView, headless: bool) -> (&'static str, f32, String) {
             let config = node_menu_config(view, headless);
             let items: Vec<&str> = config
@@ -5621,16 +5837,7 @@ mod tests {
             has_json: bool,
             headless: bool,
         ) -> (&'static str, f32, String) {
-            let view = NodeMenuView {
-                kind,
-                has_group,
-                color: None,
-                pinned,
-                has_json,
-                other_default_engine: false,
-                failed: false,
-                renaming: None,
-            };
+            let view = NodeMenuView { has_group, pinned, has_json, ..view_of(kind) };
             menu_of(&view, headless)
         }
         for has_group in [false, true] {
@@ -5698,16 +5905,7 @@ mod tests {
         // A failed tab offers Retry (and the default engine, when it isn't
         // the engine that failed) instead of Open; a sleeping/waking one
         // just offers Open.
-        let failed = NodeMenuView {
-            kind: ItemNodeKind::Unloaded,
-            has_group: false,
-            color: None,
-            pinned: false,
-            has_json: false,
-            other_default_engine: true,
-            failed: true,
-            renaming: None,
-        };
+        let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(ItemNodeKind::Unloaded) };
         assert_eq!(
             menu_of(&failed, false).2,
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
@@ -5716,6 +5914,21 @@ mod tests {
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, false, true).2,
             "Rename | <colors> | --- | Dissolve | Close Group"
+        );
+        // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
+        // Tab, ahead of the kind's own items.
+        let with_url = |kind| NodeMenuView { kind, has_url: true, ..view_of(kind) };
+        assert_eq!(
+            menu_of(&with_url(ItemNodeKind::Image), false).2,
+            "Refresh | Open as Tab | Open Containing Folder | Copy Path | <colors> | --- | Delete"
+        );
+        assert_eq!(
+            menu_of(&with_url(ItemNodeKind::Json), false).2,
+            "Refresh | Open as Tab | Open Containing Folder | Copy Path | Expand as Graph | <colors> | --- | Delete"
+        );
+        assert_eq!(
+            menu_of(&with_url(ItemNodeKind::Note), false).2,
+            "Open as Tab | Copy Text | <colors> | --- | Delete"
         );
     }
 

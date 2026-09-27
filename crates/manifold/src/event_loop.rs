@@ -1123,7 +1123,7 @@ impl App {
                         self.redirect_tab_to_content(&tab_id, job.node_id, job.url, body);
                     }
                 }
-                FetchTarget::Node(_) => {}
+                FetchTarget::Node(id) => self.reload_fetched_node(&id, body),
             }
         }
 
@@ -1210,6 +1210,7 @@ impl App {
                 let url_changed = node.url != url;
                 if url_changed {
                     node.json_body = None;
+                    self.skip_convert.remove(tab_id);
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);
@@ -1302,6 +1303,12 @@ impl App {
                     tab.json_body = Some(body.clone());
                     tab.url.clone()
                 });
+                // "Open as Tab"'s first report doesn't convert -- the point
+                // was to keep it a tab (see `skip_convert`'s own doc
+                // comment).
+                if self.skip_convert.remove(tab_id) {
+                    return false;
+                }
                 if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
                     let node_id = self.alloc_node_id();
                     if let Some(web) = crate::redirect_fetch::save(
@@ -1321,6 +1328,9 @@ impl App {
             // in `drain_tab_events`, not here.
             EngineToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
+                if self.skip_convert.remove(tab_id) {
+                    return false;
+                }
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
                 let kind = crate::content::kind_of(&content_type);
                 if let (Some(url), K::Image | K::Pdf | K::Json | K::Note) = (url, kind) {
