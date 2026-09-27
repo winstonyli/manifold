@@ -14,7 +14,7 @@ use crate::node::{
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
-use crate::store::model::{encode_field, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
+use crate::store::model::{encode_field, encode_field_into, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CLOSED};
 
@@ -149,7 +149,9 @@ pub(crate) fn diff(
         created.insert(id);
     }
 
-    // Existing nodes: moves and sets.
+    // Existing nodes: moves and sets. Each field is encoded into `enc` and
+    // copied out only when it differs.
+    let mut enc = Vec::new();
     for (&id, node) in live {
         let Some(current) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
         let group = valid(node.group);
@@ -160,13 +162,12 @@ pub(crate) fn diff(
             if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
                 continue;
             }
-            let value = match value {
-                FieldValue::Id(parent) => FieldValue::Id(valid(*parent)),
-                other => other.clone(),
-            };
-            let enc = encode_field(no, &value);
+            match value {
+                FieldValue::Id(parent) => encode_field_into(&mut enc, no, &FieldValue::Id(valid(*parent))),
+                other => encode_field_into(&mut enc, no, other),
+            }
             if current.fields.get(&no).map_or(&[][..], |reg| &reg.enc[..]) != &enc[..] {
-                ops.push(OpBody::Set { node: id, field: no, enc });
+                ops.push(OpBody::Set { node: id, field: no, enc: enc.clone() });
             }
         }
     }
@@ -717,6 +718,15 @@ impl App {
                 }
             }
             let ops = diff(txn.doc(), &live, &self.explicit, &keep);
+            // The nodes whose stored state this commit changes. A delete can
+            // also change other nodes' effective group, so it refreshes all.
+            let touched: Option<BTreeSet<NodeId>> = ops
+                .iter()
+                .map(|op| match op {
+                    OpBody::Create { node, .. } | OpBody::Set { node, .. } | OpBody::Move { node, .. } => Some(*node),
+                    OpBody::Delete { .. } => None,
+                })
+                .collect();
             let result = if ops.is_empty() {
                 drop(txn);
                 Ok(())
@@ -728,10 +738,17 @@ impl App {
                 Ok(()) => {
                     // What the store now holds is what this replica last
                     // saw: every diffed field as live, but an explicit one
-                    // only if it was marked (an unmarked `pos` stays).
+                    // only if it was marked (an unmarked `pos` stays). Only
+                    // `touched` nodes can differ from `last_shared`: every
+                    // other store change (a remote op, a restore) already
+                    // updated it in `materialize`.
                     if let Some(journal) = &self.journal {
                         let doc = journal.doc();
-                        for &id in live.keys() {
+                        let ids: Box<dyn Iterator<Item = &NodeId>> = match &touched {
+                            Some(touched) => Box::new(touched.iter()),
+                            None => Box::new(live.keys()),
+                        };
+                        for &id in ids {
                             let Some(node) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
                             let seen =
                                 Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
@@ -2031,6 +2048,58 @@ pub(crate) mod tests {
         let g = app.alloc_node_id();
         assert!(app.export_group_json(&g).is_none());
         assert!(!app.save_toast_queue.is_empty(), "toasted");
+    }
+
+    /// `save_session` refreshes `last_shared` only for nodes its ops name
+    /// (all of them after a delete), trusting `materialize` for every other
+    /// store change. After each kind of save, `last_shared` must still be
+    /// exactly what the store holds for every live node.
+    #[test]
+    fn last_shared_matches_the_store_after_every_save() {
+        fn check(app: &App, step: &str) {
+            let doc = app.journal.as_ref().unwrap().doc();
+            for (id, node) in doc.live() {
+                let want = Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+                assert_eq!(app.last_shared.get(&id.to_string()), Some(&want), "{step}: node {id}");
+            }
+        }
+        let dir = temp_dir("last-shared");
+        let path = dir.join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+        let outer = add(&mut app, group("outer"));
+        let inner = add(&mut app, group("inner"));
+        let tab = add(&mut app, failed_tab("https://a/", 1.0));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+        app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
+        app.nodes.get_mut(&tab).unwrap().group = Some(inner.clone());
+        assert!(app.save_session());
+        check(&app, "creates");
+
+        if let NodePayload::Note(n) = &mut app.nodes.get_mut(&note).unwrap().payload {
+            n.text = "typed".into();
+        }
+        assert!(app.save_session());
+        check(&app, "a set");
+
+        // Another replica pins the tab and deletes the inner group, so the
+        // tab's effective group becomes `outer` with no op naming the tab.
+        let mut other = Journal::open(&path, ActorId(2)).unwrap();
+        remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
+        other.begin().unwrap().commit(vec![OpBody::Delete { node: inner.parse().unwrap() }]).unwrap();
+        assert!(app.save_session());
+        check(&app, "remote set and delete");
+
+        app.dissolve_group(&outer);
+        assert!(app.save_session());
+        check(&app, "a local delete and moves");
+
+        if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+            t.url = "https://b/".into();
+        }
+        app.mark(&tab, field::URL);
+        assert!(app.save_session());
+        check(&app, "a marked url");
     }
 
     /// What the app's side of a save costs at realistic session sizes: the

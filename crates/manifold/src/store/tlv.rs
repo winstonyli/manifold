@@ -52,6 +52,12 @@ impl Writer {
         Self::default()
     }
 
+    /// Writes into `buf`, cleared, reusing its allocation.
+    pub fn reuse(mut buf: Vec<u8>) -> Self {
+        buf.clear();
+        Self { buf }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }

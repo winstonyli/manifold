@@ -258,7 +258,15 @@ impl FieldValue {
 /// `value` as field `no` of a node message, key and value; empty when it
 /// holds what absence decodes to, so equal values encode equally.
 pub fn encode_field(no: u32, value: &FieldValue) -> Vec<u8> {
-    let mut w = Writer::new();
+    let mut out = Vec::new();
+    encode_field_into(&mut out, no, value);
+    out
+}
+
+/// `encode_field` into `out` (replacing what it held), reusing its
+/// allocation: for comparing many fields against stored bytes.
+pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
+    let mut w = Writer::reuse(std::mem::take(out));
     match value {
         FieldValue::Pos(x, y) => {
             let mut m = Writer::new();
@@ -279,7 +287,7 @@ pub fn encode_field(no: u32, value: &FieldValue) -> Vec<u8> {
         FieldValue::Engine(code) if *code != 0 => w.varint(no, *code),
         _ => {}
     }
-    w.into_bytes()
+    *out = w.into_bytes();
 }
 
 fn id_message(id: NodeId) -> Writer {
