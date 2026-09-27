@@ -39,8 +39,9 @@ pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
     match kind {
         Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED],
         Kind::Group => &[POS, COLOR, NAME, FROM_JSON],
-        Kind::Note => &[POS, COLOR, TEXT],
-        Kind::Image | Kind::Pdf | Kind::Json | Kind::Download => &[POS, COLOR, PATH],
+        Kind::Note => &[POS, COLOR, URL, TEXT],
+        Kind::Image | Kind::Pdf | Kind::Json => &[POS, COLOR, URL, PATH],
+        Kind::Download => &[POS, COLOR, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Unknown(_) => &[],
     }
@@ -223,6 +224,11 @@ fn str_of(fields: &Fields, no: u32) -> String {
     }
 }
 
+/// The URL field as `Option<String>`: absent (empty string) is `None`.
+fn url_of(fields: &Fields) -> Option<String> {
+    Some(str_of(fields, field::URL)).filter(|u| !u.is_empty())
+}
+
 fn bool_of(fields: &Fields, no: u32) -> bool {
     matches!(fields.get(&no), Some(FieldValue::Bool(true)))
 }
@@ -322,21 +328,27 @@ impl App {
                     Kind::Group
                 }
                 NodePayload::Note(n) => {
+                    fields.insert(field::URL, str(n.url.as_deref().unwrap_or("")));
                     fields.insert(field::TEXT, str(&n.text));
                     Kind::Note
                 }
                 NodePayload::Image(i) => {
+                    fields.insert(field::URL, str(i.url.as_deref().unwrap_or("")));
                     fields.insert(field::PATH, str(&i.path));
                     Kind::Image
                 }
                 NodePayload::Pdf(p) => {
+                    fields.insert(field::URL, str(p.url.as_deref().unwrap_or("")));
                     fields.insert(field::PATH, str(&p.path));
                     Kind::Pdf
                 }
                 NodePayload::Json(j) => {
                     fields.insert(field::PATH, str(&j.path));
                     match &j.key {
-                        None => Kind::Json,
+                        None => {
+                            fields.insert(field::URL, str(j.url.as_deref().unwrap_or("")));
+                            Kind::Json
+                        }
                         Some(key) => {
                             fields.insert(field::KEY, str(key));
                             fields.insert(field::VALUE, FieldValue::Str(j.value.to_string()));
@@ -445,8 +457,17 @@ impl App {
                         g.from_json = bool_of(fields, field::FROM_JSON);
                     }
                 }
-                NodePayload::Note(n) if changed(field::TEXT) => n.text = str_of(fields, field::TEXT),
-                NodePayload::Note(_) => {}
+                NodePayload::Note(n) => {
+                    if changed(field::TEXT) {
+                        n.text = str_of(fields, field::TEXT);
+                    }
+                    if changed(field::URL) {
+                        n.url = url_of(fields);
+                    }
+                }
+                NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
+                NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
+                NodePayload::Json(p) if p.key.is_none() && changed(field::URL) => p.url = url_of(fields),
                 // Paths, keys and values never change after creation.
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
             }
@@ -480,13 +501,13 @@ impl App {
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(payload));
             }
             Kind::Note => {
-                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false };
+                let payload = NotePayload { text: str_of(fields, field::TEXT), editing: false, url: None };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
             }
             Kind::Image => {
                 let path = str_of(fields, field::PATH);
                 if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
-                    let payload = ImagePayload { path, width: 0, height: 0, error: Some(error) };
+                    let payload = ImagePayload { path, width: 0, height: 0, error: Some(error), url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
                 }
             }
@@ -494,7 +515,8 @@ impl App {
             Kind::Json => {
                 let path = str_of(fields, field::PATH);
                 if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
-                    let payload = JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error) };
+                    let payload =
+                        JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error), url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
                 }
             }
@@ -502,7 +524,7 @@ impl App {
                 let text = str_of(fields, field::VALUE);
                 let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
                 let key = Some(str_of(fields, field::KEY));
-                let payload = JsonPayload { path: str_of(fields, field::PATH), value, key, error: None };
+                let payload = JsonPayload { path: str_of(fields, field::PATH), value, key, error: None, url: None };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
             }
             Kind::Download => {
@@ -517,6 +539,9 @@ impl App {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;
             node.color = color;
+            if let Some(url) = node.source_url_mut() {
+                *url = url_of(fields);
+            }
         }
     }
 
@@ -1350,7 +1375,7 @@ pub(crate) mod tests {
             app.notice("damaged".into());
         }
         assert_eq!(app.save_toast_queue.len(), 2);
-        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
         assert!(app.save_session());
         app.notice("read-only".into());
         assert_eq!(app.save_toast_queue.len(), 3, "a commit lets a notice show again");
@@ -1614,7 +1639,7 @@ pub(crate) mod tests {
         let mut app = app_with(&nodes);
         // A note only this replica has, not yet saved, inside the group.
         let local = id(3).to_string();
-        let payload = NodePayload::Note(NotePayload { text: "local".into(), editing: false });
+        let payload = NodePayload::Note(NotePayload { text: "local".into(), editing: false, url: None });
         app.insert_placeholder_node(local.clone(), egui::Vec2::ZERO, payload);
         app.nodes.get_mut(&local).unwrap().group = Some(id(1).to_string());
         app.current_group = Some(id(1).to_string());
@@ -1657,7 +1682,7 @@ pub(crate) mod tests {
     fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
         let path = temp_dir("sync-fields").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false }));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
         let failed = UnloadedTabPayload {
             url: "https://u0/".into(),
             title: String::new(),
@@ -1741,7 +1766,7 @@ pub(crate) mod tests {
     fn a_failed_commit_keeps_the_explicit_marks() {
         let path = temp_dir("sync-fail").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
         assert!(app.save_session());
         app.nodes.get_mut(&note).unwrap().pos = egui::vec2(5.0, 6.0);
         let mark = (note.parse().unwrap(), field::POS);
@@ -1774,7 +1799,7 @@ pub(crate) mod tests {
     fn a_marked_pos_is_saved_and_an_unmarked_one_is_not() {
         let path = temp_dir("marks").join("session.mnf");
         let mut app = app_on(&path, 1);
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
         app.nodes.get_mut(&note).unwrap().pos = egui::vec2(1.0, 1.0);
         assert!(app.save_session());
         app.nodes.get_mut(&note).unwrap().pos = egui::vec2(50.0, 50.0);
@@ -1795,7 +1820,7 @@ pub(crate) mod tests {
         bytes[21..25].copy_from_slice(&crc.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
         let mut app = app_on(&path, 2);
-        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
         assert!(!app.save_session());
         assert_eq!(app.journal.as_ref().unwrap().doc().live().count(), 0);
     }
@@ -1867,7 +1892,7 @@ pub(crate) mod tests {
         let path = dir.join("session.mnf");
         {
             let mut app = app_on(&path, 1);
-            let id = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+            let id = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None }));
             app.nodes.get_mut(&id).unwrap().pos = egui::vec2(3.0, 4.0);
             app.close_store();
         }
@@ -1877,6 +1902,31 @@ pub(crate) mod tests {
         app.close_store();
         let after = (std::fs::read(&path).unwrap(), std::fs::read(crate::store::local::path_for(&path)).unwrap());
         assert!(before == after, "an idle launch rewrote the session or its personal state");
+    }
+
+    /// A note made from a web page keeps its URL through save and restore
+    /// (content dispatch spec): `shared_nodes` reports it under `field::URL`
+    /// and `restore_session` hands it back via `GraphNode::source_url`.
+    #[test]
+    fn content_nodes_keep_their_source_url() {
+        let path = crate::store::testutil::temp_dir("content-url").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let id = app.alloc_node_id();
+        let payload = NotePayload { text: "hi".into(), editing: false, url: Some("https://x.test/a.txt".into()) };
+        app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Note(payload));
+        let shared = app.shared_nodes();
+        let fields = &shared[&id.parse().unwrap()].fields;
+        assert_eq!(fields.get(&field::URL), Some(&FieldValue::Str("https://x.test/a.txt".into())));
+        assert!(app.save_session());
+        app.close_store();
+        let mut restored = app_on(&path, 2);
+        assert!(restored.restore_session());
+        assert_eq!(restored.nodes[&id].source_url(), Some("https://x.test/a.txt"));
+    }
+
+    #[test]
+    fn path_is_explicit() {
+        assert!(crate::store::model::field_def(field::PATH).unwrap().explicit);
     }
 
     /// A group export round-trips as a JSON snapshot: `export_group_json`
@@ -2266,7 +2316,7 @@ pub(crate) mod tests {
         let mut app = app_on(&path, 2);
         assert!(!app.restore_session(), "no nodes: the caller starts fresh");
         assert_eq!(app.closed.len(), 1);
-        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false }));
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
         app.maybe_write_local(true);
         let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
         assert_eq!(LocalState::from_bytes(&bytes).unwrap().closed, vec![entry]);
@@ -2279,7 +2329,7 @@ pub(crate) mod tests {
     fn tabs_still_spawning_at_quit_are_saved() {
         let path = temp_dir("spawning-quit").join("session.mnf");
         let mut app = app_on(&path, 1);
-        add(&mut app, NodePayload::Note(NotePayload { text: "old".into(), editing: false }));
+        add(&mut app, NodePayload::Note(NotePayload { text: "old".into(), editing: false, url: None }));
         assert!(app.save_session());
         let json =
             JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
@@ -2442,7 +2492,7 @@ pub(crate) mod tests {
         let outer = add(&mut app, group("outer"));
         let inner = add(&mut app, group("inner"));
         let tab = add(&mut app, failed_tab("https://a/", 1.0));
-        let note = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false }));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None }));
         app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
         app.nodes.get_mut(&tab).unwrap().group = Some(inner.clone());
         assert!(app.save_session());

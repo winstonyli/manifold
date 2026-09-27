@@ -1,8 +1,8 @@
 //! `%APPDATA%\manifold`, the one folder the app keeps its files in:
-//! `settings.json`, `bookmarks.json`, `history.json`, the session store
-//! and the named sessions (and CEF's throwaway cache dirs, under
-//! `cef-cache`). Every path into it starts from `dir()` or, for
-//! engines, `engine_data_dir()`.
+//! `settings.json`, `bookmarks.json`, `history.json`, the session store,
+//! the named sessions, fetched content (`content_dir`) and CEF's throwaway
+//! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
+//! or, for engines, `engine_data_dir()`.
 
 use std::path::PathBuf;
 
@@ -31,6 +31,13 @@ pub fn favicon_cache_dir() -> Option<PathBuf> {
     Some(dir()?.join("favicons"))
 }
 
+/// Where content fetched from the web lives: each file is named
+/// `<node id>.<ext>` (see `content`). `None` like `dir()`.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on (a fetch saves here); removed there.
+pub fn content_dir() -> Option<PathBuf> {
+    Some(dir()?.join("content"))
+}
+
 /// The per-user data directory (Known Folders on Windows, which puts it at
 /// `%APPDATA%\manifold\manifold\data`; XDG on Linux; Application Support on
 /// macOS) where `process_manager::engine_binary_path` looks for an engine
@@ -55,6 +62,7 @@ mod tests {
         assert_eq!(super::dir(), None);
         assert_eq!(super::engine_data_dir(), None);
         assert_eq!(super::cef_cache_dir(), None);
+        assert_eq!(super::content_dir(), None);
     }
 
     /// `App::default()` loads settings, bookmarks and history. Under test

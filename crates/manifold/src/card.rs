@@ -1783,7 +1783,7 @@ mod tests {
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(
-            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false })),
+            node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
             NOTE_NODE_SIZE
         );
         assert_eq!(
@@ -1795,6 +1795,7 @@ mod tests {
             value: serde_json::json!({}),
             key: None,
             error: None,
+            url: None,
         });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
         assert_eq!(
@@ -1812,8 +1813,9 @@ mod tests {
 
         // Image: a small picture keeps its own size; an oversized one is
         // scaled down to fit `IMAGE_NODE_MAX_SIZE`, aspect ratio kept.
-        let image =
-            |width, height| NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None });
+        let image = |width, height| {
+            NodePayload::Image(ImagePayload { path: "p.png".into(), width, height, error: None, url: None })
+        };
         assert_eq!(node_card_size(&image(40, 20)), egui::vec2(40.0, 20.0));
         let big = node_card_size(&image(100_000, 50_000));
         assert!(big.x <= IMAGE_NODE_MAX_SIZE.x && big.y <= IMAGE_NODE_MAX_SIZE.y);
@@ -1821,7 +1823,7 @@ mod tests {
 
         // Pdf: pending and failed use the fixed pending box; rendered uses
         // the page's own size through the same image fitting.
-        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome });
+        let pdf = |outcome| NodePayload::Pdf(PdfPayload { path: "d.pdf".into(), outcome, url: None });
         assert_eq!(node_card_size(&pdf(None)), PDF_PENDING_NODE_SIZE);
         assert_eq!(node_card_size(&pdf(Some(Err("bad".into())))), PDF_PENDING_NODE_SIZE);
         assert_eq!(
@@ -1842,7 +1844,7 @@ mod tests {
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(card_filter_text(&download), ["C:/dl/f.bin"]);
         assert_eq!(
-            card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false })),
+            card_filter_text(&NodePayload::Note(NotePayload { text: "buy milk".into(), editing: false, url: None })),
             ["buy milk"]
         );
         assert_eq!(
@@ -1850,12 +1852,17 @@ mod tests {
                 path: "C:/pics/cat.png".into(),
                 width: 1,
                 height: 1,
-                error: None
+                error: None,
+                url: None
             })),
             ["cat.png"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })),
+            card_filter_text(&NodePayload::Pdf(PdfPayload {
+                path: "C:/docs/paper.pdf".into(),
+                outcome: None,
+                url: None
+            })),
             ["paper.pdf"]
         );
         assert_eq!(
@@ -1863,7 +1870,8 @@ mod tests {
                 path: "C:/data/x.json".into(),
                 value: serde_json::json!(1),
                 key: None,
-                error: None
+                error: None,
+                url: None
             })),
             ["x.json"]
         );

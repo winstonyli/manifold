@@ -214,7 +214,9 @@ pub static FIELDS: [FieldDef; 13] = [
     FieldDef { no: field::NAME, name: "name", ty: FieldType::Str, explicit: false },
     FieldDef { no: field::FROM_JSON, name: "from_json", ty: FieldType::Bool, explicit: false },
     FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str, explicit: false },
-    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: false },
+    // Machine-local: a replica that refetches a missing file saves it under
+    // its own content dir, and that path must not be written back.
+    FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: true },
     FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
     FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
 ];

@@ -219,6 +219,10 @@ pub(crate) struct NotePayload {
     /// note starts `true` instead, so typing into it works immediately
     /// with no extra click.
     pub(crate) editing: bool,
+    /// Where this content came from on the web, when it did (see
+    /// `content`): Refresh and Open as tab use it, and a missing file is
+    /// fetched again from it. `None` for a local file.
+    pub(crate) url: Option<String>,
 }
 
 /// A locally-added picture, embedded directly on the graph -- the second
@@ -247,6 +251,10 @@ pub(crate) struct ImagePayload {
     /// with this message as its tooltip. It stays in the session, so the
     /// next launch tries the file again.
     pub(crate) error: Option<String>,
+    /// Where this content came from on the web, when it did (see
+    /// `content`): Refresh and Open as tab use it, and a missing file is
+    /// fetched again from it. `None` for a local file.
+    pub(crate) url: Option<String>,
 }
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
@@ -276,6 +284,10 @@ pub(crate) struct PdfPayload {
     /// failure) -- shown in place of the page image, distinct from "still
     /// loading" so a real failure isn't mistaken for a hang.
     pub(crate) outcome: Option<Result<PdfOutcome, String>>,
+    /// Where this content came from on the web, when it did (see
+    /// `content`): Refresh and Open as tab use it, and a missing file is
+    /// fetched again from it. `None` for a local file.
+    pub(crate) url: Option<String>,
 }
 
 pub(crate) struct PdfOutcome {
@@ -310,6 +322,11 @@ pub(crate) struct JsonPayload {
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     pub(crate) error: Option<String>,
+    /// Where this content came from on the web, when it did (see
+    /// `content`): Refresh and Open as tab use it, and a missing file is
+    /// fetched again from it. `None` for a local file, and for a leaf
+    /// (`key.is_some()`, never persisted).
+    pub(crate) url: Option<String>,
 }
 
 /// A tab without an engine: asleep since a restore (only the focused tab
@@ -514,6 +531,28 @@ impl GraphNode {
     pub(crate) fn as_json(&self) -> Option<&JsonPayload> {
         self.payload.as_json()
     }
+
+    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on (Refresh, Open as tab); removed there.
+    pub(crate) fn source_url(&self) -> Option<&str> {
+        match &self.payload {
+            NodePayload::Image(p) => p.url.as_deref(),
+            NodePayload::Pdf(p) => p.url.as_deref(),
+            NodePayload::Json(p) if p.key.is_none() => p.url.as_deref(),
+            NodePayload::Note(p) => p.url.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn source_url_mut(&mut self) -> Option<&mut Option<String>> {
+        match &mut self.payload {
+            NodePayload::Image(p) => Some(&mut p.url),
+            NodePayload::Pdf(p) => Some(&mut p.url),
+            NodePayload::Json(p) if p.key.is_none() => Some(&mut p.url),
+            NodePayload::Note(p) => Some(&mut p.url),
+            _ => None,
+        }
+    }
 }
 
 /// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
@@ -581,7 +620,7 @@ mod tests {
             ItemNodeKind::Group
         );
         assert_eq!(
-            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false })),
+            item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
             ItemNodeKind::Note
         );
         assert_eq!(
@@ -589,12 +628,13 @@ mod tests {
                 path: "img.png".into(),
                 width: 100,
                 height: 100,
-                error: None
+                error: None,
+                url: None
             })),
             ItemNodeKind::Image
         );
         assert_eq!(
-            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None })),
+            item_node_kind(&NodePayload::Pdf(PdfPayload { path: "doc.pdf".into(), outcome: None, url: None })),
             ItemNodeKind::Pdf
         );
         assert_eq!(
@@ -602,7 +642,8 @@ mod tests {
                 path: "data.json".into(),
                 value: serde_json::Value::Null,
                 key: None,
-                error: None
+                error: None,
+                url: None
             })),
             ItemNodeKind::Json
         );

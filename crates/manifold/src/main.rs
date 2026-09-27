@@ -2402,6 +2402,7 @@ impl App {
                            (undo via \"Recently Closed\" if you change your mind)."
                         .to_string(),
                     editing: false,
+                    url: None,
                 }),
             },
         );
@@ -2465,6 +2466,7 @@ impl App {
                     }),
                     key: None,
                     error: None,
+                    url: None,
                 }),
             },
         );
@@ -4004,7 +4006,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Note(NotePayload { text: String::new(), editing: true }),
+                payload: NodePayload::Note(NotePayload { text: String::new(), editing: true, url: None }),
             },
         );
         self.node_order.push(id);
@@ -4183,7 +4185,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Image(ImagePayload { path, width, height, error: None }),
+                payload: NodePayload::Image(ImagePayload { path, width, height, error: None, url: None }),
             },
         );
         self.node_order.push(id);
@@ -4269,7 +4271,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Pdf(PdfPayload { path, outcome: None }),
+                payload: NodePayload::Pdf(PdfPayload { path, outcome: None, url: None }),
             },
         );
         self.node_order.push(id);
@@ -4319,7 +4321,7 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Json(JsonPayload { path, value, key: None, error: None }),
+                payload: NodePayload::Json(JsonPayload { path, value, key: None, error: None, url: None }),
             },
         );
         self.node_order.push(id);
@@ -4424,6 +4426,7 @@ impl App {
                             value: entry_value.clone(),
                             key: Some(key),
                             error: None,
+                            url: None,
                         }),
                     },
                 );
@@ -5358,14 +5361,16 @@ mod tests {
         let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
 
         let outer = add(&mut app, NodePayload::Group(GroupPayload { name: "Outer".into(), from_json: false }));
-        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false }));
+        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
         put_in(&mut app, &note0, &outer);
-        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false }));
+        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
         put_in(&mut app, &note1, &outer);
         let inner = add(&mut app, NodePayload::Group(GroupPayload { name: "Inner".into(), from_json: false }));
         put_in(&mut app, &inner, &outer);
-        let img0 =
-            add(&mut app, NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None }));
+        let img0 = add(
+            &mut app,
+            NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None, url: None }),
+        );
         put_in(&mut app, &img0, &inner);
         let json0 = add(
             &mut app,
@@ -5374,6 +5379,7 @@ mod tests {
                 value: 1.into(),
                 key: Some("k".into()),
                 error: None,
+                url: None,
             }),
         );
         put_in(&mut app, &json0, &inner);
@@ -5387,7 +5393,7 @@ mod tests {
             }),
         );
         put_in(&mut app, &dl0, &inner);
-        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false }));
+        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false, url: None }));
 
         let entry = closed_entry(&app, &outer).unwrap();
         let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -5407,6 +5413,7 @@ mod tests {
                 value: 1.into(),
                 key: Some("k".into()),
                 error: None,
+                url: None,
             }),
         );
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
@@ -5548,7 +5555,7 @@ mod tests {
             payload,
         };
         let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
-        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false });
+        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
         let mut nodes = NodeMap::default();
         nodes.insert("outer".into(), node(None, group("outer")));
         nodes.insert("inner".into(), node(Some("outer"), group("inner")));
