@@ -1113,9 +1113,9 @@ impl App {
             let Some(body) = body else {
                 // A tab whose fetch failed just stays an ordinary tab (see
                 // `RedirectFetcher::tick`'s own doc comment) -- silent by
-                // design. A Refresh (or a missing-file retry) failing this
-                // way would otherwise vanish with no feedback at all, since
-                // it never reaches `reload_fetched_node`'s own toast.
+                // design. A Refresh failing this way would otherwise vanish
+                // with no feedback at all, since it never reaches
+                // `reload_fetched_node`'s own toast.
                 if let FetchTarget::Node(id) = &job.target {
                     self.refresh_fetch_failed(id);
                 }

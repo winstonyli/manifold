@@ -152,6 +152,21 @@ pub(crate) fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(head)
 }
 
+/// Whether `path` is exactly `<dir>/<id>.<anything>` -- the shape
+/// `redirect_fetch::save` always names a content file. Structural, not a
+/// prefix check: `Path::starts_with` doesn't resolve `..`, so e.g.
+/// `dir/../../x` would pass a naive `old.starts_with(dir)` and then get
+/// deleted as if it were `x` -- comparing `path.parent()` to `dir`
+/// component-wise instead rejects that, since a literal `..` component
+/// never equals a real directory name.
+// `prune`'s own `keep` closure and Task 6's keep rule could plausibly
+// share this (same "does this filename belong to a live id" question),
+// but that's left for whichever of them touches this next, not folded in
+// here.
+pub(crate) fn owned_content_file(dir: &Path, id: &str, path: &Path) -> bool {
+    path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem == id)
+}
+
 /// Deletes each file in `dir` whose name `keep` rejects; returns how many.
 /// A missing `dir` deletes nothing.
 // Used from Task 4 on (sweeping the content dir of files no live node
@@ -267,5 +282,19 @@ mod tests {
         assert_eq!(prune(&dir, |name| name != "old.bin"), 1);
         assert!(dir.join("1-2.png").exists() && !dir.join("old.bin").exists());
         assert_eq!(prune(&dir.join("missing"), |_| false), 0);
+    }
+
+    #[test]
+    fn owned_content_file_is_a_structural_check_not_a_prefix_one() {
+        let dir = crate::store::testutil::temp_dir("owned_content_file");
+        let id = "abc123";
+        assert!(owned_content_file(&dir, id, &dir.join(format!("{id}.png"))));
+        // `starts_with` alone would accept this -- `..` doesn't resolve to
+        // the parent directory it names until the filesystem sees it, so a
+        // naive prefix check would delete `id.png` two levels up instead.
+        assert!(!owned_content_file(&dir, id, &dir.join("..").join(format!("{id}.png"))));
+        assert!(!owned_content_file(&dir, id, &dir.join("sub").join(format!("{id}.png"))));
+        assert!(!owned_content_file(&dir, id, &dir.join("other.png")));
+        assert!(!owned_content_file(&dir, id, std::path::Path::new("/somewhere/else/abc123.png")));
     }
 }

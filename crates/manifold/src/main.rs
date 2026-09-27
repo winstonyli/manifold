@@ -4262,7 +4262,7 @@ impl App {
         if result.is_ok() {
             if let (Some(old_path), Some(dir)) = (&old_path, crate::profile::content_dir()) {
                 let old = std::path::Path::new(old_path);
-                if old != std::path::Path::new(&new_path) && old.starts_with(&dir) {
+                if old != std::path::Path::new(&new_path) && content::owned_content_file(&dir, id, old) {
                     let _ = std::fs::remove_file(old);
                 }
             }
@@ -4270,9 +4270,9 @@ impl App {
         }
     }
 
-    /// A Refresh (or missing-file retry) whose fetch itself failed --
-    /// network error, or bytes that didn't pass their kind's check -- so it
-    /// never reached `reload_fetched_node` at all. The node is untouched;
+    /// A Refresh whose fetch itself failed -- network error, or bytes that
+    /// didn't pass their kind's check -- so it never reached
+    /// `reload_fetched_node` at all. The node is untouched;
     /// only a toast reports it, same wording as `insert_image_node_with_id`
     /// and friends' own failure toasts.
     fn refresh_fetch_failed(&mut self, id: &str) {
