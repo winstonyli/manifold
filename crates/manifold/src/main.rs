@@ -344,7 +344,7 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
             items.push(Button("Fit Subtree", A::FitSubtree));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
-        ItemNodeKind::FailedTab => {
+        ItemNodeKind::Unloaded => {
             let mut items = vec![Button("Retry", A::RetryMissingFile)];
             if view.other_default_engine {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
@@ -377,7 +377,7 @@ struct NodeMenuView {
     pinned: bool,
     /// Tab only.
     has_json: bool,
-    /// FailedTab only: the default engine isn't the one that failed, so
+    /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.
     other_default_engine: bool,
     /// Group only: the rename draft, while this group is being renamed.
@@ -1046,7 +1046,7 @@ fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> b
 fn tab_zoom(app: &App, id: &str) -> Option<f64> {
     let zoom = match app.nodes.get(id).map(|n| &n.payload) {
         Some(NodePayload::Tab(tab)) => tab.zoom_factor,
-        Some(NodePayload::FailedTab(tab)) => tab.zoom_factor,
+        Some(NodePayload::Unloaded(tab)) => tab.zoom_factor,
         _ => return None,
     };
     (zoom != app.settings.zoom_factor).then_some(zoom)
@@ -1743,13 +1743,12 @@ struct App {
     /// (`Ok` or `Err`) arrives.
     pending_respawn_focus: Option<String>,
 
-    /// Failed tabs' cards (`FailedTabPayload`) whose `retry_failed_tab`
-    /// spawn is in flight. Unlike a crash respawn, the card is still on
-    /// the graph meanwhile, so it can be moved or closed: the outcome takes
-    /// the card's placement as it is now, and is dropped if the card is
-    /// gone. Set in `retry_failed_tab`, cleared by that outcome in
-    /// `handle_tab_spawn_result`.
-    failed_tab_retries: HashSet<String>,
+    /// Unloaded tabs' cards whose `wake_tab` spawn is in flight. Unlike a
+    /// crash respawn, the card is still on the graph meanwhile, so it can
+    /// be moved or closed: the outcome takes the card's placement as it is
+    /// now, and is dropped if the card is gone. Set in `wake_tab`, cleared
+    /// by that outcome in `handle_tab_spawn_result`.
+    wakes_in_flight: HashSet<String>,
 
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
     /// parks each spawn here (with its `session_generation`) for the test
@@ -1870,7 +1869,7 @@ impl Default for App {
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,
-            failed_tab_retries: HashSet::new(),
+            wakes_in_flight: HashSet::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
         };
@@ -2476,10 +2475,10 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color) = if self.failed_tab_retries.remove(&id) {
-            match self.nodes.get(&id).filter(|n| n.as_failed_tab().is_some()) {
+        let (parent, group, pos, color) = if self.wakes_in_flight.remove(&id) {
+            match self.nodes.get(&id).filter(|n| n.as_unloaded().is_some()) {
                 Some(card) => (card.parent.clone(), card.group.clone(), card.pos, card.color),
-                // Closed while retrying (see `failed_tab_retries`).
+                // Closed while waking (see `wakes_in_flight`).
                 None => return,
             }
         } else {
@@ -2627,12 +2626,20 @@ impl App {
                 }
                 // A tab that already existed (a crash restart, a restored
                 // session or group, a retry) keeps its place as a failed
-                // card rather than disappearing; see `FailedTabPayload`.
+                // card rather than disappearing; see `UnloadedTabPayload`.
                 if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore) {
                     self.queue_toast(format!("Couldn't start {} for {url}: {err}", engine_label(kind)));
-                    let error = err.to_string();
-                    let failed = FailedTabPayload { url, kind, error, pinned, zoom_factor, retrying: false };
-                    let payload = NodePayload::FailedTab(failed);
+                    let state = UnloadedState::Failed(err.to_string());
+                    let failed = UnloadedTabPayload {
+                        url,
+                        title: String::new(),
+                        kind,
+                        pinned,
+                        muted: false,
+                        zoom_factor,
+                        state,
+                    };
+                    let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
@@ -2735,7 +2742,7 @@ impl App {
             NodePayload::Image(image) => Some(image.path.clone()),
             NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
             NodePayload::Json(json) => Some(json.path.clone()),
-            NodePayload::Tab(_) | NodePayload::FailedTab(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
+            NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
         }
     }
 
@@ -3165,7 +3172,7 @@ impl App {
             };
             // A crashed focused tab stays focused as its failed card, which
             // has no Item view: Enter retries it, as its click does.
-            if node.as_failed_tab().is_some() {
+            if node.as_unloaded().is_some() {
                 self.retry_missing_file(&id);
             } else {
                 self.start_transition_to_item(&id);
@@ -3571,7 +3578,8 @@ impl App {
     /// `destroy_tab` without the save: a tab another replica deleted
     /// (`remove_remotely_deleted`), whose removal is not a local edit.
     fn remove_tab(&mut self, id: &str) {
-        let Some(parent) = self.nodes.get(id).filter(|n| n.as_tab().is_some()).map(|n| n.parent.clone()) else {
+        let Some(parent) = self.nodes.get(id).filter(|n| n.payload.saved_tab().is_some()).map(|n| n.parent.clone())
+        else {
             return;
         };
         for node in self.nodes.values_mut() {
@@ -3972,8 +3980,8 @@ impl App {
     /// new error, which the insert has already toasted. A failed PDF card
     /// just renders again (back to its spinner).
     fn retry_missing_file(&mut self, id: &str) {
-        if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_failed_tab()).map(|t| t.kind) {
-            self.retry_failed_tab(id, kind);
+        if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
+            self.wake_tab(id, kind);
             return;
         }
         if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
@@ -4017,21 +4025,21 @@ impl App {
         }
     }
 
-    /// Spawns a failed tab's card (`FailedTabPayload`) again, on `kind`.
+    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.
     /// The card stays, showing a spinner, until the outcome replaces it:
-    /// the live tab under the same id, or a fresh failed card with the new
-    /// error.
-    fn retry_failed_tab(&mut self, id: &str, kind: EngineKind) {
+    /// the live tab under the same id, or a failed card with the new
+    /// error. Ignored while a wake is already in flight.
+    fn wake_tab(&mut self, id: &str, kind: EngineKind) {
         let Some(node) = self.nodes.get_mut(id) else { return };
         let (parent, group, pos, color) = (node.parent.clone(), node.group.clone(), node.pos, node.color);
-        let NodePayload::FailedTab(failed) = &mut node.payload else { return };
-        if failed.retrying {
+        let NodePayload::Unloaded(tab) = &mut node.payload else { return };
+        if tab.state == UnloadedState::Waking {
             return;
         }
-        failed.retrying = true;
-        self.failed_tab_retries.insert(id.to_string());
-        let carry = TabCarry { pinned: failed.pinned, color, zoom_factor: failed.zoom_factor };
-        let url = failed.url.clone();
+        tab.state = UnloadedState::Waking;
+        self.wakes_in_flight.insert(id.to_string());
+        let carry = TabCarry { pinned: tab.pinned, color, zoom_factor: tab.zoom_factor };
+        let url = tab.url.clone();
         let vel = egui::Vec2::ZERO;
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Respawn, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
@@ -4739,9 +4747,8 @@ impl App {
         };
         match kind {
             ItemNodeKind::Group => self.destroy_group(id),
-            ItemNodeKind::Tab => self.destroy_tab(id),
-            ItemNodeKind::FailedTab
-            | ItemNodeKind::Download
+            ItemNodeKind::Tab | ItemNodeKind::Unloaded => self.destroy_tab(id),
+            ItemNodeKind::Download
             | ItemNodeKind::Note
             | ItemNodeKind::Image
             | ItemNodeKind::Pdf
@@ -4767,8 +4774,7 @@ impl App {
         let persisted = self.nodes.get(id).is_some_and(|node| {
             matches!(
                 item_node_kind(&node.payload),
-                ItemNodeKind::FailedTab
-                    | ItemNodeKind::Download
+                ItemNodeKind::Download
                     | ItemNodeKind::Note
                     | ItemNodeKind::Image
                     | ItemNodeKind::Pdf
@@ -4837,7 +4843,7 @@ impl App {
             has_json: tab.is_some_and(|t| t.json_body.is_some()),
             other_default_engine: node
                 .payload
-                .as_failed_tab()
+                .as_unloaded()
                 .is_some_and(|t| t.kind != self.settings.default_starting_engine),
             renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
         })
@@ -4909,7 +4915,7 @@ impl App {
             }
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
-            NodeAction::OpenInDefaultEngine => self.retry_failed_tab(id, self.settings.default_starting_engine),
+            NodeAction::OpenInDefaultEngine => self.wake_tab(id, self.settings.default_starting_engine),
             NodeAction::RemoveFromGroup => self.eject(id),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
@@ -5395,14 +5401,14 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::FailedTab, false, false),
+                menu(ItemNodeKind::Unloaded, false, false),
                 ("failed_tab_context_menu", 170.0, format!("Retry | Copy URL | <colors>{g} | --- | Close"))
             );
         }
         // A failed tab offers the default engine only when it isn't the
         // engine that failed.
         let failed = NodeMenuView {
-            kind: ItemNodeKind::FailedTab,
+            kind: ItemNodeKind::Unloaded,
             has_group: false,
             color: None,
             pinned: false,

@@ -104,7 +104,7 @@ pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardSty
             close_icon: egui::Color32::from_black_alpha(200),
             dim_rounding: 6.0,
         },
-        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::FailedTab => {
+        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::Unloaded => {
             CardStyle { dim_rounding: 6.0, ..themed }
         }
         // ACCENT at rest, as group cards have always been.
@@ -528,7 +528,7 @@ pub(crate) fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// their own per-kind copy, and the LOD count approximated Image/Pdf).
 pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
     match payload {
-        NodePayload::Tab(_) | NodePayload::FailedTab(_) => GRAPH_NODE_SIZE,
+        NodePayload::Tab(_) | NodePayload::Unloaded(_) => GRAPH_NODE_SIZE,
         NodePayload::Download(_) => DOWNLOAD_NODE_SIZE,
         NodePayload::Note(_) => NOTE_NODE_SIZE,
         // A placeholder has no real size: the same box a failed PDF gets.
@@ -551,7 +551,7 @@ pub(crate) fn node_card_rect(node: &GraphNode) -> egui::Rect {
 pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
     match payload {
         NodePayload::Tab(tab) => vec![&tab.title, &tab.url],
-        NodePayload::FailedTab(tab) => vec![&tab.url],
+        NodePayload::Unloaded(tab) => vec![&tab.url],
         NodePayload::Download(download) => vec![&download.path],
         NodePayload::Note(note) => vec![&note.text],
         NodePayload::Image(image) => vec![download_filename(&image.path)],
@@ -794,17 +794,17 @@ impl App {
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
             ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::FailedTab => {
-                self.paint_failed_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
+            ItemNodeKind::Unloaded => {
+                self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
             }
         }
     }
 
-    /// FailedTab (see `FailedTabPayload`): a warning icon, or a spinner
-    /// while a retry is in flight, and the url, with which engine failed
+    /// Unloaded (see `UnloadedTabPayload`): a warning icon, or a spinner
+    /// while a wake is in flight, and the url, with which engine failed
     /// and why as the tooltip. LOD: skipped once simplified, as for
     /// `paint_download_body`.
-    pub(crate) fn paint_failed_tab_body(
+    pub(crate) fn paint_unloaded_tab_body(
         &mut self,
         ui: &mut egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
@@ -814,16 +814,20 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some(failed) = self.nodes.get(id).and_then(|n| n.as_failed_tab()) else {
+        let Some(tab) = self.nodes.get(id).and_then(|n| n.as_unloaded()) else {
             return body;
         };
-        let (url, retrying) = (failed.url.clone(), failed.retrying);
-        body.tooltip =
-            Some(format!("Couldn't start {}: {}\nClick to try again.", engine_label(failed.kind), failed.error));
+        let (url, state) = (tab.url.clone(), tab.state.clone());
+        body.tooltip = Some(match &state {
+            UnloadedState::Failed(error) => {
+                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
+            }
+            UnloadedState::Sleeping | UnloadedState::Waking => "Sleeping — click to load".to_string(),
+        });
         if self.graph_lod_simplified {
             return body;
         }
-        if retrying {
+        if state == UnloadedState::Waking {
             ui.put(
                 egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
                 egui::Spinner::new().size(24.0 * inv_zoom),
@@ -1689,13 +1693,14 @@ mod tests {
         });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
         assert_eq!(
-            node_card_size(&NodePayload::FailedTab(FailedTabPayload {
+            node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
+                title: String::new(),
                 kind: EngineKind::Cef,
-                error: "no binary".into(),
                 pinned: true,
+                muted: false,
                 zoom_factor: 1.5,
-                retrying: false,
+                state: UnloadedState::Failed("no binary".into()),
             })),
             GRAPH_NODE_SIZE
         );
@@ -1762,13 +1767,14 @@ mod tests {
             ["Reading"]
         );
         assert_eq!(
-            card_filter_text(&NodePayload::FailedTab(FailedTabPayload {
+            card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
+                title: String::new(),
                 kind: EngineKind::Cef,
-                error: "no binary".into(),
                 pinned: true,
+                muted: false,
                 zoom_factor: 1.5,
-                retrying: false,
+                state: UnloadedState::Failed("no binary".into()),
             })),
             ["https://example.org/"]
         );

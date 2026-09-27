@@ -12,7 +12,7 @@ use super::*;
 /// own `*Payload` doc comment.
 pub(crate) enum NodePayload {
     Tab(TabPayload),
-    FailedTab(FailedTabPayload),
+    Unloaded(UnloadedTabPayload),
     Download(DownloadPayload),
     Group(GroupPayload),
     Note(NotePayload),
@@ -36,19 +36,19 @@ impl NodePayload {
         }
     }
 
-    pub(crate) fn as_failed_tab(&self) -> Option<&FailedTabPayload> {
+    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
         match self {
-            NodePayload::FailedTab(t) => Some(t),
+            NodePayload::Unloaded(t) => Some(t),
             _ => None,
         }
     }
 
-    /// The url and engine a live or failed tab is saved (and exported,
+    /// The url and engine a live or unloaded tab is saved (and exported,
     /// and copied) with.
     pub(crate) fn saved_tab(&self) -> Option<(&str, EngineKind)> {
         match self {
             NodePayload::Tab(t) => Some((&t.url, t.tab.kind)),
-            NodePayload::FailedTab(t) => Some((&t.url, t.kind)),
+            NodePayload::Unloaded(t) => Some((&t.url, t.kind)),
             _ => None,
         }
     }
@@ -134,7 +134,7 @@ impl NodePayload {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ItemNodeKind {
     Tab,
-    FailedTab,
+    Unloaded,
     Download,
     Group,
     Note,
@@ -147,7 +147,7 @@ pub(crate) enum ItemNodeKind {
 /// draws, and takes the pointer, on top of an earlier one.
 pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
     ItemNodeKind::Tab,
-    ItemNodeKind::FailedTab,
+    ItemNodeKind::Unloaded,
     ItemNodeKind::Download,
     ItemNodeKind::Note,
     ItemNodeKind::Image,
@@ -159,7 +159,7 @@ pub(crate) const GRAPH_DRAW_ORDER: [ItemNodeKind; 8] = [
 pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
     match payload {
         NodePayload::Tab(_) => ItemNodeKind::Tab,
-        NodePayload::FailedTab(_) => ItemNodeKind::FailedTab,
+        NodePayload::Unloaded(_) => ItemNodeKind::Unloaded,
         NodePayload::Download(_) => ItemNodeKind::Download,
         NodePayload::Group(_) => ItemNodeKind::Group,
         NodePayload::Note(_) => ItemNodeKind::Note,
@@ -285,23 +285,40 @@ pub(crate) struct JsonPayload {
     pub(crate) error: Option<String>,
 }
 
-/// A tab whose engine couldn't start: a crash restart, or a session or
-/// group restore, whose spawn failed (e.g. an engine whose binary isn't
-/// built). The card keeps the tab where it was, and in the saved session
-/// as a plain tab, instead of dropping it. A click retries on the same
-/// engine (`retry_failed_tab`), its menu can use the default engine
-/// instead, and a success replaces the card with the live tab under the
-/// same id. It can stay `App::focused`: Tab view shows only live tabs, so
-/// it falls back to Graph.
-pub(crate) struct FailedTabPayload {
+/// A tab without an engine: asleep since a restore (only the focused tab
+/// starts at launch), waking (a spawn in flight), or failed (its engine
+/// couldn't start: a crash restart, a restore or a retry). The card keeps
+/// the tab where it was, and in the saved session as a plain tab. Opening
+/// it (`focus_tab`), or a click on a failed card, starts its engine
+/// (`App::wake_tab`), and a success replaces the card with the live tab
+/// under the same id. It can stay `App::focused`: Tab view shows only live
+/// tabs, so it shows the respawning placeholder while waking and falls
+/// back to Graph otherwise.
+pub(crate) struct UnloadedTabPayload {
     pub(crate) url: String,
+    /// From personal state (`LocalNode::title`); the live tab reports its
+    /// own once it loads.
+    pub(crate) title: String,
     pub(crate) kind: EngineKind,
-    pub(crate) error: String,
     pub(crate) pinned: bool,
+    /// From personal state, like `title`.
+    pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
-    /// A retry's spawn is in flight: the card shows a spinner, and further
-    /// clicks wait for it.
-    pub(crate) retrying: bool,
+    pub(crate) state: UnloadedState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum UnloadedState {
+    // Not yet built by production code -- a later task's sleeping restore
+    // is its only producer; today it's built only by
+    // `session_sync::tests::sleeping_tab`.
+    #[allow(dead_code)]
+    Sleeping,
+    /// A spawn is in flight: the card shows a spinner, and further opens
+    /// wait for it.
+    Waking,
+    /// The engine couldn't start; the error is the card's tooltip.
+    Failed(String),
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
@@ -428,8 +445,8 @@ impl GraphNode {
         self.payload.as_tab_mut()
     }
 
-    pub(crate) fn as_failed_tab(&self) -> Option<&FailedTabPayload> {
-        self.payload.as_failed_tab()
+    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
+        self.payload.as_unloaded()
     }
 
     pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
@@ -565,17 +582,18 @@ mod tests {
         );
     }
 
-    /// A failed tab's card is saved, exported and copied as its tab.
+    /// An unloaded tab's card is saved, exported and copied as its tab.
     #[test]
     fn saved_tab_keeps_a_failed_tab() {
         assert_eq!(
-            (NodePayload::FailedTab(FailedTabPayload {
+            (NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
+                title: String::new(),
                 kind: EngineKind::Cef,
-                error: "no binary".into(),
                 pinned: true,
+                muted: false,
                 zoom_factor: 1.5,
-                retrying: false,
+                state: UnloadedState::Failed("no binary".into()),
             }))
             .saved_tab(),
             Some(("https://example.org/", EngineKind::Cef))

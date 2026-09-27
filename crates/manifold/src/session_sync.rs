@@ -9,7 +9,7 @@ use ipc_protocol::HostToEngine;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, FailedTabPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload,
+    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload, UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
@@ -307,7 +307,7 @@ impl App {
                 NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, .. }) => {
                     tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent))
                 }
-                NodePayload::FailedTab(FailedTabPayload { url, kind, pinned, .. }) => {
+                NodePayload::Unloaded(UnloadedTabPayload { url, kind, pinned, .. }) => {
                     tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent))
                 }
                 NodePayload::Download(dl) if dl.completed => {
@@ -425,7 +425,7 @@ impl App {
                         swap = Some(want);
                     }
                 }
-                NodePayload::FailedTab(tab) => {
+                NodePayload::Unloaded(tab) => {
                     if changed(field::PINNED) {
                         tab.pinned = bool_of(fields, field::PINNED);
                     }
@@ -563,7 +563,7 @@ impl App {
         let Some(node) = self.nodes.get(id) else { return };
         let (parent, up) = (node.parent.clone(), node.group.clone());
         let is_group = node.as_group().is_some();
-        let is_tab = node.as_tab().is_some();
+        let is_tab = node.payload.saved_tab().is_some();
         for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
             node.parent = parent.clone();
         }
@@ -590,7 +590,7 @@ impl App {
             self.focused = None;
         }
         self.selected_tabs.remove(id);
-        self.failed_tab_retries.remove(id);
+        self.wakes_in_flight.remove(id);
     }
 
     /// Applies what other replicas changed while `id`'s spawn was in flight,
@@ -844,7 +844,9 @@ impl App {
                         local.zoom = zoom(tab.zoom_factor);
                         local.live_url = live_url(&tab.url);
                     }
-                    NodePayload::FailedTab(tab) => {
+                    NodePayload::Unloaded(tab) => {
+                        local.title = tab.title.clone();
+                        local.muted = tab.muted;
                         local.zoom = zoom(tab.zoom_factor);
                         local.live_url = live_url(&tab.url);
                     }
@@ -962,17 +964,22 @@ impl App {
                     tab.zoom_factor = zoom;
                 }
             }
+            NodePayload::Unloaded(tab) => {
+                tab.title = node.title.clone();
+                tab.muted = node.muted;
+                if let Some(zoom) = node.zoom {
+                    tab.zoom_factor = zoom;
+                }
+            }
             NodePayload::Note(n) => n.editing = node.editing,
             _ => {}
         }
     }
 
     /// Applies a spawning node's personal-state entry once its node exists
-    /// (`handle_tab_spawn_result`), removing it from `pending_local`. A
-    /// `FailedTab` card has no title/muted/editing fields, so only its
-    /// position (and zoom, which it does have) come from personal state;
-    /// the rest of the entry is simply dropped rather than lingering for an
-    /// id that will never gain those fields.
+    /// (`handle_tab_spawn_result`), removing it from `pending_local`. An
+    /// unloaded card now takes title/muted/zoom from personal state just
+    /// like a live tab; every other kind only takes its position.
     pub(crate) fn apply_pending_local(&mut self, id: &str) {
         let Some(pending) = &mut self.pending_local else { return };
         let Some(node) = pending.nodes.remove(id) else { return };
@@ -981,13 +988,12 @@ impl App {
         }
         if let Some(live) = self.nodes.get_mut(id) {
             match &live.payload {
-                NodePayload::Tab(_) | NodePayload::Note(_) => Self::apply_local_node(live, &node),
+                NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Note(_) => {
+                    Self::apply_local_node(live, &node)
+                }
                 _ => {
                     live.pos = egui::vec2(node.pos[0], node.pos[1]);
                     live.vel = egui::Vec2::ZERO;
-                    if let (NodePayload::FailedTab(tab), Some(zoom)) = (&mut live.payload, node.zoom) {
-                        tab.zoom_factor = zoom;
-                    }
                 }
             }
         }
@@ -1247,7 +1253,7 @@ impl App {
         self.selected_tabs.clear();
         self.rect_select_start = None;
         self.graph_settled_key = None;
-        self.failed_tab_retries.clear();
+        self.wakes_in_flight.clear();
         self.spawning.clear();
         self.host_loads.clear();
         self.navigated_from.clear();
@@ -1299,6 +1305,7 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::node::UnloadedState;
     use crate::store::journal::Journal;
     use crate::store::model::{ActorId, DocId, Hlc};
     use crate::store::ops::Op;
@@ -1623,15 +1630,16 @@ pub(crate) mod tests {
         let path = temp_dir("sync-fields").join("session.mnf");
         let mut app = app_on(&path, 1);
         let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false }));
-        let failed = FailedTabPayload {
+        let failed = UnloadedTabPayload {
             url: "https://u0/".into(),
+            title: String::new(),
             kind: EngineKind::Servo,
-            error: "x".into(),
             pinned: false,
+            muted: false,
             zoom_factor: 1.0,
-            retrying: false,
+            state: UnloadedState::Failed("x".into()),
         };
-        let tab = add(&mut app, NodePayload::FailedTab(failed));
+        let tab = add(&mut app, NodePayload::Unloaded(failed));
         assert!(app.save_session());
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
 
@@ -1640,7 +1648,7 @@ pub(crate) mod tests {
         if let NodePayload::Note(n) = &mut app.nodes.get_mut(&note).unwrap().payload {
             n.text = "typing".into();
         }
-        if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+        if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
             t.url = "https://u1/".into();
         }
         let red = color_value(Some(egui::Color32::RED));
@@ -1653,7 +1661,7 @@ pub(crate) mod tests {
         assert_eq!(live.color, Some(egui::Color32::RED));
         assert!(matches!(&live.payload, NodePayload::Note(n) if n.text == "typing"));
         assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("typing".into()));
-        assert!(matches!(&app.nodes[&tab].payload, NodePayload::FailedTab(t) if t.pinned && t.url == "https://u1/"));
+        assert!(matches!(&app.nodes[&tab].payload, NodePayload::Unloaded(t) if t.pinned && t.url == "https://u1/"));
         assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://u0/".into()));
 
         // A later remote edit to the same field does apply.
@@ -1798,13 +1806,14 @@ pub(crate) mod tests {
         let mut app = app_on(&path, 1);
         let tab = add(
             &mut app,
-            NodePayload::FailedTab(FailedTabPayload {
+            NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://x/".into(),
+                title: String::new(),
                 kind: EngineKind::Servo,
-                error: "x".into(),
                 pinned: false,
+                muted: false,
                 zoom_factor: 1.0,
-                retrying: false,
+                state: UnloadedState::Failed("x".into()),
             }),
         );
         // A node whose id isn't live yet -- `spawning`, not `self.nodes` --
@@ -1863,15 +1872,64 @@ pub(crate) mod tests {
     }
 
     fn failed_tab(url: &str, zoom_factor: f64) -> NodePayload {
-        let kind = EngineKind::Servo;
-        NodePayload::FailedTab(FailedTabPayload {
+        NodePayload::Unloaded(UnloadedTabPayload {
             url: url.into(),
-            kind,
-            error: "x".into(),
+            title: String::new(),
+            kind: EngineKind::Servo,
             pinned: false,
+            muted: false,
             zoom_factor,
-            retrying: false,
+            state: UnloadedState::Failed("x".into()),
         })
+    }
+
+    /// A tab restored asleep (`TabStart::Sleep`), as `add` inserts it.
+    pub(crate) fn sleeping_tab(url: &str, title: &str) -> NodePayload {
+        NodePayload::Unloaded(UnloadedTabPayload {
+            url: url.into(),
+            title: title.into(),
+            kind: EngineKind::Servo,
+            pinned: false,
+            muted: false,
+            zoom_factor: 1.0,
+            state: UnloadedState::Sleeping,
+        })
+    }
+
+    /// An unloaded tab's title and mute survive a restart through personal
+    /// state, though it has no engine to report either.
+    #[test]
+    fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
+        let mut app = app_on(&temp_dir("unloaded-local").join("session.mnf"), 1);
+        let tab = add(&mut app, sleeping_tab("https://s/", "Saved title"));
+        let set = |app: &mut App, title: &str, muted: bool| {
+            if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+                (t.title, t.muted) = (title.to_string(), muted);
+            }
+        };
+        set(&mut app, "Saved title", true);
+        let entry = app.local_state().nodes[&tab].clone();
+        assert_eq!((entry.title.as_str(), entry.muted), ("Saved title", true));
+        set(&mut app, "", false);
+        App::apply_local_node(app.nodes.get_mut(&tab).unwrap(), &entry);
+        let t = app.nodes[&tab].as_unloaded().unwrap();
+        assert_eq!((t.title.as_str(), t.muted), ("Saved title", true));
+    }
+
+    /// Closing an unloaded card moves its children to its parent, as
+    /// closing a live tab does, instead of leaving them naming a node
+    /// that's gone.
+    #[test]
+    fn closing_an_unloaded_tab_reparents_its_children() {
+        let mut app = app_on(&temp_dir("unloaded-close").join("session.mnf"), 1);
+        let root = add(&mut app, sleeping_tab("https://root/", ""));
+        let mid = add(&mut app, failed_tab("https://mid/", 1.0));
+        let leaf = add(&mut app, sleeping_tab("https://leaf/", ""));
+        app.nodes.get_mut(&mid).unwrap().parent = Some(root.clone());
+        app.nodes.get_mut(&leaf).unwrap().parent = Some(mid.clone());
+        app.close_node(&mid);
+        assert!(!app.nodes.contains_key(&mid));
+        assert_eq!(app.nodes[&leaf].parent.as_deref(), Some(root.as_str()));
     }
 
     /// Fails every spawn parked in `test_spawns`, as a missing engine would.
@@ -1899,7 +1957,7 @@ pub(crate) mod tests {
         app.reopen_closed(entry);
         assert_eq!(app.test_spawns.len(), 1);
         fail_spawns(&mut app);
-        let cards: Vec<&FailedTabPayload> = app.nodes.values().filter_map(|n| n.as_failed_tab()).collect();
+        let cards: Vec<&UnloadedTabPayload> = app.nodes.values().filter_map(|n| n.as_unloaded()).collect();
         assert!(matches!(&cards[..], [t] if t.url == "https://r/" && t.zoom_factor == 1.5), "no failed card");
     }
 
@@ -1913,7 +1971,7 @@ pub(crate) mod tests {
         let json = app.export_group_json(&g).unwrap();
         app.import_group_json(&json);
         fail_spawns(&mut app);
-        let copy = app.nodes.iter().find(|(id, n)| **id != tab && n.as_failed_tab().is_some()).expect("a failed card");
+        let copy = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a failed card");
         let group = copy.1.group.as_deref().expect("in a group");
         assert!(group != g && app.nodes[group].as_group().is_some(), "in the imported group");
     }
@@ -2015,7 +2073,7 @@ pub(crate) mod tests {
             let mut app = app_on(&path, 1);
             let tab = add(&mut app, failed_tab("https://s/", 1.0));
             assert!(app.save_session());
-            if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+            if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
                 t.url = "https://s/moved".into();
             }
             app.close_store();
@@ -2094,7 +2152,7 @@ pub(crate) mod tests {
         assert!(app.save_session());
         check(&app, "a local delete and moves");
 
-        if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+        if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
             t.url = "https://b/".into();
         }
         app.mark(&tab, field::URL);
@@ -2172,7 +2230,7 @@ pub(crate) mod tests {
                 "save_session, one url changed",
                 timed(N, || {
                     let id = &ids[k % tabs];
-                    if let NodePayload::FailedTab(f) = &mut app.nodes.get_mut(id).unwrap().payload {
+                    if let NodePayload::Unloaded(f) = &mut app.nodes.get_mut(id).unwrap().payload {
                         f.url = format!("https://moved.example/{k}");
                     }
                     app.mark(id, field::URL);

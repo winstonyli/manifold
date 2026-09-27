@@ -1128,7 +1128,7 @@ impl App {
         for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
             let (radius, color) = match kind {
                 ItemNodeKind::Tab => (2.0, ui.visuals().text_color()),
-                ItemNodeKind::FailedTab => (2.0, DANGER_COLOR),
+                ItemNodeKind::Unloaded => (2.0, DANGER_COLOR),
                 ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
                 ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
                 ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
@@ -1374,7 +1374,7 @@ impl App {
                 // to open; a click tries its file again instead.
                 let missing_file = self.nodes.get(id).is_some_and(|n| {
                     n.as_image().is_some_and(|i| i.error.is_some())
-                        || n.as_failed_tab().is_some()
+                        || n.as_unloaded().is_some()
                         || n.as_json().is_some_and(|j| j.error.is_some())
                         || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
                 });

@@ -172,7 +172,7 @@ impl App {
         match kind {
             ItemNodeKind::Tab => self.render_tab_toolbar_content(node_id, ui, trailing_ui),
             ItemNodeKind::Image => self.render_image_toolbar_content(node_id, ui, trailing_ui),
-            ItemNodeKind::FailedTab
+            ItemNodeKind::Unloaded
             | ItemNodeKind::Download
             | ItemNodeKind::Group
             | ItemNodeKind::Note
