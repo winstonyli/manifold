@@ -2195,11 +2195,14 @@ pub(crate) mod tests {
     }
 
     /// A reopened tab comes back asleep, starting no engine, and keeps its
-    /// zoom (spec "Lazy tabs").
+    /// zoom and title (spec "Lazy tabs").
     #[test]
-    fn a_reopened_tab_comes_back_asleep_with_its_zoom() {
+    fn a_reopened_tab_comes_back_asleep_with_its_zoom_and_title() {
         let mut app = app_on(&temp_dir("reopen-sleep").join("session.mnf"), 1);
-        let tab = add(&mut app, failed_tab("https://r/", 1.5));
+        let tab = add(&mut app, sleeping_tab("https://r/", "Page R"));
+        if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+            t.zoom_factor = 1.5;
+        }
         let entry = crate::closed_entry(&app, &tab).unwrap();
         app.nodes.remove(&tab);
         app.node_order.retain(|t| t != &tab);
@@ -2207,7 +2210,8 @@ pub(crate) mod tests {
         assert!(app.test_spawns.is_empty());
         let cards: Vec<&UnloadedTabPayload> = app.nodes.values().filter_map(|n| n.as_unloaded()).collect();
         assert!(
-            matches!(&cards[..], [t] if t.url == "https://r/" && t.zoom_factor == 1.5 && t.state == UnloadedState::Sleeping),
+            matches!(&cards[..], [t] if t.url == "https://r/" && t.title == "Page R" && t.zoom_factor == 1.5
+                && t.state == UnloadedState::Sleeping),
             "no sleeping card"
         );
     }

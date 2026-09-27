@@ -1019,12 +1019,21 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 /// `closed_entry` built it. `doc.nodes[0]` is the node that was closed.
 /// `App::reopen_closed` imports the whole snapshot with fresh ids. Not
 /// cookies/localStorage/scroll position, the same "graph shape only"
-/// limit session restore and an engine swap have. `doc.local` carries any
-/// tab's zoom that differs from the default settings zoom (zoom is
-/// personal state, not a store field), as `{"zoom": {"<label>": 1.25}}`,
-/// set on that tab's sleeping card when it's reopened.
+/// limit session restore and an engine swap have. `doc.local` carries a
+/// tab's personal state, which isn't in the store: its zoom when it
+/// differs from the default settings zoom, and its title when it has one,
+/// as `{"zoom": {"<label>": 1.25}, "title": {"<label>": "…"}}`. Both are
+/// set on that tab's sleeping card when it's reopened, and the title
+/// names it in the Recently Closed list.
 struct ClosedEntry {
     doc: store::json::JsonDoc,
+}
+
+impl ClosedEntry {
+    /// `doc.local[key]`'s value for the node recorded as `label`.
+    fn local(&self, key: &str, label: &str) -> Option<&serde_json::Value> {
+        self.doc.local.as_ref()?.get(key)?.get(label)
+    }
 }
 
 /// How many entries `App::closed` keeps before dropping the oldest, like a
@@ -1059,6 +1068,17 @@ fn tab_zoom(app: &App, id: &str) -> Option<f64> {
     (zoom != app.settings.zoom_factor).then_some(zoom)
 }
 
+/// `id`'s tab title, when it has one -- what `closed_entry` records in
+/// `doc.local["title"]`. Like zoom, a title is personal state.
+fn tab_title(app: &App, id: &str) -> Option<String> {
+    let title = match app.nodes.get(id).map(|n| &n.payload) {
+        Some(NodePayload::Tab(tab)) => &tab.title,
+        Some(NodePayload::Unloaded(tab)) => &tab.title,
+        _ => return None,
+    };
+    (!title.is_empty()).then(|| title.clone())
+}
+
 /// The `ClosedEntry` closing `id` should record: `id` and, for a group,
 /// every node under it at any depth (in `app.node_order`, i.e. draw
 /// order), minus what `worth_reopening` skips. `None` when `id` itself
@@ -1072,10 +1092,16 @@ fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
         return None;
     }
     let mut nodes = vec![store::json::node_json(id, root.kind, &root.fields, None)];
-    let mut zoom = serde_json::Map::new();
-    if let Some(z) = tab_zoom(app, id) {
-        zoom.insert(id.to_string(), serde_json::json!(z));
-    }
+    let (mut zoom, mut title) = (serde_json::Map::new(), serde_json::Map::new());
+    let mut record = |label: &str| {
+        if let Some(z) = tab_zoom(app, label) {
+            zoom.insert(label.to_string(), serde_json::json!(z));
+        }
+        if let Some(t) = tab_title(app, label) {
+            title.insert(label.to_string(), serde_json::json!(t));
+        }
+    };
+    record(id);
     // Only a group has members; for anything else this finds none.
     let mut levels = vec![root_id];
     while let Some(level) = levels.pop() {
@@ -1091,13 +1117,17 @@ fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
             if worth_reopening(member.kind, &member.fields) {
                 let label = member_id.to_string();
                 nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
-                if let Some(z) = tab_zoom(app, &label) {
-                    zoom.insert(label, serde_json::json!(z));
-                }
+                record(&label);
             }
         }
     }
-    let local = (!zoom.is_empty()).then(|| serde_json::json!({ "zoom": zoom }));
+    let mut local = serde_json::Map::new();
+    for (key, map) in [("zoom", zoom), ("title", title)] {
+        if !map.is_empty() {
+            local.insert(key.to_string(), serde_json::Value::Object(map));
+        }
+    }
+    let local = (!local.is_empty()).then_some(serde_json::Value::Object(local));
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
@@ -2128,31 +2158,32 @@ impl App {
         if imported.is_empty() {
             return;
         }
-        // Old label (the id `closed_entry` recorded it under) -> zoom,
-        // read from `doc.local`, then carried over to the fresh id below
-        // (`imported[i]` is `entry.doc.nodes[i]`, per `import`'s contract)
-        // and set on that tab's sleeping card once it's in place.
-        let zoom_by_label: std::collections::BTreeMap<&str, f64> = entry
-            .doc
-            .local
-            .as_ref()
-            .and_then(|v| v.get("zoom"))
-            .and_then(|v| v.as_object())
-            .map(|map| map.iter().filter_map(|(k, v)| Some((k.as_str(), v.as_f64()?))).collect())
-            .unwrap_or_default();
-        let zooms: Vec<(String, f64)> = entry
+        // Each tab's zoom and title, recorded in `doc.local` under its old
+        // label, carried over to its fresh id (`imported[i]` is
+        // `entry.doc.nodes[i]`, per `import`'s contract) and set on its
+        // sleeping card once it's in place.
+        let personal: Vec<(String, Option<f64>, Option<String>)> = entry
             .doc
             .nodes
             .iter()
             .zip(&imported)
-            .filter_map(|(n, i)| Some((i.id.to_string(), *zoom_by_label.get(n.id.as_str())?)))
+            .map(|(n, i)| {
+                let zoom = entry.local("zoom", &n.id).and_then(|v| v.as_f64());
+                let title = entry.local("title", &n.id).and_then(|v| v.as_str()).map(str::to_string);
+                (i.id.to_string(), zoom, title)
+            })
             .collect();
 
         let root = session_sync::ImportRoot { group: self.current_group.clone(), pos: None };
         self.materialize_imported(imported, Some(root), true);
-        for (id, factor) in zooms {
+        for (id, zoom, title) in personal {
             if let Some(NodePayload::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.payload) {
-                tab.zoom_factor = factor;
+                if let Some(zoom) = zoom {
+                    tab.zoom_factor = zoom;
+                }
+                if let Some(title) = title {
+                    tab.title = title;
+                }
             }
         }
         self.save_session();

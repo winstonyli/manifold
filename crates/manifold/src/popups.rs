@@ -196,15 +196,21 @@ impl App {
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
     /// into `ui` as a side effect, same as the row's other icons) and the
-    /// text -- `name` for a group (with its member count), `url` for a
-    /// tab, `text` for a note, `path` for every file-backed kind.
-    fn closed_entry_label(ui: &mut egui::Ui, node: &store::json::JsonNode, member_count: usize) -> String {
+    /// text -- `name` for a group (with its member count), `title` (its
+    /// recorded title) or else `url` for a tab, `text` for a note, `path`
+    /// for every file-backed kind.
+    fn closed_entry_label(
+        ui: &mut egui::Ui,
+        node: &store::json::JsonNode,
+        title: Option<&str>,
+        member_count: usize,
+    ) -> String {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         match node.kind.as_str() {
             "tab" => {
                 let code = store::model::ENGINES.iter().position(|e| *e == str_field("engine")).unwrap_or(0) as u64 + 1;
                 engine_dot(ui, session_sync::engine_of(code), 8.0);
-                str_field("url")
+                title.map_or_else(|| str_field("url"), str::to_string)
             }
             "group" => {
                 ui.label(egui_phosphor::light::FOLDER_SIMPLE);
@@ -241,7 +247,8 @@ impl App {
                 for (index, entry) in self.closed.iter().enumerate().rev() {
                     ui.horizontal(|ui| {
                         let root = &entry.doc.nodes[0];
-                        let label = Self::closed_entry_label(ui, root, entry.doc.nodes.len() - 1);
+                        let title = entry.local("title", &root.id).and_then(|v| v.as_str());
+                        let label = Self::closed_entry_label(ui, root, title, entry.doc.nodes.len() - 1);
                         if ui
                             .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)

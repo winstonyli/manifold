@@ -276,9 +276,10 @@ engine at once. Both now arrive asleep, like every other way a tab is
 created from saved data, so `TabStart` went. A reopened tab's zoom
 (`doc.local["zoom"]`) is set on its sleeping card directly instead of
 waiting in `pending_local` for a landing. Nothing gains focus on a
-reopen, so nothing wakes; the first click starts the engine. A reopened
-tab has no title until it loads (titles are personal state, and
-`closed_entry` records only zoom), so its card shows the url.
+reopen, so nothing wakes; the first click starts the engine. Titles are
+personal state too, so `closed_entry` records them beside zoom
+(`doc.local["title"]`): a reopened sleeping card shows its title, and
+the Recently Closed list names a tab by it rather than by its url.
 
 ## Deferred
 
