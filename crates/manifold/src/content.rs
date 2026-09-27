@@ -159,19 +159,17 @@ pub(crate) fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
 /// deleted as if it were `x` -- comparing `path.parent()` to `dir`
 /// component-wise instead rejects that, since a literal `..` component
 /// never equals a real directory name.
-// `prune`'s own `keep` closure and Task 6's keep rule could plausibly
-// share this (same "does this filename belong to a live id" question),
-// but that's left for whichever of them touches this next, not folded in
-// here.
+// `prune`'s own `keep` closure and the app's stem rule for a synced
+// node's local copy (`App::content_keep`) could plausibly share this
+// (same "does this filename belong to a live id" question), but the keep
+// rule is set-based -- checking membership in a set of ids, not parsing
+// one specific path -- so it doesn't reuse this structural check.
 pub(crate) fn owned_content_file(dir: &Path, id: &str, path: &Path) -> bool {
     path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem == id)
 }
 
 /// Deletes each file in `dir` whose name `keep` rejects; returns how many.
 /// A missing `dir` deletes nothing.
-// Used from Task 4 on (sweeping the content dir of files no live node
-// still points at).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn prune(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries

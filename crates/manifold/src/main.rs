@@ -518,6 +518,24 @@ fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
+/// Where node `id`'s file is on this machine (spec "Where fetched files
+/// live"): `stored` if it exists, else a copy this machine fetched into
+/// the content dir (named by id, see `content`), else `stored` (it shows
+/// as missing, and `session_sync::materialize` refetches it when the node
+/// has a URL).
+fn resolve_content_path(dir: Option<&std::path::Path>, id: &str, stored: &str) -> String {
+    if std::path::Path::new(stored).exists() {
+        return stored.to_string();
+    }
+    let prefix = format!("{id}.");
+    dir.and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map_or_else(|| stored.to_string(), |e| e.path().to_string_lossy().into_owned())
+}
+
 /// Recursively renders one `serde_json::Value` inside the JSON viewer's
 /// tree -- an object/array as a `CollapsingHeader` (its own children
 /// indented beneath, count shown in the header so a collapsed node still
@@ -4121,6 +4139,48 @@ impl App {
         self.node_order.push(id);
     }
 
+    /// Content-dir file names something still uses (spec "Where fetched
+    /// files live"): live nodes' files, files named by a live node's id
+    /// (this machine's own copy of a node synced from another replica,
+    /// whose stored path was never on this machine), and Recently Closed
+    /// entries' files. `prune_content_dir` moves this into its own thread,
+    /// and applies the stem rule (an id with no extension matches
+    /// `<id>.<ext>`) that turns it into `content::prune`'s `keep` closure.
+    fn content_keep(&self) -> impl Fn(&str) -> bool + Send + 'static {
+        let name = |path: &str| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned());
+        let mut keep: HashSet<String> = HashSet::new();
+        for (id, node) in &self.nodes {
+            let path = match &node.payload {
+                NodePayload::Image(p) => Some(&p.path),
+                NodePayload::Pdf(p) => Some(&p.path),
+                NodePayload::Json(p) => Some(&p.path),
+                NodePayload::Download(p) => Some(&p.path),
+                _ => None,
+            };
+            keep.extend(path.and_then(|p| name(p)));
+            keep.insert(id.clone()); // matched by stem below
+        }
+        for entry in &self.closed {
+            for node in &entry.doc.nodes {
+                keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(name));
+            }
+        }
+        move |file: &str| keep.contains(file) || file.split_once('.').is_some_and(|(stem, _)| keep.contains(stem))
+    }
+
+    /// Deletes content-dir files nothing uses (spec "Where fetched files
+    /// live"), on a thread. Called once at launch, after restore.
+    fn prune_content_dir(&self) {
+        let Some(dir) = profile::content_dir() else { return };
+        let keep = self.content_keep();
+        std::thread::spawn(move || {
+            let n = content::prune(&dir, keep);
+            if n > 0 {
+                eprintln!("content: pruned {n} unused file(s)");
+            }
+        });
+    }
+
     /// Tries a placeholder's file again (a click on the card). Loaded, the
     /// real card takes the placeholder's place: same id, position, group,
     /// color and draw order. Still failing, it stays a placeholder with the
@@ -4129,6 +4189,10 @@ impl App {
     fn retry_missing_file(&mut self, id: &str) {
         if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
             self.wake_tab(id, kind);
+            return;
+        }
+        if self.nodes.get(id).is_some_and(|n| n.source_url().is_some()) {
+            self.refresh_node(id);
             return;
         }
         if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
@@ -5593,6 +5657,68 @@ mod tests {
         let source = ContentSource::Web { url: "https://x.test/note.txt".into(), body: WebBody::Text("hi".into()) };
         app.insert_content(source, note_id.clone(), egui::Vec2::ZERO, None).unwrap();
         assert_eq!(app.nodes[&note_id].source_url(), Some("https://x.test/note.txt"));
+    }
+
+    #[test]
+    fn a_missing_content_file_resolves_to_this_machines_copy() {
+        let dir = crate::store::testutil::temp_dir("resolve_content");
+        std::fs::write(dir.join("5-9.png"), b"x").unwrap();
+        let elsewhere = r"Z:\nowhere\5-9.png";
+        assert_eq!(resolve_content_path(Some(&dir), "5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
+        assert_eq!(resolve_content_path(Some(&dir), "5-8", elsewhere), elsewhere);
+        assert_eq!(resolve_content_path(None, "5-9", elsewhere), elsewhere);
+    }
+
+    #[test]
+    fn pruning_keeps_files_live_or_recently_closed_nodes_name() {
+        let dir = crate::store::testutil::temp_dir("prune_content");
+        let mut app = App::default();
+        // A live node by path, a live node by id (a refetched copy), a
+        // closed entry by its path field, and an orphan.
+        for name in ["a.png", "1-7.json", "c.pdf", "orphan.png"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        app.insert_placeholder_node(
+            "1".into(),
+            egui::Vec2::ZERO,
+            NodePayload::Image(ImagePayload {
+                path: dir.join("a.png").to_string_lossy().into_owned(),
+                width: 0,
+                height: 0,
+                error: None,
+                url: None,
+            }),
+        );
+        app.insert_placeholder_node(
+            "1-7".into(),
+            egui::Vec2::ZERO,
+            NodePayload::Json(JsonPayload {
+                path: r"Z:\x.json".into(),
+                value: serde_json::Value::Null,
+                key: None,
+                error: None,
+                url: None,
+            }),
+        );
+        app.closed.push(ClosedEntry {
+            doc: store::json::JsonDoc {
+                nodes: vec![store::json::JsonNode {
+                    id: "99".into(),
+                    kind: "pdf".into(),
+                    fields: serde_json::Map::from_iter([(
+                        "path".to_string(),
+                        serde_json::Value::String(dir.join("c.pdf").to_string_lossy().into_owned()),
+                    )]),
+                }],
+                local: None,
+            },
+        });
+        let keep = app.content_keep();
+        assert_eq!(crate::content::prune(&dir, keep), 1);
+        assert!(!dir.join("orphan.png").exists());
+        assert!(dir.join("a.png").exists());
+        assert!(dir.join("1-7.json").exists());
+        assert!(dir.join("c.pdf").exists());
     }
 
     /// The fetch-result drain's `let Some(body) = body else { continue }`

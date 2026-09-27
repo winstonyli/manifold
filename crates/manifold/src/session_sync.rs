@@ -479,6 +479,13 @@ impl App {
             }
             return;
         }
+        // Resolved once up front (used by three of the arms below and by
+        // the missing-file refetch check after them): `resolve_content_path`
+        // prefers `stored` when it exists, else this machine's own copy in
+        // the content dir, named by id.
+        let content_path = matches!(kind, Kind::Image | Kind::Pdf | Kind::Json).then(|| {
+            crate::resolve_content_path(crate::profile::content_dir().as_deref(), &id, &str_of(fields, field::PATH))
+        });
         match kind {
             Kind::Tab => {
                 let shared = str_of(fields, field::URL);
@@ -505,15 +512,17 @@ impl App {
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
             }
             Kind::Image => {
-                let path = str_of(fields, field::PATH);
+                let path = content_path.clone().unwrap_or_default();
                 if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
                     let payload = ImagePayload { path, width: 0, height: 0, error: Some(error), url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
                 }
             }
-            Kind::Pdf => self.insert_pdf_node_with_id(id.clone(), str_of(fields, field::PATH), pos, None),
+            Kind::Pdf => {
+                self.insert_pdf_node_with_id(id.clone(), content_path.clone().unwrap_or_default(), pos, None);
+            }
             Kind::Json => {
-                let path = str_of(fields, field::PATH);
+                let path = content_path.clone().unwrap_or_default();
                 if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
                     let payload =
                         JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error), url: None };
@@ -542,6 +551,18 @@ impl App {
             if let Some(url) = node.source_url_mut() {
                 *url = url_of(fields);
             }
+        }
+        // Missing file, URL known (spec "Where fetched files live"):
+        // refetch instead of showing an error, whether it's genuinely
+        // missing here or this is a node synced from another replica whose
+        // path was never on this machine. `content_path` above already
+        // tried this machine's own copy in the content dir, so this fires
+        // only when neither exists. The placeholder card (or, for Pdf, its
+        // spinner) shows until the fetch lands.
+        if content_path.is_some_and(|p| !std::path::Path::new(&p).exists())
+            && self.nodes.get(&id).is_some_and(|n| n.source_url().is_some())
+        {
+            self.refresh_node(&id);
         }
     }
 

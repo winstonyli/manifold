@@ -68,6 +68,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.save_settings();
             }
         }
+        self.prune_content_dir();
     }
 
     /// A clean exit (a window close, or headless `QUIT`): the store's last
@@ -1104,6 +1105,12 @@ impl App {
                     self.queue_toast(err.clone());
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
                         pdf.outcome = Some(Err(err));
+                    }
+                    // Missing file, URL known: refetch instead of leaving
+                    // the error card up (spec "Where fetched files live").
+                    // A no-op for a picked/dropped PDF with no URL.
+                    if self.nodes.get(&id).is_some_and(|n| n.source_url().is_some()) {
+                        self.refresh_node(&id);
                     }
                 }
             }
