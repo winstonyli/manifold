@@ -289,7 +289,7 @@ The whole tab graph (which tabs, their url/engine/graph position, who opened who
 The session lives in `%APPDATA%\manifold\` as a replicated operation log rather than one JSON blob, so two instances open on the same profile (or a synced folder) merge instead of one clobbering the other's save:
 
 - `session.mnf` — the shared graph: every node's kind, url/engine, group, and who opened whom. Multiple instances on the same file each append their own ops and read back the other's; a conflicting edit resolves the same way every field does (spec "Fields": last-write-wins by wall clock, actor id breaking a tie).
-- `session.mnf.local` — this profile's own personal state, kept out of the shared file so it never bounces between instances: focus, camera position, each node's own position and title, and Recently Closed.
+- `session.mnf.local` — this profile's own personal state, kept out of the shared file so it never bounces between instances: focus, camera position, each node's own position, title and live url (where a redirect or script took it without sharing), and Recently Closed. Two instances on one profile each write their own whole, so the next launch reopens whichever instance saved last.
 - `session.mnf.prev` — a copy of the file kept from the last compaction, used to recover a snapshot if the live file's own is damaged.
 - `session.mnf.damaged-<16 hex digits>` — a byte-for-byte copy of the file set aside the moment damage is found (a bad CRC, a torn tail), keyed by its generation, so repairing it in place can't lose evidence of what went wrong. The app repairs around the damage and keeps running; a toast names the file once.
 - An old `session.json` (from before this format) is left in place and ignored — nothing migrates it automatically.

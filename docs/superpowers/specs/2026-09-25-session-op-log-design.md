@@ -177,8 +177,12 @@ Encoded as JSON (`local_state::LocalState`) inside the personal-state
 file's state bytes.
 
 Two instances on one profile each keep their own personal state while
-running, and the last write wins. So on the next launch one instance's
-Recently Closed list replaces the other's; accepted.
+running, and the last write wins. A write happens on any save that
+changed personal state, not only on quit. So the next launch reopens one
+instance's view whole: its Recently Closed list, positions, camera, and
+live urls (a tab only the other instance had moved by redirect reopens
+at the shared url, as it would without `live_url`). Accepted: a restart
+has one view to restore, and mixing two per node would restore neither.
 
 When it is written (Plan B):
 - only when it changed, and at most every 30 s;
