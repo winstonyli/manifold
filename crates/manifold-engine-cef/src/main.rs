@@ -113,8 +113,16 @@ fn main() {
     // matters here; we never need ENGINE_TAB_ID itself.
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
     let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // ENGINE_CACHE_DIR is this process's own `root_cache_path`, fresh per
+    // spawn and deleted afterwards (see process_manager::spawn_tab).
+    // Chromium's process singleton lets one browser process at a time use a
+    // given root, so CEF's machine-wide default would allow one CEF tab at
+    // a time. `cache_path` stays empty: browsing data lives in memory, since
+    // the directory doesn't outlive the tab anyway.
+    let cache_dir = std::env::var("ENGINE_CACHE_DIR").expect("ENGINE_CACHE_DIR env var required");
 
     let settings = Settings {
+        root_cache_path: cache_dir.as_str().into(),
         windowless_rendering_enabled: true as _,
         external_message_pump: true as _,
         // We disabled the `sandbox` cargo feature (it needs a separate

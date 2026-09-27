@@ -200,6 +200,8 @@ pub struct EngineTab {
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
     child: Child,
+    /// CEF's `root_cache_path` for this process, deleted on drop.
+    cache_dir: Option<PathBuf>,
 }
 
 impl EngineTab {
@@ -255,6 +257,83 @@ impl Drop for EngineTab {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        if let Some(dir) = self.cache_dir.take() {
+            remove_cache_dir(dir);
+        }
+    }
+}
+
+/// Parent of every CEF engine-host's own `root_cache_path`. Temp when
+/// there's no profile (always under `cargo test`), so CEF never falls back
+/// to its machine-wide default, which only one CEF process can use at once.
+fn cef_cache_root() -> PathBuf {
+    crate::profile::cef_cache_dir().unwrap_or_else(|| std::env::temp_dir().join("manifold-cef-cache"))
+}
+
+/// Names each CEF engine's cache dir `<manifold pid>-<n>`: unique across
+/// manifold instances sharing a profile, and across respawns of one tab,
+/// so a swap's new engine never shares a dir the old one's
+/// `remove_cache_dir` is still deleting.
+static CEF_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Deletes an exited CEF engine's cache dir. Its renderer/GPU subprocesses
+/// die with it (its own kill-on-close job) but not instantly, and Windows
+/// won't delete files they still hold, so this retries for a few seconds
+/// on a background thread. Whatever is left `sweep_cef_cache` removes at
+/// the next startup.
+fn remove_cache_dir(dir: PathBuf) {
+    let removal = std::thread::spawn(move || {
+        for _ in 0..50 {
+            if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(removal);
+}
+
+static CACHE_REMOVALS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
+
+/// Waits for every `remove_cache_dir` so far, at most its few seconds of
+/// retries: `main` calls this after dropping the app's tabs, since the
+/// process exiting would otherwise cut the deletes short.
+pub fn finish_cache_removals() {
+    let removals = std::mem::take(&mut *CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()));
+    for removal in removals {
+        let _ = removal.join();
+    }
+}
+
+/// Deletes CEF cache dirs left by engines that `remove_cache_dir` never
+/// finished (manifold killed or crashed). Another manifold on the same
+/// profile may be using some: Windows won't rename a dir while a running
+/// CEF holds files in it, so each is renamed aside first and deleted only
+/// if that works. Dirs touched in the last minute are skipped, since their
+/// CEF may not have opened its files yet.
+pub fn sweep_cef_cache() {
+    sweep_cache_dirs(&cef_cache_root(), Duration::from_secs(60));
+}
+
+fn sweep_cache_dirs(root: &Path, min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Renamed aside by an earlier sweep that then couldn't finish.
+        let aside = if path.extension().is_some_and(|ext| ext == "old") {
+            path
+        } else {
+            let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+            if age.is_none_or(|age| age < min_age) {
+                continue;
+            }
+            let aside = path.with_extension("old");
+            if std::fs::rename(&path, &aside).is_err() {
+                continue;
+            }
+            aside
+        };
+        let _ = std::fs::remove_dir_all(&aside);
     }
 }
 
@@ -496,13 +575,25 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
 
-    let mut child = Command::new(engine_binary_path(kind))
+    // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
+    // don't share cookies or logins and keep none across a restart (see
+    // manifold-engine-cef's main.rs for why they can't share one).
+    let cache_dir = (kind == EngineKind::Cef).then(|| {
+        let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        cef_cache_root().join(format!("{}-{n}", std::process::id()))
+    });
+
+    let mut command = Command::new(engine_binary_path(kind));
+    command
         .env("ENGINE_TAB_ID", tab_id)
         .env("ENGINE_SOCKET_ID", &socket_id)
         .env("ENGINE_INITIAL_URL", initial_url)
         .stdout(stdout_file)
-        .stderr(stderr_file)
-        .spawn()?;
+        .stderr(stderr_file);
+    if let Some(dir) = &cache_dir {
+        command.env("ENGINE_CACHE_DIR", dir);
+    }
+    let mut child = command.spawn()?;
     assign_to_engine_job(&child);
 
     // The child connects to both sockets right after spawning — bounded by
@@ -521,12 +612,15 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(dir) = cache_dir {
+                remove_cache_dir(dir);
+            }
             return Err(e);
         }
     };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child })
+    Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir })
 }
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
@@ -614,5 +708,41 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         to_engine: ToEngine::Remote(to_engine),
         events_rx,
         child,
+        cache_dir: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    /// A dir whose files a live CEF holds (opened without share-delete, as
+    /// Chromium's SQLite does) survives the sweep untouched; a dead one and
+    /// one an earlier sweep renamed aside are deleted.
+    #[cfg(windows)]
+    #[test]
+    fn sweep_skips_dirs_still_in_use() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+        let root = crate::store::testutil::temp_dir("cef-sweep");
+        for name in ["1-0", "1-1", "1-2.old"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("Cookies"), b"x").unwrap();
+        }
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ_WRITE)
+            .open(root.join("1-1").join("Cookies"))
+            .unwrap();
+
+        super::sweep_cache_dirs(&root, Duration::from_secs(3600));
+        assert!(root.join("1-0").exists(), "a dir touched within min_age is kept");
+
+        super::sweep_cache_dirs(&root, Duration::ZERO);
+        let mut left: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["1-1"]);
+        assert!(root.join("1-1").join("Cookies").exists());
+    }
 }

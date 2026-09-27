@@ -1,6 +1,7 @@
 //! `%APPDATA%\manifold`, the one folder the app keeps its files in:
 //! `settings.json`, `bookmarks.json`, `history.json`, the session store
-//! and the named sessions. Every path into it starts from `dir()` or, for
+//! and the named sessions (and CEF's throwaway cache dirs, under
+//! `cef-cache`). Every path into it starts from `dir()` or, for
 //! engines, `engine_data_dir()`.
 
 use std::path::PathBuf;
@@ -15,6 +16,13 @@ pub fn dir() -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("manifold"))
+}
+
+/// Where CEF engine-hosts keep their browser data: one throwaway
+/// subdirectory per engine process (see `process_manager::spawn_tab`).
+/// `None` like `dir()`.
+pub fn cef_cache_dir() -> Option<PathBuf> {
+    Some(dir()?.join("cef-cache"))
 }
 
 /// The per-user data directory (Known Folders on Windows, which puts it at
@@ -40,6 +48,7 @@ mod tests {
     fn tests_have_no_profile_dir() {
         assert_eq!(super::dir(), None);
         assert_eq!(super::engine_data_dir(), None);
+        assert_eq!(super::cef_cache_dir(), None);
     }
 
     /// `App::default()` loads settings, bookmarks and history. Under test
