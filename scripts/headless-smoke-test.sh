@@ -282,6 +282,9 @@ send "NEWGROUP"
 sleep 1 # Tab-to-Graph transition, layout settle
 send "SCREENSHOT $out_dir_win\group_card.png"
 check_screenshot "$out_dir/group_card.png" "group card"
+# A "Saved <path>" toast would cover the bottom-left of the window, and a
+# card placed there would take the next click on the toast instead.
+check_state group_card "a headless screenshot shows no toast" 's["toast"] is None'
 settle group_card
 first_group=$(query group_card 'groups[0]')
 send "DOUBLECLICK $(query group_card "xy('$first_group')")"

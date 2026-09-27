@@ -478,12 +478,18 @@ impl App {
             };
             if outcome.surface_ok {
                 self.pending_screenshot = None;
-                // The PNG is written by now (`render` saves it).
+                // The PNG is written by now (`render` saves it). A headless
+                // `SCREENSHOT` (one with a waiter) isn't toasted: the toast
+                // would sit over the window's bottom-left for 4s, in later
+                // screenshots and under the script's next clicks.
+                let mut headless = false;
                 if outcome.screenshot_result.is_some() {
                     if let Some(waiter) = self.screenshot_waiter.take() {
                         let _ = waiter.send(());
+                        headless = true;
                     }
                 }
+                let screenshot_path = screenshot_path.filter(|_| !headless);
                 self.handle_screenshot_result(screenshot_path, outcome.screenshot_result);
             }
         }
@@ -818,6 +824,8 @@ impl App {
                     "current_group": self.current_group,
                     "cards": cards,
                     "selected_tabs": selected_tabs,
+                    // The toast showing, or else the next queued one.
+                    "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
                 });
                 if let Err(err) = std::fs::write(&path, state.to_string()) {
                     eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
