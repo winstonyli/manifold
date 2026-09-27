@@ -1,6 +1,7 @@
 mod bookmarks;
 mod card;
 mod cli;
+mod content;
 mod crash_report;
 mod debug_control;
 mod engine_info;
