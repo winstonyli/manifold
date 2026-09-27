@@ -4,9 +4,15 @@ Usage: python -P scripts/nonce_server.py <hits-file> <seconds> < /dev/null
 
 Serves http://127.0.0.1:<port>/r. Each `?n=` it issued is served once;
 any other request (no `n`, or an `n` already served) redirects to a new
-`n`, like a login nonce that is consumed on use. Prints the port, writes
-the running count of /r requests to <hits-file>, and exits after <seconds>
-on its own, so nothing has to kill it.
+`n`, like a login nonce that is consumed on use. Also serves `/link`, a
+page that is one window-sized link to `/r`, and `/js`, a page whose script
+navigates to a fresh `/dest?n=` without a gesture.
+
+Prints the port, writes the running count of /r requests to <hits-file>
+and "<r-repeats> <dest-repeats> <dests>" to <hits-file>.repeats: how often an
+already-served `/r?n=` or `/dest?n=` was asked for again, which is another
+instance loading a url one instance shared, and how many `/dest` urls were
+asked for at all. Exits after <seconds> on its own, so nothing has to kill it.
 """
 
 import http.server
@@ -17,24 +23,60 @@ import urllib.parse
 
 hits_path, lifetime = sys.argv[1], float(sys.argv[2])
 lock = threading.Lock()
-state = {"next": 0, "issued": set(), "served": set(), "hits": 0}
+state = {"next": 0, "issued": set(), "served": set(), "hits": 0, "dests": set(), "repeats": [0, 0]}
+
+LINK = b"""<!doctype html><title>link</title>
+<a href="/r" style="position:fixed;inset:0;display:block">go</a>"""
+JS = b"""<!doctype html><title>js</title>
+<script>setTimeout(function () { location.href = "/dest?n=" + Math.random(); }, 500);</script>"""
+
+
+def write(path, text):
+    try:
+        with open(path, "w") as f:
+            f.write(text)
+    except OSError:
+        pass  # the test's output dir is gone: it has finished
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def page(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        with lock:
+            try:
+                with open(hits_path + ".log", "a") as f:
+                    f.write("%.2f %s\n" % (time.monotonic(), self.path))
+            except OSError:
+                pass
+        n = urllib.parse.parse_qs(url.query).get("n", [None])[0]
+        if url.path == "/link":
+            return self.page(LINK)
+        if url.path == "/js":
+            return self.page(JS)
+        if url.path == "/dest":
+            with lock:
+                if n in state["dests"]:
+                    state["repeats"][1] += 1
+                state["dests"].add(n)
+                write(hits_path + ".repeats", "%d %d %d" % (*state["repeats"], len(state["dests"])))
+            return self.page(b"<!doctype html><title>dest</title>")
         if url.path != "/r":
             self.send_response(404)
             self.end_headers()
             return
-        n = urllib.parse.parse_qs(url.query).get("n", [None])[0]
         with lock:
             state["hits"] += 1
-            try:
-                with open(hits_path, "w") as f:
-                    f.write(str(state["hits"]))
-            except OSError:
-                pass  # the test's output dir is gone: it has finished
+            write(hits_path, str(state["hits"]))
+            if n in state["served"]:
+                state["repeats"][0] += 1
+                write(hits_path + ".repeats", "%d %d %d" % (*state["repeats"], len(state["dests"])))
             if n in state["issued"] and n not in state["served"]:
                 state["served"].add(n)
                 redirect = None
@@ -47,12 +89,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", redirect)
             self.end_headers()
         else:
-            body = b"<!doctype html><title>nonce</title><p>served once"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.page(b"<!doctype html><title>nonce</title><p>served once")
 
     def log_message(self, *args):
         pass

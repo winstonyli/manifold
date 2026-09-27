@@ -12,7 +12,8 @@ use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, Sha
 use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
 use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab};
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedMuted, SharedNavState,
+    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, EngineRequestHandler, LoadHandlerBuilder,
+    RequestHandlerBuilder, SharedMuted, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
 use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, REDIRECT_RESULT};
@@ -55,6 +56,7 @@ wrap_client! {
         render_handler: RenderHandler,
         display_handler: DisplayHandler,
         load_handler: LoadHandler,
+        request_handler: RequestHandler,
         life_span_handler: LifeSpanHandler,
         find_handler: FindHandler,
         download_handler: DownloadHandler,
@@ -108,6 +110,10 @@ wrap_client! {
             Some(self.load_handler.clone())
         }
 
+        fn request_handler(&self) -> Option<cef::RequestHandler> {
+            Some(self.request_handler.clone())
+        }
+
         fn life_span_handler(&self) -> Option<cef::LifeSpanHandler> {
             Some(self.life_span_handler.clone())
         }
@@ -143,7 +149,8 @@ impl ClientBuilder {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
             DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
-            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state, muted)),
+            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state.clone(), muted)),
+            RequestHandlerBuilder::build(EngineRequestHandler::new(nav_state)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),

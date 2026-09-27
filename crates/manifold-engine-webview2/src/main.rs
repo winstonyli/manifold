@@ -26,7 +26,7 @@ use capture::Capture;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ipc_protocol::{transport, EngineToHost, HostToEngine, SharedFrameBuffer};
+use ipc_protocol::{transport, EngineToHost, HostToEngine, InputEvent, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2Environment3, ICoreWebView2_8, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
@@ -256,12 +256,14 @@ fn main() {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 HostToEngine::Navigate { url, .. } => unsafe {
+                    nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
                     let _ = webview.Navigate(&HSTRING::from(&url));
                 },
                 HostToEngine::GoBack => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoBack(&mut can_go);
                     if can_go.as_bool() {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         let _ = webview.GoBack();
                     }
                 },
@@ -272,6 +274,7 @@ fn main() {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoForward(&mut can_go);
                     if can_go.as_bool() {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         let _ = webview.GoForward();
                     }
                 },
@@ -281,6 +284,9 @@ fn main() {
                     capture.resize(width, height);
                 }
                 HostToEngine::Input(event) => {
+                    if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
+                        nav_state.borrow_mut().last_input = Some(std::time::Instant::now());
+                    }
                     input::send_input(&webview, &comp_controller, event, &pending_context_menu, &drag_state);
                 }
                 HostToEngine::SetZoom { factor } => unsafe {
@@ -343,7 +349,11 @@ fn main() {
                     can_go_back: state.can_go_back,
                     can_go_forward: state.can_go_forward,
                     loading: state.loading,
+                    user_started: state.user_started,
                 });
+                if std::mem::take(&mut state.finished) {
+                    state.user_started = None;
+                }
             }
         }
 

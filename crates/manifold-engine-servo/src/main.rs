@@ -319,6 +319,8 @@ fn main() {
                     can_go_back: nav.can_go_back,
                     can_go_forward: nav.can_go_forward,
                     loading: nav.loading,
+                    // Servo's `NavigationRequest` carries only the url.
+                    user_started: None,
                 });
             }
         }

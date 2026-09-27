@@ -378,6 +378,10 @@ fn main() {
                 can_go_back: nav_now.2,
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
+                // Polled state carries no cause; `decide-policy`'s
+                // `NavigationAction` (is_user_gesture, navigation_type)
+                // would.
+                user_started: None,
             });
             // Loading just finished -- check once whether the page that
             // loaded is a raw JSON response, or anything else non-HTML (see

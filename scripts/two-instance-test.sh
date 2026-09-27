@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Usage: scripts/two-instance-test.sh
+# Usage: [ENGINE=cef] scripts/two-instance-test.sh
 #
 # Two headless instances on one isolated APPDATA (spec "Testing",
 # Headless). Never touches the real %APPDATA%\manifold. Build first:
 # cargo build -j 12 -p manifold.
+# ENGINE (default webview2) is the engine new tabs start in, which
+# scenarios 3 and 4 navigate.
 #   1. A imports a group, B adds a note: both EXPORTSESSION node sets agree.
 #   2. A imports enough notes to compact while B stays open; B edits
 #      after: both agree and nothing is lost.
 #   3. A navigates a tab to a site that redirects to a fresh url on every
 #      load (scripts/nonce_server.py): B follows once, and the two don't
 #      keep navigating each other (the site's request count settles).
-#   4. A adds a note and is killed; a fresh instance still has it.
+#   4. A clicks a link on that site: B follows. A's page then navigates
+#      by script: B doesn't (the engine reports how a navigation started).
+#   5. A adds a note and is killed; a fresh instance still has it.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -28,7 +32,7 @@ profile="$repo_root/target/two-instance-appdata-$$"
 out="$repo_root/target/two-instance-out-$$"
 mkdir -p "$profile/manifold" "$out"
 export APPDATA="$(cygpath -w "$profile")"
-echo '{"has_shown_first_launch_demo": true}' >"$profile/manifold/settings.json"
+echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"${ENGINE:-webview2}\"}" >"$profile/manifold/settings.json"
 win() { cygpath -w "$1"; }
 out_win="$(win "$out")"
 
@@ -157,7 +161,7 @@ assert_py has_kinds "$out/a2.json" "note:201"
 echo "scenario 2: ok"
 
 echo "=== scenario 3: a url that changes on every load ==="
-python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 150 >"$out/port" </dev/null &
+python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &
 wait_file "$out/port"
 port="$(tr -d '\r\n' <"$out/port")"
 hits() { cat "$out/hits" 2>/dev/null || echo 0; }
@@ -189,7 +193,45 @@ sleep 10
 }
 echo "scenario 3: ok ($settled requests)"
 
-echo "=== scenario 4: kill A ==="
+echo "=== scenario 4: a click is shared, a script's navigation isn't ==="
+# "<r-repeats> <dest-repeats> <dests>", see nonce_server.py.
+repeats() { cat "$out/hits.repeats" 2>/dev/null || echo "0 0 0"; }
+field() { repeats | tr -d '\r\n' | cut -d' ' -f"$1"; }
+before="$(field 1)"
+sa "ADDRESSBAR http://127.0.0.1:$port/link"
+sa "SLEEP 1"
+sa ENTER
+sa "SLEEP 3"
+# The page is one window-sized link, so any click below the toolbar hits it.
+sa "CLICK 400 300"
+# A lands on a served-once /r?n= and shares it; B asks for it again.
+for _ in $(seq 75); do [ "$(field 1)" -gt "$before" ] && break; sleep 0.2; done
+[ "$(field 1)" -gt "$before" ] || {
+    echo "FAIL: scenario 4: B never followed A's link click"
+    exit 1
+}
+sa "ADDRESSBAR http://127.0.0.1:$port/js"
+sa "SLEEP 1"
+sa ENTER
+# A's page and then B's (it follows the typed url) each navigate by script
+# to their own /dest; had A's been shared, B would ask for A's too.
+for _ in $(seq 75); do [ "$(field 3)" -ge 2 ] && break; sleep 0.2; done
+[ "$(field 3)" -ge 2 ] || {
+    echo "FAIL: scenario 4: only $(field 3) script navigations ran; expected A's and B's"
+    exit 1
+}
+sleep 5
+[ "$(field 2)" -eq 0 ] || {
+    echo "FAIL: scenario 4: B followed A's script navigation"
+    cat "$out/hits.log"
+    sa "EXPORTSESSION $(win "$out/a4.json")"; sb "EXPORTSESSION $(win "$out/b4.json")"
+    wait_file "$out/a4.json"; wait_file "$out/b4.json"
+    grep -o '"url": *"[^"]*"' "$out/a4.json" "$out/b4.json"
+    exit 1
+}
+echo "scenario 4: ok"
+
+echo "=== scenario 5: kill A ==="
 sa "EXPORTSESSION $(win "$out/before3.json")"
 wait_file "$out/before3.json"
 sa NEWNOTE
@@ -220,6 +262,6 @@ assert_py has_id "$out/c.json" "$new_id"
 sc QUIT
 wait "$C_PID" 2>/dev/null || true
 c_winpid=""
-echo "scenario 4: ok"
+echo "scenario 5: ok"
 
 echo "two-instance test: ok"

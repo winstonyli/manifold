@@ -24,8 +24,9 @@ use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CL
 const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long after a store-started load last reported loading its tab's url
-/// changes stay local (`App::shares_url_change`): a script redirect can
-/// come just after the page reports loaded.
+/// changes stay local (`App::shares_url_change`), when the engine doesn't
+/// say how they started: a script redirect can come just after the page
+/// reports loaded.
 const STORE_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A node's shared fields by number: every field of its kind but `group`.
@@ -610,13 +611,24 @@ impl App {
         self.store_loads.insert(id.to_string(), std::time::Instant::now());
     }
 
-    /// Whether tab `id`'s reported url change is shared (ruling 3). Not
-    /// while it follows a load the store started, nor for `STORE_LOAD_GRACE`
-    /// after the tab was last seen loading: a site that redirects to a
-    /// fresh url on every load (a nonce, a session token) would otherwise
-    /// have two instances navigate each other back and forth forever. The
-    /// url stays local; the next navigation after the load is shared.
-    pub(crate) fn shares_url_change(&mut self, id: &str) -> bool {
+    /// Whether tab `id`'s reported url change is shared (ruling 3), given
+    /// how the engine says its navigation started (`user_started`). One a
+    /// person started is; a page script's or the host's own `Navigate` (a
+    /// typed url, which `navigate_tab` marks itself, or another replica's)
+    /// isn't. Otherwise, not while it follows a load the store started, nor
+    /// for `STORE_LOAD_GRACE` after the tab was last seen loading. Either
+    /// way a site that redirects to a fresh url on every load (a nonce, a
+    /// session token) can't have two instances navigate each other back
+    /// and forth forever: the url stays local.
+    pub(crate) fn shares_url_change(&mut self, id: &str, user_started: Option<bool>) -> bool {
+        match user_started {
+            Some(true) => {
+                self.store_loads.remove(id);
+                return true;
+            }
+            Some(false) => return false,
+            None => {}
+        }
         let Some(since) = self.store_loads.get_mut(id) else { return true };
         if self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.loading) {
             *since = std::time::Instant::now();
@@ -1622,13 +1634,23 @@ pub(crate) mod tests {
     #[test]
     fn url_changes_after_a_store_started_load_stay_local_until_it_settles() {
         let mut app = App::default();
-        assert!(app.shares_url_change("7"), "an ordinary tab shares");
+        assert!(app.shares_url_change("7", None), "an ordinary tab shares");
         app.note_store_load("7");
-        assert!(!app.shares_url_change("7"), "a redirect right after the store's navigation");
-        assert!(!app.shares_url_change("7"), "still within the grace");
+        assert!(!app.shares_url_change("7", None), "a redirect right after the store's navigation");
+        assert!(!app.shares_url_change("7", None), "still within the grace");
         app.store_loads.insert("7".into(), std::time::Instant::now() - STORE_LOAD_GRACE);
-        assert!(app.shares_url_change("7"), "settled: the next navigation is shared");
+        assert!(app.shares_url_change("7", None), "settled: the next navigation is shared");
         assert!(app.store_loads.is_empty());
+    }
+
+    /// An engine that says how a navigation started overrides the grace.
+    #[test]
+    fn the_engines_cause_decides_whether_a_url_change_is_shared() {
+        let mut app = App::default();
+        assert!(!app.shares_url_change("7", Some(false)), "a script's navigation stays local");
+        app.note_store_load("7");
+        assert!(app.shares_url_change("7", Some(true)), "a click right after the store's load is shared");
+        assert!(app.store_loads.is_empty(), "and ends the store's load");
     }
 
     #[test]

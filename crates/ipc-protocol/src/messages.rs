@@ -197,6 +197,13 @@ pub enum EngineToHost {
         can_go_back: bool,
         can_go_forward: bool,
         loading: bool,
+        /// How the current navigation started, so the host shares only the
+        /// url changes a person made (spec "Fields", `url`). `Some(true)`:
+        /// a link click, a form submit, back/forward. `Some(false)`: a page
+        /// script without a gesture, or the host's own `Navigate`. Redirects
+        /// keep the label of the navigation they continue. `None`: the
+        /// engine can't tell (Servo, WebKit), or no navigation is under way.
+        user_started: Option<bool>,
     },
     StateSnapshot(TabState),
     Crashed { reason: String },

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 use cef::{rc::Rc, *};
 
@@ -15,8 +16,28 @@ pub struct NavState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub loading: bool,
+    /// Whether the current navigation was user-started, sent as
+    /// `NavigationStateChanged::user_started`. Set when a navigation starts
+    /// (`on_before_browse`) and kept through its redirects; cleared once its
+    /// load's end has been sent (`finished`), so a later change nothing
+    /// started isn't labelled.
+    pub user_started: Option<bool>,
+    /// The label of a navigation the host just asked for, and when:
+    /// `false` for `Navigate` (a typed url, another instance's url, the
+    /// initial load), `true` for back/forward. CEF's `user_gesture` reports
+    /// only the page's own gestures, so an API call needs its label from
+    /// here. It applies to the next navigation to start within
+    /// `HOST_START_WINDOW`: a same-document one (a new `#fragment`) starts
+    /// none, and a stale label would mislabel the user's next click.
+    pub host_started: Option<(bool, Instant)>,
+    /// The current navigation's load ended; `main.rs` clears `user_started`
+    /// after sending it.
+    pub finished: bool,
     pub dirty: bool,
 }
+
+/// See `NavState::host_started`.
+const HOST_START_WINDOW: Duration = Duration::from_secs(2);
 
 impl NavState {
     fn new(initial_url: String) -> Self {
@@ -26,6 +47,9 @@ impl NavState {
             can_go_back: false,
             can_go_forward: false,
             loading: false,
+            user_started: None,
+            host_started: Some((false, Instant::now())), // the browser is created at `initial_url`
+            finished: false,
             dirty: true,
         }
     }
@@ -139,6 +163,7 @@ wrap_load_handler! {
             {
                 let mut state = self.handler.state.borrow_mut();
                 state.loading = is_loading != 0;
+                state.finished |= is_loading == 0;
                 state.can_go_back = can_go_back != 0;
                 state.can_go_forward = can_go_forward != 0;
                 state.dirty = true;
@@ -172,6 +197,58 @@ wrap_load_handler! {
 
 impl LoadHandlerBuilder {
     pub fn build(handler: EngineLoadHandler) -> LoadHandler {
+        Self::new(handler)
+    }
+}
+
+#[derive(Clone)]
+pub struct EngineRequestHandler {
+    state: SharedNavState,
+}
+
+impl EngineRequestHandler {
+    pub fn new(state: SharedNavState) -> Self {
+        Self { state }
+    }
+}
+
+wrap_request_handler! {
+    pub struct RequestHandlerBuilder {
+        handler: EngineRequestHandler,
+    }
+
+    impl RequestHandler {
+        /// Labels each main-frame navigation by how it started (see
+        /// `NavState::user_started`). `Request::transition_type` isn't read:
+        /// the binding makes it a Rust enum, and a source combined with its
+        /// qualifier flags (a redirected link) is no variant of it.
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            user_gesture: ::std::os::raw::c_int,
+            is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            if frame.is_none_or(|f| f.is_main() == 0) {
+                return 0;
+            }
+            let mut state = self.handler.state.borrow_mut();
+            // A redirect continues the navigation it came from, and keeps
+            // its label, while that one is under way; a client redirect
+            // after the load gets its own.
+            if !(is_redirect != 0 && state.user_started.is_some() && !state.finished) {
+                let host = state.host_started.take().filter(|(_, at)| at.elapsed() < HOST_START_WINDOW);
+                state.user_started = Some(host.map_or(user_gesture != 0, |(label, _)| label));
+                state.finished = false;
+            }
+            0 // let it proceed
+        }
+    }
+}
+
+impl RequestHandlerBuilder {
+    pub fn build(handler: EngineRequestHandler) -> RequestHandler {
         Self::new(handler)
     }
 }

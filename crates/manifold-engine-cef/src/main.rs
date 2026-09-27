@@ -200,17 +200,20 @@ fn main() {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
+                    nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
                     }
                 }
                 HostToEngine::GoBack => {
                     if browser.can_go_back() != 0 {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         browser.go_back();
                     }
                 }
                 HostToEngine::GoForward => {
                     if browser.can_go_forward() != 0 {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         browser.go_forward();
                     }
                 }
@@ -339,7 +342,11 @@ fn main() {
                     can_go_back: nav.can_go_back,
                     can_go_forward: nav.can_go_forward,
                     loading: nav.loading,
+                    user_started: nav.user_started,
                 });
+                if std::mem::take(&mut nav.finished) {
+                    nav.user_started = None;
+                }
             }
         }
 

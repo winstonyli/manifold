@@ -52,6 +52,7 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false,
                 loading: false,
+                user_started: None,
             })
             .expect("send NavigationStateChanged");
 

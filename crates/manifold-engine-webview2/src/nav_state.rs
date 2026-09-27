@@ -8,8 +8,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2NavigationStartingEventArgs};
 use webview2_com::{
     take_pwstr, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, HistoryChangedEventHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
@@ -22,8 +23,41 @@ pub struct NavState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub loading: bool,
+    /// Whether the current navigation was user-started, sent as
+    /// `NavigationStateChanged::user_started`. Set when a navigation starts
+    /// and kept through its redirects; cleared once its completion has been
+    /// sent (`finished`), so a later change nothing started isn't labelled.
+    pub user_started: Option<bool>,
+    /// The label of a navigation the host just asked for, and when:
+    /// `false` for `Navigate` (a typed url, another instance's url, the
+    /// initial load), `true` for back/forward. It applies to the next
+    /// navigation to start within `HOST_START_WINDOW`: a same-document one
+    /// (a new `#fragment`) starts none, and a stale label would mislabel
+    /// the user's next click.
+    pub host_started: Option<(bool, Instant)>,
+    /// When the page last got a click or a key press (`main.rs`). A
+    /// navigation that starts within `GESTURE_WINDOW` of it is the user's,
+    /// and uses it up, as a new document starts without Chromium's
+    /// transient user activation. WebView2's own `IsUserInitiated` can't
+    /// say: it was true even for a page's `setTimeout` navigation in a tab
+    /// that never got any input (runtime tested 2026-09-26).
+    pub last_input: Option<Instant>,
+    /// The current navigation completed; `main.rs` clears `user_started`
+    /// after sending it.
+    pub finished: bool,
     pub dirty: bool,
 }
+
+/// See `NavState::host_started`: long enough for a navigation to start,
+/// short enough that a click after a same-document `Navigate` isn't taken
+/// for the host's.
+const HOST_START_WINDOW: Duration = Duration::from_secs(2);
+
+/// See `NavState::last_input`: Chromium's own lifespan for transient user
+/// activation, which covers a click whose handler navigates only after a
+/// fetch. Too long only shares one navigation too many: the one it starts
+/// in another instance is the host's, and never shared back.
+const GESTURE_WINDOW: Duration = Duration::from_secs(5);
 
 pub type SharedNavState = Rc<RefCell<NavState>>;
 
@@ -34,6 +68,10 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
         can_go_back: false,
         can_go_forward: false,
         loading: false,
+        user_started: None,
+        host_started: Some((false, Instant::now())), // `main.rs` navigates to `initial_url` next
+        last_input: None,
+        finished: false,
         dirty: false,
     }))
 }
@@ -71,6 +109,12 @@ fn can_go_forward(webview: &ICoreWebView2) -> bool {
     value.as_bool()
 }
 
+fn is_redirected(args: &ICoreWebView2NavigationStartingEventArgs) -> bool {
+    let mut value = BOOL(0);
+    unsafe { args.IsRedirected(&mut value) }.ok();
+    value.as_bool()
+}
+
 /// Registers all four nav-state event handlers on `webview`. Each handler
 /// closure is leaked into the event-registration token via `add_*` and
 /// never explicitly removed -- matches this project's other engine-hosts,
@@ -89,13 +133,25 @@ pub fn register_handlers(
         let webview_for_query = webview.clone();
         let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
             let url = args
+                .as_ref()
                 .and_then(|a| {
                     let mut uri = PWSTR::null();
                     unsafe { a.Uri(&mut uri) }.ok()?;
                     Some(take_pwstr(uri))
                 })
                 .unwrap_or_default();
+            let redirected = args.as_ref().is_some_and(is_redirected);
             let mut s = state.borrow_mut();
+            // A redirect continues the navigation it came from, and keeps
+            // its label, while that one is under way. WebView2 also calls a
+            // page script's navigation just after the load a redirect (a
+            // client redirect); that one gets its own.
+            if !(redirected && s.user_started.is_some() && !s.finished) {
+                let host = s.host_started.take().filter(|(_, at)| at.elapsed() < HOST_START_WINDOW);
+                let input = s.last_input.take().is_some_and(|at| at.elapsed() < GESTURE_WINDOW);
+                s.user_started = Some(host.map_or(input, |(label, _)| label));
+                s.finished = false;
+            }
             s.url = url;
             s.loading = true;
             s.can_go_back = can_go_back(&webview_for_query);
@@ -117,6 +173,7 @@ pub fn register_handlers(
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
+            s.finished = true;
             if let Some(sender) = &sender {
                 let mut uri = PWSTR::null();
                 if unsafe { sender.Source(&mut uri) }.is_ok() {

@@ -1035,14 +1035,18 @@ impl App {
         // `NavigationStateChanged`.
         let mut changed = false;
         for (tab_id, msg) in messages {
+            let user_started = match &msg {
+                EngineToHost::NavigationStateChanged { user_started, .. } => *user_started,
+                _ => None,
+            };
             let url_changed = self.handle_engine_message(&tab_id, msg);
-            if url_changed && self.shares_url_change(&tab_id) {
+            if url_changed && self.shares_url_change(&tab_id, user_started) {
                 // Ruling 3: every reported url change is shared, whichever
                 // tab it came from -- mark it here rather than leaving it
                 // to `navigate_tab` (that only handles this instance's own
                 // address-bar navigations, not the engine's own
                 // confirmation this responds to, nor back/forward) --
-                // except while it follows a load the store started.
+                // except one a script or the store started.
                 self.mark(&tab_id, field::URL);
             }
             changed |= url_changed;
@@ -1160,7 +1164,7 @@ impl App {
                     self.finish_swap(tab_id, target, state.url);
                 }
             }
-            EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading } => {
+            EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };

@@ -2162,6 +2162,11 @@ impl App {
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });
             self.store_loads.remove(tab_id);
             self.mark(tab_id, field::URL);
+            // Now, while `node.url` is still the typed url: a save writes the
+            // live value, and the page's own redirect or script navigation
+            // (never shared) would otherwise be what the mark writes. Only a
+            // save that doesn't commit leaves the mark for a later one.
+            self.save_session();
         }
     }
 
