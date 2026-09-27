@@ -63,7 +63,8 @@ browsers restore tabs unloaded.
 - **Open Session sleeps too.** (Amended by the plan.)
   `replace_running_session` (Open Session, `OPENSESSION`) replaces the
   whole session as a launch does, so its tabs restore asleep and the
-  focused one wakes. Group import and Recently Closed still spawn.
+  focused one wakes. Group import and Recently Closed sleep too (see
+  Outcome).
 - **Cards.** Sleeping: dimmed, title and host, tooltip "Sleeping — click
   to load". Waking: the spinner a retry shows now, tooltip "Loading…".
   Failed: unchanged (warning icon, error tooltip).
@@ -107,13 +108,13 @@ swap, crash respawn) still produces `Failed`.
 
 ### Restore (`session_sync.rs`)
 
-- `materialize(.., TabStart::Sleep, ..)` for a `Tab` inserts a
-  sleeping `Unloaded` card (same id, position, group, color, parent)
-  instead of spawning. `TabStart` replaced `materialize`'s purpose
-  parameter, which every caller passed as `Restore`. `restore_session`
-  and `replace_running_session` pass `Sleep`, and so do `apply_remote`
-  and `land_remote_in_flight` for a tab another instance created (see
-  Outcome); Recently Closed and group import pass `Spawn`.
+- `materialize` for a `Tab` inserts a sleeping `Unloaded` card (same
+  id, position, group, color, parent) instead of spawning, whoever
+  calls it: `restore_session`, `replace_running_session`, `apply_remote`
+  and `land_remote_in_flight` for a tab another instance created, and
+  Recently Closed and group import through `materialize_imported` (see
+  Outcome). A `TabStart { Spawn, Sleep }` parameter chose between the
+  two while some callers still spawned; it went once none did.
 - `restore_session`, after `apply_local` has set `focused` (and
   `split_tab`), wakes each of them that is asleep (`wake_focused`); so
   does `replace_running_session`. No focused tab wakes nothing; without
@@ -265,8 +266,15 @@ A's new tab loading by itself; B now opens it through the Quick
 Switcher once A's url reaches it, then returns to Graph view (C inherits
 B's personal state, and scenario 6 toggles C into Tab view from Graph).
 
-**Known limitation.** A reopened Recently Closed group's members and an
-imported group's tabs still start at once (`TabStart::Spawn`).
+**Recently Closed and group import sleep too** (added after the
+review). Reopening or importing a big group started every member's
+engine at once. Both now arrive asleep, like every other way a tab is
+created from saved data, so `TabStart` went. A reopened tab's zoom
+(`doc.local["zoom"]`) is set on its sleeping card directly instead of
+waiting in `pending_local` for a landing. Nothing gains focus on a
+reopen, so nothing wakes; the first click starts the engine. A reopened
+tab has no title until it loads (titles are personal state, and
+`closed_entry` records only zoom), so its card shows the url.
 
 ## Deferred
 
@@ -283,6 +291,3 @@ imported group's tabs still start at once (`TabStart::Spawn`).
   placeholder.
 - **Waking neighbours ahead of time**, e.g. the tabs next to the focused
   one, if opening a tab feels slow in use.
-- **Group import and Recently Closed sleeping their tabs.** Both still
-  use `TabStart::Spawn` (`materialize_imported`), so reopening or
-  importing a big group starts every member's engine.

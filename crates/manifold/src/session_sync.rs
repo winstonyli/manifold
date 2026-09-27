@@ -17,7 +17,7 @@ use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{encode_field, encode_field_into, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
 use crate::store::ops::OpBody;
-use crate::{App, ClosedEntry, SpawnPurpose, TabCarry, TabSpawn, ViewMode, MAX_CLOSED};
+use crate::{App, ClosedEntry, TabSpawn, ViewMode, MAX_CLOSED};
 
 /// How long after a save that didn't commit `poll_store` tries again:
 /// soon enough that an edit isn't left unsaved, slow enough that a failing
@@ -292,16 +292,6 @@ pub(crate) fn imported_fields(kind: Kind, raw: &BTreeMap<u32, FieldValue>) -> Fi
         .collect()
 }
 
-/// How `materialize` starts a tab it creates: a restore of this profile's
-/// own session (`restore_session`, Open Session) leaves it asleep, and
-/// everything else (another replica's tab, Recently Closed, a group
-/// import) spawns it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TabStart {
-    Spawn,
-    Sleep,
-}
-
 impl App {
     /// Every live node the store keeps, as `Shared`. Skipped: an
     /// in-progress download (it can't resume), and a node whose id isn't a
@@ -365,9 +355,10 @@ impl App {
         out
     }
 
-    /// Makes live node `id` show `fields`. A new node is inserted, and a
-    /// new tab either spawns or sleeps per `tabs` (`TabStart`) -- spawning
-    /// joins `spawning`. A node whose spawn is in flight keeps the change
+    /// Makes live node `id` show `fields`. A new node is inserted; a new
+    /// tab arrives asleep (spec "Lazy tabs"), whatever created it: a
+    /// restore, another replica, Recently Closed or an import. A node
+    /// whose spawn is in flight keeps the change
     /// for when it lands (`remote_in_flight`). An existing node is updated
     /// in place, but only in the fields (and group) where the store
     /// differs from what this replica last saw of it (`last_shared`), so
@@ -392,7 +383,6 @@ impl App {
         kind: Kind,
         fields: &Fields,
         group: Option<String>,
-        tabs: TabStart,
         local: Option<&LocalNode>,
     ) {
         if self.spawning.contains_key(&id) {
@@ -475,12 +465,6 @@ impl App {
                 let url = live.map_or(shared, |l| l.url.clone());
                 let (kind, pinned, parent) =
                     (engine_field(fields), bool_of(fields, field::PINNED), id_of(fields, field::PARENT));
-                if tabs == TabStart::Spawn {
-                    let spawn = TabSpawn::new(id, url, kind, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
-                    let carry = TabCarry { pinned, color, ..spawn.carry };
-                    self.spawn_tab_async(TabSpawn { parent, group, carry, ..spawn });
-                    return;
-                }
                 // Title, mute and zoom come from personal state (`apply_local`).
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
@@ -552,7 +536,7 @@ impl App {
     /// without a Recently Closed entry (`remove_remotely_deleted`), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
-    /// exist yet. A new tab arrives asleep (`TabStart::Sleep`, spec "Lazy
+    /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
     /// tabs"): another replica opening a big session mustn't start an
     /// engine here for every tab in it.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
@@ -561,9 +545,7 @@ impl App {
         for (id, change) in changes {
             let key = id.to_string();
             match change {
-                Some((kind, fields, group)) => {
-                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), TabStart::Sleep, None)
-                }
+                Some((kind, fields, group)) => self.materialize(key, kind, &fields, group.map(|g| g.to_string()), None),
                 None if self.spawning.contains_key(&key) => {
                     self.remote_in_flight.insert(key, None);
                 }
@@ -621,9 +603,7 @@ impl App {
     /// now that its node exists (`handle_tab_spawn_result`).
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
-            Some(Some((kind, fields, group))) => {
-                self.materialize(id.to_string(), kind, &fields, group, TabStart::Sleep, None)
-            }
+            Some(Some((kind, fields, group))) => self.materialize(id.to_string(), kind, &fields, group, None),
             Some(None) => {
                 self.last_shared.remove(id);
                 self.remove_remotely_deleted(id);
@@ -852,7 +832,7 @@ impl App {
             // The store's own `pos` still becomes `last_shared` inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(&id.to_string());
-            self.materialize(id.to_string(), *kind, fields, group, TabStart::Sleep, entry);
+            self.materialize(id.to_string(), *kind, fields, group, entry);
         }
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
@@ -1174,7 +1154,7 @@ impl App {
         // format's own import behavior.
         let pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
         let root = ImportRoot { group: self.current_group.clone(), pos: Some(pos) };
-        self.materialize_imported(imported, Some(root), false, TabStart::Spawn);
+        self.materialize_imported(imported, Some(root), false);
         self.save_session();
     }
 
@@ -1190,15 +1170,13 @@ impl App {
     ///   names some other session's tab, or an unrelated live one. It's
     ///   dropped, unless `keep_live_parents` and that node is live.
     ///
-    /// Tabs start per `tabs` (`TabStart`): spawning, a tab whose engine
-    /// won't start stays as a failed card rather than vanishing. Toasts
-    /// from missing files are collapsed into one.
+    /// Tabs arrive asleep (`materialize`). Toasts from missing files are
+    /// collapsed into one.
     pub(crate) fn materialize_imported(
         &mut self,
         imported: Vec<Imported>,
         root: Option<ImportRoot>,
         keep_live_parents: bool,
-        tabs: TabStart,
     ) {
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
@@ -1221,7 +1199,7 @@ impl App {
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, tabs, None);
+            self.materialize(node.id.to_string(), node.kind, &fields, group, None);
         }
         self.collapse_toasts_since(toasts);
     }
@@ -1269,7 +1247,7 @@ impl App {
         let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
-        self.materialize_imported(imported, None, false, TabStart::Sleep);
+        self.materialize_imported(imported, None, false);
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
@@ -1359,6 +1337,7 @@ pub(crate) mod tests {
     use crate::store::model::{ActorId, DocId, Hlc};
     use crate::store::ops::Op;
     use crate::store::testutil::{temp_dir, XorShift};
+    use crate::SpawnPurpose;
 
     const A: ActorId = ActorId(0xA);
 
@@ -1932,7 +1911,7 @@ pub(crate) mod tests {
         })
     }
 
-    /// A tab restored asleep (`TabStart::Sleep`), as `add` inserts it.
+    /// A tab restored asleep, as `add` inserts it.
     pub(crate) fn sleeping_tab(url: &str, title: &str) -> NodePayload {
         NodePayload::Unloaded(UnloadedTabPayload {
             url: url.into(),
@@ -2215,34 +2194,37 @@ pub(crate) mod tests {
         crate::store::json::JsonNode { id: id.into(), kind: kind.into(), fields }
     }
 
-    /// A reopened tab whose engine won't start stays as a failed card,
-    /// keeping its zoom, like a restored one, rather than vanishing.
+    /// A reopened tab comes back asleep, starting no engine, and keeps its
+    /// zoom (spec "Lazy tabs").
     #[test]
-    fn a_reopened_tab_that_fails_to_spawn_stays_as_a_failed_card() {
-        let mut app = app_on(&temp_dir("reopen-fail").join("session.mnf"), 1);
+    fn a_reopened_tab_comes_back_asleep_with_its_zoom() {
+        let mut app = app_on(&temp_dir("reopen-sleep").join("session.mnf"), 1);
         let tab = add(&mut app, failed_tab("https://r/", 1.5));
         let entry = crate::closed_entry(&app, &tab).unwrap();
         app.nodes.remove(&tab);
         app.node_order.retain(|t| t != &tab);
         app.reopen_closed(entry);
-        assert_eq!(app.test_spawns.len(), 1);
-        fail_spawns(&mut app);
+        assert!(app.test_spawns.is_empty());
         let cards: Vec<&UnloadedTabPayload> = app.nodes.values().filter_map(|n| n.as_unloaded()).collect();
-        assert!(matches!(&cards[..], [t] if t.url == "https://r/" && t.zoom_factor == 1.5), "no failed card");
+        assert!(
+            matches!(&cards[..], [t] if t.url == "https://r/" && t.zoom_factor == 1.5 && t.state == UnloadedState::Sleeping),
+            "no sleeping card"
+        );
     }
 
-    /// Same for a tab in an imported group: it stays in the new group.
+    /// Same for a tab in an imported group: it sleeps in the new group.
     #[test]
-    fn an_imported_groups_tab_that_fails_to_spawn_stays_as_a_failed_card() {
-        let mut app = app_on(&temp_dir("import-fail").join("session.mnf"), 1);
+    fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
+        let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
         let g = add(&mut app, NodePayload::Group(GroupPayload { name: "G".into(), from_json: false }));
         let tab = add(&mut app, failed_tab("https://i/", 1.0));
         app.nodes.get_mut(&tab).unwrap().group = Some(g.clone());
         let json = app.export_group_json(&g).unwrap();
         app.import_group_json(&json);
-        fail_spawns(&mut app);
-        let copy = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a failed card");
-        let group = copy.1.group.as_deref().expect("in a group");
+        assert!(app.test_spawns.is_empty());
+        let (_, copy) = app.nodes.iter().find(|(id, n)| **id != tab && n.as_unloaded().is_some()).expect("a card");
+        assert_eq!(copy.as_unloaded().unwrap().state, UnloadedState::Sleeping);
+        let group = copy.group.as_deref().expect("in a group");
         assert!(group != g && app.nodes[group].as_group().is_some(), "in the imported group");
     }
 

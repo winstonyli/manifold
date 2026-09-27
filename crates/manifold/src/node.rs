@@ -336,8 +336,9 @@ pub(crate) struct UnloadedTabPayload {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UnloadedState {
-    /// A restored tab that hasn't been opened yet (`TabStart::Sleep`):
-    /// every saved tab but the focused one.
+    /// A tab that hasn't been opened yet: every restored tab but the
+    /// focused one, and every tab another replica, Recently Closed or an
+    /// import creates (`materialize`).
     Sleeping,
     /// A spawn is in flight: the card shows a spinner, and further opens
     /// wait for it.

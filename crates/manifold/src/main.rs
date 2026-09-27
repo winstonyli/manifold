@@ -1019,7 +1019,7 @@ const SAVE_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(
 /// limit session restore and an engine swap have. `doc.local` carries any
 /// tab's zoom that differs from the default settings zoom (zoom is
 /// personal state, not a store field), as `{"zoom": {"<label>": 1.25}}`,
-/// applied through `pending_local` once that tab respawns.
+/// set on that tab's sleeping card when it's reopened.
 struct ClosedEntry {
     doc: store::json::JsonDoc,
 }
@@ -2111,8 +2111,8 @@ impl App {
     /// `None` in the doc -- see `closed_entry`); every other node keeps
     /// the group `closed_entry` recorded if it's still part of this entry,
     /// and otherwise joins the root (`materialize_imported`). Nothing
-    /// gains focus, and a tab whose engine won't start stays as a failed
-    /// card. An image or JSON file that's gone since is toasted and
+    /// gains focus, and tabs come back asleep, starting when opened (spec
+    /// "Lazy tabs"). An image or JSON file that's gone since is toasted and
     /// skipped; a PDF reopens as its error card. Ends with `save_session`.
     fn reopen_closed(&mut self, entry: ClosedEntry) {
         let imported = match store::json::import(&entry.doc, || self.alloc_node_id().parse().expect("a store id")) {
@@ -2128,7 +2128,7 @@ impl App {
         // Old label (the id `closed_entry` recorded it under) -> zoom,
         // read from `doc.local`, then carried over to the fresh id below
         // (`imported[i]` is `entry.doc.nodes[i]`, per `import`'s contract)
-        // as a `pending_local` entry, applied once that tab lands.
+        // and set on that tab's sleeping card once it's in place.
         let zoom_by_label: std::collections::BTreeMap<&str, f64> = entry
             .doc
             .local
@@ -2137,25 +2137,20 @@ impl App {
             .and_then(|v| v.as_object())
             .map(|map| map.iter().filter_map(|(k, v)| Some((k.as_str(), v.as_f64()?))).collect())
             .unwrap_or_default();
-        let zooms: Vec<(String, local_state::LocalNode)> = entry
+        let zooms: Vec<(String, f64)> = entry
             .doc
             .nodes
             .iter()
             .zip(&imported)
-            .filter_map(|(n, i)| {
-                let &factor = zoom_by_label.get(n.id.as_str())?;
-                let pos = match i.fields.get(&field::POS) {
-                    Some(store::model::FieldValue::Pos(x, y)) => [*x, *y],
-                    _ => [0.0, 0.0],
-                };
-                Some((i.id.to_string(), local_state::LocalNode { pos, zoom: Some(factor), ..Default::default() }))
-            })
+            .filter_map(|(n, i)| Some((i.id.to_string(), *zoom_by_label.get(n.id.as_str())?)))
             .collect();
 
         let root = session_sync::ImportRoot { group: self.current_group.clone(), pos: None };
-        self.materialize_imported(imported, Some(root), true, session_sync::TabStart::Spawn);
-        if !zooms.is_empty() {
-            self.pending_local.get_or_insert_with(local_state::LocalState::default).nodes.extend(zooms);
+        self.materialize_imported(imported, Some(root), true);
+        for (id, factor) in zooms {
+            if let Some(NodePayload::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.payload) {
+                tab.zoom_factor = factor;
+            }
         }
         self.save_session();
     }
