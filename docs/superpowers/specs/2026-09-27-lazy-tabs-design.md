@@ -249,6 +249,10 @@ card requests its own origin through the same `favicon_resolved` /
 `FaviconFetcher` dedupe. Only on-screen cards drawn in full detail do
 this (culled and LOD-simplified cards return earlier), so a big
 restored session fetches once per origin in view, not for every tab.
+Fetched favicons are then kept on disk too (`profile::favicon_cache_dir`,
+one PNG per origin; used for 7 days before a refetch, the stale copy kept
+if that fails, and files untouched for 30 days pruned at launch), so a
+relaunch shows them without the network.
 
 A whole-branch review then found eight gaps, fixed in 2055140: Quick
 Switcher rows skipped sleeping tabs; a split session came back with an

@@ -1845,7 +1845,7 @@ impl Default for App {
             egui_ctx,
             egui_state: None,
             address_bar: AddressBar::new(settings.home_page.clone()),
-            favicon_fetcher: FaviconFetcher::new(),
+            favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
             pdf_fetcher: PdfFetcher::new(),
             redirect_fetcher: RedirectFetcher::new(),
             favicon_resolved: HashSet::new(),

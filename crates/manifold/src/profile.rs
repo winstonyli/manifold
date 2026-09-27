@@ -25,6 +25,12 @@ pub fn cef_cache_dir() -> Option<PathBuf> {
     Some(dir()?.join("cef-cache"))
 }
 
+/// Where `FaviconFetcher` keeps each origin's favicon between launches.
+/// `None` like `dir()`.
+pub fn favicon_cache_dir() -> Option<PathBuf> {
+    Some(dir()?.join("favicons"))
+}
+
 /// The per-user data directory (Known Folders on Windows, which puts it at
 /// `%APPDATA%\manifold\manifold\data`; XDG on Linux; Application Support on
 /// macOS) where `process_manager::engine_binary_path` looks for an engine
