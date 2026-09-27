@@ -204,10 +204,13 @@ impl ApplicationHandler<UserEvent> for App {
             // drop point is read from the OS (`cursor_point`), falling back
             // to the last real `CursorMoved` off Windows or if that read
             // fails.
+            // `save_session` isn't called here -- several files dropped at
+            // once each land in their own `DroppedFile` event, and
+            // `render_frame` already saves once for the whole batch (see
+            // its own comment, by `drop_batch`) rather than once per file.
             WindowEvent::DroppedFile(path) => {
                 let point = self.cursor_point().unwrap_or_else(|| self.last_pointer_point());
                 self.drop_file(path, point);
-                self.save_session();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let chrome_height = self.chrome_height_px() as f64;
@@ -462,11 +465,20 @@ impl App {
     /// `RedrawRequested`: draws the content panes and the egui output,
     /// taking a pending screenshot (and print-to-PDF) along the way.
     pub(crate) fn render_frame(&mut self, egui_output: Option<egui::FullOutput>) {
-        // Reset here, at the very top, rather than after this frame's own
-        // drop handling -- this is the one call every frame is guaranteed
-        // to make, so a stale nonzero count left over from a batch that
-        // landed a frame ago can never survive to offset a later, unrelated
-        // single drop (see `drop_file`'s own doc comment).
+        // One `save_session()` for however many files landed this frame,
+        // not one per `drop_file` call (same reasoning as the engine
+        // message drain's own "one save for the whole drain", above) --
+        // counts a batch that was entirely refused too, which is harmless
+        // (`save_session` with nothing new to persist is a no-op write).
+        // Checked and reset here, at the very top, rather than after this
+        // frame's own drop handling -- this is the one call every frame is
+        // guaranteed to make, so a stale nonzero count left over from a
+        // batch that landed a frame ago can never survive to either
+        // trigger a spurious save or offset a later, unrelated single drop
+        // (see `drop_file`'s own doc comment).
+        if self.drop_batch > 0 {
+            self.save_session();
+        }
         self.drop_batch = 0;
         let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
         let content_panes_pts = self.content_panes_points(ppp);
@@ -938,10 +950,13 @@ impl App {
                     self.save_session();
                 }
             }
-            // Placed like a real drop at that window point.
+            // Placed like a real drop at that window point. No
+            // `save_session` here either -- same reasoning as
+            // `WindowEvent::DroppedFile`, so a script sending several
+            // `ADDFILE`s with a point still gets one save per batch, not
+            // one per file.
             DebugCommand::AddFile(path, Some((x, y))) => {
                 self.drop_file(path.into(), egui::pos2(x, y));
-                self.save_session();
             }
             // Only ever intercepted by the stdin reader itself.
             DebugCommand::WaitTabs(_) => {}

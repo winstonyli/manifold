@@ -453,14 +453,12 @@ fi
 # same way a real drop does (`drop_file`) -- Graph view here (Tab view is
 # never entered in this whole "Recently Closed" section above), at the
 # world position under the dropped point, so its on-screen center should
-# land back near that point. The two ADDFILEs below are sent back to back
-# with no pointer command between them, which is the one thing headless
-# mode redraws a frame for on its own (see `user_event`'s own comment) --
-# so they usually land in the same frame and fan out (`drop_batch`), but
-# aren't guaranteed to: if their positions come back identical, they landed
-# in separate frames (each with its own reset `drop_batch == 0`), and the
-# fan-out check is skipped rather than asserted on a coin flip. The exact
-# fan-out math is the unit test's job (`several_drops_in_a_frame_fan_out`).
+# land back near that point. Fanning out several drops landing in the same
+# frame (`drop_batch`) is the unit tests' job
+# (`several_drops_in_a_frame_fan_out`, `drop_file_lands_beside_the_focused_
+# tab_in_its_own_group`) -- back-to-back `ADDFILE`s here never reliably
+# land in the same rendered frame (checked live: they didn't, every run),
+# so this only checks the two cards exist and land near the drop point.
 printf 'a dropped note\n' >"$out_dir/drop.txt"
 printf '{"a": 1}\n' >"$out_dir/drop.json"
 state before_drop 1 >/dev/null
@@ -478,12 +476,6 @@ check_query after_drop "the dropped note's screen center is within 60px of (400,
     "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
 check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
     "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
-if [ "$(query after_drop "cards['$note_id']['screen'] == cards['$json_id']['screen']")" = True ]; then
-    echo "SKIP: fan-out check (the two ADDFILEs landed in separate frames this run)"
-else
-    check_query after_drop "two drops in the same frame land at different spots (fan out)" \
-        "cards['$note_id']['screen'] != cards['$json_id']['screen']"
-fi
 
 send "QUIT"
 if wait "$browser_pid"; then

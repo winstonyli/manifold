@@ -5708,6 +5708,46 @@ mod tests {
     }
 
     #[test]
+    fn drop_file_lands_beside_the_focused_tab_in_its_own_group() {
+        let dir = crate::store::testutil::temp_dir("drop_beside_focused");
+        let mut app = App::default();
+        // A sleeping (unloaded) tab is a real Tab-kind node with no live
+        // engine process -- the same stand-in `session_sync::tests::
+        // sleeping_tab` already uses elsewhere for "the focused tab" in a
+        // unit test. `drop_file`'s "beside focused" branch only reads
+        // `pos`/`group`, so this exercises exactly the same code a live
+        // tab would. `App::default()` is already in Tab view
+        // (`showing_tab_view()`, see `several_drops_in_a_frame_fan_out`'s
+        // own comment).
+        use crate::session_sync::tests::{add, sleeping_tab};
+        let focused = add(&mut app, sleeping_tab("https://x.test/", "Focused"));
+        {
+            let node = app.nodes.get_mut(&focused).unwrap();
+            node.pos = egui::vec2(100.0, 50.0);
+            node.group = Some("g".into());
+        }
+        app.focused = Some(focused.clone());
+        // Deliberately not "g": proves the drop uses the focused tab's own
+        // group, not `current_group`, the way `insert_content` directly
+        // (not `add_file_at`) is needed for.
+        app.current_group = None;
+
+        let mut ids = Vec::new();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+            let before: HashSet<String> = app.nodes.keys().cloned().collect();
+            app.drop_file(dir.join(name), egui::pos2(300.0, 300.0));
+            ids.extend(app.nodes.keys().filter(|k| !before.contains(*k)).cloned());
+        }
+
+        let beside = egui::vec2(100.0, 50.0) + egui::vec2(240.0, 0.0);
+        assert_eq!(app.nodes[&ids[0]].pos, beside);
+        assert_eq!(app.nodes[&ids[1]].pos, beside + egui::vec2(24.0, 24.0));
+        assert_eq!(app.nodes[&ids[0]].group.as_deref(), Some("g"));
+        assert_eq!(app.nodes[&ids[1]].group.as_deref(), Some("g"));
+    }
+
+    #[test]
     fn insert_content_dispatches_web_content_and_keeps_its_url() {
         let dir = crate::store::testutil::temp_dir("insert_content_web");
         let mut png = std::io::Cursor::new(Vec::new());
