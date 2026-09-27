@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Usage: [ENGINE=cef] scripts/scale-test.sh <tabs>...
+#
+# What a big session costs at startup. For each <tabs>, one headless
+# instance on a fresh isolated APPDATA (never the real %APPDATA%\manifold)
+# restores <tabs> tabs of a local page (scripts/page_server.py) and prints:
+#   - how long until every tab had spawned (WAITTABS), checking all did;
+#   - 15 s later, its process tree: process count, private memory and
+#     working set, and private memory per process name.
+# ENGINE (default webview2) is the engine every tab uses. Build first:
+# cargo build -j 12 -p manifold. Each tab costs ~80 MB on WebView2 and
+# ~180 MB on CEF (README, known limitations), so mind free memory.
+set -euo pipefail
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+exe="$repo_root/target/debug/manifold.exe"
+# shellcheck source=fresh-exe.sh
+. "$repo_root/scripts/fresh-exe.sh"
+require_fresh_exe "$exe"
+[ $# -gt 0 ] || { sed -n 2p "$0"; exit 1; }
+engine="${ENGINE:-webview2}"
+out="$repo_root/target/scale-test-$$"
+mkdir -p "$out"
+srv=""
+inst=""
+cleanup() {
+    local status=$?
+    [ -n "$inst" ] && { winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"; [ -n "$winpid" ] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1; }
+    [ -n "$srv" ] && kill "$srv" 2>/dev/null
+    rm -rf "$out"
+    exit $status
+}
+trap cleanup EXIT
+
+python -P "$repo_root/scripts/page_server.py" "$out/port" 3600 </dev/null >/dev/null 2>&1 &
+srv=$!
+for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
+port="$(cat "$out/port")"
+
+# Memory of the process tree rooted at a Windows pid.
+tree_memory() {
+    ROOT_PID="$1" powershell -NoProfile -Command '
+        $root = [int]$env:ROOT_PID
+        if ($root -le 0) { "  (no pid)"; exit 1 }
+        $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+        $ids = @($root); $i = 0
+        while ($i -lt $ids.Count) { $p = $ids[$i]; $ids += @($all | Where-Object { $_.ParentProcessId -eq $p -and $ids -notcontains $_.ProcessId } | ForEach-Object { $_.ProcessId }); $i++ }
+        $procs = $ids | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }
+        $mb = { param($g) [math]::Round((($g | Measure-Object PrivateMemorySize64 -Sum).Sum) / 1MB) }
+        $names = $procs | Group-Object ProcessName | ForEach-Object { "{0} x{1} {2} MB" -f $_.Name, $_.Count, (& $mb $_.Group) }
+        "  {0} processes, {1} MB private, {2} MB working set" -f $procs.Count, (& $mb $procs), [math]::Round((($procs | Measure-Object WorkingSet64 -Sum).Sum) / 1MB)
+        $names | ForEach-Object { "    $_" }
+    ' | tr -d '\r'
+}
+
+for n in "$@"; do
+    profile="$out/appdata-$n"
+    mkdir -p "$profile/manifold"
+    echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"$engine\"}" >"$profile/manifold/settings.json"
+    {
+        printf '{"nodes": ['
+        for i in $(seq 1 "$n"); do
+            [ "$i" -gt 1 ] && printf ','
+            printf '{"id": "t%d", "kind": "tab", "url": "http://127.0.0.1:%s/p?i=%d", "engine": "%s", "pos": [%d.0, %d.0]}' \
+                "$i" "$port" "$i" "$engine" $((i % 10 * 300)) $((i / 10 * 200))
+        done
+        printf ']}'
+    } >"$profile/seed.json"
+    "$exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
+
+    cmd="$profile/cmd"
+    : >"$cmd"
+    spawned="$profile/spawned.json"
+    start=$(date +%s.%N)
+    # Commands come from a tail that exits with this script.
+    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+    inst=$!
+    echo WAITTABS >>"$cmd"
+    echo "EXPORTSTATE $(cygpath -w "$spawned")" >>"$cmd"
+    for _ in $(seq 1200); do [ -s "$spawned" ] && break; sleep 0.1; done
+    [ -s "$spawned" ] || { echo "FAIL: $n tabs: WAITTABS never answered in 120 s"; exit 1; }
+    elapsed=$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+    tabs=$(grep -o '"kind":"Tab"' "$spawned" | wc -l)
+    [ "$tabs" -eq "$n" ] || { echo "FAIL: $n tabs: only $tabs spawned"; exit 1; }
+    winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"
+    echo "$engine, $n tabs: all spawned in ${elapsed}s"
+    sleep 15
+    tree_memory "$winpid"
+    echo QUIT >>"$cmd"
+    wait "$inst" 2>/dev/null || true
+    inst=""
+done
