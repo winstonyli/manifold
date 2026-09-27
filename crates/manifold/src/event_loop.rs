@@ -1110,7 +1110,17 @@ impl App {
         }
 
         for FetchResult { job, body } in self.redirect_fetcher.tick() {
-            let Some(body) = body else { continue };
+            let Some(body) = body else {
+                // A tab whose fetch failed just stays an ordinary tab (see
+                // `RedirectFetcher::tick`'s own doc comment) -- silent by
+                // design. A Refresh (or a missing-file retry) failing this
+                // way would otherwise vanish with no feedback at all, since
+                // it never reaches `reload_fetched_node`'s own toast.
+                if let FetchTarget::Node(id) = &job.target {
+                    self.refresh_fetch_failed(id);
+                }
+                continue;
+            };
             match job.target {
                 // The tab may have been closed, or navigated somewhere else,
                 // while this fetch was still in flight -- only convert it if
@@ -1303,10 +1313,10 @@ impl App {
                     tab.json_body = Some(body.clone());
                     tab.url.clone()
                 });
-                // "Open as Tab"'s first report doesn't convert -- the point
-                // was to keep it a tab (see `skip_convert`'s own doc
-                // comment).
-                if self.skip_convert.remove(tab_id) {
+                // "Open as Tab" keeps this a tab for as long as it stays at
+                // that url (see `skip_convert`'s own doc comment) -- so
+                // every report at that url is skipped, not just the first.
+                if self.skip_convert.contains(tab_id) {
                     return false;
                 }
                 if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
@@ -1328,7 +1338,7 @@ impl App {
             // in `drain_tab_events`, not here.
             EngineToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
-                if self.skip_convert.remove(tab_id) {
+                if self.skip_convert.contains(tab_id) {
                     return false;
                 }
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
