@@ -309,10 +309,8 @@ pub(crate) struct UnloadedTabPayload {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UnloadedState {
-    // Not yet built by production code -- a later task's sleeping restore
-    // is its only producer; today it's built only by
-    // `session_sync::tests::sleeping_tab`.
-    #[allow(dead_code)]
+    /// A restored tab that hasn't been opened yet (`TabStart::Sleep`):
+    /// every saved tab but the focused one.
     Sleeping,
     /// A spawn is in flight: the card shows a spinner, and further opens
     /// wait for it.

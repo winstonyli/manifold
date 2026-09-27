@@ -9,7 +9,8 @@ use ipc_protocol::HostToEngine;
 
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload, UnloadedTabPayload,
+    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload, UnloadedState,
+    UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
@@ -291,6 +292,16 @@ pub(crate) fn imported_fields(kind: Kind, raw: &BTreeMap<u32, FieldValue>) -> Fi
         .collect()
 }
 
+/// How `materialize` starts a tab it creates: a restore of this profile's
+/// own session (`restore_session`, Open Session) leaves it asleep, and
+/// everything else (another replica's tab, Recently Closed, a group
+/// import) spawns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabStart {
+    Spawn,
+    Sleep,
+}
+
 impl App {
     /// Every live node the store keeps, as `Shared`. Skipped: an
     /// in-progress download (it can't resume), and a node whose id isn't a
@@ -355,12 +366,12 @@ impl App {
     }
 
     /// Makes live node `id` show `fields`. A new node is inserted, and a
-    /// new tab is spawned with `purpose` (it joins `spawning`). A node whose
-    /// spawn is in flight keeps the change for when it lands
-    /// (`remote_in_flight`). An existing node is updated in place, but only
-    /// in the fields (and group) where the store differs from what this
-    /// replica last saw of it (`last_shared`), so an unsaved local value in
-    /// another field survives:
+    /// new tab either spawns or sleeps per `tabs` (`TabStart`) -- spawning
+    /// joins `spawning`. A node whose spawn is in flight keeps the change
+    /// for when it lands (`remote_in_flight`). An existing node is updated
+    /// in place, but only in the fields (and group) where the store
+    /// differs from what this replica last saw of it (`last_shared`), so
+    /// an unsaved local value in another field survives:
     /// - a tab's url change navigates without marking `url`;
     /// - an engine change swaps engines.
     ///
@@ -381,7 +392,7 @@ impl App {
         kind: Kind,
         fields: &Fields,
         group: Option<String>,
-        purpose: SpawnPurpose,
+        tabs: TabStart,
         local: Option<&LocalNode>,
     ) {
         if self.spawning.contains_key(&id) {
@@ -462,10 +473,22 @@ impl App {
                 let shared = str_of(fields, field::URL);
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
-                let spawn = TabSpawn::new(id, url, engine_field(fields), pos, purpose, self.settings.zoom_factor);
-                let carry = TabCarry { pinned: bool_of(fields, field::PINNED), color, ..spawn.carry };
-                self.spawn_tab_async(TabSpawn { parent: id_of(fields, field::PARENT), group, carry, ..spawn });
-                return;
+                let (kind, pinned, parent) =
+                    (engine_field(fields), bool_of(fields, field::PINNED), id_of(fields, field::PARENT));
+                if tabs == TabStart::Spawn {
+                    let spawn = TabSpawn::new(id, url, kind, pos, SpawnPurpose::Restore, self.settings.zoom_factor);
+                    let carry = TabCarry { pinned, color, ..spawn.carry };
+                    self.spawn_tab_async(TabSpawn { parent, group, carry, ..spawn });
+                    return;
+                }
+                // Title, mute and zoom come from personal state (`apply_local`).
+                let zoom_factor = self.settings.zoom_factor;
+                let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
+                let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
+                self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.parent = parent;
+                }
             }
             Kind::Group => {
                 let payload =
@@ -529,8 +552,8 @@ impl App {
     /// without a Recently Closed entry (`remove_remotely_deleted`), and a
     /// tab's engine host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
-    /// exist yet. A new tab spawns as `Restore`, so a spawn failure keeps
-    /// it as a failed card rather than dropping it from the store.
+    /// exist yet. A new tab spawns (`TabStart::Spawn`), so a spawn failure
+    /// keeps it as a failed card rather than dropping it from the store.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
         changes.sort_by_key(|(_, c)| !matches!(c, Some((Kind::Group, ..))));
         let toasts = self.save_toast_queue.len();
@@ -538,7 +561,7 @@ impl App {
             let key = id.to_string();
             match change {
                 Some((kind, fields, group)) => {
-                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), SpawnPurpose::Restore, None)
+                    self.materialize(key, kind, &fields, group.map(|g| g.to_string()), TabStart::Spawn, None)
                 }
                 None if self.spawning.contains_key(&key) => {
                     self.remote_in_flight.insert(key, None);
@@ -598,7 +621,7 @@ impl App {
     pub(crate) fn land_remote_in_flight(&mut self, id: &str, remote: Option<Option<RemoteNode>>) {
         match remote {
             Some(Some((kind, fields, group))) => {
-                self.materialize(id.to_string(), kind, &fields, group, SpawnPurpose::Restore, None)
+                self.materialize(id.to_string(), kind, &fields, group, TabStart::Spawn, None)
             }
             Some(None) => {
                 self.last_shared.remove(id);
@@ -614,6 +637,16 @@ impl App {
     /// (`shares_url_change`).
     pub(crate) fn note_host_load(&mut self, id: &str) {
         self.host_loads.insert(id.to_string(), std::time::Instant::now());
+    }
+
+    /// Starts the focused tab if it's asleep: the one engine a restored
+    /// session starts (spec "Lazy tabs").
+    pub(crate) fn wake_focused(&mut self) {
+        let Some(id) = self.focused.clone() else { return };
+        let asleep = self.nodes.get(&id).and_then(|n| n.as_unloaded()).filter(|t| t.state == UnloadedState::Sleeping);
+        if let Some(kind) = asleep.map(|t| t.kind) {
+            self.wake_tab(&id, kind);
+        }
     }
 
     /// Whether tab `id`'s reported url change is shared (ruling 3), given
@@ -804,7 +837,7 @@ impl App {
             // The store's own `pos` still becomes `last_shared` inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(&id.to_string());
-            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore, entry);
+            self.materialize(id.to_string(), *kind, fields, group, TabStart::Sleep, entry);
         }
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
@@ -814,6 +847,7 @@ impl App {
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
         self.apply_local(local);
+        self.wake_focused();
         self.local_written = Some(self.local_state());
         true
     }
@@ -1125,7 +1159,7 @@ impl App {
         // format's own import behavior.
         let pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
         let root = ImportRoot { group: self.current_group.clone(), pos: Some(pos) };
-        self.materialize_imported(imported, Some(root), false);
+        self.materialize_imported(imported, Some(root), false, TabStart::Spawn);
         self.save_session();
     }
 
@@ -1141,15 +1175,15 @@ impl App {
     ///   names some other session's tab, or an unrelated live one. It's
     ///   dropped, unless `keep_live_parents` and that node is live.
     ///
-    /// Tabs spawn as `Restore` (none of these ids is `focused`, so it
-    /// matches `New` except on failure): a tab whose engine won't start
-    /// stays as a failed card rather than vanishing. Toasts from missing
-    /// files are collapsed into one.
+    /// Tabs start per `tabs` (`TabStart`): spawning, a tab whose engine
+    /// won't start stays as a failed card rather than vanishing. Toasts
+    /// from missing files are collapsed into one.
     pub(crate) fn materialize_imported(
         &mut self,
         imported: Vec<Imported>,
         root: Option<ImportRoot>,
         keep_live_parents: bool,
+        tabs: TabStart,
     ) {
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
@@ -1172,7 +1206,7 @@ impl App {
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id.to_string(), node.kind, &fields, group, SpawnPurpose::Restore, None);
+            self.materialize(node.id.to_string(), node.kind, &fields, group, tabs, None);
         }
         self.collapse_toasts_since(toasts);
     }
@@ -1220,7 +1254,7 @@ impl App {
         let first_tab = imported.iter().find(|i| i.kind == Kind::Tab).map(|i| i.id.to_string());
         // No root: a group or parent outside the file (import keeps real
         // node ids) names nothing once the old session is gone.
-        self.materialize_imported(imported, None, false);
+        self.materialize_imported(imported, None, false, TabStart::Sleep);
         self.focused = first_tab;
         self.view_mode = ViewMode::Graph;
         self.camera.frame_restored = true;
@@ -1233,6 +1267,7 @@ impl App {
             self.apply_local(state.remap(&map));
             self.closed = closed;
         }
+        self.wake_focused();
         self.save_session();
         map
     }
@@ -1305,7 +1340,6 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::node::UnloadedState;
     use crate::store::journal::Journal;
     use crate::store::model::{ActorId, DocId, Hlc};
     use crate::store::ops::Op;
@@ -1932,6 +1966,109 @@ pub(crate) mod tests {
         assert_eq!(app.nodes[&leaf].parent.as_deref(), Some(root.as_str()));
     }
 
+    /// A restore starts only the focused tab; every other tab is a
+    /// sleeping card with its saved title.
+    #[test]
+    fn a_restore_starts_only_the_focused_tab() {
+        let path = temp_dir("lazy-restore").join("session.mnf");
+        let (a, b, c) = {
+            let mut app = app_on(&path, 1);
+            let a = add(&mut app, sleeping_tab("https://a/", "A"));
+            let b = add(&mut app, sleeping_tab("https://b/", "B"));
+            let c = add(&mut app, sleeping_tab("https://c/", "C"));
+            app.focused = Some(b.clone());
+            assert!(app.save_session());
+            app.maybe_write_local(true);
+            app.close_store();
+            (a, b, c)
+        };
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        let spawned: Vec<&str> = app.test_spawns.iter().map(|(s, _)| s.id.as_str()).collect();
+        assert_eq!(spawned, [b.as_str()]);
+        assert!(matches!(app.test_spawns[0].0.purpose, SpawnPurpose::Wake));
+        for (id, title) in [(&a, "A"), (&c, "C")] {
+            let t = app.nodes[id].as_unloaded().unwrap();
+            assert_eq!((t.state.clone(), t.title.as_str()), (UnloadedState::Sleeping, title));
+        }
+        assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
+    }
+
+    /// Opening a sleeping tab, by any path, wakes it once: focused, in Tab
+    /// view (showing the respawning placeholder), one spawn. A second open
+    /// while it wakes issues none.
+    #[test]
+    fn opening_a_sleeping_tab_wakes_it_once() {
+        let mut app = app_on(&temp_dir("lazy-open").join("session.mnf"), 1);
+        let a = add(&mut app, sleeping_tab("https://a/", "Alpha"));
+        let b = add(&mut app, sleeping_tab("https://b/", "Beta"));
+        app.focus_item(&a);
+        app.focus_item(&a);
+        assert_eq!(app.test_spawns.len(), 1);
+        assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+        assert_eq!(app.view_mode, ViewMode::Item);
+        assert_eq!(app.pending_respawn_focus.as_deref(), Some(a.as_str()));
+        app.focus_tab(&b);
+        assert_eq!(app.test_spawns.len(), 2);
+        assert_eq!(app.nodes[&b].as_unloaded().unwrap().state, UnloadedState::Waking);
+    }
+
+    /// A failed wake leaves a failed card, still focused, and ends the
+    /// respawning placeholder (Tab view then falls back to Graph).
+    #[test]
+    fn a_failed_wake_leaves_a_failed_card() {
+        let mut app = app_on(&temp_dir("lazy-fail").join("session.mnf"), 1);
+        let a = add(&mut app, sleeping_tab("https://a/", "A"));
+        app.focus_tab(&a);
+        fail_spawns(&mut app);
+        assert!(matches!(app.nodes[&a].as_unloaded().unwrap().state, UnloadedState::Failed(_)));
+        assert_eq!(app.nodes[&a].as_unloaded().unwrap().title, "A", "the wake carried its title");
+        assert_eq!(app.pending_respawn_focus, None);
+        assert!(app.wakes_in_flight.is_empty());
+    }
+
+    /// Another replica's url change moves a sleeping tab without waking it.
+    #[test]
+    fn a_remote_url_change_moves_a_sleeping_tab_without_waking_it() {
+        let path = temp_dir("lazy-remote").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let tab = add(&mut app, sleeping_tab("https://s/", "S"));
+        assert!(app.save_session());
+        let mut other = Journal::open(&path, ActorId(2)).unwrap();
+        remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://moved/".into()));
+        assert!(app.save_session());
+        assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://moved/");
+        assert!(app.test_spawns.is_empty());
+    }
+
+    /// Saving a sleeping tab writes what its live tab would: a restore
+    /// followed by a save changes nothing in the store.
+    #[test]
+    fn a_sleeping_tab_saves_as_its_tab() {
+        let path = temp_dir("lazy-save").join("session.mnf");
+        let tab = {
+            let mut app = app_on(&path, 1);
+            let tab = add(&mut app, sleeping_tab("https://s/", ""));
+            if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+                t.pinned = true;
+            }
+            assert!(app.save_session());
+            app.close_store();
+            tab
+        };
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        let engine = stored(&app, &tab, field::ENGINE);
+        // The single tab is the focused one, so the restore woke it; fail
+        // that wake too: a waking and a failed card save the same way.
+        assert!(app.save_session());
+        fail_spawns(&mut app);
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
+        assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
+        assert_eq!(stored(&app, &tab, field::ENGINE), engine);
+    }
+
     /// Fails every spawn parked in `test_spawns`, as a missing engine would.
     fn fail_spawns(app: &mut App) {
         for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
@@ -2083,6 +2220,8 @@ pub(crate) mod tests {
         assert!(app.restore_session());
         assert_eq!(app.test_spawns[0].0.url, "https://s/moved");
         assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()), "still unshared");
+        // The single tab is focused, so it is the one waking.
+        assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://s/moved");
         app.close_store();
 
         // Moved on from a url the store no longer holds: the shared one wins.

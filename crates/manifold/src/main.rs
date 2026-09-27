@@ -1180,6 +1180,11 @@ enum SpawnPurpose {
     /// background tab) rather than gaining focus. See `App::split_tab`'s
     /// own doc comment.
     Split,
+    /// `App::wake_tab`: an unloaded tab's engine starting (a sleeping tab
+    /// opened, a failed one retried). Lands like `Respawn`, decided at
+    /// completion against `self.focused`, and is a host-started load
+    /// (`note_host_load`), like a restore.
+    Wake,
 }
 
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
@@ -1216,9 +1221,10 @@ struct TabSpawn {
     fallback_kind: Option<EngineKind>,
 }
 
-/// What a tab keeps across a respawn (engine swap, crash recovery). A new
-/// tab starts unpinned, untagged, at the default zoom. A new attribute
-/// that must survive a respawn is one more field here.
+/// What a tab keeps across a respawn (engine swap, crash recovery) or a
+/// wake. A new tab starts unpinned, untagged, at the default zoom, with no
+/// title or mute of its own yet. A new attribute that must survive a
+/// respawn or wake is one more field here.
 struct TabCarry {
     /// See `TabPayload::pinned`.
     pinned: bool,
@@ -1227,6 +1233,10 @@ struct TabCarry {
     /// See `TabPayload::zoom_factor`. A new tab takes
     /// `Settings::zoom_factor`, having no value of its own yet.
     zoom_factor: f64,
+    /// See `TabPayload::title`: shown until the page reports its own.
+    title: String,
+    /// See `TabPayload::muted`. Sent to the new engine on landing.
+    muted: bool,
 }
 
 impl TabSpawn {
@@ -1247,7 +1257,7 @@ impl TabSpawn {
             pos,
             vel: egui::Vec2::ZERO,
             purpose,
-            carry: TabCarry { pinned: false, color: None, zoom_factor },
+            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
             fallback_kind: None,
         }
     }
@@ -1265,7 +1275,13 @@ impl TabSpawn {
             pos: node.pos,
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
-            carry: TabCarry { pinned: tab.pinned, color: node.color, zoom_factor: tab.zoom_factor },
+            carry: TabCarry {
+                pinned: tab.pinned,
+                color: node.color,
+                zoom_factor: tab.zoom_factor,
+                title: tab.title.clone(),
+                muted: tab.muted,
+            },
             fallback_kind: None,
         })
     }
@@ -2133,7 +2149,7 @@ impl App {
             .collect();
 
         let root = session_sync::ImportRoot { group: self.current_group.clone(), pos: None };
-        self.materialize_imported(imported, Some(root), true);
+        self.materialize_imported(imported, Some(root), true, session_sync::TabStart::Spawn);
         if !zooms.is_empty() {
             self.pending_local.get_or_insert_with(local_state::LocalState::default).nodes.extend(zooms);
         }
@@ -2455,7 +2471,7 @@ impl App {
             generation,
             result,
         } = outcome;
-        let TabCarry { pinned, color, zoom_factor } = carry;
+        let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
         self.spawning.remove(&id);
         let remote = self.remote_in_flight.remove(&id);
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
@@ -2485,7 +2501,7 @@ impl App {
             (parent, group, pos, color)
         };
         let group = group.filter(|g| self.nodes.contains_key(g));
-        if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore)
+        if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
         {
             self.pending_respawn_focus = None;
@@ -2495,7 +2511,9 @@ impl App {
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
-                    SpawnPurpose::Respawn | SpawnPurpose::Restore => self.focused.as_deref() == Some(id.as_str()),
+                    SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake => {
+                        self.focused.as_deref() == Some(id.as_str())
+                    }
                 };
                 // A split's secondary pane is always live even though it's
                 // never `focused` -- true for a fresh `Split` spawn, and
@@ -2510,6 +2528,9 @@ impl App {
                 // currently covering (see `spawned_tab_visible`'s doc).
                 let visible = spawned_tab_visible(is_focused, is_split, self.showing_image_view());
                 tab.set_visible(visible);
+                if muted {
+                    tab.send(&HostToEngine::SetMuted { muted: true });
+                }
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
@@ -2521,12 +2542,12 @@ impl App {
                         payload: NodePayload::Tab(TabPayload {
                             tab,
                             url: url.clone(),
-                            title: String::new(),
+                            title,
                             can_go_back: false,
                             can_go_forward: false,
                             loading: false,
                             audio_playing: false,
-                            muted: false,
+                            muted,
                             pinned,
                             zoom_factor,
                             swap_target: None,
@@ -2560,7 +2581,14 @@ impl App {
                             self.send_resize_to(&focused_id);
                         }
                     }
-                    SpawnPurpose::Respawn => {
+                    SpawnPurpose::Respawn | SpawnPurpose::Wake => {
+                        // A wake is a host-started load, same as a restore
+                        // (`note_host_load`); a plain respawn (crash
+                        // recovery, engine swap) needs no such marking --
+                        // it isn't a url change at all.
+                        if matches!(purpose, SpawnPurpose::Wake) {
+                            self.note_host_load(&id);
+                        }
                         // A respawned tab is a fresh engine-host process
                         // that starts at that engine's own default zoom --
                         // unlike Root/New/Split/Restore above, this arm
@@ -2605,7 +2633,7 @@ impl App {
                         engine_label(kind),
                         engine_label(fallback)
                     ));
-                    let carry = TabCarry { pinned, color, zoom_factor };
+                    let carry = TabCarry { pinned, color, zoom_factor, title, muted };
                     let spawn = TabSpawn {
                         id,
                         url,
@@ -2627,18 +2655,10 @@ impl App {
                 // A tab that already existed (a crash restart, a restored
                 // session or group, a retry) keeps its place as a failed
                 // card rather than disappearing; see `UnloadedTabPayload`.
-                if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore) {
+                if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake) {
                     self.queue_toast(format!("Couldn't start {} for {url}: {err}", engine_label(kind)));
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed = UnloadedTabPayload {
-                        url,
-                        title: String::new(),
-                        kind,
-                        pinned,
-                        muted: false,
-                        zoom_factor,
-                        state,
-                    };
+                    let failed = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
                     if !self.node_order.iter().any(|t| t == &id) {
@@ -2655,6 +2675,10 @@ impl App {
                     SpawnPurpose::Split => format!("Couldn't start split view: {err}"),
                     SpawnPurpose::Respawn => format!("Couldn't restart tab: {err}"),
                     SpawnPurpose::Restore => format!("Couldn't restore tab: {err}"),
+                    // Unreachable in practice: a wake's failure always
+                    // takes the failed-card branch above (the tab already
+                    // exists), but the match must stay exhaustive.
+                    SpawnPurpose::Wake => format!("Couldn't load tab: {err}"),
                 });
                 // A save while it was in flight may have created it
                 // (`spawning`); it's gone now.
@@ -3354,7 +3378,8 @@ impl App {
     /// (`split_tab`) is the one exception, also visible but never focused;
     /// switching primary focus to a genuinely different tab always closes
     /// whatever split was open, since a split is only ever meaningful
-    /// paired with the specific tab it was opened against.
+    /// paired with the specific tab it was opened against. An unloaded tab
+    /// (`UnloadedTabPayload`) is woken.
     fn focus_tab(&mut self, id: &str) {
         if self.focused.as_deref() != Some(id) {
             self.hide_focused_tab();
@@ -3368,6 +3393,12 @@ impl App {
         self.focused = Some(id.to_string());
         self.viewed_image = None;
         self.view_mode = ViewMode::Item;
+        // An unloaded tab opens by starting its engine; Tab view shows the
+        // respawning placeholder until it lands (`pending_respawn_focus`).
+        if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
+            self.pending_respawn_focus = Some(id.to_string());
+            self.wake_tab(id, kind);
+        }
         self.send_resize_to(id);
         self.save_session();
     }
@@ -3378,7 +3409,7 @@ impl App {
     /// Item view are a no-op (and a debug-build assertion).
     fn focus_item(&mut self, id: &str) {
         match self.nodes.get(id).map(|n| item_node_kind(&n.payload)) {
-            Some(ItemNodeKind::Tab) => self.focus_tab(id),
+            Some(ItemNodeKind::Tab | ItemNodeKind::Unloaded) => self.focus_tab(id),
             Some(ItemNodeKind::Image) => {
                 self.hide_focused_tab();
                 self.viewed_image = Some(id.to_string());
@@ -4029,7 +4060,7 @@ impl App {
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
-    fn wake_tab(&mut self, id: &str, kind: EngineKind) {
+    pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
         let Some(node) = self.nodes.get_mut(id) else { return };
         let (parent, group, pos, color) = (node.parent.clone(), node.group.clone(), node.pos, node.color);
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
@@ -4038,10 +4069,16 @@ impl App {
         }
         tab.state = UnloadedState::Waking;
         self.wakes_in_flight.insert(id.to_string());
-        let carry = TabCarry { pinned: tab.pinned, color, zoom_factor: tab.zoom_factor };
+        let carry = TabCarry {
+            pinned: tab.pinned,
+            color,
+            zoom_factor: tab.zoom_factor,
+            title: tab.title.clone(),
+            muted: tab.muted,
+        };
         let url = tab.url.clone();
         let vel = egui::Vec2::ZERO;
-        let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Respawn, None);
+        let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
     }
 
