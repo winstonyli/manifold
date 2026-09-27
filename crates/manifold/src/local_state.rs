@@ -47,6 +47,19 @@ pub(crate) struct LocalNode {
     pub zoom: Option<f64>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub editing: bool,
+    /// A tab's current url, when its page moved on from the shared `url`
+    /// without sharing (a redirect, a script's navigation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_url: Option<LiveUrl>,
+}
+
+/// See `LocalNode::live_url`. A restart reopens `url` while the shared
+/// `url` is still `from`; once another replica has shared a new one, that
+/// wins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LiveUrl {
+    pub url: String,
+    pub from: String,
 }
 
 fn is_false(b: &bool) -> bool {

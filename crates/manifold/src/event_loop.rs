@@ -1148,6 +1148,23 @@ impl App {
         }
     }
 
+    /// The url tab `tab_id` shows, given one its engine reported (`url`)
+    /// and the one it shows now (`current`). Right after `navigate_tab` an
+    /// engine can still report the url it left, from before it started the
+    /// navigation (CEF reports loading first): that keeps `current`, the
+    /// typed url, rather than flashing back and adding the old url to
+    /// history again. Any other url, or `NAVIGATE_START_WINDOW` passing,
+    /// ends that.
+    pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, current: String) -> String {
+        const NAVIGATE_START_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+        let Some((from, at)) = self.navigated_from.get(tab_id) else { return url };
+        if *from == url && at.elapsed() < NAVIGATE_START_WINDOW {
+            return current;
+        }
+        self.navigated_from.remove(tab_id);
+        url
+    }
+
     /// Applies one message from tab `tab_id`'s engine (see
     /// `drain_tab_events`, which uploads frames itself). Messages that
     /// update the tab do nothing once it's gone, e.g. after a crash earlier
@@ -1165,6 +1182,10 @@ impl App {
                 }
             }
             EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
+                let Some(current) = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
+                    return false;
+                };
+                let url = self.reported_url(tab_id, url, current);
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };

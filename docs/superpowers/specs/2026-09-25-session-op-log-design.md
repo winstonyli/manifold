@@ -162,8 +162,12 @@ journal (see "Personal-state file"):
   `split_tab`, `groups_collapsed`, and the camera rect with the level it
   was saved at (the app has one camera; per-level cameras are later);
 - per node: a note's `editing`; a tab's `muted`, `zoom` and `title`.
-  The current url equals the shared `url` while Plan B sets `url` on
-  every change, so it isn't stored; sub-project 2 adds it back;
+  A tab's `live_url` is its current url when the page moved on from the
+  shared `url` without sharing (a redirect, a script's navigation),
+  with the shared url it moved from. A restart reopens `live_url` while
+  the shared `url` is still that one; once another replica shares a new
+  url, the shared one wins. The restored load is host-started, so its
+  redirects stay local;
 - the last settled position of every node, so the graph reopens exactly
   as it was left rather than re-settling from the shared `pos`;
 - Recently Closed: up to 20 entries, oldest first, each a JSON snapshot

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ipc_protocol::HostToEngine;
 
-use crate::local_state::{LocalNode, LocalState};
+use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
     DownloadPayload, FailedTabPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, TabPayload,
 };
@@ -368,11 +368,12 @@ impl App {
     /// loaded is kept, showing its error, so the next diff doesn't delete
     /// it from the store.
     ///
-    /// `initial_pos`, when given, places the node here instead of at
-    /// `fields`'s stored `pos` (restore applies personal state's settled
-    /// position); `last_shared` still records the real stored `pos`, so a
-    /// later save doesn't diff the override back into the store. Every
-    /// caller but `restore_session` passes `None`.
+    /// `local`, personal state's entry for a new node, places it at its
+    /// settled position instead of `fields`'s stored `pos`, and reopens a
+    /// tab at its live url (`LocalNode::live_url`); `last_shared` still
+    /// records the real stored fields, so a later save doesn't diff the
+    /// overrides back into the store. Every caller but `restore_session`
+    /// passes `None`.
     pub(crate) fn materialize(
         &mut self,
         id: String,
@@ -380,13 +381,13 @@ impl App {
         fields: &Fields,
         group: Option<String>,
         purpose: SpawnPurpose,
-        initial_pos: Option<egui::Vec2>,
+        local: Option<&LocalNode>,
     ) {
         if self.spawning.contains_key(&id) {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
-        let pos = initial_pos.unwrap_or_else(|| pos_of(fields));
+        let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
         let color = fields.get(&field::COLOR).and_then(color_of);
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
@@ -457,7 +458,9 @@ impl App {
         }
         match kind {
             Kind::Tab => {
-                let url = str_of(fields, field::URL);
+                let shared = str_of(fields, field::URL);
+                let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
+                let url = live.map_or(shared, |l| l.url.clone());
                 let spawn = TabSpawn::new(id, url, engine_field(fields), pos, purpose, self.settings.zoom_factor);
                 let carry = TabCarry { pinned: bool_of(fields, field::PINNED), color, ..spawn.carry };
                 self.spawn_tab_async(TabSpawn { parent: id_of(fields, field::PARENT), group, carry, ..spawn });
@@ -783,8 +786,8 @@ impl App {
             let group = group.map(|g| g.to_string());
             // The store's own `pos` still becomes `last_shared` inside
             // `materialize`; only the live placement is overridden.
-            let initial_pos = local.nodes.get(&id.to_string()).map(|n| egui::vec2(n.pos[0], n.pos[1]));
-            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore, initial_pos);
+            let entry = local.nodes.get(&id.to_string());
+            self.materialize(id.to_string(), *kind, fields, group, SpawnPurpose::Restore, entry);
         }
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
@@ -811,13 +814,23 @@ impl App {
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
             .map(|(id, node)| {
                 let mut local = LocalNode { pos: [node.pos.x, node.pos.y], ..LocalNode::default() };
+                // Against what the store held at this replica's last save
+                // or load: a url this replica shares is marked and saved.
+                let live_url = |url: &str| {
+                    let from = str_of(&self.last_shared.get(id)?.fields, field::URL);
+                    (from != url).then(|| LiveUrl { url: url.to_string(), from })
+                };
                 match &node.payload {
                     NodePayload::Tab(tab) => {
                         local.title = tab.title.clone();
                         local.muted = tab.muted;
                         local.zoom = zoom(tab.zoom_factor);
+                        local.live_url = live_url(&tab.url);
                     }
-                    NodePayload::FailedTab(tab) => local.zoom = zoom(tab.zoom_factor),
+                    NodePayload::FailedTab(tab) => {
+                        local.zoom = zoom(tab.zoom_factor);
+                        local.live_url = live_url(&tab.url);
+                    }
                     NodePayload::Note(n) => local.editing = n.editing,
                     _ => {}
                 }
@@ -1220,6 +1233,7 @@ impl App {
         self.failed_tab_retries.clear();
         self.spawning.clear();
         self.host_loads.clear();
+        self.navigated_from.clear();
         self.remote_in_flight.clear();
         self.last_shared.clear();
         self.pending_local = None;
@@ -1654,6 +1668,22 @@ pub(crate) mod tests {
         assert!(app.host_loads.is_empty(), "and ends the host's load");
     }
 
+    /// Right after a typed navigation, a report still at the url it left
+    /// is from before the engine started it.
+    #[test]
+    fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
+        let mut app = App::default();
+        let report = |app: &mut App, url: &str| app.reported_url("7", url.into(), "https://typed/".into());
+        assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
+        app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now()));
+        assert_eq!(report(&mut app, "https://old/"), "https://typed/");
+        assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
+        assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
+        let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        app.navigated_from.insert("7".into(), ("https://old/".into(), long_ago));
+        assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
+    }
+
     #[test]
     fn a_failed_commit_keeps_the_explicit_marks() {
         let path = temp_dir("sync-fail").join("session.mnf");
@@ -1956,6 +1986,41 @@ pub(crate) mod tests {
         let state = app.local_state();
         assert_eq!(state.nodes.get(&tab), Some(&entry));
         assert_eq!(state.nodes[&card].zoom, Some(1.5));
+    }
+
+    /// A tab its page moved on without sharing (a redirect, a script's
+    /// navigation) reopens where it was, unless the shared url has changed
+    /// since.
+    #[test]
+    fn a_restart_reopens_a_tabs_live_url_while_the_shared_url_is_unchanged() {
+        let path = temp_dir("live-url").join("session.mnf");
+        let tab = {
+            let mut app = app_on(&path, 1);
+            let tab = add(&mut app, failed_tab("https://s/", 1.0));
+            assert!(app.save_session());
+            if let NodePayload::FailedTab(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
+                t.url = "https://s/moved".into();
+            }
+            app.close_store();
+            tab
+        };
+        let mut app = app_on(&path, 2);
+        assert!(app.restore_session());
+        assert_eq!(app.test_spawns[0].0.url, "https://s/moved");
+        assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()), "still unshared");
+        app.close_store();
+
+        // Moved on from a url the store no longer holds: the shared one wins.
+        {
+            let journal = Journal::open(&path, ActorId(3)).unwrap();
+            let live_url = Some(LiveUrl { url: "https://s/moved".into(), from: "https://elsewhere/".into() });
+            let entry = LocalNode { live_url, ..LocalNode::default() };
+            let state = LocalState { nodes: BTreeMap::from([(tab.clone(), entry)]), ..LocalState::default() };
+            journal.write_local(&state.to_bytes()).unwrap();
+        }
+        let mut app = app_on(&path, 4);
+        assert!(app.restore_session());
+        assert_eq!(app.test_spawns[0].0.url, "https://s/");
     }
 
     /// Export Group of a group the store doesn't hold gives nothing (and

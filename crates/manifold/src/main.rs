@@ -1404,10 +1404,13 @@ struct App {
     /// its spawn lands (`None`: deleted). The spawn itself carries only
     /// what it was started with.
     remote_in_flight: HashMap<String, Option<session_sync::RemoteNode>>,
-    /// Tabs loading a url the store gave them, with when each was last seen
+    /// Tabs loading a url the host gave them, with when each was last seen
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
     host_loads: HashMap<String, std::time::Instant>,
+    /// Tabs `navigate_tab` just moved on, with the url each left and when
+    /// (`App::reported_url`).
+    navigated_from: HashMap<String, (String, std::time::Instant)>,
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
@@ -1804,6 +1807,7 @@ impl Default for App {
             spawning: HashMap::new(),
             remote_in_flight: HashMap::new(),
             host_loads: HashMap::new(),
+            navigated_from: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
             local_written: None,
@@ -2158,6 +2162,9 @@ impl App {
             }
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+            if node.url != url {
+                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now()));
+            }
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });
             // Until the engine labels the navigation, a report can still
