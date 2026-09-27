@@ -427,6 +427,15 @@ impl App {
                 // comment) and show a lightweight placeholder (with just
                 // enough chrome to still escape to Graph) instead of
                 // nothing until it reappears in `self.nodes`.
+                // An Unloaded card still in `self.nodes` (state `Waking`)
+                // is a tab being woken from sleep; anything else missing
+                // here (a crash respawn, or an engine swap) is a real tab
+                // reconnecting.
+                let label = if self.nodes.get(&focused_id).and_then(|n| n.as_unloaded()).is_some() {
+                    "Loading…"
+                } else {
+                    "Reconnecting…"
+                };
                 let mut back_to_graph = false;
                 toolbar_panel("tab_strip_respawning", ui, |ui| {
                     ui.horizontal_centered(|ui| {
@@ -434,7 +443,7 @@ impl App {
                             back_to_graph = true;
                         }
                         ui.add(egui::Spinner::new().size(12.0));
-                        ui.label("Reconnecting…");
+                        ui.label(label);
                     });
                 });
                 if back_to_graph {

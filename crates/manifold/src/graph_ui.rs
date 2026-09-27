@@ -1127,8 +1127,7 @@ impl App {
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
             let (radius, color) = match kind {
-                ItemNodeKind::Tab => (2.0, ui.visuals().text_color()),
-                ItemNodeKind::Unloaded => (2.0, DANGER_COLOR),
+                ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
                 ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
                 ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
                 ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
@@ -1136,6 +1135,11 @@ impl App {
             };
             for id in ids {
                 if let Some(node) = self.nodes.get(id) {
+                    let color = if node.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))) {
+                        DANGER_COLOR
+                    } else {
+                        color
+                    };
                     overlay_painter.circle_filled(world_to_minimap(node.pos.to_pos2()), radius, color);
                 }
             }
@@ -1374,7 +1378,7 @@ impl App {
                 // to open; a click tries its file again instead.
                 let missing_file = self.nodes.get(id).is_some_and(|n| {
                     n.as_image().is_some_and(|i| i.error.is_some())
-                        || n.as_unloaded().is_some()
+                        || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
                         || n.as_json().is_some_and(|j| j.error.is_some())
                         || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
                 });
@@ -1384,8 +1388,10 @@ impl App {
                             pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
                         }
                     }
-                    // Opens the tab into Tab view.
-                    ItemNodeKind::Tab if card.response.clicked() => {
+                    // Opens the tab into Tab view; for a sleeping/waking
+                    // Unloaded card this wakes its engine (see
+                    // `App::wake_tab`).
+                    ItemNodeKind::Tab | ItemNodeKind::Unloaded if card.response.clicked() => {
                         pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
                     }
                     // Click (not drag -- egui doesn't report

@@ -345,12 +345,14 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
         ItemNodeKind::Unloaded => {
-            let mut items = vec![Button("Retry", A::RetryMissingFile)];
-            if view.other_default_engine {
+            let mut items =
+                if view.failed { vec![Button("Retry", A::RetryMissingFile)] } else { vec![Button("Open", A::Open)] };
+            if view.failed && view.other_default_engine {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
+            items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
             items.push(Button("Copy URL", A::CopyUrl));
-            finish("failed_tab_context_menu", 170.0, items, delete("Close"))
+            finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
         ItemNodeKind::Group => {
             let mut delete_items = vec![Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
@@ -380,6 +382,8 @@ struct NodeMenuView {
     /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.
     other_default_engine: bool,
+    /// Unloaded only: its engine failed, so the menu offers a retry.
+    failed: bool,
     /// Group only: the rename draft, while this group is being renamed.
     renaming: Option<String>,
 }
@@ -3195,8 +3199,10 @@ impl App {
                 return;
             };
             // A crashed focused tab stays focused as its failed card, which
-            // has no Item view: Enter retries it, as its click does.
-            if node.as_unloaded().is_some() {
+            // has no Item view: Enter retries it, as its click does. A
+            // sleeping/waking card instead opens like a tab (its own
+            // engine wakes via `focus_tab`).
+            if node.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))) {
                 self.retry_missing_file(&id);
             } else {
                 self.start_transition_to_item(&id);
@@ -4882,6 +4888,7 @@ impl App {
                 .payload
                 .as_unloaded()
                 .is_some_and(|t| t.kind != self.settings.default_starting_engine),
+            failed: node.payload.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
             renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
         })
     }
@@ -5376,6 +5383,7 @@ mod tests {
                 pinned,
                 has_json,
                 other_default_engine: false,
+                failed: false,
                 renaming: None,
             };
             menu_of(&view, headless)
@@ -5439,11 +5447,12 @@ mod tests {
             );
             assert_eq!(
                 menu(ItemNodeKind::Unloaded, false, false),
-                ("failed_tab_context_menu", 170.0, format!("Retry | Copy URL | <colors>{g} | --- | Close"))
+                ("unloaded_tab_context_menu", 170.0, format!("Open | Pin | Copy URL | <colors>{g} | --- | Close"))
             );
         }
-        // A failed tab offers the default engine only when it isn't the
-        // engine that failed.
+        // A failed tab offers Retry (and the default engine, when it isn't
+        // the engine that failed) instead of Open; a sleeping/waking one
+        // just offers Open.
         let failed = NodeMenuView {
             kind: ItemNodeKind::Unloaded,
             has_group: false,
@@ -5451,9 +5460,13 @@ mod tests {
             pinned: false,
             has_json: false,
             other_default_engine: true,
+            failed: true,
             renaming: None,
         };
-        assert_eq!(menu_of(&failed, false).2, "Retry | Open in Default Engine | Copy URL | <colors> | --- | Close");
+        assert_eq!(
+            menu_of(&failed, false).2,
+            "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
+        );
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, false, true).2,

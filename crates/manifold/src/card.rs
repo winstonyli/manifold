@@ -561,6 +561,14 @@ pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
     }
 }
 
+/// What a sleeping card names its page by: the url's `host[:port]`, or the
+/// whole url when it has none (`about:`, `data:`).
+pub(crate) fn url_host(url: &str) -> String {
+    crate::favicon_fetch::url_origin(url)
+        .and_then(|origin| origin.split_once("://").map(|(_, host)| host.to_string()))
+        .unwrap_or_else(|| url.to_string())
+}
+
 impl App {
     /// `id`'s `CardView`, or `None` when the node is gone.
     pub(crate) fn card_view(&self, id: &str) -> Option<CardView> {
@@ -800,9 +808,11 @@ impl App {
         }
     }
 
-    /// Unloaded (see `UnloadedTabPayload`): a warning icon, or a spinner
-    /// while a wake is in flight, and the url, with which engine failed
-    /// and why as the tooltip. LOD: skipped once simplified, as for
+    /// Unloaded (see `UnloadedTabPayload`), by state: **Sleeping** draws the
+    /// title (or url) and host dimmed, no icon; **Waking** adds the spinner
+    /// over the same dimmed labels; **Failed** keeps the Task 1 look -- a
+    /// warning icon, the url at the bottom, and which engine failed and why
+    /// as the tooltip. LOD: skipped once simplified, as for
     /// `paint_download_body`.
     pub(crate) fn paint_unloaded_tab_body(
         &mut self,
@@ -817,7 +827,7 @@ impl App {
         let Some(tab) = self.nodes.get(id).and_then(|n| n.as_unloaded()) else {
             return body;
         };
-        let (url, state) = (tab.url.clone(), tab.state.clone());
+        let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
         body.tooltip = Some(match &state {
             UnloadedState::Failed(error) => {
                 format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
@@ -827,38 +837,88 @@ impl App {
         if self.graph_lod_simplified {
             return body;
         }
-        if state == UnloadedState::Waking {
-            ui.put(
-                egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                egui::Spinner::new().size(24.0 * inv_zoom),
-            );
-        } else {
-            let icon_pos = rect.center();
-            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                overlay_painter.text(
-                    project(icon_pos),
-                    egui::Align2::CENTER_CENTER,
-                    egui_phosphor::light::WARNING_CIRCLE,
-                    egui::FontId::proportional(24.0),
-                    DANGER_COLOR,
-                );
-            }));
-        }
-        if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-            let url_font = egui::FontId::proportional(13.0);
-            let url_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-            let url = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &url_font, url_max_width);
-            let url_pos = rect.center_bottom();
-            let url_color = ui.visuals().weak_text_color();
-            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                overlay_painter.text(
-                    project(url_pos) + egui::vec2(0.0, -8.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    url,
-                    url_font,
-                    url_color,
-                );
-            }));
+        match &state {
+            UnloadedState::Failed(_) => {
+                let icon_pos = rect.center();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(icon_pos),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::light::WARNING_CIRCLE,
+                        egui::FontId::proportional(24.0),
+                        DANGER_COLOR,
+                    );
+                }));
+                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    let url_font = egui::FontId::proportional(13.0);
+                    let url_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                    let url = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &url_font, url_max_width);
+                    let url_pos = rect.center_bottom();
+                    let url_color = ui.visuals().weak_text_color();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(url_pos) + egui::vec2(0.0, -8.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            url,
+                            url_font,
+                            url_color,
+                        );
+                    }));
+                }
+            }
+            UnloadedState::Sleeping | UnloadedState::Waking => {
+                if state == UnloadedState::Waking {
+                    ui.put(
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
+                        egui::Spinner::new().size(24.0 * inv_zoom),
+                    );
+                }
+                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                    let dim_color = ui.visuals().weak_text_color();
+                    let title_font = egui::FontId::proportional(14.0);
+                    let title_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                    let title_text = if title.is_empty() { url.clone() } else { title };
+                    let title_text = truncate_to_width(
+                        &mut self.truncate_cache,
+                        ui.ctx(),
+                        &title_text,
+                        &title_font,
+                        title_max_width,
+                    );
+                    let title_pos = rect.center();
+                    let title_color = dim_color;
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(title_pos),
+                            egui::Align2::CENTER_CENTER,
+                            title_text,
+                            title_font,
+                            title_color,
+                        );
+                    }));
+
+                    let host_font = egui::FontId::proportional(13.0);
+                    let host_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
+                    let host = truncate_to_width(
+                        &mut self.truncate_cache,
+                        ui.ctx(),
+                        &url_host(&url),
+                        &host_font,
+                        host_max_width,
+                    );
+                    let host_pos = rect.center_bottom();
+                    let host_color = dim_color;
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        overlay_painter.text(
+                            project(host_pos) + egui::vec2(0.0, -8.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            host,
+                            host_font,
+                            host_color,
+                        );
+                    }));
+                }
+            }
         }
         body
     }
@@ -1778,5 +1838,11 @@ mod tests {
             })),
             ["https://example.org/"]
         );
+    }
+
+    #[test]
+    fn url_host_is_the_authority_or_the_whole_url() {
+        assert_eq!(url_host("https://example.org:8080/a?b#c"), "example.org:8080");
+        assert_eq!(url_host("about:blank"), "about:blank");
     }
 }
