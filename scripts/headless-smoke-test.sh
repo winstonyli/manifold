@@ -230,15 +230,16 @@ ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays 
 
 # Card helpers. `query NAME EXPR` evaluates EXPR over an
 # already-exported NAME.json without exporting again: `s` (the state),
-# `cards` (by id), `tabs`/`groups` (sorted ids), `xy(id)` and `lt(id)` (a
-# card's center and top-left corner, where its eject button sits, as "x
-# y") and `bbox` (every tab's rects' bounds grown by 20, as "x0 y0 x1 y1").
+# `cards` (by id), `tabs` (live or asleep) and `groups` (sorted ids),
+# `xy(id)` and `lt(id)` (a card's center and top-left corner, where its
+# eject button sits, as "x y") and `bbox` (every tab's rects' bounds grown
+# by 20, as "x0 y0 x1 y1").
 query() {
     python - "$out_dir/$1.json" "$2" <<'EOF'
 import json, os, sys
 s = json.load(open(sys.argv[1], encoding="utf-8"))
 cards = {c["id"]: c for c in s["cards"]}
-tabs = sorted(i for i, c in cards.items() if c["kind"] == "Tab")
+tabs = sorted(i for i, c in cards.items() if c["kind"] in ("Tab", "Unloaded"))
 groups = sorted(i for i, c in cards.items() if c["kind"] == "Group")
 xy = lambda i: "%.0f %.0f" % tuple(cards[i]["screen"])
 lt = lambda i: "%.0f %.0f" % (cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
