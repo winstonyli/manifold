@@ -883,17 +883,14 @@ impl App {
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
             DebugCommand::NewGroup => self.new_group_shortcut(),
             DebugCommand::NewNote => self.new_note_shortcut(),
-            DebugCommand::AddImage(path) => {
-                if self.insert_image_node(path) {
+            DebugCommand::AddFile(path, None) => {
+                if self.add_file_at(path.into(), None).is_ok() {
                     self.save_session();
                 }
             }
-            DebugCommand::AddPdf(path) => {
-                self.insert_pdf_node(path);
-                self.save_session();
-            }
-            DebugCommand::AddJson(path) => {
-                if self.insert_json_node(path) {
+            // Placed like a drop at that window point (Task 7).
+            DebugCommand::AddFile(path, Some(_point)) => {
+                if self.add_file_at(path.into(), None).is_ok() {
                     self.save_session();
                 }
             }

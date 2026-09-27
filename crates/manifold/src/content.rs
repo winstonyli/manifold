@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on; removed there.
-
 //! What node a piece of content becomes, picked from its MIME type: the
 //! one table every way content arrives goes through (a page a tab loaded,
 //! the file picker, a dropped file, `ADDFILE`). See
@@ -50,6 +48,8 @@ pub(crate) fn kind_of(mime: &str) -> ContentKind {
 
 /// Whether `bytes` really are `kind`: a server's header, or a file's
 /// sniffed type, isn't trusted on its own.
+// Used from Task 4 on (checking a web fetch's own claimed Content-Type).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn passes(kind: ContentKind, bytes: &[u8]) -> bool {
     match kind {
         ContentKind::Image => image::load_from_memory(bytes).is_ok(),
@@ -98,6 +98,8 @@ pub(crate) fn sniff(head: &[u8], file_name: &str) -> &'static str {
 }
 
 /// The extension a fetched file of `kind` is saved with.
+// Used from Task 4 on (naming a web fetch's file in the content dir).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn extension(kind: ContentKind, bytes: &[u8]) -> &'static str {
     match kind {
         ContentKind::Image => {
@@ -111,12 +113,17 @@ pub(crate) fn extension(kind: ContentKind, bytes: &[u8]) -> &'static str {
     }
 }
 
+// Used from Task 4 on, via `passes`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn strip_bom(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)
 }
 
 /// The local path a `file:///` URL names, percent-decoded. `None` for any
 /// other URL, including a `file://server/share` one.
+// Used from Task 4 on (a dropped/converted file:// tab, the inverse of
+// `path_file_url`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file:///").or_else(|| url.strip_prefix("file://localhost/"))?;
     let rest = rest.split(['?', '#']).next()?;
@@ -156,6 +163,9 @@ pub(crate) fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
 
 /// Deletes each file in `dir` whose name `keep` rejects; returns how many.
 /// A missing `dir` deletes nothing.
+// Used from Task 4 on (sweeping the content dir of files no live node
+// still points at).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn prune(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries

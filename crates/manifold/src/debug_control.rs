@@ -227,18 +227,13 @@ pub enum DebugCommand {
     NewGroup,
     /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
     NewNote,
-    /// The Graph toolbar's "+ Image" button with an explicit path instead
-    /// of a real file dialog — same "bypass the dialog entirely" reason as
-    /// `ExportSession`/`PrintToPdf`. See `App::insert_image_node`.
-    AddImage(String),
-    /// The Graph toolbar's "+ PDF" button with an explicit path instead of
-    /// a real file dialog — same reasoning as `AddImage`. See
-    /// `App::insert_pdf_node`.
-    AddPdf(String),
-    /// The Graph toolbar's "+ JSON" button with an explicit path instead of
-    /// a real file dialog — same reasoning as `AddImage`. See
-    /// `App::insert_json_node`.
-    AddJson(String),
+    /// The Graph toolbar's "+ File" button with an explicit path instead of
+    /// a real file dialog — same "bypass the dialog entirely" reason as
+    /// `ExportSession`/`PrintToPdf`. The point, if given, is a window point
+    /// like a drop there (Task 7); with none, the file is jittered around
+    /// world center at the current level, the same as the picker. See
+    /// `App::add_file_at`.
+    AddFile(String, Option<(f32, f32)>),
     /// A download node for `path`, as if the focused tab had just started
     /// downloading it (no bytes, unknown total) -- downloads otherwise only
     /// come from a real engine download. Nothing is fetched or written.
@@ -417,9 +412,10 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
     ("NEWGROUP", "Ctrl+Shift+G -- new group"),
     ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
-    ("ADDIMAGE path", "Add an image node from `path`"),
-    ("ADDPDF path", "Add a PDF node from `path`"),
-    ("ADDJSON path", "Add a JSON node from `path`"),
+    (
+        "ADDFILE path [x y]",
+        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there",
+    ),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
@@ -536,6 +532,20 @@ fn parse_single_char_key(name: &str) -> Option<KeyCode> {
         }),
         _ => None,
     }
+}
+
+/// `ADDFILE <path>` or `ADDFILE <path> <x> <y>` -- `rest` is non-empty. The
+/// path may itself contain spaces, so the trailing `x y` is only peeled off
+/// when the last two whitespace-separated words both parse as `f32`;
+/// otherwise the whole of `rest` is the path.
+fn parse_add_file(rest: &str) -> Option<DebugCommand> {
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    if words.len() >= 3 {
+        if let (Ok(x), Ok(y)) = (words[words.len() - 2].parse::<f32>(), words[words.len() - 1].parse::<f32>()) {
+            return Some(DebugCommand::AddFile(words[..words.len() - 2].join(" "), Some((x, y))));
+        }
+    }
+    Some(DebugCommand::AddFile(rest.to_string(), None))
 }
 
 /// Parses one line of the headless debug-command text protocol. Unknown
@@ -655,9 +665,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "RELOAD" => Some(DebugCommand::Reload),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
-        "ADDIMAGE" => non_empty(DebugCommand::AddImage),
-        "ADDPDF" => non_empty(DebugCommand::AddPdf),
-        "ADDJSON" => non_empty(DebugCommand::AddJson),
+        "ADDFILE" => (!rest.is_empty()).then(|| parse_add_file(rest)).flatten(),
         "ADDDOWNLOAD" => non_empty(DebugCommand::AddDownload),
         "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(if rest.is_empty() {
             60.0
@@ -739,4 +747,20 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         }
         let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_addfile_with_an_optional_trailing_point() {
+        assert!(
+            matches!(parse_line("ADDFILE C:\\a b\\c.png"), Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png")
+        );
+        assert!(matches!(
+            parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
+            Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5
+        ));
+    }
 }

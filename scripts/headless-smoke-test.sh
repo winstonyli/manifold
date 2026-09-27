@@ -420,7 +420,7 @@ fi
 # subtree back as one entry, still nested.
 send "DOUBLECLICK $(query nine "xy('$empty')")"
 settle outer_in
-send "ADDIMAGE $(cygpath -w "$repo_root")\crates\manifold\assets\icon\icon-64.png"
+send "ADDFILE $(cygpath -w "$repo_root")\crates\manifold\assets\icon\icon-64.png"
 send "IMPORTGROUP $out_dir_win\pair.group.json"
 send "WAITTABS"
 settle outer_built

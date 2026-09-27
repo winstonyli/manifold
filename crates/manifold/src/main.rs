@@ -1184,6 +1184,27 @@ fn take_focus(pending: &mut Option<FocusTarget>, target: FocusTarget) -> bool {
     }
 }
 
+/// Content on its way to becoming a node (`App::insert_content`).
+pub(crate) enum ContentSource {
+    /// A file on this machine. Sniffed; the node points at it where it is.
+    Local(std::path::PathBuf),
+    /// Checked content from `url` (see `redirect_fetch`).
+    // constructed from Task 4's web conversion
+    #[cfg_attr(not(test), allow(dead_code))]
+    Web { url: String, body: WebBody },
+}
+
+pub(crate) enum WebBody {
+    /// Saved in the content dir as `<id>.<ext>`; `id` is the node's id.
+    // constructed from Task 4's web conversion
+    #[cfg_attr(not(test), allow(dead_code))]
+    File { kind: content::ContentKind, path: String },
+    /// A note's text.
+    // constructed from Task 4's web conversion
+    #[cfg_attr(not(test), allow(dead_code))]
+    Text(String),
+}
+
 /// The event loop's real user-event type: headless debug commands, plus
 /// `TabSpawned` — see its own doc comment for why engine-host spawning needs
 /// to be async in the first place.
@@ -4141,17 +4162,111 @@ impl App {
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind });
     }
 
-    fn insert_image_node(&mut self, path: String) -> bool {
+    /// The one way content becomes a node (see `content`): a picked,
+    /// dropped or `ADDFILE` file, or a page a tab converted. `id`, `pos`
+    /// and `group` place it. A failure is toasted here.
+    fn insert_content(
+        &mut self,
+        source: ContentSource,
+        id: String,
+        pos: egui::Vec2,
+        group: Option<String>,
+    ) -> Result<(), String> {
+        use content::ContentKind as K;
+        let (url, kind, path) = match source {
+            ContentSource::Web { url, body: WebBody::Text(text) } => {
+                self.insert_note_with_text(id, text, Some(url), pos, group);
+                return Ok(());
+            }
+            ContentSource::Web { url, body: WebBody::File { kind, path } } => (Some(url), kind, path),
+            ContentSource::Local(path) => {
+                let name = crate::json_file::file_name(&path);
+                let head = content::read_head(&path).map_err(|err| {
+                    let err = format!("Couldn't open {name}: {err}");
+                    self.queue_toast(err.clone());
+                    err
+                })?;
+                let kind = content::kind_of(content::sniff(&head, &name));
+                let path_str = path.to_string_lossy().into_owned();
+                match kind {
+                    K::Note if head.len() > content::NOTE_MAX_BYTES => {
+                        let err = format!("Couldn't open {name}: too long for a note (over 1 MB)");
+                        self.queue_toast(err.clone());
+                        return Err(err);
+                    }
+                    K::Note => {
+                        // `sniff` said text and the head is the whole file.
+                        let text = String::from_utf8(head).map_err(|e| e.to_string())?;
+                        self.insert_note_with_text(id, text, None, pos, group);
+                        return Ok(());
+                    }
+                    K::Page => {
+                        self.spawn_tab_at(&content::path_file_url(&path), pos, group);
+                        return Ok(());
+                    }
+                    K::Other => {
+                        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
+                        let payload = DownloadPayload {
+                            path: path_str,
+                            bytes_received: bytes,
+                            total_bytes: Some(bytes),
+                            completed: true,
+                        };
+                        self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.group = group;
+                        }
+                        return Ok(());
+                    }
+                    _ => (None, kind, path_str),
+                }
+            }
+        };
+        match kind {
+            K::Image => self.insert_image_node_with_id(id.clone(), path, pos, group)?,
+            K::Pdf => self.insert_pdf_node_with_id(id.clone(), path, pos, group),
+            K::Json => self.insert_json_node_with_id(id.clone(), path, pos, group)?,
+            // A web page never reaches here as a file (see `redirect_fetch`).
+            K::Note | K::Page | K::Other => return Err(format!("{kind:?} is not a file kind")),
+        }
+        if let Some(slot) = self.nodes.get_mut(&id).and_then(|n| n.source_url_mut()) {
+            *slot = url;
+        }
+        Ok(())
+    }
+
+    fn insert_note_with_text(
+        &mut self,
+        id: String,
+        text: String,
+        url: Option<String>,
+        pos: egui::Vec2,
+        group: Option<String>,
+    ) {
+        let payload = NotePayload { text, editing: false, url };
+        self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.group = group;
+        }
+    }
+
+    /// A new tab at `url`, placed at `pos` in `group`. Returns its id.
+    fn spawn_tab_at(&mut self, url: &str, pos: egui::Vec2, group: Option<String>) -> String {
         let id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        let group = self.current_group.clone();
-        self.insert_image_node_with_id(id, path, pos, group).is_ok()
+        let (kind, zoom) = (self.settings.default_starting_engine, self.settings.zoom_factor);
+        // Cleared at the start of this spawn attempt too -- see
+        // `tab_spawn_error`'s own doc comment.
+        self.tab_spawn_error = None;
+        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        self.spawn_tab_async(TabSpawn { group, ..spawn });
+        id
     }
 
     /// The insert every `image` card goes through: the caller picks the id,
-    /// position and group -- `insert_image_node` a fresh id at the current
-    /// level, session restore the saved id and position with no group,
-    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
+    /// position and group -- `insert_content` a fresh id at the current
+    /// level for a picked/dropped/`ADDFILE` image, session restore the saved
+    /// id and position with no group, "Recently Closed" the old position and
+    /// group (`reopen_closed`), among others.
     fn insert_image_node_with_id(
         &mut self,
         id: String,
@@ -4161,8 +4276,15 @@ impl App {
     ) -> Result<(), String> {
         // Toasted here, not by callers: session restore, add-file and
         // reopen all used to drop a missing or undecodable file silently.
-        // The error comes back too, for restore's placeholder card.
-        let img = match image::open(&path) {
+        // The error comes back too, for restore's placeholder card. Decoded
+        // by content (`image::load_from_memory` guesses the format from the
+        // bytes), not by `path`'s own extension: `insert_content` already
+        // sniffed this file as an image, which a lying extension (a `.pdf`
+        // that's really a PNG) would otherwise defeat.
+        let img = match std::fs::read(&path)
+            .map_err(image::ImageError::IoError)
+            .and_then(|bytes| image::load_from_memory(&bytes))
+        {
             Ok(img) => img,
             Err(err) => {
                 eprintln!("image: couldn't open {path}: {err}");
@@ -4238,29 +4360,17 @@ impl App {
         self.save_session();
     }
 
-    /// Inserts a new PDF node with a fresh id at the current level,
-    /// jittered around world center, and starts its background render --
-    /// the interactive "+ PDF" button (`add_pdf_node`, after its own file
-    /// picker) and the headless `ADDPDF <path>` debug command. Unlike
-    /// `insert_image_node`, this always inserts the node immediately
-    /// (`outcome: None`, "still loading") rather than checking the file
-    /// synchronously first -- decoding a PDF is genuinely slow (see
-    /// `PdfPayload`'s own doc comment), so there's nothing worth checking
-    /// synchronously here; a bad/missing file surfaces later as a
-    /// `Some(Err(_))` outcome instead of the node never having existed the
-    /// way a bad image file does. Doesn't itself call `save_session` --
-    /// both callers mutate persisted state and save themselves right after.
-    fn insert_pdf_node(&mut self, path: String) {
-        let id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        let group = self.current_group.clone();
-        self.insert_pdf_node_with_id(id, path, pos, group);
-    }
-
     /// The insert every `pdf` card goes through: the caller picks the id,
-    /// position and group -- `insert_pdf_node` a fresh id at the current
-    /// level, session restore the saved id and position with no group,
-    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
+    /// position and group -- `insert_content` a fresh id at the current
+    /// level for a picked/dropped/`ADDFILE` PDF, session restore the saved
+    /// id and position with no group, "Recently Closed" the old position and
+    /// group (`reopen_closed`), among others. Unlike `insert_image_node_
+    /// with_id`, this always inserts the node immediately (`outcome: None`,
+    /// "still loading") rather than checking the file synchronously first --
+    /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment),
+    /// so there's nothing worth checking synchronously here; a bad/missing
+    /// file surfaces later as a `Some(Err(_))` outcome instead of the node
+    /// never having existed the way a bad image file does.
     fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_fetcher.request(id.clone(), path.clone());
         self.nodes.insert(
@@ -4277,27 +4387,15 @@ impl App {
         self.node_order.push(id);
     }
 
-    /// Decodes `path` as JSON and inserts a new JSON node with a fresh id at
-    /// the current level, jittered around world center -- the interactive
-    /// "+ File" button (`add_file_node`, when the picked file is `.json`)
-    /// and the headless `ADDJSON <path>` debug command. Returns `false`
-    /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
-    /// fail-fast posture `insert_image_node` already has (a JSON parse is
-    /// just as fast as decoding an image, so there's nothing here that
-    /// needs `Pdf`'s own background-render treatment). Doesn't itself call
-    /// `save_session` -- both callers mutate persisted state and save
-    /// themselves right after.
-    fn insert_json_node(&mut self, path: String) -> bool {
-        let id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        let group = self.current_group.clone();
-        self.insert_json_node_with_id(id, path, pos, group).is_ok()
-    }
-
     /// The insert every `json` card goes through: the caller picks the id,
-    /// position and group -- `insert_json_node` a fresh id at the current
-    /// level, session restore the saved id and position with no group,
-    /// "Recently Closed" the old position and group (`reopen_closed`), among others.
+    /// position and group -- `insert_content` a fresh id at the current
+    /// level for a picked/dropped/`ADDFILE` JSON file, session restore the
+    /// saved id and position with no group, "Recently Closed" the old
+    /// position and group (`reopen_closed`), among others. Returns `Err`
+    /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
+    /// fail-fast posture `insert_image_node_with_id` already has (a JSON
+    /// parse is just as fast as decoding an image, so there's nothing here
+    /// that needs `Pdf`'s own background-render treatment).
     fn insert_json_node_with_id(
         &mut self,
         id: String,
@@ -4436,64 +4534,39 @@ impl App {
     }
 
     /// The Graph toolbar's single "+ File" button -- one file picker
-    /// covering every locally-addable node kind (Image/PDF/JSON), replacing
-    /// three separate buttons/pickers (`add_image_node`/`add_pdf_node`/
-    /// `add_json_node`, all since removed) that only ever differed in
-    /// which extensions they filtered for and which `insert_*_node` got
-    /// called after picking a file -- the same "dispatch by type, one
-    /// allowlist" shape `redirect_fetch::classify` already established for
-    /// auto-redirected tabs, applied here to a local file's own extension
-    /// instead of a fetched `Content-Type` (there's no HTTP response to
-    /// read a real MIME type from for a file already on disk). A real file
-    /// picker blocks on OS/human input neither exists in headless mode, so
-    /// this is never called there; `ADDIMAGE`/`ADDPDF`/`ADDJSON <path>`
-    /// remain the headless equivalents, each still supplying its own path
-    /// directly to the matching `insert_*_node` without going through this
-    /// dispatch at all.
-    /// `pos`: `None` for the toolbar button (fresh id per kind, jittered
-    /// around world center internally by `insert_image_node`/
-    /// `insert_pdf_node`/`insert_json_node`, same as always); `Some(pos)`
-    /// for the empty-canvas "New Tab/Note/Group/File" card
-    /// (`pending_new_node`), which already knows exactly where it should
-    /// land and calls the `_with_id` variants directly instead.
+    /// covering every locally-addable node kind, dispatching whatever it
+    /// picks through `insert_content` (see that method, and `content`'s own
+    /// doc comment for the MIME table every way content arrives shares). A
+    /// real file picker blocks on OS/human input neither exists in headless
+    /// mode, so this is never called there; `ADDFILE <path>` is the headless
+    /// equivalent, going through `add_file_at` the same way.
+    /// `pos`: `None` for the toolbar button (jittered around world center,
+    /// same as always); `Some(pos)` for the empty-canvas "New Tab/Note/
+    /// Group/File" card (`pending_new_node`), which already knows exactly
+    /// where it should land.
     fn add_file_node(&mut self, pos: Option<egui::Vec2>) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Image, PDF, or JSON", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "json"])
+            .add_filter(
+                "Image, PDF, JSON or text",
+                &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "pdf", "json", "txt", "md", "html", "htm"],
+            )
+            .add_filter("All files", &["*"])
             .pick_file()
         else {
             return;
         };
-        let path = path.to_string_lossy().into_owned();
-        let extension =
-            std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
-        let inserted = match (extension.as_deref(), pos) {
-            (Some("pdf"), Some(pos)) => {
-                let id = self.alloc_node_id();
-                let group = self.current_group.clone();
-                self.insert_pdf_node_with_id(id, path, pos, group);
-                true
-            }
-            (Some("pdf"), None) => {
-                self.insert_pdf_node(path);
-                true
-            }
-            (Some("json"), Some(pos)) => {
-                let id = self.alloc_node_id();
-                let group = self.current_group.clone();
-                self.insert_json_node_with_id(id, path, pos, group).is_ok()
-            }
-            (Some("json"), None) => self.insert_json_node(path),
-            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), Some(pos)) => {
-                let id = self.alloc_node_id();
-                let group = self.current_group.clone();
-                self.insert_image_node_with_id(id, path, pos, group).is_ok()
-            }
-            (Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"), None) => self.insert_image_node(path),
-            _ => false,
-        };
-        if inserted {
+        if self.add_file_at(path, pos).is_ok() {
             self.save_session();
         }
+    }
+
+    /// `path` as a new node at `pos`, or jittered around world center, at
+    /// the current level. The picker and `ADDFILE`.
+    fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
+        let id = self.alloc_node_id();
+        let pos = pos.unwrap_or_else(|| GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id));
+        let group = self.current_group.clone();
+        self.insert_content(ContentSource::Local(path), id, pos, group)
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
@@ -5307,6 +5380,80 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insert_content_dispatches_local_files_by_content() {
+        let dir = crate::store::testutil::temp_dir("insert_content");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(3, 2).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let files = [
+            ("pic.pdf", png.into_inner()), // lying extension: still an image
+            ("doc", b"%PDF-1.4\n".to_vec()),
+            ("data.txt", br#"{"a": 1}"#.to_vec()),
+            ("notes.md", b"# hi".to_vec()),
+            ("blob.bin", vec![0, 1, 2, 255]),
+        ];
+        let mut app = App::default();
+        let mut kinds = Vec::new();
+        for (name, bytes) in files {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let id = app.alloc_node_id();
+            app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).unwrap();
+            kinds.push(match &app.nodes[&id].payload {
+                NodePayload::Image(p) => format!("image {}x{}", p.width, p.height),
+                NodePayload::Pdf(_) => "pdf".into(),
+                NodePayload::Json(p) => format!("json {}", p.value),
+                NodePayload::Note(p) => format!("note {}", p.text),
+                NodePayload::Download(p) => format!("download {} done={}", p.bytes_received, p.completed),
+                _ => "other".into(),
+            });
+            assert_eq!(app.nodes[&id].source_url(), None);
+        }
+        assert_eq!(kinds, ["image 3x2", "pdf", r#"json {"a":1}"#, "note # hi", "download 4 done=true"]);
+    }
+
+    #[test]
+    fn insert_content_refuses_a_failing_local_file() {
+        let dir = crate::store::testutil::temp_dir("insert_content_refuse");
+        let big = dir.join("big.txt");
+        std::fs::write(&big, vec![b'a'; crate::content::NOTE_MAX_BYTES + 1]).unwrap();
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"\x89PNG\r\n\x1a\n not really").unwrap();
+        let mut app = App::default();
+        for path in [big, broken, dir.join("missing.txt")] {
+            let id = app.alloc_node_id();
+            assert!(app.insert_content(ContentSource::Local(path), id.clone(), egui::Vec2::ZERO, None).is_err());
+            assert!(!app.nodes.contains_key(&id));
+        }
+        assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 3, "each refusal toasts");
+    }
+
+    /// `ContentSource::Web` isn't constructed by any real code path until
+    /// Task 4's web conversion, but `insert_content`'s dispatch for it is
+    /// this task's own -- covered here rather than left untested until then.
+    #[test]
+    fn insert_content_dispatches_web_content_and_keeps_its_url() {
+        let dir = crate::store::testutil::temp_dir("insert_content_web");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let path = dir.join("fetched.png");
+        std::fs::write(&path, png.into_inner()).unwrap();
+
+        let mut app = App::default();
+        let id = app.alloc_node_id();
+        let source = ContentSource::Web {
+            url: "https://x.test/a.png".into(),
+            body: WebBody::File { kind: content::ContentKind::Image, path: path.to_string_lossy().into_owned() },
+        };
+        app.insert_content(source, id.clone(), egui::Vec2::ZERO, None).unwrap();
+        assert_eq!(app.nodes[&id].source_url(), Some("https://x.test/a.png"));
+
+        let note_id = app.alloc_node_id();
+        let source = ContentSource::Web { url: "https://x.test/note.txt".into(), body: WebBody::Text("hi".into()) };
+        app.insert_content(source, note_id.clone(), egui::Vec2::ZERO, None).unwrap();
+        assert_eq!(app.nodes[&note_id].source_url(), Some("https://x.test/note.txt"));
+    }
 
     #[test]
     fn in_reading_order_reads_first_then_second_in_both_directions() {
