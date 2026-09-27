@@ -4,12 +4,13 @@
 # What a big session costs at startup. For each <tabs>, one headless
 # instance on a fresh isolated APPDATA (never the real %APPDATA%\manifold)
 # restores <tabs> tabs of a local page (scripts/page_server.py) and prints:
-#   - how long until every tab had spawned (WAITTABS), checking all did;
+#   - how long until the restore settled (WAITTABS), checking the focused
+#     tab is live and the rest asleep (spec "Lazy tabs");
 #   - 15 s later, its process tree: process count, private memory and
 #     working set, and private memory per process name.
 # ENGINE (default webview2) is the engine every tab uses. Build first:
-# cargo build -j 12 -p manifold. Each tab costs ~80 MB on WebView2 and
-# ~180 MB on CEF (README, known limitations), so mind free memory.
+# cargo build -j 12 -p manifold. Each tab opened costs ~80 MB on WebView2
+# and ~180 MB on CEF (README, known limitations).
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$repo_root/target/debug/manifold.exe"
@@ -79,10 +80,14 @@ for n in "$@"; do
     for _ in $(seq 1200); do [ -s "$spawned" ] && break; sleep 0.1; done
     [ -s "$spawned" ] || { echo "FAIL: $n tabs: WAITTABS never answered in 120 s"; exit 1; }
     elapsed=$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
-    tabs=$(grep -o '"kind":"Tab"' "$spawned" | wc -l)
-    [ "$tabs" -eq "$n" ] || { echo "FAIL: $n tabs: only $tabs spawned"; exit 1; }
+    # `|| true`: grep finding none fails the pipeline, and a count of 0 is
+    # an answer (1 tab has none asleep).
+    live=$(grep -o '"kind":"Tab"' "$spawned" | wc -l || true)
+    asleep=$(grep -o '"kind":"Unloaded"' "$spawned" | wc -l || true)
+    [ "$live" -eq 1 ] && [ $((live + asleep)) -eq "$n" ] ||
+        { echo "FAIL: $n tabs: $live live and $asleep asleep, expected 1 and $((n - 1))"; exit 1; }
     winpid="$(ps -W | awk -v p="$inst" '$1 == p { print $4 }')"
-    echo "$engine, $n tabs: all spawned in ${elapsed}s"
+    echo "$engine, $n tabs: restored in ${elapsed}s, 1 live and $asleep asleep"
     sleep 15
     tree_memory "$winpid"
     echo QUIT >>"$cmd"
