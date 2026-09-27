@@ -219,6 +219,22 @@ impl GraphCamera {
             }
         }
     }
+
+    /// Grows `rect` to everything `Scene` shows of it in `outer`, keeping
+    /// its center and scale. `Scene` fits `rect` into `outer` by aspect,
+    /// so a rect of another shape (a fit to the cards' bounds, a tween
+    /// toward one) is shown with more world beside it than it covers,
+    /// and `Scene` only writes the full visible rect back after a user pan
+    /// or zoom. Until then the grid, card culling, the LOD count and the
+    /// minimap, which all read `rect`, skipped that margin: a card dragged
+    /// into it vanished.
+    pub(crate) fn fill(&mut self, outer: egui::Rect) {
+        if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
+            return; // `Scene` resets a bad rect itself.
+        }
+        let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        self.rect = egui::Rect::from_center_size(self.rect.center(), outer.size() / scale);
+    }
 }
 
 impl App {
@@ -572,6 +588,7 @@ impl App {
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
 
         self.camera.advance();
+        self.camera.fill(scene_outer_rect);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
         // Compared against after `Scene`'s own closure runs, below --
@@ -1612,5 +1629,22 @@ mod tests {
         camera.advance();
         assert_eq!(camera.rect, to);
         assert!(camera.tween.is_none() && camera.momentum.is_none());
+    }
+
+    /// A wide fit in a squarer window: `fill` adds the world `Scene` shows
+    /// above and below it, and moves nothing on screen.
+    #[test]
+    fn filling_grows_the_rect_to_the_visible_world_without_moving_it() {
+        let outer = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 600.0));
+        let wide = egui::Rect::from_center_size(egui::pos2(250.0, 0.0), egui::vec2(1000.0, 300.0));
+        let scale = |rect: egui::Rect| (outer.size() / rect.size()).min_elem();
+        let mut camera = GraphCamera::new();
+        camera.jump_to(wide);
+        camera.fill(outer);
+        assert_eq!((camera.rect.center(), scale(camera.rect)), (wide.center(), scale(wide)));
+        assert_eq!(camera.rect.size(), egui::vec2(1000.0, 750.0));
+        let filled = camera.rect;
+        camera.fill(outer);
+        assert_eq!(camera.rect, filled, "already filling: unchanged");
     }
 }
