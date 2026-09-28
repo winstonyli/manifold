@@ -14,6 +14,7 @@ mod history;
 mod image_view;
 mod input;
 mod json_file;
+mod level;
 mod local_state;
 mod node;
 mod pdf;
@@ -49,6 +50,7 @@ use input::*;
 use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
+use level::{EdgeCurve, LevelItem, LevelItemKind};
 use node::*;
 use popups::*;
 use process_manager::{EngineKind, EngineTab};
@@ -3260,9 +3262,7 @@ impl App {
     /// fit (an empty group, or before any tab has spawned) — an empty
     /// bounding box has no sensible center/size to frame.
     fn fit_all_nodes_scene_rect(&self) -> egui::Rect {
-        self.bounds_for_level(
-            self.node_order.iter().filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group)),
-        )
+        self.bounds_for_rects(self.level_items().into_iter().map(|item| item.rect))
     }
 
     /// Same computation `fit_all_nodes_scene_rect` needs, but taking
@@ -3271,10 +3271,15 @@ impl App {
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
     fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        let bounds = ids
-            .into_iter()
-            .filter_map(|id| self.nodes.get(id))
-            .fold(egui::Rect::NOTHING, |bounds, node| bounds.union(node_card_rect(node)));
+        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.nodes.get(id)).map(node_card_rect))
+    }
+
+    /// The shared fold behind both of the above (and `level_items`'
+    /// world bounds more generally): every rect's union, expanded by a
+    /// flat margin, or `default_graph_scene_rect()` when there's nothing
+    /// to fit.
+    pub(crate) fn bounds_for_rects(&self, rects: impl IntoIterator<Item = egui::Rect>) -> egui::Rect {
+        let bounds = rects.into_iter().fold(egui::Rect::NOTHING, egui::Rect::union);
         if !bounds.is_finite() {
             return default_graph_scene_rect();
         }
@@ -3324,7 +3329,7 @@ impl App {
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
     fn current_level_settle_key(&self) -> (Option<String>, usize) {
-        (self.current_group.clone(), GRAPH_DRAW_ORDER.iter().map(|&kind| self.nodes_at_current_level(kind).len()).sum())
+        (self.current_group.clone(), self.level_items().len())
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab

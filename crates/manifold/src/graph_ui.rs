@@ -88,16 +88,6 @@ pub(crate) fn draw_new_node_menu_row(
     response.clicked()
 }
 
-/// How many of `ids` (one kind's own node-id list at the current level)
-/// have a card (`node_card_rect`) intersecting `viewport` -- the exact
-/// same per-node rect the render loops build for their own cull check.
-/// Shared by `build_graph_ui`'s LOD pre-pass (see `LOD_SIMPLIFY_COUNT`)
-/// so it counts "visible" precisely the way culling already does, rather
-/// than a second, slightly different notion of visibility.
-pub(crate) fn count_visible_nodes(nodes: &NodeMap, ids: &[String], viewport: egui::Rect) -> usize {
-    ids.iter().filter(|id| nodes.get(id.as_str()).is_some_and(|n| node_card_rect(n).intersects(viewport))).count()
-}
-
 /// What the Graph toolbar (`App::render_graph_toolbar`) hands back to
 /// `build_graph_ui`: the actions its buttons pushed, the zoom-chip
 /// requests, and the button rects that popups and drops anchor to.
@@ -415,7 +405,7 @@ impl App {
     /// any open node menu.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
         self.current_group = group;
-        self.settle_current_level();
+        self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
         self.camera.ease_to(self.fit_all_nodes_scene_rect());
         self.selected_tabs.clear();
@@ -449,6 +439,7 @@ impl App {
         // here would have added surface area without the same payoff.
         let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
         let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
+        let items = self.level_items();
 
         // Level-of-detail: count how many nodes at this level actually
         // intersect the viewport, then flip `graph_lod_simplified` with a
@@ -456,8 +447,7 @@ impl App {
         // why. Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
-        let lod_visible_count: usize =
-            at_level.iter().map(|ids| count_visible_nodes(&self.nodes, ids, self.camera.rect)).sum();
+        let lod_visible_count: usize = items.iter().filter(|item| item.rect.intersects(self.camera.rect)).count();
         if self.graph_lod_simplified {
             if lod_visible_count < LOD_RESTORE_COUNT {
                 self.graph_lod_simplified = false;
@@ -487,7 +477,7 @@ impl App {
             self.camera.frame_restored = false;
             // Settled first, as in `switch_group_level`: fitting the
             // pre-settle positions would leave spread-out nodes off screen.
-            self.settle_current_level();
+            self.layout_current_level();
             self.graph_settled_key = Some(self.current_level_settle_key());
             self.camera.jump_to(self.fit_all_nodes_scene_rect());
         }
@@ -521,11 +511,11 @@ impl App {
         // where it is for the whole gesture.
         if self.dragging.is_none() {
             // Same formula `current_level_settle_key()` computes, just
-            // built from this frame's already-cached lists instead of
-            // redoing all seven scans a second time.
-            let current_key = (self.current_group.clone(), at_level.iter().map(Vec::len).sum());
+            // built from this frame's already-cached `items` instead of
+            // redoing the level scan a second time.
+            let current_key = (self.current_group.clone(), items.len());
             if self.graph_settled_key.as_ref() != Some(&current_key) {
-                self.settle_current_level();
+                self.layout_current_level();
                 self.graph_settled_key = Some(current_key);
             }
         }
@@ -605,7 +595,7 @@ impl App {
         self.camera.advance();
         self.camera.fill(scene_outer_rect);
 
-        let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &at_level);
+        let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
         // Compared against after `Scene`'s own closure runs, below --
         // an actual pan drag or scroll-wheel zoom this frame changes this,
         // and dismisses `pending_new_node` the same as every other camera
@@ -1067,22 +1057,19 @@ impl App {
                 // `self.focused` stays tab-only), so a right-click on one
                 // would otherwise just compute an empty selection.
                 let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
-                // Reverse draw order, so the card on top takes the
-                // right-click, the same card a left-click there would
-                // reach. Within one kind, later in `node_order` draws
-                // later, hence the second `.rev()`.
-                let hit = GRAPH_DRAW_ORDER.into_iter().rev().find_map(|kind| {
-                    self.nodes_at_current_level(kind)
-                        .into_iter()
-                        .rev()
-                        .find(|id| self.nodes.get(id).is_some_and(|n| node_card_rect(n).contains(world_pos)))
-                });
-                if let Some(id) = hit {
-                    self.node_menu = Some((id, pos));
-                    self.rect_select_start = None;
-                } else {
-                    self.node_menu = None;
-                    self.rect_select_start = Some(pos);
+                // Reverse draw order, `level_items`, so the card on top
+                // takes the right-click, the same card a left-click there
+                // would reach.
+                let hit = self.level_items().into_iter().rev().find(|item| item.rect.contains(world_pos));
+                match hit {
+                    Some(LevelItem { id, kind: LevelItemKind::Node(_), .. }) => {
+                        self.node_menu = Some((id, pos));
+                        self.rect_select_start = None;
+                    }
+                    None => {
+                        self.node_menu = None;
+                        self.rect_select_start = Some(pos);
+                    }
                 }
             }
         }
@@ -1148,9 +1135,9 @@ impl App {
         ui: &egui::Ui,
         overlay_painter: &egui::Painter,
         scene_outer_rect: egui::Rect,
-        at_level: &[Vec<String>],
+        items: &[LevelItem],
     ) -> Option<(egui::Rect, egui::Rect, f32)> {
-        let world_bounds = self.bounds_for_level(at_level.iter().flatten());
+        let world_bounds = self.bounds_for_rects(items.iter().map(|item| item.rect));
         if self.camera.rect.contains_rect(world_bounds.shrink(GRAPH_FIT_MARGIN)) {
             return None;
         }
@@ -1164,7 +1151,8 @@ impl App {
         let world_to_minimap =
             |p: egui::Pos2| -> egui::Pos2 { minimap_rect.center() + (p - world_bounds.center()) * minimap_scale };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
-        for (kind, ids) in GRAPH_DRAW_ORDER.into_iter().zip(at_level) {
+        for item in items {
+            let LevelItemKind::Node(kind) = item.kind;
             let (radius, color) = match kind {
                 ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
                 ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
@@ -1172,16 +1160,13 @@ impl App {
                 ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
                 ItemNodeKind::Group => (3.0, ACCENT),
             };
-            for id in ids {
-                if let Some(node) = self.nodes.get(id) {
-                    let color = if node.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))) {
-                        DANGER_COLOR
-                    } else {
-                        color
-                    };
-                    overlay_painter.circle_filled(world_to_minimap(node.pos.to_pos2()), radius, color);
-                }
-            }
+            let failed = self
+                .nodes
+                .get(&item.id)
+                .and_then(|n| n.as_unloaded())
+                .is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)));
+            let color = if failed { DANGER_COLOR } else { color };
+            overlay_painter.circle_filled(world_to_minimap(item.rect.center()), radius, color);
         }
         let viewport_rect =
             egui::Rect::from_two_pos(world_to_minimap(self.camera.rect.min), world_to_minimap(self.camera.rect.max))
@@ -1335,18 +1320,7 @@ impl App {
     /// One pass over every node kind (tabs, downloads, ...), so
     /// each parent->child edge is drawn exactly once.
     pub(crate) fn draw_graph_edges(&self, ui: &egui::Ui, inv_zoom: f32) {
-        for node in self.nodes.values() {
-            if node.group != self.current_group {
-                continue;
-            }
-            let Some(parent_id) = &node.parent else {
-                continue;
-            };
-            let Some(parent) = self.nodes.get(parent_id).filter(|p| p.group == self.current_group) else {
-                continue;
-            };
-            let parent_pos = egui::Pos2::new(parent.pos.x, parent.pos.y);
-            let node_pos = egui::Pos2::new(node.pos.x, node.pos.y);
+        for edge in self.level_edges() {
             // Viewport culling: unlike a node's own rect, an edge
             // can have one endpoint off-screen and the other on --
             // or pass through the viewport with both endpoints
@@ -1357,13 +1331,22 @@ impl App {
             // without actually crossing the viewport, but that's a
             // rare, cheap-to-tolerate false negative, not a
             // visible edge going missing.
-            if egui::Rect::from_two_pos(parent_pos, node_pos).intersects(self.camera.rect) {
-                draw_graph_edge(
-                    ui.painter(),
-                    parent_pos,
-                    node_pos,
-                    egui::Stroke::new(2.0 * inv_zoom, ui.visuals().weak_text_color()),
-                );
+            if !egui::Rect::from_two_pos(edge.from, edge.to).intersects(self.camera.rect) {
+                continue;
+            }
+            let color = if edge.highlight { ACCENT } else { ui.visuals().weak_text_color() };
+            let stroke = egui::Stroke::new(2.0 * inv_zoom, color);
+            match edge.curve {
+                EdgeCurve::Bow => draw_graph_edge(ui.painter(), edge.from, edge.to, stroke),
+                EdgeCurve::Horizontal => {
+                    let bend = ((edge.to.x - edge.from.x) / 2.0).max(20.0);
+                    ui.painter().add(egui::epaint::CubicBezierShape::from_points_stroke(
+                        [edge.from, edge.from + egui::vec2(bend, 0.0), edge.to - egui::vec2(bend, 0.0), edge.to],
+                        false,
+                        egui::Color32::TRANSPARENT,
+                        stroke,
+                    ));
+                }
             }
         }
     }

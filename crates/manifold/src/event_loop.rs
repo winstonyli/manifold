@@ -843,15 +843,16 @@ impl App {
                 // The current level's cards, in draw order, with where each
                 // one's center is on screen: what a headless test needs to
                 // aim a click or drag at a card.
-                let cards: Vec<serde_json::Value> = GRAPH_DRAW_ORDER
-                    .iter()
-                    .flat_map(|&kind| self.nodes_at_current_level(kind))
-                    .filter_map(|id| {
-                        let node = self.nodes.get(&id)?;
-                        let screen = self.graph_world_rect_to_screen(node_card_rect(node));
+                let cards: Vec<serde_json::Value> = self
+                    .level_items()
+                    .into_iter()
+                    .filter_map(|item| {
+                        let screen = self.graph_world_rect_to_screen(item.rect);
+                        let LevelItemKind::Node(kind) = item.kind;
+                        let node = self.nodes.get(&item.id)?;
                         Some(serde_json::json!({
-                            "id": id,
-                            "kind": format!("{:?}", item_node_kind(&node.payload)),
+                            "id": item.id,
+                            "kind": format!("{kind:?}"),
                             "group": node.group,
                             "parent": node.parent,
                             "color": node.color.is_some(),
