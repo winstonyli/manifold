@@ -203,6 +203,11 @@ pub(crate) struct CardLook<'a> {
     pub(crate) text: bool,
     pub(crate) selected_row: Option<usize>,
     pub(crate) hit_rows: &'a [usize],
+    /// A container row's port dot: true on the JSON level itself, where it
+    /// marks a row with a child card and an edge to it. False for the Json
+    /// card's preview at its parent's level, which has no child cards or
+    /// edges to show a dot for.
+    pub(crate) ports: bool,
 }
 
 /// A JSON level card's background, header tint and border.
@@ -302,7 +307,7 @@ pub(crate) fn paint_json_content(
         let r = row_rect(row);
         let y = r.center().y;
         let parts = row_parts(value, &key, child);
-        if parts.port {
+        if parts.port && look.ports {
             painter.circle_filled(egui::pos2(r.right(), y), 3.5, pal.container);
         }
         if !look.text {
@@ -420,6 +425,7 @@ impl App {
                 text: zoom_scale >= LOD_TEXT_ZOOM,
                 selected_row,
                 hit_rows: &hit_rows,
+                ports: true,
             };
             let header = header_parts(&level.value, card, &root_name);
             paint_json_content(ui.painter(), deferred_overlays, rect, value, &header, card.rows, card.more, &look);

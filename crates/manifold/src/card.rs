@@ -1377,6 +1377,9 @@ impl App {
             text,
             selected_row: None,
             hit_rows: &[],
+            // No child cards or edges at the parent level: a port dot here
+            // would point at nothing.
+            ports: false,
         };
         crate::json_level_ui::paint_json_content(
             ui.painter(),
