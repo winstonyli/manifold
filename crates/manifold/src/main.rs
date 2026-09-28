@@ -4095,15 +4095,6 @@ impl App {
         self.save_session();
     }
 
-    /// Decodes `path` and inserts a new image node with a fresh id at the
-    /// current level, jittered around world center -- the interactive
-    /// "+ Image" button (`add_image_node`, after its own file picker) and
-    /// the headless `ADDIMAGE <path>` debug command. Returns `false` (doing
-    /// nothing) if the file doesn't exist or isn't a decodable image, same
-    /// "never let one bad file stop everything else" posture
-    /// `Settings::load`/`App::restore_session` already have. Doesn't
-    /// itself call `save_session` -- both callers mutate persisted state
-    /// and save themselves right after.
     /// A download node for `path`, started from tab `tab_id`: placed next
     /// to that tab, in the tab's group, with an edge from it. Shared by an
     /// engine's `DownloadStarted` and the headless `ADDDOWNLOAD <path>`

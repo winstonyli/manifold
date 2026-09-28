@@ -211,10 +211,12 @@ Per-task rulings:
   under it.
 - The live Explorer drag-and-drop check (Task 7's Step 5) is left for the
   user to try, not attempted by any task's own implementer.
-- The smoke test only asserts two same-frame drops fan out beside each
-  other when they actually land in one rendered frame; back-to-back
-  headless `ADDFILE`s never reliably do, so that assertion was dropped
-  from the smoke test and is covered by its unit test instead.
+- The smoke test asserts each dropped card lands within 60 px of the
+  point it was dropped at; it only asserts two same-frame drops fan out
+  beside each other when they actually land in one rendered frame, and
+  back-to-back headless `ADDFILE`s never reliably do, so that assertion
+  was dropped from the smoke test and is covered by its unit test
+  instead.
 
 Live-verified per engine (Tasks 4 and 5, via `scripts/drive.sh` seeding a
 `file://` tab): WebView2 and CEF both convert JSON, PDF, PNG and plain
