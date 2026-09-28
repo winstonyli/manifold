@@ -477,6 +477,45 @@ check_query after_drop "the dropped note's screen center is within 60px of (400,
 check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
     "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
 
+# Task 8: the remaining `ADDFILE` kinds, alongside the image (the
+# icon-64.png ADDFILE above, checked via outer_built's Image count) and
+# the .txt/.json drops just above. A PDF, an unrecognized `.bin` (a
+# finished Download card) and a `.md` note -- proving Note dispatch
+# comes from sniffing the bytes, not the `.txt` extension -- are each
+# checked the same way: by the new card's kind. `.html` goes further: it
+# becomes a Tab (`insert_content`'s `K::Page` arm calls `spawn_tab_at`),
+# so after `WAITTABS` its card is clicked to focus it into Tab view, and
+# `focused_url` is checked to start with `file://`.
+printf '%%PDF-1.4\n' >"$out_dir/doc.pdf"
+printf '# a markdown note\n' >"$out_dir/note.md"
+printf '\xffbinary\xfedata' >"$out_dir/data.bin"
+printf '<!doctype html><html><body>hi</body></html>' >"$out_dir/page.html"
+state before_kinds 1 >/dev/null
+before_kinds_ids=$(query before_kinds 'sorted(cards)')
+send "ADDFILE $out_dir_win\\doc.pdf 600 500"
+send "ADDFILE $out_dir_win\\note.md 600 500"
+send "ADDFILE $out_dir_win\\data.bin 600 500"
+send "ADDFILE $out_dir_win\\page.html 600 500"
+send "WAITTABS"
+settle after_kinds
+new_card() {
+    BEFORE="$before_kinds_ids" query after_kinds \
+        "([i for i, c in cards.items() if c[\"kind\"] == \"$1\" and i not in eval(env[\"BEFORE\"])] or [\"none\"])[0]"
+}
+pdf_id=$(new_card Pdf)
+md_id=$(new_card Note)
+bin_id=$(new_card Download)
+html_id=$(new_card Tab)
+check_query after_kinds "a dropped .pdf becomes a Pdf card" "'$pdf_id' != 'none'"
+check_query after_kinds "a dropped .md becomes a Note card" "'$md_id' != 'none'"
+check_query after_kinds "a dropped .bin becomes a Download card" "'$bin_id' != 'none'"
+check_query after_kinds "a dropped .html becomes a Tab card" "'$html_id' != 'none'"
+if [ "$html_id" != none ]; then
+    send "CLICK $(query after_kinds "xy('$html_id')")"
+    sleep 1
+    check_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
+fi
+
 send "QUIT"
 if wait "$browser_pid"; then
     pass "process exited cleanly"

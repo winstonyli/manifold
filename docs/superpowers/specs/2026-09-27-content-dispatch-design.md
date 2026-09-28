@@ -1,6 +1,6 @@
 # Content dispatch: one MIME table for every way content arrives
 
-Status: approved design, 2026-09-27. Not yet implemented.
+Status: implemented, 2026-09-27 (plan docs/superpowers/plans/2026-09-27-content-dispatch.md).
 
 ## Goal
 
@@ -151,3 +151,111 @@ until that file goes; they have no URL, so they can't refetch.
   loading a local `file://` PDF and JSON page in a tab and checking it
   converts with `url` set (no network needed).
 - Open as tab: the new tab stays a tab on its first load.
+
+## Outcome
+
+Built across eight tasks (commits `2fdfdc7..2152826` on `dev`, this task
+adds the last commit). Rulings made along the way, decision only:
+
+Planning rulings:
+
+1. `path` is an explicit field: a replica that refetches a missing file
+   saves it under its own content dir, and an implicit field would write
+   that machine-local path back into the shared store.
+2. Web text converts into a Note holding the text directly; no file is
+   saved for it, since Refresh isn't offered for notes anyway.
+3. "Open as tab" tracks skipped conversion by tab id in `App::skip_convert`,
+   not a field on the tab payload, since the tab's node doesn't exist yet
+   at spawn time. An id leaves the set on its first content report or a
+   real URL change or the tab closing.
+4. When both `JsonBody` and a text redirect arrive for one load, the JSON
+   path converts and removes the tab first; the text path's existing
+   `still_current` check quietly no-ops on the now-missing tab.
+5. Pruning keeps a content-dir file whose name matches a live node's path
+   (or a Recently Closed entry's), or whose stem matches a live node id —
+   the id form is what lets a replica's own refetch of another machine's
+   file survive.
+6. A dropped file's position comes from `GetCursorPos`/`ScreenToClient`,
+   not `CursorMoved` (winit sends none during an OLE drag); `ADDFILE <path>
+   x y` reuses the same placement code so headless tests cover it.
+
+Per-task rulings:
+
+- Task 6's file-keep rule lives in one shared function so pruning and its
+  test can't drift apart.
+- `mod content;` sits alphabetically among `main.rs`'s other `mod` lines,
+  not next to `mod redirect_fetch` as the plan's looser wording suggested.
+- Two early commits (Tasks 2 and 5) carry the subagent harness's own
+  "Claude Sonnet 5" trailer instead of "Claude Opus 5.5"; left as-is
+  rather than rewriting already-made history, since it still names the
+  model that wrote the code.
+- Images decode by content (`image::load_from_memory`), not by
+  `image::open`'s extension-based guess, so a lying extension can't hide
+  a real image from the missing-file/retry path.
+- Converting a tab reuses `remove_tab` (the same primitive a close or a
+  remote deletion uses) instead of hand-copying `redirect_tab_to_image`'s
+  old body, so a converted tab clears every guard (dragging, hovered,
+  focus, split, pending respawn) a real close already clears.
+- `skip_convert` stays set for as long as the tab stays at that URL,
+  consumed only by its first real content report — not by the first
+  report unconditionally — so F5 or waking the tab doesn't quietly
+  convert an Open-as-Tab tab back into a card.
+- A PDF that fails to render is never refreshed automatically; the
+  brief's mandated removal of that retry loop is covered instead by the
+  existing missing-file and restore paths.
+- A missing file that still has a URL is refetched silently — no
+  "Couldn't open" toast and no failed render first — inserting the
+  placeholder directly and refreshing it.
+- Pruning skips any file modified at or after its keep-set snapshot, so a
+  file another running replica just fetched can't be deleted out from
+  under it.
+- The live Explorer drag-and-drop check (Task 7's Step 5) is left for the
+  user to try, not attempted by any task's own implementer.
+- The smoke test only asserts two same-frame drops fan out beside each
+  other when they actually land in one rendered frame; back-to-back
+  headless `ADDFILE`s never reliably do, so that assertion was dropped
+  from the smoke test and is covered by its unit test instead.
+
+Live-verified per engine (Tasks 4 and 5, via `scripts/drive.sh` seeding a
+`file://` tab): WebView2 and CEF both convert JSON, PDF, PNG and plain
+text pages into the right node kind, keeping the source URL. On
+WebView2, Refresh re-fetches and swaps a Json node's stored bytes in
+place, and Open as Tab adds a second, unconverted tab beside the
+original node rather than replacing it. Task 6's refetch-on-missing-file
+and pruning were live-verified together: deleting a Json node's content
+file and dropping an unrelated file into the content dir, then
+restarting, refetched the missing file byte-identical and removed the
+unrelated one. Task 7's headless `ADDFILE` drops were verified through
+the smoke test (this task extends it to every kind); the real OLE
+drag-and-drop path was not.
+
+Left open:
+
+- Servo and WebKit conversion over `file://` is untested — their
+  engine-hosts didn't spawn in this checkout.
+- `skip_convert` isn't persisted, so an Open-as-Tab tab converts back to
+  a card on its first load after a restart.
+- The live Explorer drag-and-drop still needs the user's own check.
+- A report's line count came out one line off (271 vs. 270).
+- `insert_content`'s Note branch has an unreachable, un-toasted
+  `from_utf8` error path (sniff already guarantees valid UTF-8 first).
+- The address-bar-suggestion smoke checks flaked twice in four runs
+  under load, not bisected against a specific commit.
+- `redirect_fetch`'s module doc still describes reusing the old
+  `insert_image_node_with_id`-style helpers.
+- A `file://` read has no size cap, unlike the HTTP path's 100 MB one.
+- `JsonBody` clones a tab's whole body into `json_body` even when it's
+  about to convert and discard that clone.
+- The `still_current` guard and the `JsonBody` handler have no unit test;
+  `redirect_fetch`'s own tests weren't written red-first.
+- A discarded or failed tab spawn can leave a stale entry in
+  `skip_convert`.
+- An expanded JSON node's exploded children aren't refreshed along with
+  their parent (unconfirmed whether they copy or read through).
+- A code comment in `content.rs` still names "Task 6" by its planning
+  name.
+- Reopening a closed node re-ids it, so a replica's `<old id>.<ext>`
+  content file is orphaned and refetched rather than reused (no data
+  loss).
+- Comments added across Tasks 5-7 are noticeably denser than the
+  surrounding code.
