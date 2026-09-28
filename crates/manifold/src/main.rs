@@ -2925,8 +2925,16 @@ impl App {
     /// tab's engine process or a group's membership does, so one plain
     /// `self.nodes`/`node_order` removal (plus the same stale-`dragging`/
     /// `hovered` guard `destroy_tab`/`finish_swap` also apply) covers both.
+    ///
+    /// Removing the Json node whose level is being viewed (another replica
+    /// deleted it, or its group was closed) leaves to that node's group,
+    /// as `dissolve_group` does for a group: `current_group` must never
+    /// name a node that's gone, or `insertion_group` would orphan new nodes.
     fn remove_node(&mut self, id: &str) {
-        self.nodes.remove(id);
+        let removed = self.nodes.remove(id);
+        if self.current_group.as_deref() == Some(id) {
+            self.switch_group_level(removed.and_then(|n| n.group));
+        }
         self.node_order.retain(|d| d != id);
         if self.dragging.as_deref() == Some(id) {
             self.dragging = None;
@@ -4782,6 +4790,12 @@ impl App {
                 }
             }
             self.expand_json_entries(&root_id, &value, &path);
+            // Viewing the node's JSON level (headless EXPANDJSONASGRAPH):
+            // the view follows the card to its new id, like `node_order`
+            // and the parent links above, instead of naming a removed node.
+            if self.current_group.as_deref() == Some(json_node_id) {
+                self.switch_group_level(Some(root_id));
+            }
         }
     }
 

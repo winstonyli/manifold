@@ -151,8 +151,17 @@ impl App {
     /// node, relaid out when marked stale, dropped on leaving. Runs at the
     /// start of `build_graph_ui` and in `switch_group_level`.
     pub(crate) fn sync_json_level(&mut self) {
-        if self.current_json_node().is_none() {
+        let Some(json) = self.current_json_node() else {
             self.json_level = None;
+            return;
+        };
+        // A Json node whose file failed to load has no level (plan ruling
+        // 10); a failed Refresh while viewing it, or a restart after its
+        // file moved, leaves to its group, where its card shows the error
+        // and Retry. Its group is never a Json node, so this recurses once.
+        if json.error.is_some() {
+            let group = self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+            self.switch_group_level(group);
             return;
         }
         // Looked up again through the field, not `current_json_node`, so
@@ -353,5 +362,55 @@ mod tests {
             None,
             "the header is the card, not a row"
         );
+    }
+
+    #[test]
+    fn a_remotely_deleted_json_node_leaves_its_level() {
+        let (mut app, j) = app_with_json("remote_delete", r#"{"a": [1]}"#);
+        app.switch_group_level(Some(j.clone()));
+        // What `remote_changes` reports when another replica deletes J.
+        app.apply_remote(vec![(j.parse().unwrap(), None)]);
+        assert!(!app.nodes.contains_key(&j));
+        assert_eq!(app.current_group.as_deref(), Some(OUTER), "the view leaves the removed level");
+        assert!(app.json_level.is_none());
+        assert_eq!(app.insertion_group().as_deref(), Some(OUTER), "new nodes land in a group that exists");
+    }
+
+    #[test]
+    fn a_failed_refresh_leaves_the_level_for_the_error_card() {
+        let dir = crate::store::testutil::temp_dir("json_level-failed_refresh");
+        let mut app = App::default();
+        app.insert_placeholder_node(
+            OUTER.into(),
+            egui::Vec2::ZERO,
+            NodePayload::Group(GroupPayload { name: "outer".into(), from_json: false }),
+        );
+        let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
+        let source = ContentSource::Web { url: "https://x.test/j".into(), body };
+        app.insert_content(source, J.into(), egui::Vec2::ZERO, Some(OUTER.into())).unwrap();
+        app.switch_group_level(Some(J.into()));
+        assert!(app.json_level.is_some());
+        let bad = WebBody::File {
+            kind: crate::content::ContentKind::Json,
+            path: dir.join("missing.json").to_string_lossy().into_owned(),
+        };
+        app.reload_fetched_node(J, bad);
+        assert!(app.nodes[J].as_json().unwrap().error.is_some(), "the refresh failed");
+        // Still the Json node's own group before any frame syncs the level.
+        assert_eq!(app.insertion_group().as_deref(), Some(OUTER));
+        app.sync_json_level(); // the start of the next frame
+        assert_eq!(app.current_group.as_deref(), Some(OUTER), "no level is built from the placeholder");
+        assert!(app.json_level.is_none());
+    }
+
+    #[test]
+    fn expanding_the_viewed_json_node_follows_it_to_its_group() {
+        let (mut app, j) = app_with_json("expand", r#"{"a": 1}"#);
+        app.switch_group_level(Some(j.clone()));
+        app.expand_json_as_graph(&j);
+        let root = app.current_group.clone().expect("the view is on a level");
+        assert_ne!(root, j);
+        assert!(app.nodes[&root].as_group().is_some_and(|g| g.from_json), "the view is the expanded root group");
+        assert!(app.json_level.is_none());
     }
 }
