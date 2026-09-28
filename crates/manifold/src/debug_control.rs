@@ -291,6 +291,17 @@ pub enum DebugCommand {
     /// focus the node it creates, so a headless test can't rely on focus
     /// here) — see `App::expand_json_as_graph`.
     ExpandJsonAsGraph(String),
+    /// Select the entry at this JSON Pointer on the current JSON level
+    /// (empty: the root).
+    JsonSelect(String),
+    /// Collapse or expand the card at this pointer.
+    JsonToggle(String),
+    /// Reveal the next page of the card at this pointer.
+    JsonMore(String),
+    /// Clear every saved card position (the bar's Relayout).
+    JsonRelayout,
+    /// Search the current JSON level.
+    JsonSearch(String),
     /// A group card's own "Close" context-menu action, targeting an
     /// explicit group id instead of `self.focused` -- same "deterministic
     /// headless test" reasoning as `ExpandJsonAsGraph`. No-ops if `id`
@@ -423,6 +434,11 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
     ("EXPANDJSONASGRAPH id", "\"Expand as Graph\" on the JSON node `id`"),
+    ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
+    ("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level"),
+    ("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level"),
+    ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
+    ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
@@ -680,6 +696,11 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "EXPANDJSONASGRAPH" => non_empty(DebugCommand::ExpandJsonAsGraph),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
+        "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
+        "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
+        "JSONRELAYOUT" => Some(DebugCommand::JsonRelayout),
+        "JSONSEARCH" => Some(DebugCommand::JsonSearch(rest.to_string())),
         "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
         "HELP" | "?" => Some(DebugCommand::Help),
         _ => None,
@@ -752,6 +773,14 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_json_level_commands_with_an_optional_pointer() {
+        assert!(matches!(parse_line("JSONSELECT /users/0"), Some(DebugCommand::JsonSelect(p)) if p == "/users/0"));
+        assert!(matches!(parse_line("JSONTOGGLE"), Some(DebugCommand::JsonToggle(p)) if p.is_empty()));
+        assert!(matches!(parse_line("JSONSEARCH two words"), Some(DebugCommand::JsonSearch(q)) if q == "two words"));
+        assert!(matches!(parse_line("JSONRELAYOUT"), Some(DebugCommand::JsonRelayout)));
+    }
 
     #[test]
     fn parses_addfile_with_an_optional_trailing_point() {

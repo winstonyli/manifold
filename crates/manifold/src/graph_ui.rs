@@ -252,9 +252,13 @@ impl App {
     /// `graph_world_to_screen_transform`).
     pub(crate) fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
         let screen = self.screen_size_points();
+        // A JSON level's outline is drawn on the right, so the scene keeps
+        // its left edge and loses the outline's width (plan ruling 12).
+        let outline =
+            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
         let scene_outer_rect = egui::Rect::from_min_size(
             egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2(screen.x, (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
         );
         let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         egui::Rect::from_min_max(
@@ -286,7 +290,7 @@ impl App {
             GraphAction::Node(id, action) => self.apply_node_action(ctx, &id, action),
             GraphAction::NewTab(parent) => {
                 let home_page = self.settings.home_page.clone();
-                let group = self.current_group.clone();
+                let group = self.insertion_group();
                 self.spawn_new_tab(parent, group, &home_page);
             }
             GraphAction::NewNote(pos) => {
@@ -320,7 +324,7 @@ impl App {
                     id.clone(),
                     GraphNode {
                         parent: None,
-                        group: self.current_group.clone(),
+                        group: self.insertion_group(),
                         pos,
                         vel: egui::Vec2::ZERO,
                         color: None,
@@ -405,6 +409,7 @@ impl App {
     /// any open node menu.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
         self.current_group = group;
+        self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());
         self.camera.ease_to(self.fit_all_nodes_scene_rect());
@@ -415,6 +420,7 @@ impl App {
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
+        self.sync_json_level();
         // Computed once per frame and reused everywhere below that only
         // needs "every node of kind X at this level" unconditionally --
         // **found during a performance audit**: each of these seven
@@ -678,6 +684,8 @@ impl App {
     /// buttons ask for comes back as a `GraphToolbar`, which
     /// `build_graph_ui` applies at the same points it always did.
     pub(crate) fn render_graph_toolbar(&mut self, ui: &mut egui::Ui, groups_at_level: &[String]) -> GraphToolbar {
+        // A JSON level is read-only: no creation, grouping or rename here.
+        let on_json_level = self.json_level.is_some();
         let mut actions: Vec<GraphAction> = Vec::new();
         let mut reset_view = false;
         let mut reset_zoom = false;
@@ -771,6 +779,7 @@ impl App {
                                     format!("Click to rename ({name})")
                                 })
                                 .clicked()
+                                && !on_json_level
                             {
                                 actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
                             }
@@ -810,7 +819,7 @@ impl App {
                 // anyway (their sole consumption site is unreachable
                 // from the early-return branch) -- removing them is a
                 // pure simplification, not a capability loss.
-                if ui.button("+ New Tab").clicked() {
+                if !on_json_level && ui.button("+ New Tab").clicked() {
                     actions.push(GraphAction::NewTab(self.focused.clone()));
                 }
                 // These three buttons used to carry full text labels
@@ -842,7 +851,7 @@ impl App {
                 // neither exists in headless mode" reasoning as every
                 // other Export/Import button -- `IMPORTGROUP <path>`
                 // calls the same underlying import directly instead.
-                if !self.headless || !groups_at_level.is_empty() {
+                if !on_json_level && (!self.headless || !groups_at_level.is_empty()) {
                     toolbar_chip(ui, |ui| {
                         let mut bounds: Option<egui::Rect> = None;
                         let mut grow = |r: egui::Rect| {
@@ -928,7 +937,7 @@ impl App {
                 // Rectangle-select's own action bar: only shown once a
                 // right-drag has actually selected something (see
                 // `handle_rect_select`).
-                if !self.selected_tabs.is_empty() {
+                if !on_json_level && !self.selected_tabs.is_empty() {
                     // Matches "+ New Group" above: groups the selection
                     // into a new subgroup of whichever level is
                     // currently being viewed, not just the top.
@@ -1066,6 +1075,9 @@ impl App {
                         self.node_menu = Some((id, pos));
                         self.rect_select_start = None;
                     }
+                    Some(LevelItem { kind: LevelItemKind::JsonCard, .. }) => {
+                        self.rect_select_start = None;
+                    }
                     None => {
                         self.node_menu = None;
                         self.rect_select_start = Some(pos);
@@ -1091,8 +1103,11 @@ impl App {
                 // "New Tab/Note/Group/File" card here instead of computing
                 // a select-nothing zero-area marquee.
                 if (current - start).length() < 4.0 {
-                    let world_pos = ((start.to_vec2() - translation) / zoom_scale).to_pos2();
-                    self.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
+                    // A JSON level is read-only: no creation card there.
+                    if self.json_level.is_none() {
+                        let world_pos = ((start.to_vec2() - translation) / zoom_scale).to_pos2();
+                        self.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
+                    }
                 } else {
                     let world_rect = egui::Rect::from_two_pos(
                         ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
@@ -1152,13 +1167,15 @@ impl App {
             |p: egui::Pos2| -> egui::Pos2 { minimap_rect.center() + (p - world_bounds.center()) * minimap_scale };
         overlay_painter.rect_filled(minimap_rect, 4.0, egui::Color32::from_black_alpha(160));
         for item in items {
-            let LevelItemKind::Node(kind) = item.kind;
-            let (radius, color) = match kind {
-                ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
-                ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
-                ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
-                ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
-                ItemNodeKind::Group => (3.0, ACCENT),
+            let (radius, color) = match item.kind {
+                LevelItemKind::JsonCard => (2.0, ACCENT),
+                LevelItemKind::Node(kind) => match kind {
+                    ItemNodeKind::Tab | ItemNodeKind::Unloaded => (2.0, ui.visuals().text_color()),
+                    ItemNodeKind::Download => (2.0, ui.visuals().weak_text_color()),
+                    ItemNodeKind::Note => (2.0, NOTE_CARD_COLOR),
+                    ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => (2.0, ACCENT),
+                    ItemNodeKind::Group => (3.0, ACCENT),
+                },
             };
             let failed = self
                 .nodes
@@ -1432,8 +1449,18 @@ impl App {
                     ItemNodeKind::Image if card.response.clicked() => {
                         pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
                     }
-                    // Opens the full tree in `build_json_viewer`.
-                    ItemNodeKind::Json if card.response.double_clicked() => self.json_viewer_node = Some(id.clone()),
+                    // Enters the node's JSON level, unless it's a leaf or
+                    // its file failed to load (plan ruling 10).
+                    ItemNodeKind::Json
+                        if card.response.double_clicked()
+                            && self
+                                .nodes
+                                .get(id)
+                                .and_then(|n| n.as_json())
+                                .is_some_and(|j| j.key.is_none() && j.error.is_none()) =>
+                    {
+                        pass.actions.push(GraphAction::EnterGroup(id.clone()))
+                    }
                     // Drills into the group's own subgraph.
                     ItemNodeKind::Group if card.response.double_clicked() => {
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))

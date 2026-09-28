@@ -481,6 +481,13 @@ impl App {
                 // Paths, keys and values never change after creation.
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
             }
+            // Another replica changed the view of the level being shown:
+            // relaid out on the next sync.
+            if changed(field::VIEW) {
+                if let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) {
+                    level.stale = true;
+                }
+            }
             if store_load {
                 self.note_host_load(&id);
                 // The replica that navigated converts it, if it's content;
@@ -1252,7 +1259,7 @@ impl App {
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
         let pos = crate::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(&root.to_string());
-        let root = ImportRoot { group: self.current_group.clone(), pos: Some(pos) };
+        let root = ImportRoot { group: self.insertion_group(), pos: Some(pos) };
         self.materialize_imported(imported, Some(root), false);
         self.save_session();
     }

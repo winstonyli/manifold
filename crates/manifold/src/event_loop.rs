@@ -848,7 +848,15 @@ impl App {
                     .into_iter()
                     .filter_map(|item| {
                         let screen = self.graph_world_rect_to_screen(item.rect);
-                        let LevelItemKind::Node(kind) = item.kind;
+                        if item.kind == LevelItemKind::JsonCard {
+                            return Some(serde_json::json!({
+                                "id": item.id,
+                                "kind": "JsonCard",
+                                "screen": [screen.center().x, screen.center().y],
+                                "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                            }));
+                        }
+                        let LevelItemKind::Node(kind) = item.kind else { return None };
                         let node = self.nodes.get(&item.id)?;
                         Some(serde_json::json!({
                             "id": item.id,
@@ -873,6 +881,7 @@ impl App {
                     "highlighted": self.address_bar.highlighted,
                     "current_group": self.current_group,
                     "cards": cards,
+                    "json_level": self.json_level_state(),
                     "selected_tabs": selected_tabs,
                     // The toast showing, or else the next queued one.
                     "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
@@ -966,6 +975,11 @@ impl App {
                 self.expand_json_as_graph(&id);
                 self.save_session();
             }
+            DebugCommand::JsonSelect(pointer) => self.apply_json_edit(JsonEdit::Select(pointer)),
+            DebugCommand::JsonToggle(pointer) => self.apply_json_edit(JsonEdit::Toggle(pointer)),
+            DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
+            DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
+            DebugCommand::JsonSearch(text) => self.set_json_search(text),
             DebugCommand::CloseGroup(id) => {
                 if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
                     self.close_node(&id);

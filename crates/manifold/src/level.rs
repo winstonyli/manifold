@@ -11,6 +11,8 @@ use super::*;
 pub(crate) enum LevelItemKind {
     /// A stored node's card.
     Node(ItemNodeKind),
+    /// A JSON level's card (`json_level.rs`).
+    JsonCard,
 }
 
 /// One card on the current level, as the shared chrome sees it.
@@ -26,9 +28,7 @@ pub(crate) struct LevelItem {
 pub(crate) enum EdgeCurve {
     /// `draw_graph_edge`'s sideways bow, for stored nodes' `parent` links.
     Bow,
-    /// Leaves and enters horizontally. Unused until the JSON level (task
-    /// 5) draws its own edges; `draw_graph_edges` already handles it.
-    #[allow(dead_code)]
+    /// Leaves and enters horizontally: a JSON level's row-to-card links.
     Horizontal,
 }
 
@@ -46,6 +46,11 @@ impl App {
     /// nodes kind by kind in `GRAPH_DRAW_ORDER`, and each kind in
     /// `node_order`.
     pub(crate) fn level_items(&self) -> Vec<LevelItem> {
+        if let Some(level) = &self.json_level {
+            return (0..level.cards.len())
+                .map(|i| LevelItem { id: level.card_id(i), kind: LevelItemKind::JsonCard, rect: level.rects[i] })
+                .collect();
+        }
         GRAPH_DRAW_ORDER
             .iter()
             .flat_map(|&kind| self.nodes_at_current_level(kind))
@@ -63,6 +68,26 @@ impl App {
     /// The current level's edges: each stored node's `parent` link whose
     /// two ends are both on this level.
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
+        // A JSON level: from the parent's row port (its right edge, at the
+        // row's middle) to the child's header.
+        if let Some(level) = &self.json_level {
+            return level
+                .cards
+                .iter()
+                .zip(&level.rects)
+                .filter_map(|(card, rect)| {
+                    let (parent, row) = card.parent?;
+                    let from_rect = level.rects[parent];
+                    let row_y = from_rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row as f32 + 0.5);
+                    Some(LevelEdge {
+                        from: egui::pos2(from_rect.right(), row_y),
+                        to: egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT / 2.0),
+                        curve: EdgeCurve::Horizontal,
+                        highlight: level.selected.as_deref() == Some(card.pointer.as_str()),
+                    })
+                })
+                .collect();
+        }
         self.nodes
             .values()
             .filter(|node| node.group == self.current_group)
@@ -79,9 +104,27 @@ impl App {
     }
 
     /// Lays out the current level with its source's own strategy: the
-    /// force settle for stored nodes.
+    /// force settle for stored nodes, the tree layout on a JSON level
+    /// (where the settle never runs).
     pub(crate) fn layout_current_level(&mut self) {
+        if let Some(level) = self.json_level.as_mut() {
+            if let Some(json) = self.nodes.get(&level.node_id).and_then(|n| n.as_json()) {
+                level.relayout(&json.view);
+            }
+            return;
+        }
         self.settle_current_level();
+    }
+
+    /// Where a new node goes (spec "Level sources"): the level being
+    /// viewed, except on a JSON level, where it's the Json node's own
+    /// group. Based on `current_group`, not `json_level`, so it is right
+    /// before the first frame builds the level (plan ruling 3).
+    pub(crate) fn insertion_group(&self) -> Option<String> {
+        if self.current_json_node().is_some() {
+            return self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
+        }
+        self.current_group.clone()
     }
 }
 

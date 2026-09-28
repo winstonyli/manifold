@@ -14,6 +14,7 @@ mod history;
 mod image_view;
 mod input;
 mod json_file;
+mod json_level;
 mod json_view;
 mod level;
 mod local_state;
@@ -51,6 +52,7 @@ use input::*;
 use ipc_protocol::{
     frame_path, modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, SharedFrameBuffer,
 };
+use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, LevelItem, LevelItemKind};
 use node::*;
 use popups::*;
@@ -1477,6 +1479,13 @@ struct App {
     /// user last drilled into, same "graph view remembers its own state"
     /// treatment `camera.rect`'s pan/zoom already gets.
     current_group: Option<String>,
+    /// The level of the Json node `current_group` names (spec "Level
+    /// sources"); `None` on every other level.
+    json_level: Option<JsonLevel>,
+    /// The JSON outline panel shows (local state).
+    json_outline_visible: bool,
+    /// Its width in points, as last drawn (local state).
+    json_outline_width: f32,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
@@ -1980,6 +1989,9 @@ impl Default for App {
             node_order: Vec::new(),
             groups_collapsed: false,
             current_group: None,
+            json_level: None,
+            json_outline_visible: true,
+            json_outline_width: 260.0,
             renaming_group: None,
             node_menu: None,
             node_menu_cache: None,
@@ -2322,7 +2334,7 @@ impl App {
             })
             .collect();
 
-        let root = session_sync::ImportRoot { group: self.current_group.clone(), pos: None };
+        let root = session_sync::ImportRoot { group: self.insertion_group(), pos: None };
         self.materialize_imported(imported, Some(root), true);
         for (id, zoom, title) in personal {
             if let Some(NodePayload::Unloaded(tab)) = self.nodes.get_mut(&id).map(|n| &mut n.payload) {
@@ -3244,7 +3256,12 @@ impl App {
                 break;
             }
             let Some(node) = self.nodes.get(&id) else { break };
-            let name = node.as_group().map(|g| g.name.clone()).unwrap_or_default();
+            // A JSON level's crumb is its Json node, named by its file.
+            let name = match &node.payload {
+                NodePayload::Group(group) => group.name.clone(),
+                NodePayload::Json(json) => download_filename(&json.path).to_string(),
+                _ => String::new(),
+            };
             current = node.group.clone();
             chain.push((id, name));
         }
@@ -4100,7 +4117,7 @@ impl App {
     /// already renaming.
     fn rename_current_group_shortcut(&mut self) {
         let Some(group_id) = self.current_group.clone() else { return };
-        if self.renaming_group.is_some() {
+        if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
         let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
@@ -4128,7 +4145,7 @@ impl App {
             id.clone(),
             GraphNode {
                 parent: None,
-                group: self.current_group.clone(),
+                group: self.insertion_group(),
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
@@ -4156,7 +4173,7 @@ impl App {
             id.clone(),
             GraphNode {
                 parent: None,
-                group: self.current_group.clone(),
+                group: self.insertion_group(),
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
@@ -4402,6 +4419,11 @@ impl App {
         }
         if let (Some(at), Some(last)) = (at, self.node_order.pop()) {
             self.node_order.insert(at.min(self.node_order.len()), last);
+        }
+        // The shown level holds the old value; the next sync rebuilds it
+        // from the new one.
+        if self.json_level.as_ref().is_some_and(|l| l.node_id == id) {
+            self.json_level = None;
         }
         if result.is_ok() {
             if let (Some(old_path), Some(dir)) = (&old_path, crate::profile::content_dir()) {
@@ -4852,7 +4874,7 @@ impl App {
     fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
         let id = self.alloc_node_id();
         let pos = pos.unwrap_or_else(|| GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id));
-        let group = self.current_group.clone();
+        let group = self.insertion_group();
         self.insert_content(ContentSource::Local(path), id, pos, group)
     }
 
