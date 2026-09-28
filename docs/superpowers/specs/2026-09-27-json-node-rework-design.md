@@ -229,7 +229,7 @@ render as ordinary nodes, and are not converted. `FROM_JSON`, `KEY` and
 
 ## Outcome
 
-Implemented across Tasks 1-11 ("JSON level: the level-source seam" through
+Implemented across Tasks 1-11 ("Level sources: the graph chrome reads the level through level.rs" through
 "JSON level: smoke-test coverage, a drive.sh probe and docs"). Rulings made
 while implementing that changed or sharpened this spec:
 
