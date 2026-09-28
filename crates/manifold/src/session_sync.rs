@@ -473,6 +473,9 @@ impl App {
             }
             if store_load {
                 self.note_host_load(&id);
+                // The replica that navigated converts it, if it's content;
+                // converting here too would add a second node.
+                self.skip_convert.insert(id.clone(), false);
             }
             if let Some(target) = swap {
                 self.start_swap_to(&id, target);

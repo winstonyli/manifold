@@ -1917,12 +1917,14 @@ struct App {
     /// by that outcome in `handle_tab_spawn_result`.
     wakes_in_flight: HashSet<String>,
 
-    /// Tabs opened by "Open as tab", each with whether its first load has
-    /// settled (reported `loading == false`). Every `RedirectableContent`/
-    /// `JsonBody` report is skipped while a tab is in here. It stays until a
-    /// real url change after the first load settles (an HTTP redirect
-    /// during that load doesn't count; see `skip_convert_after`) or the tab
-    /// closes (`remove_tab`). Not persisted (spec "Left open").
+    /// Tabs that stay tabs whatever they load, each with whether that load
+    /// has settled (reported `loading == false`): one opened by "Open as
+    /// tab", and one loading another replica's url (`materialize`), which
+    /// that replica converts itself. Every `RedirectableContent`/`JsonBody`
+    /// report is skipped while a tab is in here. It stays until a real url
+    /// change after the load settles (an HTTP redirect during it doesn't
+    /// count; see `skip_convert_after`) or the tab closes (`remove_tab`).
+    /// Not persisted (spec "Left open").
     skip_convert: HashMap<String, bool>,
 
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`

@@ -5,7 +5,7 @@
 # Headless). Never touches the real %APPDATA%\manifold. Build first:
 # cargo build -j 12 -p manifold.
 # ENGINE (default webview2) is the engine new tabs start in, which
-# scenarios 3, 4 and 6 navigate.
+# scenarios 3, 4, 5 and 7 navigate.
 #   1. A imports a group, B adds a note: both EXPORTSESSION node sets agree.
 #   2. A imports enough notes to compact while B stays open; B edits
 #      after: both agree and nothing is lost.
@@ -16,8 +16,10 @@
 #      by script: B doesn't (the engine reports how a navigation started).
 #      Likewise a single-page app's url change: from a click, B follows;
 #      from a timer, it doesn't.
-#   5. A adds a note and is killed; a fresh instance still has it.
-#   6. That instance, now alone, types a url whose page navigates by
+#   5. A navigates that tab to a local JSON file and B follows: the
+#      document gains exactly one Json node, not one per instance.
+#   6. A adds a note and is killed; a fresh instance still has it.
+#   7. That instance, now alone, types a url whose page navigates by
 #      script, and quits: the next instance reopens the tab where the
 #      script took it (the personal-state live_url), not at the typed url.
 #
@@ -201,7 +203,7 @@ sb QUICKSWITCHOPEN
 sb "QUICKSWITCHTEXT 127.0.0.1:$port"
 sb QUICKSWITCHENTER
 # Back to Graph view, where B was: C restores B's personal state, and
-# scenario 6 toggles C into Tab view from Graph.
+# scenario 7 toggles C into Tab view from Graph.
 sb TOGGLEVIEW
 # A's load (a redirect, then the page), then B's (the same, as its copy
 # follows): at least 4 requests.
@@ -277,7 +279,37 @@ sleep 5
 }
 echo "scenario 4: ok"
 
-echo "=== scenario 5: kill A ==="
+echo "=== scenario 5: a shared tab converting to a node ==="
+# A navigates the shared tab to a local JSON file (no network); B follows.
+# Both engines load it and report content, but the document must end up
+# with exactly one more Json node, not one per instance.
+echo '{"converted": true}' >"$out/c5.json"
+c5_url="file:///$(cygpath -m "$out/c5.json" | sed 's/ /%20/g')"
+sa "EXPORTSESSION $(win "$out/a5-before.json")"
+wait_file "$out/a5-before.json"
+json_before="$(assert_py count_kind "$out/a5-before.json" json | tr -d '\r')"
+sa "ADDRESSBAR $c5_url"
+sa "SLEEP 1"
+sa ENTER
+for _ in $(seq 75); do
+    rm -f "$out/a5.json"
+    tick sa
+    sa "EXPORTSESSION $(win "$out/a5.json")"
+    wait_file "$out/a5.json"
+    [ "$(assert_py count_kind "$out/a5.json" json | tr -d '\r')" -gt "$json_before" ] && break
+    sleep 0.2
+done
+# Time for B to follow the url, load it and convert too, if it's going to.
+sleep 8
+wait_agree "scenario 5" "$out/a5.json" "$out/b5.json"
+json_after="$(assert_py count_kind "$out/a5.json" json | tr -d '\r')"
+[ "$json_after" -eq $((json_before + 1)) ] || {
+    echo "FAIL: scenario 5: Json nodes went $json_before -> $json_after, want exactly one more"
+    exit 1
+}
+echo "scenario 5: ok"
+
+echo "=== scenario 6: kill A ==="
 sa "EXPORTSESSION $(win "$out/before3.json")"
 wait_file "$out/before3.json"
 sa NEWNOTE
@@ -305,9 +337,9 @@ c_winpid="$(winpid_of "$C_PID")"
 sc "EXPORTSESSION $(win "$out/c.json")"
 wait_file "$out/c.json"
 assert_py has_id "$out/c.json" "$new_id"
-echo "scenario 5: ok"
+echo "scenario 6: ok"
 
-echo "=== scenario 6: a restart reopens a tab's live url ==="
+echo "=== scenario 7: a restart reopens a tab's live url ==="
 # C is the only instance, so its personal state is the one on disk after
 # it quits (two instances would each overwrite the other's on save).
 js_loads() { grep -c ' /js$' "$out/hits.log" || true; }
@@ -321,7 +353,7 @@ sc "SLEEP 1"
 sc ENTER
 for _ in $(seq 75); do [ "$(field 3)" -gt "$dests" ] && break; sleep 0.2; done
 [ "$(field 3)" -gt "$dests" ] || {
-    echo "FAIL: scenario 6: C's /js page never navigated to /dest"
+    echo "FAIL: scenario 7: C's /js page never navigated to /dest"
     exit 1
 }
 # Let C see its tab settle on /dest before quitting saves it.
@@ -344,17 +376,17 @@ sd WAITTABS
 # D asks again for the /dest?n= C's script chose (a dest repeat).
 for _ in $(seq 75); do [ "$(field 2)" -gt "$dest_repeats" ] && break; sleep 0.2; done
 [ "$(field 2)" -gt "$dest_repeats" ] || {
-    echo "FAIL: scenario 6: D didn't reopen C's /dest url"
+    echo "FAIL: scenario 7: D didn't reopen C's /dest url"
     cat "$out/hits.log"
     exit 1
 }
 [ "$(js_loads)" -eq "$js_before" ] || {
-    echo "FAIL: scenario 6: D loaded the typed /js again"
+    echo "FAIL: scenario 7: D loaded the typed /js again"
     exit 1
 }
 sd QUIT
 wait "$D_PID" 2>/dev/null || true
 d_winpid=""
-echo "scenario 6: ok"
+echo "scenario 7: ok"
 
 echo "two-instance test: ok"

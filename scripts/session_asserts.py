@@ -10,6 +10,8 @@ Commands:
       <before_path>. Fails unless there's exactly one.
   has_id <path> <id>
       Fails unless <id> is a node id in <path>.
+  count_kind <path> <kind>
+      Prints how many <kind> nodes <path> has.
 """
 
 import json
@@ -57,7 +59,12 @@ def cmd_has_id(args):
     print(f"ok: {wanted!r} found in {path}")
 
 
-COMMANDS = {"has_kinds": cmd_has_kinds, "new_id": cmd_new_id, "has_id": cmd_has_id}
+def cmd_count_kind(args):
+    path, kind = args
+    print(sum(1 for n in load_nodes(path) if n["kind"] == kind))
+
+
+COMMANDS = {"has_kinds": cmd_has_kinds, "new_id": cmd_new_id, "has_id": cmd_has_id, "count_kind": cmd_count_kind}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
