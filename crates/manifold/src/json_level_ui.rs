@@ -29,6 +29,10 @@ const SEARCH_HIT: egui::Color32 = egui::Color32::from_rgb(90, 150, 230);
 const ARRAY_TINT: egui::Color32 = egui::Color32::from_rgb(90, 100, 160);
 /// A row tooltip's cap, in characters.
 const TOOLTIP_MAX_CHARS: usize = 2000;
+/// One outline row's height, in points.
+const OUTLINE_ROW_HEIGHT: f32 = 20.0;
+/// An outline row's open/close caret, and the gap left where a row has none.
+const CARET_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
 
 /// Which colour a value's text takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -602,6 +606,124 @@ impl App {
                 level.menu = None;
                 level.selected = None;
             }
+        }
+    }
+
+    /// The outline (spec "Outline"): a resizable right panel holding the
+    /// search box and the value as an indented list, virtualized with
+    /// `show_rows`. Drawn before the canvas takes the remaining space.
+    pub(crate) fn build_json_outline(&mut self, ui: &mut egui::Ui) {
+        if self.json_level.is_none() || !self.json_outline_visible {
+            return;
+        }
+        self.poll_json_search();
+        let panel = egui::Panel::right("json_outline")
+            .resizable(true)
+            .default_size(self.json_outline_width)
+            .size_range(160.0..=640.0)
+            .show(ui, |ui| self.json_outline_contents(ui));
+        self.json_outline_width = panel.response.rect.width();
+    }
+
+    fn json_outline_contents(&mut self, ui: &mut egui::Ui) {
+        let root_name = self.current_json_node().map(|j| download_filename(&j.path).to_string()).unwrap_or_default();
+        let Some(level) = self.json_level.as_mut() else { return };
+        let mut query = level.search.query.clone();
+        let search = ui.add(
+            egui::TextEdit::singleline(&mut query).hint_text("Search keys and values").desired_width(f32::INFINITY),
+        );
+        if std::mem::take(&mut level.search.focus) {
+            search.request_focus();
+        }
+        let status = match (&level.search.pending, &level.search.result) {
+            (Some(_), _) => Some("Searching…".to_string()),
+            (None, Some(result)) if result.matches.is_empty() => Some("No matches".to_string()),
+            (None, Some(result)) if result.matches.len() == 1 => Some("1 match".to_string()),
+            (None, Some(result)) => Some(format!("{} matches", result.matches.len())),
+            (None, None) => None,
+        };
+        if let Some(status) = status {
+            ui.label(egui::RichText::new(status).weak().small());
+        }
+        let step = search.has_focus() && ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+            || search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.separator();
+
+        let pal = palette(ui.visuals().dark_mode);
+        let rows = std::mem::take(&mut level.outline.rows);
+        let searching = level.search.result.is_some();
+        let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if let Some(row) = level.outline.scroll_to.take() {
+            scroll = scroll.vertical_scroll_offset((row as f32 * OUTLINE_ROW_HEIGHT - 80.0).max(0.0));
+        }
+        let mut clicked = None;
+        let mut flip = None;
+        scroll.show_rows(ui, OUTLINE_ROW_HEIGHT, rows.len(), |ui, range| {
+            // Compact against the app's airy defaults (`theme.rs`): with no
+            // vertical spacing and slim padding, every row is exactly
+            // `OUTLINE_ROW_HEIGHT` tall, which `show_rows` and `scroll_to`
+            // both count on.
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+            for row in &rows[range] {
+                let Some(value) = level.value.pointer(&row.pointer) else { continue };
+                let selected = level.selected.as_deref() == Some(row.pointer.as_str());
+                let hit = level.search.result.as_ref().is_some_and(|r| r.hits.contains(&row.pointer));
+                ui.horizontal(|ui| {
+                    ui.set_height(OUTLINE_ROW_HEIGHT);
+                    ui.add_space(row.depth as f32 * 12.0);
+                    let open = searching || level.outline.open.contains(&row.pointer);
+                    if json_view::is_card(value) && !searching {
+                        let caret =
+                            if open { egui_phosphor::light::CARET_DOWN } else { egui_phosphor::light::CARET_RIGHT };
+                        if ui.add_sized(CARET_SIZE, egui::Button::new(caret).frame(false)).clicked() {
+                            flip = Some(row.pointer.clone());
+                        }
+                    } else {
+                        // Same footprint as the caret, spacing included.
+                        ui.allocate_exact_size(CARET_SIZE, egui::Sense::hover());
+                    }
+                    let parent = json_view::parent_pointer(&row.pointer).and_then(|p| level.value.pointer(p));
+                    let (name, color) = match (parent, json_view::last_key(&row.pointer)) {
+                        (Some(parent), Some(key)) if parent.is_array() => (key, pal.muted),
+                        (_, Some(key)) => (key, pal.key),
+                        (_, None) => (root_name.clone(), ui.visuals().text_color()),
+                    };
+                    let mut text = egui::RichText::new(name).color(color);
+                    if hit {
+                        text = text.background_color(SEARCH_HIT.gamma_multiply(0.3));
+                    }
+                    if ui.add(egui::Button::selectable(selected, text)).clicked() {
+                        clicked = Some(row.pointer.clone());
+                    }
+                    if let Some(label) = parent.filter(|p| p.is_array()).and_then(|_| json_view::label(value)) {
+                        ui.add(egui::Label::new(egui::RichText::new(label).color(pal.muted)).truncate());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let kind = value_kind(value);
+                        let color = if kind == ValueKind::Container { pal.muted } else { pal.of(kind) };
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(json_view::display_text(value)).color(color))
+                                .truncate(),
+                        );
+                    });
+                });
+            }
+        });
+        level.outline.rows = rows;
+        if let Some(pointer) = flip {
+            if !level.outline.open.remove(&pointer) {
+                level.outline.open.insert(pointer);
+            }
+            level.outline.dirty = true;
+        }
+        if query != level.search.query {
+            self.set_json_search(query);
+        } else if step {
+            self.step_json_match();
+        }
+        if let Some(pointer) = clicked {
+            self.apply_json_edit(JsonEdit::Select(pointer));
         }
     }
 }

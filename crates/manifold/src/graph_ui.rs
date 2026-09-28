@@ -563,6 +563,7 @@ impl App {
         // excluded from all of this — those represent actual zoomable
         // content, not chrome, so they're meant to scale (and blur like
         // any other magnified image would, which is normal/expected).
+        self.build_json_outline(ui);
         let scene_outer_rect = ui.available_rect_before_wrap();
         if reset_zoom {
             // Keeps the current pan (unlike "Reset View", which re-fits

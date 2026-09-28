@@ -14,6 +14,8 @@ pub(crate) struct JsonLevel {
     pub(crate) node_id: String,
     /// The node's value when the level was built; a Refresh rebuilds it.
     pub(crate) value: Arc<serde_json::Value>,
+    /// Nodes in `value`, for choosing a worker search.
+    pub(crate) nodes: usize,
     /// `json_view::default_expanded`, fixed for this value.
     pub(crate) expanded: HashSet<String>,
     pub(crate) cards: Vec<Card>,
@@ -35,8 +37,6 @@ pub(crate) struct JsonLevel {
 /// The outline's own state (spec "Outline"): not saved, separate from
 /// the canvas's collapse.
 #[derive(Default)]
-// `open`, `dirty` and `scroll_to` are read once Task 8 draws the outline.
-#[allow(dead_code)]
 pub(crate) struct Outline {
     pub(crate) open: HashSet<String>,
     pub(crate) rows: Vec<OutlineRow>,
@@ -53,12 +53,8 @@ pub(crate) struct Search {
     /// The match Enter or ↓ is on.
     pub(crate) current: usize,
     /// A worker's search of a big value, with the query it ran.
-    // Read once Task 8 runs big searches on a worker.
-    #[allow(dead_code)]
     pub(crate) pending: Option<(String, mpsc::Receiver<SearchResult>)>,
     /// Ctrl+F: focus the search box on the next draw.
-    // Set by Ctrl+F (Task 7); read once Task 8 draws the search box.
-    #[allow(dead_code)]
     pub(crate) focus: bool,
 }
 
@@ -87,6 +83,7 @@ impl JsonLevel {
         let expanded = json_view::default_expanded(&value);
         let mut level = Self {
             node_id,
+            nodes: json_view::count_nodes(&value),
             value: Arc::new(value),
             expanded,
             cards: Vec::new(),
@@ -199,9 +196,13 @@ impl App {
     pub(crate) fn apply_json_edit(&mut self, edit: JsonEdit) {
         match edit {
             JsonEdit::Select(pointer) => {
-                if let Some(level) = self.json_level.as_mut() {
-                    level.selected = Some(pointer);
-                }
+                // A pointer that doesn't resolve (a stale headless or
+                // outline pointer) changes nothing.
+                let Some(level) = self.json_level.as_mut().filter(|l| l.value.pointer(&pointer).is_some()) else {
+                    return;
+                };
+                level.selected = Some(pointer.clone());
+                self.reveal_json(&pointer);
             }
             JsonEdit::Toggle(pointer) => {
                 self.edit_json_view(|view, _, expanded| json_view::toggle(view, expanded, &pointer))
@@ -228,14 +229,95 @@ impl App {
         })
     }
 
-    /// Runs a search on the current JSON level (Task 8 adds the worker
-    /// and the outline).
+    /// Runs a search (spec "Search"): on the UI thread for a small value,
+    /// on a worker above `WORKER_SEARCH_NODES`. An empty query ends it.
     pub(crate) fn set_json_search(&mut self, query: String) {
-        if let Some(level) = self.json_level.as_mut() {
-            level.search.result = (!query.is_empty()).then(|| json_view::search(&level.value, &query));
-            level.search.query = query;
-            level.search.current = 0;
+        let Some(level) = self.json_level.as_mut() else { return };
+        level.search.current = 0;
+        level.search.pending = None;
+        level.outline.dirty = true;
+        if query.is_empty() {
+            level.search.result = None;
+        } else if level.nodes > json_view::WORKER_SEARCH_NODES {
+            let (tx, rx) = mpsc::channel();
+            let (value, q) = (level.value.clone(), query.clone());
+            std::thread::spawn(move || {
+                // The level may be gone by now; a closed channel is fine.
+                let _ = tx.send(json_view::search(&value, &q));
+            });
+            level.search.pending = Some((query.clone(), rx));
+        } else {
+            level.search.result = Some(json_view::search(&level.value, &query));
         }
+        level.search.query = query;
+        self.poll_json_search();
+    }
+
+    /// Takes a worker's answer if it has one, and rebuilds the outline's
+    /// rows if they're stale. Runs each frame before the outline draws.
+    pub(crate) fn poll_json_search(&mut self) {
+        let Some(level) = self.json_level.as_mut() else { return };
+        if let Some((query, rx)) = &level.search.pending {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if *query == level.search.query {
+                        level.search.result = Some(result);
+                    }
+                    level.search.pending = None;
+                    level.outline.dirty = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => level.search.pending = None,
+            }
+        }
+        if level.outline.dirty {
+            let keep = level.search.result.as_ref().map(|r| &r.keep);
+            level.outline.rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
+            level.outline.dirty = false;
+        }
+    }
+
+    /// Enter or ↓ in the search box: selects the next match, wrapping.
+    pub(crate) fn step_json_match(&mut self) {
+        let Some(level) = self.json_level.as_mut() else { return };
+        let Some(result) = level.search.result.as_ref().filter(|r| !r.matches.is_empty()) else { return };
+        let pointer = result.matches[level.search.current % result.matches.len()].clone();
+        level.search.current = (level.search.current + 1) % result.matches.len();
+        self.apply_json_edit(JsonEdit::Select(pointer));
+    }
+
+    /// Selecting from anywhere (spec "Outline"): the entry's card is
+    /// revealed on the canvas (saved, like a manual expand), the camera
+    /// pans to it, and the outline opens down to it.
+    pub(crate) fn reveal_json(&mut self, pointer: &str) {
+        // A dry run first, so selecting an already-visible entry doesn't save.
+        let changed = self.json_level.as_ref().zip(self.current_json_node()).is_some_and(|(level, json)| {
+            let mut view = json.view.clone();
+            json_view::reveal(&level.value, &mut view, &level.expanded, pointer)
+        });
+        if changed {
+            self.edit_json_view(|view, value, expanded| {
+                json_view::reveal(value, view, expanded, pointer);
+            });
+        }
+        let Some(level) = self.json_level.as_mut() else { return };
+        // The row lives on its parent's card; the root is its own.
+        let card = json_view::parent_pointer(pointer).unwrap_or("");
+        if let Some(rect) = level.index.get(card).map(|&i| level.rects[i]) {
+            let size = self.camera.rect.size();
+            self.camera.ease_to(egui::Rect::from_center_size(rect.center(), size));
+        }
+        let mut ancestor = String::new();
+        level.outline.open.insert(String::new());
+        for token in json_view::pointer_tokens(json_view::parent_pointer(pointer).unwrap_or("")) {
+            ancestor = json_view::child_pointer(&ancestor, &token);
+            level.outline.open.insert(ancestor.clone());
+        }
+        let keep = level.search.result.as_ref().map(|r| &r.keep);
+        let rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
+        level.outline.scroll_to = rows.iter().position(|r| r.pointer == pointer);
+        level.outline.rows = rows;
+        level.outline.dirty = false;
     }
 
     /// `EXPORTSTATE`'s `json_level` (spec "Headless"): the root id, the
@@ -338,10 +420,11 @@ mod tests {
         let before = stored(&app);
         assert_eq!(before.len(), 2, "both nodes are stored, so the comparison means something");
         app.switch_group_level(Some(j.clone()));
+        // Selecting first: selecting reveals, which would undo the collapse.
+        app.apply_json_edit(JsonEdit::Select("/a/b".into()));
         app.apply_json_edit(JsonEdit::Toggle("/a".into()));
         app.apply_json_edit(JsonEdit::More("/c".into()));
         app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(500.0, 40.0)));
-        app.apply_json_edit(JsonEdit::Select("/a/b".into()));
         app.apply_json_edit(JsonEdit::Relayout);
         assert_eq!(stored(&app), before);
         // The toggle is still there after Relayout; the drag is not.
@@ -445,6 +528,72 @@ mod tests {
         app.sync_json_level(); // the start of the next frame
         assert_eq!(app.current_group.as_deref(), Some(OUTER), "no level is built from the placeholder");
         assert!(app.json_level.is_none());
+    }
+
+    #[test]
+    fn selecting_a_hidden_entry_reveals_it_and_saves_the_reveal() {
+        let users: Vec<_> = (0..45).map(|i| serde_json::json!({"name": format!("u{i}")})).collect();
+        let (mut app, j) = app_with_json("reveal", &serde_json::json!({ "users": users }).to_string());
+        app.switch_group_level(Some(j.clone()));
+        app.apply_json_edit(JsonEdit::Toggle("/users".into()));
+        app.apply_json_edit(JsonEdit::Select("/users/33/name".into()));
+        let level = app.json_level.as_ref().unwrap();
+        assert!(level.index.contains_key("/users/33"), "the entry's card is on the canvas");
+        assert_eq!(level.selected.as_deref(), Some("/users/33/name"));
+        for open in ["", "/users", "/users/33"] {
+            assert!(level.outline.open.contains(open), "the outline opens {open:?}");
+        }
+        let view = &app.nodes[&j].as_json().unwrap().view;
+        assert_eq!(view.pages("/users"), 2, "the reveal is saved like a manual one");
+    }
+
+    #[test]
+    fn selecting_a_pointer_that_does_not_resolve_is_ignored() {
+        let (mut app, j) = app_with_json("select_missing", r#"{"a": {"b": 1}}"#);
+        app.switch_group_level(Some(j));
+        app.apply_json_edit(JsonEdit::Select("/a/b".into()));
+        app.apply_json_edit(JsonEdit::Select("/a/nope".into()));
+        assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/a/b"));
+    }
+
+    #[test]
+    fn search_steps_through_matches_and_filters_the_outline() {
+        let (mut app, j) = app_with_json("search", r#"{"a": {"name": "x1"}, "b": {"name": "x2"}, "c": 3}"#);
+        app.switch_group_level(Some(j));
+        app.set_json_search("X".into());
+        app.poll_json_search();
+        let rows = |app: &App| {
+            app.json_level.as_ref().unwrap().outline.rows.iter().map(|r| r.pointer.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(rows(&app), ["", "/a", "/a/name", "/b", "/b/name"]);
+        app.step_json_match();
+        assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/a/name"));
+        app.step_json_match();
+        assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/b/name"));
+        app.step_json_match();
+        assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/a/name"), "wraps around");
+        app.set_json_search(String::new());
+        app.poll_json_search();
+        // The two selections opened /a and /b in the outline.
+        assert_eq!(rows(&app), ["", "/a", "/a/name", "/b", "/b/name", "/c"]);
+    }
+
+    #[test]
+    fn a_big_value_is_searched_on_a_worker() {
+        let big: Vec<u32> = (0..json_view::WORKER_SEARCH_NODES as u32 + 1).collect();
+        let (mut app, j) = app_with_json("worker", &serde_json::to_string(&big).unwrap());
+        app.switch_group_level(Some(j));
+        app.set_json_search("99999".into());
+        assert!(app.json_level.as_ref().unwrap().search.pending.is_some());
+        for _ in 0..1000 {
+            app.poll_json_search();
+            if app.json_level.as_ref().unwrap().search.result.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let result = app.json_level.as_ref().unwrap().search.result.clone().expect("the worker answers");
+        assert_eq!(result.matches, ["/99999"]);
     }
 
     #[test]
