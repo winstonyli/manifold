@@ -608,6 +608,7 @@ impl App {
         // move already does (see that field's own doc comment).
         let scene_rect_before_pan_zoom = self.camera.rect;
         let mut scene_rect = self.camera.rect;
+        let mut json_edits = Vec::new();
         let scene_response = egui::Scene::new()
             .zoom_range(GRAPH_ZOOM_MIN..=GRAPH_ZOOM_MAX)
             .drag_pan_buttons(egui::DragPanButtons::PRIMARY)
@@ -622,18 +623,21 @@ impl App {
 
                 self.draw_graph_edges(ui, inv_zoom);
 
-                self.draw_graph_cards(
-                    ui,
-                    &mut deferred_overlays,
-                    &mut actions,
-                    &at_level,
-                    inv_zoom,
-                    zoom_scale,
-                    leave_group_button_rect,
-                );
-                self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
-
-                self.draw_peek_preview(ui);
+                if self.json_level.is_some() {
+                    self.draw_json_level(ui, &mut deferred_overlays, &mut json_edits, inv_zoom, zoom_scale);
+                } else {
+                    self.draw_graph_cards(
+                        ui,
+                        &mut deferred_overlays,
+                        &mut actions,
+                        &at_level,
+                        inv_zoom,
+                        zoom_scale,
+                        leave_group_button_rect,
+                    );
+                    self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
+                    self.draw_peek_preview(ui);
+                }
                 deferred_overlays
             });
         self.camera.rect = scene_rect;
@@ -662,6 +666,9 @@ impl App {
 
         for action in actions {
             self.apply_graph_action(ui.ctx(), action);
+        }
+        for edit in json_edits {
+            self.apply_json_edit(edit);
         }
 
         // Built last, now that `overlay_painter`'s node-decoration layer

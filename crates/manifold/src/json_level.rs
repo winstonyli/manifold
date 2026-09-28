@@ -70,8 +70,6 @@ pub(crate) enum JsonEdit {
     Toggle(String),
     More(String),
     /// A dragged card's new top-left.
-    // Constructed once Task 6 handles card drags.
-    #[allow(dead_code)]
     Moved(String, egui::Pos2),
     Relayout,
     // Constructed once Task 7's context menu picks a colour.
@@ -115,8 +113,6 @@ impl JsonLevel {
 
     /// The pointer of the entry row under `world` on card `card`, or
     /// `None` on its header or its `+ N more` row.
-    // Called once Task 6 handles clicks on cards.
-    #[allow(dead_code)]
     pub(crate) fn row_at(&self, card: usize, world: egui::Pos2) -> Option<String> {
         let rect = self.rects.get(card)?;
         let offset = world.y - rect.top() - json_view::HEADER_HEIGHT;
@@ -131,8 +127,6 @@ impl JsonLevel {
     }
 
     /// Whether `world` is on card `card`'s `+ N more` row.
-    // Called once Task 6 handles clicks on cards.
-    #[allow(dead_code)]
     pub(crate) fn more_row_at(&self, card: usize, world: egui::Pos2) -> bool {
         let (Some(rect), Some(c)) = (self.rects.get(card), self.cards.get(card)) else { return false };
         let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * c.rows as f32;

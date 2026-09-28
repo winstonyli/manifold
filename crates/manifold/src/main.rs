@@ -15,6 +15,7 @@ mod image_view;
 mod input;
 mod json_file;
 mod json_level;
+mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
