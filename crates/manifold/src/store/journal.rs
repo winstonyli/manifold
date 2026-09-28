@@ -776,6 +776,14 @@ impl Journal {
         Ok(journal.doc)
     }
 
+    /// `read`, but `None` when loading had to repair anything: a lost
+    /// snapshot, damaged regions or skipped frames.
+    pub fn read_intact(bytes: &[u8]) -> Result<Option<Doc>, JournalError> {
+        let mut journal = Journal::blank(Path::new(""), ActorId(0));
+        journal.load(bytes)?;
+        Ok(journal.recovery.is_none().then_some(journal.doc))
+    }
+
     pub fn doc(&self) -> &Doc {
         &self.doc
     }

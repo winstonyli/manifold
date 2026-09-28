@@ -35,16 +35,26 @@ pub(crate) fn named_sessions_dir() -> Option<PathBuf> {
 
 /// What the named sessions in `dir` still use of the content dir, for
 /// `content::kept`: each one's live nodes' ids and `path` file names, and
-/// its Recently Closed entries' `path` file names. An unreadable save adds
-/// nothing.
-pub(crate) fn content_names(dir: &Path) -> HashSet<String> {
+/// its Recently Closed entries' `path` file names. `None` when any save or
+/// its personal state can't be read whole, so pruning never runs against
+/// a partial list; a missing `dir` names nothing.
+pub(crate) fn content_names(dir: &Path) -> Option<HashSet<String>> {
     let mut names = HashSet::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return names };
-    let saves = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|ext| ext == "mnf"));
-    for path in saves {
-        let Some(doc) = std::fs::read(&path).ok().and_then(|bytes| Journal::read(&bytes).ok()) else { continue };
-        let local = crate::store::local::read(&path, doc.id).ok().flatten().and_then(|b| LocalState::from_bytes(&b));
-        let closed = local.map(|l| l.closed).unwrap_or_default();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(names),
+        Err(_) => return None,
+    };
+    for entry in entries {
+        let path = entry.ok()?.path();
+        if path.extension().is_none_or(|ext| ext != "mnf") {
+            continue;
+        }
+        let doc = Journal::read_intact(&std::fs::read(&path).ok()?).ok()??;
+        let closed = match crate::store::local::read(&path, doc.id).ok()? {
+            Some(bytes) => LocalState::from_bytes(&bytes)?.closed,
+            None => Vec::new(),
+        };
         let live = crate::store::json::doc_to_json(&doc).nodes;
         for node in &live {
             names.insert(node.id.clone());
@@ -52,7 +62,7 @@ pub(crate) fn content_names(dir: &Path) -> HashSet<String> {
         let paths = live.iter().chain(closed.iter().flat_map(|c| &c.nodes)).filter_map(|n| n.fields.get("path"));
         names.extend(paths.filter_map(|p| p.as_str()).filter_map(crate::content::file_name));
     }
-    names
+    Some(names)
 }
 
 pub(crate) fn named_session_path(name: &str) -> Option<PathBuf> {

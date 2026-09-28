@@ -482,10 +482,9 @@ impl App {
             }
             return;
         }
-        // Resolved once up front (used by three of the arms below and by
-        // the missing-file refetch check after them): `resolve_content_path`
-        // prefers `stored` when it exists, else this machine's own copy in
-        // the content dir, named by id.
+        // Resolved once up front for the arms below and the missing-file
+        // refetch check: this machine's newest `<id>.*` in the content dir,
+        // else `stored` (`resolve_content_path`).
         let content_path = matches!(kind, Kind::Image | Kind::Pdf | Kind::Json).then(|| {
             crate::resolve_content_path(crate::profile::content_dir().as_deref(), &id, &str_of(fields, field::PATH))
         });

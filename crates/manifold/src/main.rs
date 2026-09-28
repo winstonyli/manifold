@@ -1182,6 +1182,21 @@ fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
+/// Prunes `dir` of files neither `keep` nor any named session in
+/// `sessions` names. `None`, deleting nothing, when a session can't be
+/// read whole (`session::content_names`).
+fn prune_unnamed(
+    dir: &std::path::Path,
+    snapshot: std::time::SystemTime,
+    mut keep: HashSet<String>,
+    sessions: Option<&std::path::Path>,
+) -> Option<usize> {
+    if let Some(sessions) = sessions {
+        keep.extend(session::content_names(sessions)?);
+    }
+    Some(content::prune(dir, snapshot, |file| content::kept(&keep, file)))
+}
+
 /// Whether a Refresh of node `id` that saved `new` may delete the file it
 /// replaced, `old`: only its own `<id>.<ext>` in `dir`, and only when
 /// nothing else names it (`others`: `App::content_keep` without `id`).
@@ -4227,15 +4242,13 @@ impl App {
             return;
         }
         let Some(dir) = profile::content_dir() else { return };
-        let mut keep = self.content_keep(None);
+        let keep = self.content_keep(None);
         let sessions = session::named_sessions_dir();
         let snapshot = std::time::SystemTime::now();
-        std::thread::spawn(move || {
-            keep.extend(sessions.map(|s| session::content_names(&s)).unwrap_or_default());
-            let n = content::prune(&dir, snapshot, |file| content::kept(&keep, file));
-            if n > 0 {
-                eprintln!("content: pruned {n} unused file(s)");
-            }
+        std::thread::spawn(move || match prune_unnamed(&dir, snapshot, keep, sessions.as_deref()) {
+            Some(0) => {}
+            Some(n) => eprintln!("content: pruned {n} unused file(s)"),
+            None => eprintln!("content: a named session couldn't be read whole; not pruning"),
         });
     }
 
@@ -5810,7 +5823,7 @@ mod tests {
         assert_eq!(resolve_content_path(Some(&dir), "5-9", &old), dir.join("5-9.jpg").to_string_lossy());
         assert_eq!(resolve_content_path(Some(&dir), "5-1", &old), old);
         // An unfinished save is never a node's file.
-        write_aged(&dir.join("5-2.png.tmp"), std::time::Duration::ZERO);
+        write_aged(&dir.join("5-2.png.1234.tmp"), std::time::Duration::ZERO);
         assert_eq!(resolve_content_path(Some(&dir), "5-2", elsewhere), elsewhere);
     }
 
@@ -5896,14 +5909,49 @@ mod tests {
             write_aged(&content_dir.join(name), OLD);
         }
         // The running session names none of them.
-        let keep = crate::session::content_names(&sessions);
-        let pruned =
-            crate::content::prune(&content_dir, std::time::SystemTime::now(), |f| crate::content::kept(&keep, f));
-        assert_eq!(pruned, 1);
+        let pruned = prune_unnamed(&content_dir, std::time::SystemTime::now(), HashSet::new(), Some(&sessions));
+        assert_eq!(pruned, Some(1));
         assert!(!content_dir.join("orphan.png").exists());
         assert!(content_dir.join("by-path.png").exists());
         assert!(content_dir.join(format!("{by_id}.json")).exists());
         assert!(content_dir.join("closed.png").exists());
+    }
+
+    #[test]
+    fn a_named_session_that_cant_be_read_whole_stops_the_prune() {
+        use crate::content::tests::{write_aged, OLD};
+        use crate::session_sync::tests::{add, app_on};
+        let root = crate::store::testutil::temp_dir("prune_named_damaged");
+        let (content_dir, sessions) = (root.join("content"), root.join("sessions"));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let orphan = content_dir.join("orphan.png");
+        let prune = || {
+            write_aged(&orphan, OLD);
+            prune_unnamed(&content_dir, std::time::SystemTime::now(), HashSet::new(), Some(&sessions))
+        };
+        // No sessions dir yet names nothing.
+        assert_eq!(prune(), Some(1));
+        std::fs::create_dir_all(&sessions).unwrap();
+        let saved = sessions.join("saved.mnf");
+        let mut app = app_on(&root.join("session.mnf"), 1);
+        add(&mut app, NodePayload::Note(NotePayload { text: "x".into(), editing: false, url: None }));
+        assert!(app.save_session());
+        app.journal.as_ref().unwrap().save_copy(&saved, None).unwrap();
+        assert_eq!(prune(), Some(1));
+
+        let local = crate::store::local::path_for(&saved);
+        std::fs::write(&local, b"garbage").unwrap();
+        assert_eq!(prune(), None, "a corrupt .mnf.local");
+        std::fs::remove_file(&local).unwrap();
+
+        let good = std::fs::read(&saved).unwrap();
+        let mut damaged = good.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        std::fs::write(&saved, damaged).unwrap();
+        assert_eq!(prune(), None, "a save that loads only by repair");
+        std::fs::write(&saved, b"garbage").unwrap();
+        assert_eq!(prune(), None, "a save that isn't a journal");
+        assert!(orphan.exists());
     }
 
     #[test]

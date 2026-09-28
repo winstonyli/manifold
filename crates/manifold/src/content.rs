@@ -359,7 +359,7 @@ pub(crate) mod tests {
         let names: HashSet<String> = ["a.png", "1-7"].into_iter().map(String::from).collect();
         assert!(kept(&names, "a.png"));
         assert!(kept(&names, "1-7.json"));
-        assert!(!kept(&names, "1-7.json.tmp"));
+        assert!(!kept(&names, "1-7.json.1234.tmp"));
         assert!(!kept(&names, "b.png"));
     }
 
