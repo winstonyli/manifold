@@ -519,20 +519,22 @@ fn download_filename(path: &str) -> &str {
 }
 
 /// Where node `id`'s file is on this machine (spec "Where fetched files
-/// live"): `stored` if it exists, else a copy this machine fetched into
-/// the content dir (named by id, see `content`), else `stored` (it shows
-/// as missing, and `session_sync::materialize` refetches it when the node
-/// has a URL).
+/// live"): this machine's own fetch in the content dir (`<id>.<ext>`, the
+/// newest if a Refresh changed the extension), which a Refresh replaces
+/// without touching the shared `path`; else `stored`. A missing `stored`
+/// shows as missing, and `session_sync::materialize` refetches it when the
+/// node has a URL. An unfinished `.tmp` save is never picked.
 fn resolve_content_path(dir: Option<&std::path::Path>, id: &str, stored: &str) -> String {
-    if std::path::Path::new(stored).exists() {
-        return stored.to_string();
-    }
     let prefix = format!("{id}.");
     dir.and_then(|dir| std::fs::read_dir(dir).ok())
         .into_iter()
         .flatten()
         .flatten()
-        .find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix) && !name.ends_with(".tmp")
+        })
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
         .map_or_else(|| stored.to_string(), |e| e.path().to_string_lossy().into_owned())
 }
 
@@ -1180,6 +1182,45 @@ fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     Some(ClosedEntry { doc: store::json::JsonDoc { nodes, local } })
 }
 
+/// Whether a Refresh of node `id` that saved `new` may delete the file it
+/// replaced, `old`: only its own `<id>.<ext>` in `dir`, and only when
+/// nothing else names it (`others`: `App::content_keep` without `id`).
+fn replaced_file_unused(
+    dir: &std::path::Path,
+    id: &str,
+    old: &std::path::Path,
+    new: &std::path::Path,
+    others: &HashSet<String>,
+) -> bool {
+    old != new
+        && content::owned_content_file(dir, id, old)
+        && old.file_name().is_some_and(|name| !content::kept(others, &name.to_string_lossy()))
+}
+
+/// A tab's `App::skip_convert` entry after a navigation report: settled
+/// once a report says `loading == false`, and dropped by a url change
+/// after that. A url change before it (an HTTP redirect) keeps it.
+fn skip_convert_after(entry: Option<bool>, url_changed: bool, loading: bool) -> Option<bool> {
+    let settled = entry?;
+    if url_changed && settled {
+        return None;
+    }
+    Some(settled || !loading)
+}
+
+/// Marks each content-dir file `entry`'s nodes own as modified now, so a
+/// recent close keeps its file through `content::PRUNE_GRACE` even if
+/// another instance's Recently Closed list overwrites this one's.
+fn touch_owned_content(dir: &std::path::Path, entry: &ClosedEntry) {
+    for node in &entry.doc.nodes {
+        let Some(path) = node.fields.get("path").and_then(|p| p.as_str()).map(std::path::Path::new) else { continue };
+        if content::owned_content_file(dir, &node.id, path) {
+            let file = std::fs::OpenOptions::new().write(true).open(path);
+            let _ = file.and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        }
+    }
+}
+
 /// A minimal right-click context menu: just "Open in new tab" for a link,
 /// positioned where the click landed — see `ipc_protocol::EngineToHost::
 /// ContextMenuLink`'s doc comment for why this is the one action
@@ -1782,6 +1823,9 @@ struct App {
     /// (`store_error`, `take_store_recovery`), each shown once: a read-only
     /// file with a damaged tail reports both at every reload.
     store_notices: std::collections::BTreeSet<String>,
+    /// Set once the store reports a repair (`take_store_recovery`): what
+    /// was loaded may be missing nodes, so `prune_content_dir` doesn't run.
+    store_recovered: bool,
     /// `settings::fingerprint()` as this process last saw it (set at load,
     /// updated after every successful save) -- see `save_settings`. `None`
     /// until the file has actually been loaded or saved once this run,
@@ -1873,15 +1917,13 @@ struct App {
     /// by that outcome in `handle_tab_spawn_result`.
     wakes_in_flight: HashSet<String>,
 
-    /// Tabs opened by "Open as tab": every `RedirectableContent`/`JsonBody`
-    /// report is skipped (checked, not consumed) for as long as the id
-    /// stays in here, so F5 or waking an unloaded tab doesn't turn it back
-    /// into a card. Cleared on a real url change (a navigation away *is*
-    /// "done reading it as a tab") and by `remove_tab`. Not persisted
-    /// across a restart: a tab a saved session restores gets a fresh
-    /// engine load with no memory of this, so it converts as if it were
-    /// new -- see task-5-report.md's "Concerns".
-    skip_convert: HashSet<String>,
+    /// Tabs opened by "Open as tab", each with whether its first load has
+    /// settled (reported `loading == false`). Every `RedirectableContent`/
+    /// `JsonBody` report is skipped while a tab is in here. It stays until a
+    /// real url change after the first load settles (an HTTP redirect
+    /// during that load doesn't count; see `skip_convert_after`) or the tab
+    /// closes (`remove_tab`). Not persisted (spec "Left open").
+    skip_convert: HashMap<String, bool>,
 
     /// Windowless tests have no event loop to spawn on: `spawn_tab_async`
     /// parks each spawn here (with its `session_generation`) for the test
@@ -1988,6 +2030,7 @@ impl Default for App {
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),
+            store_recovered: false,
             settings_fingerprint,
             find: FindState::default(),
             tab_spawn_error: None,
@@ -2004,7 +2047,7 @@ impl Default for App {
             event_proxy: None,
             pending_respawn_focus: None,
             wakes_in_flight: HashSet::new(),
-            skip_convert: HashSet::new(),
+            skip_convert: HashMap::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
         };
@@ -2210,6 +2253,9 @@ impl App {
     /// oldest entry past `MAX_CLOSED`. Called before anything is removed.
     fn record_closed(&mut self, id: &str) {
         if let Some(entry) = closed_entry(self, id) {
+            if let Some(dir) = profile::content_dir() {
+                touch_owned_content(&dir, &entry);
+            }
             self.closed.push(entry);
             if self.closed.len() > MAX_CLOSED {
                 self.closed.remove(0);
@@ -4137,17 +4183,13 @@ impl App {
         self.node_order.push(id);
     }
 
-    /// Content-dir file names something still uses (spec "Where fetched
-    /// files live"): live nodes' files, files named by a live node's id
-    /// (this machine's own copy of a node synced from another replica,
-    /// whose stored path was never on this machine), and Recently Closed
-    /// entries' files. `prune_content_dir` moves this into its own thread,
-    /// and applies the stem rule (an id with no extension matches
-    /// `<id>.<ext>`) that turns it into `content::prune`'s `keep` closure.
-    fn content_keep(&self) -> impl Fn(&str) -> bool + Send + 'static {
-        let name = |path: &str| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned());
+    /// Content-dir names this session still uses, for `content::kept`:
+    /// live nodes' ids (a replica's own copy is `<id>.<ext>`) and `path`
+    /// file names, and Recently Closed entries' `path` file names. `except`
+    /// leaves out one live node.
+    fn content_keep(&self, except: Option<&str>) -> HashSet<String> {
         let mut keep: HashSet<String> = HashSet::new();
-        for (id, node) in &self.nodes {
+        for (id, node) in self.nodes.iter().filter(|(id, _)| Some(id.as_str()) != except) {
             let path = match &node.payload {
                 NodePayload::Image(p) => Some(&p.path),
                 NodePayload::Pdf(p) => Some(&p.path),
@@ -4155,40 +4197,38 @@ impl App {
                 NodePayload::Download(p) => Some(&p.path),
                 _ => None,
             };
-            keep.extend(path.and_then(|p| name(p)));
-            keep.insert(id.clone()); // matched by stem below
+            keep.extend(path.and_then(|p| content::file_name(p)));
+            keep.insert(id.clone());
         }
         for entry in &self.closed {
             for node in &entry.doc.nodes {
-                keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(name));
+                keep.extend(node.fields.get("path").and_then(|v| v.as_str()).and_then(content::file_name));
             }
         }
-        move |file: &str| keep.contains(file) || file.split_once('.').is_some_and(|(stem, _)| keep.contains(stem))
+        keep
+    }
+
+    /// Whether this launch knows enough to prune: with no journal, or one
+    /// that was rebuilt (`store_recovered`), nothing or not everything was
+    /// loaded, so an unnamed file may still belong to the real session.
+    fn may_prune_content(&self) -> bool {
+        self.journal.is_some() && !self.store_recovered
     }
 
     /// Deletes content-dir files nothing uses (spec "Where fetched files
-    /// live"), on a thread. Called once at launch, after restore.
-    ///
-    /// Bails with no journal (the store failed to open, or this is a fresh
-    /// profile with nothing stored yet): `restore_session` itself bails
-    /// before loading any node or Recently Closed entry in that case, so
-    /// `content_keep`'s set would be built from whatever a fresh session
-    /// spawned (a demo/root tab, no Image/Pdf/Json/Download nodes at all)
-    /// -- not "nothing is used", just "nothing was loaded". Pruning against
-    /// that empty-ish set would delete every real content file still owned
-    /// by the session the store actually holds on disk.
+    /// live"), on a thread. Called once at launch, after restore. The
+    /// thread also reads the named sessions, which keep their files too.
     fn prune_content_dir(&self) {
-        if self.journal.is_none() {
+        if !self.may_prune_content() {
             return;
         }
         let Some(dir) = profile::content_dir() else { return };
-        let keep = self.content_keep();
-        // Taken now, before the thread below (and its `read_dir`) even
-        // starts, so another instance's file that lands after this moment
-        // is never a candidate -- see `content::prune`'s own doc comment.
+        let mut keep = self.content_keep(None);
+        let sessions = session::named_sessions_dir();
         let snapshot = std::time::SystemTime::now();
         std::thread::spawn(move || {
-            let n = content::prune(&dir, snapshot, keep);
+            keep.extend(sessions.map(|s| session::content_names(&s)).unwrap_or_default());
+            let n = content::prune(&dir, snapshot, |file| content::kept(&keep, file));
             if n > 0 {
                 eprintln!("content: pruned {n} unused file(s)");
             }
@@ -4281,11 +4321,7 @@ impl App {
         use content::ContentKind as K;
         let Some(node) = self.nodes.get(id) else { return };
         let WebBody::File { kind, path } = &body else { return };
-        // `refresh_node` only ever requests a fetch of one of these three
-        // kinds (the node's own current kind) -- checked before anything
-        // is removed below, so a kind this function doesn't know how to
-        // rebuild a placeholder for (it should never see one) leaves the
-        // existing node alone rather than silently discarding it.
+        // Checked before removing anything: only these kinds have a placeholder.
         if !matches!(kind, K::Image | K::Pdf | K::Json) {
             return;
         }
@@ -4293,12 +4329,7 @@ impl App {
         let new_path = path.clone();
         let (pos, group, parent, color) = (node.pos, node.group.clone(), node.parent.clone(), node.color);
         let Some(url) = node.source_url().map(str::to_string) else { return };
-        // The file a successful reload replaces -- e.g. a PNG becoming a
-        // JPEG changes `content::extension`'s pick even though the node id
-        // (so the stem) doesn't. `prune` only sweeps a stem with no live
-        // id, so it would never catch this on its own; deleted below, once
-        // the new file is confirmed saved, and only from inside our own
-        // content dir -- never a path the user picked by hand.
+        // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = match &node.payload {
             NodePayload::Image(p) => Some(p.path.clone()),
             NodePayload::Pdf(p) => Some(p.path.clone()),
@@ -4344,8 +4375,8 @@ impl App {
         }
         if result.is_ok() {
             if let (Some(old_path), Some(dir)) = (&old_path, crate::profile::content_dir()) {
-                let old = std::path::Path::new(old_path);
-                if old != std::path::Path::new(&new_path) && content::owned_content_file(&dir, id, old) {
+                let (old, new) = (std::path::Path::new(old_path), std::path::Path::new(&new_path));
+                if replaced_file_unused(&dir, id, old, new, &self.content_keep(Some(id))) {
                     let _ = std::fs::remove_file(old);
                 }
             }
@@ -4353,20 +4384,24 @@ impl App {
         }
     }
 
-    /// A Refresh whose fetch itself failed -- network error, or bytes that
-    /// didn't pass their kind's check -- so it never reached
-    /// `reload_fetched_node` at all. The node is untouched;
-    /// only a toast reports it, same wording as `insert_image_node_with_id`
-    /// and friends' own failure toasts.
+    /// A refetch whose fetch itself failed (network error, or bytes that
+    /// didn't pass their kind's check). With the file still there (a
+    /// Refresh), the node is untouched and a toast says so. With it missing
+    /// (restore, sync or Retry), the node becomes the missing-file card,
+    /// whose Retry is the feedback.
     fn refresh_fetch_failed(&mut self, id: &str) {
-        let Some(node) = self.nodes.get(id) else { return };
-        let path = match &node.payload {
-            NodePayload::Image(p) => &p.path,
-            NodePayload::Pdf(p) => &p.path,
-            NodePayload::Json(p) => &p.path,
+        let Some(node) = self.nodes.get_mut(id) else { return };
+        let error = format!("Couldn't fetch {}", node.source_url().unwrap_or_default());
+        let missing = |path: &str| !std::path::Path::new(path).exists();
+        let name = match &mut node.payload {
+            NodePayload::Image(p) if missing(&p.path) => return p.error = Some(error),
+            NodePayload::Json(p) if missing(&p.path) => return p.error = Some(error),
+            NodePayload::Pdf(p) if missing(&p.path) => return p.outcome = Some(Err(error)),
+            NodePayload::Image(ImagePayload { path, .. })
+            | NodePayload::Json(JsonPayload { path, .. })
+            | NodePayload::Pdf(PdfPayload { path, .. }) => crate::json_file::file_name(std::path::Path::new(path)),
             _ => return,
         };
-        let name = crate::json_file::file_name(std::path::Path::new(path));
         self.queue_toast(format!("Couldn't refresh {name}"));
     }
 
@@ -4377,7 +4412,7 @@ impl App {
         let Some(url) = node.source_url().map(str::to_string) else { return };
         let (pos, group) = (node.pos + egui::vec2(40.0, 40.0), node.group.clone());
         let tab = self.spawn_tab_at(&url, pos, group);
-        self.skip_convert.insert(tab);
+        self.skip_convert.insert(tab, false);
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.
@@ -4558,29 +4593,20 @@ impl App {
         Ok(())
     }
 
-    /// Converts a tab whose page is content the table maps to a node --
-    /// see `ipc_protocol::EngineToHost::RedirectableContent`'s own doc
-    /// comment. `body` is wherever `redirect_fetch` already saved the
-    /// downloaded bytes (or a note's text); goes through `insert_content`,
-    /// so a converted node is indistinguishable from one added by hand from
-    /// this point on. The tab itself goes through `remove_tab` -- the same
-    /// "close that isn't remembered" primitive `remove_remotely_deleted`
-    /// already uses -- so a converted tab drops every stale reference a
-    /// hand-rolled removal here could otherwise miss (this used to hand-
-    /// copy a subset of `remove_tab`'s cleanup and, notably, never freed a
-    /// focused tab's full GPU texture, only its thumbnail -- now every
-    /// JSON/PDF/image/text navigation converts, so that leaked constantly).
-    /// `remove_tab` doesn't push to `closed_tabs` (that's `close_node`'s own
-    /// job), matching this not being a user-initiated close to remember as
-    /// reopenable.
+    /// Converts a tab whose page is content the table maps to a node (see
+    /// `ipc_protocol::EngineToHost::RedirectableContent`): `body` is what
+    /// `redirect_fetch` saved, inserted through `insert_content` at the
+    /// tab's place. Only once that succeeds does the tab go, through
+    /// `remove_tab` (a close that isn't remembered, clearing every
+    /// reference to it). A failed insert is toasted and the tab stays.
     fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
         let Some((group, pos)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos)) else {
             return;
         };
-        self.remove_tab(tab_id);
-        // Failure is already toasted; the tab it replaces is gone either way.
-        let _ = self.insert_content(ContentSource::Web { url, body }, node_id, pos, group);
-        self.save_session();
+        if self.insert_content(ContentSource::Web { url, body }, node_id, pos, group).is_ok() {
+            self.remove_tab(tab_id);
+            self.save_session();
+        }
     }
 
     /// The insert every `pdf` card goes through: the caller picks the id,
@@ -5644,6 +5670,7 @@ mod tests {
             ("pic.pdf", png.into_inner()), // lying extension: still an image
             ("doc", b"%PDF-1.4\n".to_vec()),
             ("data.txt", br#"{"a": 1}"#.to_vec()),
+            ("bom.json", b"\xef\xbb\xbf[2]".to_vec()),
             ("notes.md", b"# hi".to_vec()),
             ("blob.bin", vec![0, 1, 2, 255]),
         ];
@@ -5664,7 +5691,7 @@ mod tests {
             });
             assert_eq!(app.nodes[&id].source_url(), None);
         }
-        assert_eq!(kinds, ["image 3x2", "pdf", r#"json {"a":1}"#, "note # hi", "download 4 done=true"]);
+        assert_eq!(kinds, ["image 3x2", "pdf", r#"json {"a":1}"#, "json [2]", "note # hi", "download 4 done=true"]);
     }
 
     #[test]
@@ -5762,13 +5789,25 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_content_file_resolves_to_this_machines_copy() {
+    fn a_content_file_resolves_to_this_machines_newest_copy_first() {
+        use crate::content::tests::write_aged;
         let dir = crate::store::testutil::temp_dir("resolve_content");
-        std::fs::write(dir.join("5-9.png"), b"x").unwrap();
+        write_aged(&dir.join("5-9.png"), std::time::Duration::from_secs(60));
         let elsewhere = r"Z:\nowhere\5-9.png";
         assert_eq!(resolve_content_path(Some(&dir), "5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
         assert_eq!(resolve_content_path(Some(&dir), "5-8", elsewhere), elsewhere);
         assert_eq!(resolve_content_path(None, "5-9", elsewhere), elsewhere);
+        // A stored file that exists (a re-id'd node's old copy) still loses
+        // to the node's own fetch, and a Refresh's newer extension wins.
+        let old = dir.join("5-1.png");
+        write_aged(&old, std::time::Duration::from_secs(60));
+        let old = old.to_string_lossy().into_owned();
+        write_aged(&dir.join("5-9.jpg"), std::time::Duration::ZERO);
+        assert_eq!(resolve_content_path(Some(&dir), "5-9", &old), dir.join("5-9.jpg").to_string_lossy());
+        assert_eq!(resolve_content_path(Some(&dir), "5-1", &old), old);
+        // An unfinished save is never a node's file.
+        write_aged(&dir.join("5-2.png.tmp"), std::time::Duration::ZERO);
+        assert_eq!(resolve_content_path(Some(&dir), "5-2", elsewhere), elsewhere);
     }
 
     #[test]
@@ -5778,7 +5817,7 @@ mod tests {
         // A live node by path, a live node by id (a refetched copy), a
         // closed entry by its path field, and an orphan.
         for name in ["a.png", "1-7.json", "c.pdf", "orphan.png"] {
-            std::fs::write(dir.join(name), b"x").unwrap();
+            crate::content::tests::write_aged(&dir.join(name), crate::content::tests::OLD);
         }
         app.insert_placeholder_node(
             "1".into(),
@@ -5815,20 +5854,109 @@ mod tests {
                 local: None,
             },
         });
-        let keep = app.content_keep();
-        assert_eq!(crate::content::prune(&dir, std::time::SystemTime::now(), keep), 1);
+        let keep = app.content_keep(None);
+        let pruned = crate::content::prune(&dir, std::time::SystemTime::now(), |f| crate::content::kept(&keep, f));
+        assert_eq!(pruned, 1);
         assert!(!dir.join("orphan.png").exists());
         assert!(dir.join("a.png").exists());
         assert!(dir.join("1-7.json").exists());
         assert!(dir.join("c.pdf").exists());
     }
 
-    /// The fetch-result drain's `let Some(body) = body else { continue }`
-    /// used to drop a failed Refresh silently -- it never reached
-    /// `reload_fetched_node`'s own toast, since that only fires once a
-    /// body is in hand. `refresh_fetch_failed` is the seam that closes it;
-    /// this covers it directly, since `drain_tab_events` itself needs a
-    /// real `RedirectFetcher` background thread to drive.
+    #[test]
+    fn pruning_keeps_files_a_named_session_names() {
+        use crate::content::tests::{write_aged, OLD};
+        use crate::session_sync::tests::{add, app_on};
+        let root = crate::store::testutil::temp_dir("prune_named");
+        let (content_dir, sessions) = (root.join("content"), root.join("sessions"));
+        std::fs::create_dir_all(&content_dir).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        let mut app = app_on(&root.join("session.mnf"), 1);
+        let image = |path: &std::path::Path| {
+            let path = path.to_string_lossy().into_owned();
+            NodePayload::Image(ImagePayload { path, width: 1, height: 1, error: None, url: None })
+        };
+        // A live node by path, one by id (its stored path elsewhere), and a
+        // closed one by path.
+        add(&mut app, image(&content_dir.join("by-path.png")));
+        let by_id = add(&mut app, image(std::path::Path::new(r"Z:\elsewhere.png")));
+        let closed = add(&mut app, image(&content_dir.join("closed.png")));
+        assert!(app.save_session());
+        app.close_node(&closed);
+        assert!(app.save_session());
+        assert_eq!(app.closed.len(), 1);
+        let journal = app.journal.as_ref().unwrap();
+        journal.save_copy(&sessions.join("saved.mnf"), Some(&app.local_state().to_bytes())).unwrap();
+
+        for name in ["by-path.png", &format!("{by_id}.json"), "closed.png", "orphan.png"] {
+            write_aged(&content_dir.join(name), OLD);
+        }
+        // The running session names none of them.
+        let keep = crate::session::content_names(&sessions);
+        let pruned =
+            crate::content::prune(&content_dir, std::time::SystemTime::now(), |f| crate::content::kept(&keep, f));
+        assert_eq!(pruned, 1);
+        assert!(!content_dir.join("orphan.png").exists());
+        assert!(content_dir.join("by-path.png").exists());
+        assert!(content_dir.join(format!("{by_id}.json")).exists());
+        assert!(content_dir.join("closed.png").exists());
+    }
+
+    #[test]
+    fn a_repaired_store_is_never_pruned_against() {
+        use crate::session_sync::tests::{add, app_on};
+        let path = crate::store::testutil::temp_dir("prune_recovered").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        add(&mut app, NodePayload::Note(NotePayload { text: "x".into(), editing: false, url: None }));
+        assert!(app.save_session());
+        assert!(app.may_prune_content());
+        drop(app);
+        // Damage the last byte: the repair skips that part and says so.
+        let mut bytes = std::fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+        let mut app = app_on(&path, 2);
+        app.restore_session();
+        assert!(app.store_recovered);
+        assert!(!app.may_prune_content());
+    }
+
+    #[test]
+    fn a_refresh_keeps_its_old_file_while_another_node_names_it() {
+        let dir = crate::store::testutil::temp_dir("refresh_shared_file");
+        let (old, new) = (dir.join("r.png"), dir.join("r.jpg"));
+        let mut app = App::default();
+        for id in ["r", "s"] {
+            let path = old.to_string_lossy().into_owned();
+            let payload = NodePayload::Image(ImagePayload { path, width: 1, height: 1, error: None, url: None });
+            app.insert_placeholder_node(id.into(), egui::Vec2::ZERO, payload);
+        }
+        assert!(!replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
+        app.nodes.remove("s");
+        assert!(replaced_file_unused(&dir, "r", &old, &new, &app.content_keep(Some("r"))));
+        assert!(!replaced_file_unused(&dir, "r", &old, &old, &app.content_keep(Some("r"))));
+    }
+
+    #[test]
+    fn closing_a_node_touches_its_own_content_file_only() {
+        use crate::content::tests::{write_aged, OLD};
+        let dir = crate::store::testutil::temp_dir("touch_closed");
+        let (own, picked) = (dir.join("7-1.png"), dir.join("picked.png"));
+        write_aged(&own, OLD);
+        write_aged(&picked, OLD);
+        let node = |path: &std::path::Path| store::json::JsonNode {
+            id: "7-1".into(),
+            kind: "image".into(),
+            fields: serde_json::Map::from_iter([("path".into(), path.to_string_lossy().into_owned().into())]),
+        };
+        let entry = ClosedEntry { doc: store::json::JsonDoc { nodes: vec![node(&own), node(&picked)], local: None } };
+        touch_owned_content(&dir, &entry);
+        let age = |p: &std::path::Path| std::fs::metadata(p).unwrap().modified().unwrap().elapsed().unwrap_or_default();
+        assert!(age(&own) < std::time::Duration::from_secs(60), "touched");
+        assert!(age(&picked) > crate::content::PRUNE_GRACE, "not its own <id>.<ext>: untouched");
+    }
+
+    /// A Refresh whose fetch fails, with the file still there, only toasts.
     #[test]
     fn a_failed_refresh_fetch_toasts() {
         let dir = crate::store::testutil::temp_dir("refresh_fetch_failed_toast");
@@ -5874,12 +6002,8 @@ mod tests {
         assert_eq!(app.node_order, order);
     }
 
-    /// A failed refetch (bad file) doesn't lose the node -- a placeholder
-    /// of the same kind takes its place, carrying the error and the url,
-    /// same as `retry_missing_file`'s own failure handling and
-    /// `session_sync`'s restore-time placeholder. Also covers `group`,
-    /// which a first draft of `reload_fetched_node` dropped on this path
-    /// (it only restored `parent`/`color`).
+    /// A refetched file that fails to load leaves a placeholder of the same
+    /// kind in the node's place, with the error and the url.
     #[test]
     fn a_failed_refetch_keeps_a_placeholder_with_group_and_error() {
         let dir = crate::store::testutil::temp_dir("refresh_reload_fail");
@@ -5908,10 +6032,7 @@ mod tests {
         assert_eq!(app.node_order, order);
     }
 
-    /// Windowless tests can't spawn a real tab (see `test_spawns`), but
-    /// `open_as_tab` allocates the new tab's id and marks it in
-    /// `skip_convert` before that async spawn even starts, so both are
-    /// checkable without one.
+    /// The spawn is parked in `test_spawns`; its id is already marked.
     #[test]
     fn open_as_tab_marks_the_new_tab_to_skip_its_first_conversion() {
         let dir = crate::store::testutil::temp_dir("open_as_tab");
@@ -5930,31 +6051,40 @@ mod tests {
         assert_eq!(app.test_spawns.len(), 1);
         let tab_id = app.test_spawns[0].0.id.clone();
         assert_eq!(app.test_spawns[0].0.url, "https://x.test/a.png");
-        assert!(app.skip_convert.contains(&tab_id));
+        assert_eq!(app.skip_convert.get(&tab_id), Some(&false));
     }
 
-    /// `handle_engine_message`'s `JsonBody`/`RedirectableContent` arms need
-    /// a real engine child process (`EngineTab::child`), so they can't run
-    /// in a windowless test -- covered live instead (task-5-report.md's
-    /// "Fix round 1"). `remove_tab` doesn't need one, so this covers the
-    /// other half of `skip_convert`'s lifecycle directly: closing an
-    /// Open-as-Tab tab drops its flag along with everything else about it,
-    /// rather than leaking the id forever.
+    /// The engine message arms need a live engine, so the entry's
+    /// transitions are checked through `skip_convert_after` directly.
+    #[test]
+    fn skip_convert_survives_a_redirect_but_not_a_later_navigation() {
+        // (url changed, loading) reports for one Open-as-Tab tab.
+        let mut entry = Some(false);
+        entry = skip_convert_after(entry, false, true);
+        assert_eq!(entry, Some(false), "first load under way");
+        entry = skip_convert_after(entry, true, true);
+        assert_eq!(entry, Some(false), "an HTTP redirect keeps it");
+        entry = skip_convert_after(entry, false, false);
+        assert_eq!(entry, Some(true), "first load settled");
+        entry = skip_convert_after(entry, false, true);
+        assert_eq!(entry, Some(true), "F5 at the same url keeps it");
+        entry = skip_convert_after(entry, true, true);
+        assert_eq!(entry, None, "a navigation after it settled drops it");
+        assert_eq!(skip_convert_after(None, true, false), None, "other tabs stay out");
+    }
+
+    /// Closing an Open-as-Tab tab drops its entry too.
     #[test]
     fn removing_a_tab_clears_its_skip_convert_flag() {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
         let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
-        app.skip_convert.insert(tab.clone());
+        app.skip_convert.insert(tab.clone(), true);
         app.remove_tab(&tab);
-        assert!(!app.skip_convert.contains(&tab));
+        assert!(!app.skip_convert.contains_key(&tab));
     }
 
-    /// The tab has no live engine in a windowless test, so this builds an
-    /// `Unloaded` node (`session_sync::tests::sleeping_tab`) rather than a
-    /// real `Tab` payload -- `redirect_tab_to_content` only ever reads
-    /// `parent`/`group`/`pos` off the node being replaced, so it doesn't
-    /// care which tab-shaped payload it is.
+    /// A sleeping tab stands in for a live one: only its place is read.
     #[test]
     fn a_converted_tab_keeps_its_place_and_url() {
         use crate::session_sync::tests::{add, sleeping_tab};
@@ -5977,13 +6107,8 @@ mod tests {
         assert!(app.nodes.values().all(|n| n.parent.as_deref() != Some(tab.as_str())), "children moved up");
     }
 
-    /// A converted tab goes through `remove_tab`, not a hand-rolled subset
-    /// of its cleanup -- this pins down every stale reference that a
-    /// partial copy previously left behind once every JSON/PDF/image/text
-    /// navigation started converting automatically: a focused tab stuck as
-    /// `self.focused`/`split_tab` (with `view_mode` never dropping back to
-    /// Graph), a selected tab stuck in `selected_tabs`, and a pending
-    /// crash-respawn focus stuck on `pending_respawn_focus`.
+    /// A converted tab leaves no reference behind: focus, split, selection
+    /// and a pending respawn focus all clear, and the view drops to Graph.
     #[test]
     fn a_converted_tab_clears_every_stale_reference() {
         use crate::session_sync::tests::{add, sleeping_tab};
@@ -6006,6 +6131,27 @@ mod tests {
         assert!(!app.selected_tabs.contains(&tab), "selected_tabs cleared");
         assert_eq!(app.pending_respawn_focus, None, "pending respawn focus cleared");
         assert_eq!(app.view_mode, ViewMode::Graph, "falls back to Graph like any other close of the focused tab");
+    }
+
+    /// A web page stays a tab: a conversion whose insert fails keeps it.
+    #[test]
+    fn a_failed_conversion_keeps_the_tab() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+        let dir = crate::store::testutil::temp_dir("redirect_convert_fail");
+        let mut app = App::default();
+        let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "A"));
+        let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+        app.nodes.get_mut(&child).unwrap().parent = Some(tab.clone());
+        app.focused = Some(tab.clone());
+        let path = dir.join("n.png");
+        std::fs::write(&path, b"not a picture").unwrap();
+        let body = WebBody::File { kind: content::ContentKind::Image, path: path.to_string_lossy().into_owned() };
+        app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.png".into(), body);
+        assert!(app.nodes.contains_key(&tab), "the tab stays");
+        assert!(!app.nodes.contains_key("n"));
+        assert_eq!(app.focused.as_deref(), Some(tab.as_str()));
+        assert_eq!(app.nodes[&child].parent.as_deref(), Some(tab.as_str()));
+        assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 1, "toasted");
     }
 
     #[test]

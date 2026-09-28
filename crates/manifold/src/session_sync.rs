@@ -1378,6 +1378,7 @@ impl App {
     /// the original was kept (contract "Repairs").
     pub(crate) fn take_store_recovery(&mut self) {
         let Some(recovery) = self.journal.as_mut().and_then(|j| j.take_recovery()) else { return };
+        self.store_recovered = true;
         self.notice(recovery_notice(&recovery));
     }
 
@@ -1405,10 +1406,8 @@ pub(crate) mod tests {
 
     const A: ActorId = ActorId(0xA);
 
-    /// Drains `app.redirect_fetcher` until it reports something (or gives
-    /// up after ~1 s): under test, `RedirectFetcher::new(None)` (no
-    /// content dir) still spawns a real background thread per `request`,
-    /// but it resolves at once with no I/O, so this is fast in practice.
+    /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
+    /// Under test (no content dir) every fetch fails at once.
     fn drain_fetches(app: &App) -> Vec<FetchResult> {
         for _ in 0..200 {
             let results = app.redirect_fetcher.tick();
@@ -1710,6 +1709,42 @@ pub(crate) mod tests {
         assert_eq!(results.len(), 1, "materialize's own refresh_node queued exactly one fetch");
         assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
         assert!(results[0].body.is_none(), "no content dir under test, so the fetch itself fails");
+    }
+
+    /// Its refetch failing (no content dir under test) turns each into the
+    /// missing-file card, with no toast: the card and its Retry are the
+    /// feedback.
+    #[test]
+    fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
+        let url = |u: &str| (field::URL, FieldValue::Str(u.into()));
+        let gone = |p: &str| (field::PATH, FieldValue::Str(p.into()));
+        let nodes = BTreeMap::from([
+            (id(0), shared(Kind::Json, None, &[gone(r"Z:\gone.json"), url("https://x.test/a.json")])),
+            (id(1), shared(Kind::Image, None, &[gone(r"Z:\gone.png"), url("https://x.test/a.png")])),
+            (id(2), shared(Kind::Pdf, None, &[gone(r"Z:\gone.pdf"), url("https://x.test/a.pdf")])),
+        ]);
+        let mut app = app_with(&nodes);
+        let mut results = Vec::new();
+        while results.len() < 3 {
+            let more = drain_fetches(&app);
+            assert!(!more.is_empty(), "every missing file was refetched");
+            results.extend(more);
+        }
+        for FetchResult { job, body } in results {
+            assert!(body.is_none());
+            let FetchTarget::Node(node) = &job.target else { panic!("a node refetch") };
+            app.refresh_fetch_failed(node);
+        }
+        let error = |n: u64| match &app.nodes[&id(n).to_string()].payload {
+            NodePayload::Json(p) => p.error.clone(),
+            NodePayload::Image(p) => p.error.clone(),
+            NodePayload::Pdf(p) => p.outcome.as_ref().and_then(|o| o.as_ref().err()).cloned(),
+            _ => None,
+        };
+        assert_eq!(error(0).as_deref(), Some("Couldn't fetch https://x.test/a.json"));
+        assert_eq!(error(1).as_deref(), Some("Couldn't fetch https://x.test/a.png"));
+        assert_eq!(error(2).as_deref(), Some("Couldn't fetch https://x.test/a.pdf"));
+        assert!(app.save_toast_queue.is_empty() && app.save_toast.is_none(), "no toast");
     }
 
     #[test]

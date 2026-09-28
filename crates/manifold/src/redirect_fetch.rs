@@ -1,29 +1,19 @@
-//! Fetches (or, for a `file://` tab, reads from disk) the bytes behind a
-//! tab whose page turned out to be raw, non-HTML content worth turning
-//! into a real graph node instead of leaving it sitting there as an
-//! ordinary tab -- same "manifold does its own independent HTTP fetch,
-//! engine-agnostic" posture `favicon_fetch` already established, and the
-//! same "spawn a thread, `mpsc` channel, main loop `tick()`s it" shape
-//! every other one-shot background fetch in this project uses
-//! (`favicon_fetch`, `pdf_fetch`).
+//! Fetches (or, for a `file://` url, reads from disk) the bytes behind a
+//! tab whose page is content that becomes a node, or behind a node's
+//! source url (Refresh, a missing file). manifold fetches on its own,
+//! engine-agnostic, like `favicon_fetch`: a thread per job, an `mpsc`
+//! channel, and a `tick()` each frame.
 //!
-//! The kind comes from `content::kind_of` (the same one-table dispatch a
-//! local file or `ADDFILE` goes through); the downloaded (or read) bytes
-//! are then checked with `content::passes` before anything is written or
-//! converted -- a server's (or a stale local file's) claimed type isn't
-//! trusted blindly. A file kind is saved to the profile's content dir as
-//! `<node id>.<ext>`; a note's text comes back directly instead, since a
-//! note isn't a file on disk.
-//!
-//! Deliberately reuses each kind's *existing*, synchronous, file-path-based
-//! insert function (`App::insert_image_node_with_id`, etc.) rather than
-//! teaching that kind's payload a second, network-sourced way to exist:
-//! once saved, a converted node is indistinguishable from one the user
-//! picked by hand -- same GPU upload path (where relevant), same session
-//! persistence, same context menu.
+//! The kind comes from `content::kind_of`, and the bytes must pass
+//! `content::passes` before anything is written: a server's claimed type
+//! isn't trusted. A file kind is saved to the profile's content dir as
+//! `<node id>.<ext>`; a note's text comes back directly. `App::
+//! insert_content` then makes the node, the same insert a picked file
+//! goes through.
 
 use crate::content::{self, ContentKind};
 use crate::WebBody;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -32,7 +22,7 @@ use std::time::Duration;
 pub enum FetchTarget {
     /// Convert this tab, if it still shows `url`.
     Tab(String),
-    /// Reload this node's file (Refresh, or a missing file; Task 5/6).
+    /// Reload this node's file (Refresh, or a missing file).
     Node(String),
 }
 
@@ -87,17 +77,35 @@ impl RedirectFetcher {
 /// saves it as `<node_id>.<ext>` in `dir`. A note's text comes back
 /// instead of being saved. Blocking: `request` runs it on a thread.
 pub fn fetch(dir: &Path, node_id: &str, url: &str, kind: ContentKind) -> Option<WebBody> {
+    let limit = max_bytes(kind);
     let bytes = match content::file_url_path(url) {
-        Some(path) => std::fs::read(path).ok()?,
+        Some(path) => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path).ok()?.take(limit + 1).read_to_end(&mut bytes).ok()?;
+            bytes
+        }
         None => {
             let response = ureq::get(url).config().timeout_global(Some(Duration::from_secs(15))).build().call().ok()?;
-            response.into_body().with_config().limit(100_000_000).read_to_vec().ok()?
+            response.into_body().with_config().limit(limit).read_to_vec().ok()?
         }
     };
+    if bytes.len() as u64 > limit {
+        return None;
+    }
     save(dir, node_id, kind, bytes)
 }
 
+/// The most a fetch of `kind` reads: a note's limit, or 100 MB.
+fn max_bytes(kind: ContentKind) -> u64 {
+    match kind {
+        ContentKind::Note => content::NOTE_MAX_BYTES as u64,
+        _ => 100_000_000,
+    }
+}
+
 /// Checks `bytes` are `kind` and saves them (or returns a note's text).
+/// Written to `<name>.tmp` first and renamed over, so a reader never sees
+/// half a file.
 pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Option<WebBody> {
     if !content::passes(kind, &bytes) {
         return None;
@@ -106,8 +114,13 @@ pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Opt
         return String::from_utf8(bytes).ok().map(WebBody::Text);
     }
     std::fs::create_dir_all(dir).ok()?;
-    let path = dir.join(format!("{node_id}.{}", content::extension(kind, &bytes)));
-    std::fs::write(&path, &bytes).ok()?;
+    let name = format!("{node_id}.{}", content::extension(kind, &bytes));
+    let (path, tmp) = (dir.join(&name), dir.join(format!("{name}.tmp")));
+    let saved = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
     Some(WebBody::File { kind, path: path.to_string_lossy().into_owned() })
 }
 
@@ -142,5 +155,16 @@ mod tests {
         let body = fetch(&out, "9-1", &path_file_url(&src), ContentKind::Pdf);
         assert!(matches!(body, Some(WebBody::File { kind: ContentKind::Pdf, .. })));
         assert!(out.join("9-1.pdf").exists(), "the content dir is created on demand");
+        assert!(!out.join("9-1.pdf.tmp").exists(), "saved through a renamed temp file");
+    }
+
+    #[test]
+    fn a_file_url_past_its_kinds_limit_is_refused() {
+        let dir = crate::store::testutil::temp_dir("redirect_file_limit");
+        let src = dir.join("long.txt");
+        std::fs::write(&src, vec![b'a'; content::NOTE_MAX_BYTES + 1]).unwrap();
+        assert!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note).is_none());
+        std::fs::write(&src, vec![b'a'; content::NOTE_MAX_BYTES]).unwrap();
+        assert!(matches!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note), Some(WebBody::Text(_))));
     }
 }

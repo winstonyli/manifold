@@ -9,8 +9,10 @@
 //! must decode or parse the bytes anyway (see the spec's "Sniffing local
 //! files").
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::de::IgnoredAny;
 
@@ -113,10 +115,15 @@ fn strip_bom(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)
 }
 
-/// The local path a `file:///` URL names, percent-decoded. `None` for any
-/// other URL, including a `file://server/share` one.
+/// The path a `file:` URL names, percent-decoded: a local one, or on
+/// Windows a `file://server/share/...` UNC path. `None` for any other URL.
 pub(crate) fn file_url_path(url: &str) -> Option<PathBuf> {
-    let rest = url.strip_prefix("file:///").or_else(|| url.strip_prefix("file://localhost/"))?;
+    let rest = url.strip_prefix("file://")?;
+    let (host, rest) = match rest.strip_prefix('/').or_else(|| rest.strip_prefix("localhost/")) {
+        Some(rest) => ("", rest),
+        None if cfg!(windows) => rest.split_once('/').filter(|(host, _)| !host.is_empty())?,
+        None => return None,
+    };
     let rest = rest.split(['?', '#']).next()?;
     let mut bytes = Vec::with_capacity(rest.len());
     let mut it = rest.bytes();
@@ -129,14 +136,22 @@ pub(crate) fn file_url_path(url: &str) -> Option<PathBuf> {
         }
     }
     let path = String::from_utf8(bytes).ok()?;
-    Some(PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { format!("/{path}") }))
+    Some(PathBuf::from(match host {
+        "" if cfg!(windows) => path.replace('/', "\\"),
+        "" => format!("/{path}"),
+        host => format!(r"\\{host}\{}", path.replace('/', "\\")),
+    }))
 }
 
-/// `path` as a `file:///` URL, the inverse of `file_url_path`.
+/// `path` as a `file:` URL, the inverse of `file_url_path`: a UNC
+/// `\\server\share\...` becomes `file://server/share/...`.
 pub(crate) fn path_file_url(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\\', "/");
-    let mut url = String::from("file:///");
-    for b in path.trim_start_matches('/').bytes() {
+    let (mut url, rest) = match path.strip_prefix("//") {
+        Some(unc) => (String::from("file://"), unc),
+        None => (String::from("file:///"), path.trim_start_matches('/')),
+    };
+    for b in rest.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'-' | b'_' | b'.' | b'~' => url.push(b as char),
             _ => url.push_str(&format!("%{b:02X}")),
@@ -152,45 +167,52 @@ pub(crate) fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(head)
 }
 
-/// Whether `path` is exactly `<dir>/<id>.<anything>` -- the shape
-/// `redirect_fetch::save` always names a content file. Structural, not a
-/// prefix check: `Path::starts_with` doesn't resolve `..`, so e.g.
-/// `dir/../../x` would pass a naive `old.starts_with(dir)` and then get
-/// deleted as if it were `x` -- comparing `path.parent()` to `dir`
-/// component-wise instead rejects that, since a literal `..` component
-/// never equals a real directory name.
-// `prune`'s own `keep` closure and the app's stem rule for a synced
-// node's local copy (`App::content_keep`) could plausibly share this
-// (same "does this filename belong to a live id" question), but the keep
-// rule is set-based -- checking membership in a set of ids, not parsing
-// one specific path -- so it doesn't reuse this structural check.
+/// Whether `path` is exactly `<dir>/<id>.<anything>`, the name
+/// `redirect_fetch::save` gives. Compared by parent, not by prefix, so a
+/// `..` component can't escape `dir`.
 pub(crate) fn owned_content_file(dir: &Path, id: &str, path: &Path) -> bool {
     path.parent() == Some(dir) && path.file_stem().is_some_and(|stem| stem == id)
 }
 
-/// Deletes each file in `dir` whose name `keep` rejects and whose modified
-/// time is before `snapshot`; returns how many. A missing `dir` deletes
-/// nothing.
+/// The file name of a node's stored `path`, as `kept` matches it.
+pub(crate) fn file_name(path: &str) -> Option<String> {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+/// Whether content-dir file `file` is one `names` keeps: named outright (a
+/// node's `path`), or `<id>.<ext>` for an id in `names`. A `.tmp` is an
+/// unfinished save (`redirect_fetch::save`), never a node's file.
+pub(crate) fn kept(names: &HashSet<String>, file: &str) -> bool {
+    !file.ends_with(".tmp")
+        && (names.contains(file) || file.split_once('.').is_some_and(|(stem, _)| names.contains(stem)))
+}
+
+/// How recently modified a file `prune` never deletes: covers a file whose
+/// node only another instance knows of, e.g. a close whose Recently Closed
+/// entry that instance's own list overwrote (`App::record_closed` touches it).
+pub(crate) const PRUNE_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Deletes each file in `dir` whose name `keep` rejects and that was last
+/// modified more than `PRUNE_GRACE` before `snapshot`; returns how many. A
+/// missing `dir` deletes nothing.
 ///
-/// `snapshot` should be taken when `keep`'s own name set was built, before
-/// this runs (typically on a thread, some time later): several instances
-/// can share one profile, and another instance's freshly fetched file,
-/// whose node this instance hasn't learned about yet, must survive a sweep
-/// built from a keep set that predates it. A file modified at or after
-/// `snapshot` is never a candidate, whatever `keep` says.
-pub(crate) fn prune(dir: &Path, snapshot: std::time::SystemTime, keep: impl Fn(&str) -> bool) -> usize {
+/// `snapshot` is when `keep`'s name set was built: a file another instance
+/// fetched after that, for a node this one hasn't seen yet, is never a
+/// candidate, whatever `keep` says.
+pub(crate) fn prune(dir: &Path, snapshot: SystemTime, keep: impl Fn(&str) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let cutoff = snapshot.checked_sub(PRUNE_GRACE).unwrap_or(SystemTime::UNIX_EPOCH);
     entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter(|e| !keep(&e.file_name().to_string_lossy()))
-        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < snapshot))
+        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff))
         .filter(|e| std::fs::remove_file(e.path()).is_ok())
         .count()
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn png() -> Vec<u8> {
@@ -269,7 +291,17 @@ mod tests {
         assert!(!url.contains(' ') && !url.contains('#'), "{url}");
         assert_eq!(file_url_path(&url), Some(path));
         assert_eq!(file_url_path("https://example.com/x.pdf"), None);
-        assert_eq!(file_url_path("file://server/share/x"), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn unc_paths_round_trip_through_a_host() {
+        let path = PathBuf::from(r"\\server\share\a b\x.json");
+        let url = path_file_url(&path);
+        assert_eq!(url, "file://server/share/a%20b/x.json");
+        assert_eq!(file_url_path(&url), Some(path));
+        assert_eq!(file_url_path("file://localhost/C:/x.json"), Some(PathBuf::from(r"C:\x.json")));
+        assert_eq!(file_url_path("file:///C:/x.json"), Some(PathBuf::from(r"C:\x.json")));
     }
 
     #[test]
@@ -280,38 +312,55 @@ mod tests {
         assert_eq!(read_head(&path).unwrap().len(), SNIFF_BYTES);
     }
 
+    /// Writes `path` last modified `age` ago.
+    pub(crate) fn write_aged(path: &Path, age: Duration) {
+        std::fs::write(path, b"x").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+    }
+
+    /// Past `PRUNE_GRACE`.
+    pub(crate) const OLD: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
     #[test]
     fn prune_keeps_what_keep_accepts() {
         let dir = crate::store::testutil::temp_dir("content_prune");
         for name in ["1-2.png", "3-4.json", "old.bin"] {
-            std::fs::write(dir.join(name), b"x").unwrap();
+            write_aged(&dir.join(name), OLD);
         }
-        let snapshot = std::time::SystemTime::now();
+        let snapshot = SystemTime::now();
         assert_eq!(prune(&dir, snapshot, |name| name != "old.bin"), 1);
         assert!(dir.join("1-2.png").exists() && !dir.join("old.bin").exists());
         assert_eq!(prune(&dir.join("missing"), snapshot, |_| false), 0);
     }
 
     #[test]
-    fn prune_skips_a_file_modified_at_or_after_the_snapshot() {
-        // Simulates another instance's fetch landing after this instance's
-        // keep set was built but before the sweep runs: `new.bin` isn't in
-        // `keep` either, but its mtime is at/after `snapshot`, so it must
-        // survive regardless.
+    fn prune_skips_a_file_modified_within_the_grace_period_or_after_the_snapshot() {
         let dir = crate::store::testutil::temp_dir("content_prune_race");
         let old = dir.join("old.bin");
-        std::fs::write(&old, b"x").unwrap();
-        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::OpenOptions::new().write(true).open(&old).unwrap().set_modified(old_time).unwrap();
-
-        let snapshot = std::time::SystemTime::now();
+        write_aged(&old, OLD);
+        // Closed a day ago by an instance whose Recently Closed list was
+        // then overwritten by another's.
+        let recent = dir.join("recent.bin");
+        write_aged(&recent, Duration::from_secs(24 * 60 * 60));
+        // Fetched by another instance after this one's keep set was built.
+        let snapshot = SystemTime::now() - Duration::from_secs(60);
         let new = dir.join("new.bin");
-        std::fs::write(&new, b"x").unwrap();
-        std::fs::OpenOptions::new().write(true).open(&new).unwrap().set_modified(snapshot).unwrap();
+        write_aged(&new, Duration::ZERO);
 
         assert_eq!(prune(&dir, snapshot, |_| false), 1);
-        assert!(!old.exists(), "older than the snapshot and unkept: pruned");
-        assert!(new.exists(), "modified at the snapshot moment: kept despite being unkept");
+        assert!(!old.exists(), "unkept and past the grace period: pruned");
+        assert!(recent.exists(), "modified within the grace period: kept");
+        assert!(new.exists(), "modified after the snapshot: kept");
+    }
+
+    #[test]
+    fn kept_matches_names_and_id_stems_but_never_an_unfinished_save() {
+        let names: HashSet<String> = ["a.png", "1-7"].into_iter().map(String::from).collect();
+        assert!(kept(&names, "a.png"));
+        assert!(kept(&names, "1-7.json"));
+        assert!(!kept(&names, "1-7.json.tmp"));
+        assert!(!kept(&names, "b.png"));
     }
 
     #[test]

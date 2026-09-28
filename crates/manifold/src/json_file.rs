@@ -14,10 +14,11 @@ pub fn file_name(path: &Path) -> String {
 }
 
 /// Reads and parses `path`. `what` names the file's kind in the error
-/// ("session", "settings", ...).
+/// ("session", "settings", ...). A UTF-8 byte order mark is skipped, as
+/// `content::passes` does.
 pub fn load<T: DeserializeOwned>(path: &Path, what: &str) -> Result<T, String> {
     let detail = match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str(&contents) {
+        Ok(contents) => match serde_json::from_str(contents.strip_prefix('\u{feff}').unwrap_or(&contents)) {
             Ok(value) => return Ok(value),
             Err(err) => err.to_string(),
         },

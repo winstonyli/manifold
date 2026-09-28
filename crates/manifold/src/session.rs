@@ -10,7 +10,11 @@
 //! a restored tab is a fresh navigation to its last known url, not a
 //! resumed one.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use crate::local_state::LocalState;
+use crate::store::journal::Journal;
 
 /// Where the session store (spec "Journal") lives.
 pub fn store_path() -> Option<PathBuf> {
@@ -25,8 +29,30 @@ pub fn store_path() -> Option<PathBuf> {
 /// directory. A named save is a full store file (spec "Named sessions"):
 /// same `.mnf`/`.mnf.local`/`.mnf.prev` layout as the running session's
 /// own `session.mnf`, just under a name instead of the fixed one.
-fn named_sessions_dir() -> Option<PathBuf> {
+pub(crate) fn named_sessions_dir() -> Option<PathBuf> {
     Some(crate::profile::dir()?.join("sessions"))
+}
+
+/// What the named sessions in `dir` still use of the content dir, for
+/// `content::kept`: each one's live nodes' ids and `path` file names, and
+/// its Recently Closed entries' `path` file names. An unreadable save adds
+/// nothing.
+pub(crate) fn content_names(dir: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return names };
+    let saves = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|ext| ext == "mnf"));
+    for path in saves {
+        let Some(doc) = std::fs::read(&path).ok().and_then(|bytes| Journal::read(&bytes).ok()) else { continue };
+        let local = crate::store::local::read(&path, doc.id).ok().flatten().and_then(|b| LocalState::from_bytes(&b));
+        let closed = local.map(|l| l.closed).unwrap_or_default();
+        let live = crate::store::json::doc_to_json(&doc).nodes;
+        for node in &live {
+            names.insert(node.id.clone());
+        }
+        let paths = live.iter().chain(closed.iter().flat_map(|c| &c.nodes)).filter_map(|n| n.fields.get("path"));
+        names.extend(paths.filter_map(|p| p.as_str()).filter_map(crate::content::file_name));
+    }
+    names
 }
 
 pub(crate) fn named_session_path(name: &str) -> Option<PathBuf> {

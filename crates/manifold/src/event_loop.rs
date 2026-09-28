@@ -203,11 +203,7 @@ impl ApplicationHandler<UserEvent> for App {
             // winit 0.30 sends no `CursorMoved` during an OLE drag, so the
             // drop point is read from the OS (`cursor_point`), falling back
             // to the last real `CursorMoved` off Windows or if that read
-            // fails.
-            // `save_session` isn't called here -- several files dropped at
-            // once each land in their own `DroppedFile` event, and
-            // `render_frame` already saves once for the whole batch (see
-            // its own comment, by `drop_batch`) rather than once per file.
+            // fails. `render_frame` saves once per batch (`drop_batch`).
             WindowEvent::DroppedFile(path) => {
                 let point = self.cursor_point().unwrap_or_else(|| self.last_pointer_point());
                 self.drop_file(path, point);
@@ -465,17 +461,8 @@ impl App {
     /// `RedrawRequested`: draws the content panes and the egui output,
     /// taking a pending screenshot (and print-to-PDF) along the way.
     pub(crate) fn render_frame(&mut self, egui_output: Option<egui::FullOutput>) {
-        // One `save_session()` for however many files landed this frame,
-        // not one per `drop_file` call (same reasoning as the engine
-        // message drain's own "one save for the whole drain", above) --
-        // counts a batch that was entirely refused too, which is harmless
-        // (`save_session` with nothing new to persist is a no-op write).
-        // Checked and reset here, at the very top, rather than after this
-        // frame's own drop handling -- this is the one call every frame is
-        // guaranteed to make, so a stale nonzero count left over from a
-        // batch that landed a frame ago can never survive to either
-        // trigger a spurious save or offset a later, unrelated single drop
-        // (see `drop_file`'s own doc comment).
+        // One save for the files dropped since the last frame, then reset
+        // here, the one place every frame reaches, so no count goes stale.
         if self.drop_batch > 0 {
             self.save_session();
         }
@@ -1291,9 +1278,13 @@ impl App {
                     return false;
                 };
                 let url_changed = node.url != url;
+                let skip = skip_convert_after(self.skip_convert.get(tab_id).copied(), url_changed, loading);
+                match skip {
+                    Some(settled) => self.skip_convert.insert(tab_id.to_string(), settled),
+                    None => self.skip_convert.remove(tab_id),
+                };
                 if url_changed {
                     node.json_body = None;
-                    self.skip_convert.remove(tab_id);
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);
@@ -1386,10 +1377,7 @@ impl App {
                     tab.json_body = Some(body.clone());
                     tab.url.clone()
                 });
-                // "Open as Tab" keeps this a tab for as long as it stays at
-                // that url (see `skip_convert`'s own doc comment) -- so
-                // every report at that url is skipped, not just the first.
-                if self.skip_convert.contains(tab_id) {
+                if self.skip_convert.contains_key(tab_id) {
                     return false;
                 }
                 if let (Some(url), Some(dir)) = (url, crate::profile::content_dir()) {
@@ -1411,7 +1399,7 @@ impl App {
             // in `drain_tab_events`, not here.
             EngineToHost::RedirectableContent { content_type } => {
                 use crate::content::ContentKind as K;
-                if self.skip_convert.contains(tab_id) {
+                if self.skip_convert.contains_key(tab_id) {
                     return false;
                 }
                 let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone());
