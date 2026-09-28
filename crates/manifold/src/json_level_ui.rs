@@ -29,7 +29,7 @@ const SEARCH_HIT: egui::Color32 = egui::Color32::from_rgb(90, 150, 230);
 const ARRAY_TINT: egui::Color32 = egui::Color32::from_rgb(90, 100, 160);
 /// A row tooltip's cap, in characters.
 const TOOLTIP_MAX_CHARS: usize = 2000;
-/// One outline row's height, in points.
+/// One outline row's least height, in points; a taller font raises it.
 const OUTLINE_ROW_HEIGHT: f32 = 20.0;
 /// An outline row's open/close caret, and the gap left where a row has none.
 const CARET_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
@@ -645,32 +645,41 @@ impl App {
         if let Some(status) = status {
             ui.label(egui::RichText::new(status).weak().small());
         }
-        let step = search.has_focus() && ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
-            || search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        // A single-line TextEdit gives up focus on Enter; taking it back
+        // lets Enter (and then ↓) keep stepping.
+        let enter = search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if enter {
+            search.request_focus();
+        }
+        let step = enter || search.has_focus() && ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
         ui.separator();
 
         let pal = palette(ui.visuals().dark_mode);
         let rows = std::mem::take(&mut level.outline.rows);
         let searching = level.search.result.is_some();
+        // Compact against the app's airy defaults (`theme.rs`), set on the
+        // ui `show_rows` is given: it reads `item_spacing.y` from there for
+        // its row pitch. With none, and no row taller than `row_height`
+        // (the app's font can be), rows are exactly `row_height` apart, as
+        // `show_rows` and `scroll_to` count on.
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+        let row_height = [egui::TextStyle::Body, egui::TextStyle::Button]
+            .iter()
+            .fold(OUTLINE_ROW_HEIGHT, |h, style| h.max(ui.text_style_height(style)));
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
         if let Some(row) = level.outline.scroll_to.take() {
-            scroll = scroll.vertical_scroll_offset((row as f32 * OUTLINE_ROW_HEIGHT - 80.0).max(0.0));
+            scroll = scroll.vertical_scroll_offset((row as f32 * row_height - 80.0).max(0.0));
         }
         let mut clicked = None;
         let mut flip = None;
-        scroll.show_rows(ui, OUTLINE_ROW_HEIGHT, rows.len(), |ui, range| {
-            // Compact against the app's airy defaults (`theme.rs`): with no
-            // vertical spacing and slim padding, every row is exactly
-            // `OUTLINE_ROW_HEIGHT` tall, which `show_rows` and `scroll_to`
-            // both count on.
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-            ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+        scroll.show_rows(ui, row_height, rows.len(), |ui, range| {
             for row in &rows[range] {
                 let Some(value) = level.value.pointer(&row.pointer) else { continue };
                 let selected = level.selected.as_deref() == Some(row.pointer.as_str());
                 let hit = level.search.result.as_ref().is_some_and(|r| r.hits.contains(&row.pointer));
                 ui.horizontal(|ui| {
-                    ui.set_height(OUTLINE_ROW_HEIGHT);
+                    ui.set_height(row_height);
                     ui.add_space(row.depth as f32 * 12.0);
                     let open = searching || level.outline.open.contains(&row.pointer);
                     if json_view::is_card(value) && !searching {

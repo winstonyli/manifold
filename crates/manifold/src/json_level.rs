@@ -128,6 +128,23 @@ impl JsonLevel {
         Some(json_view::child_pointer(pointer, &key))
     }
 
+    /// Where the entry at `pointer` is drawn (world): its own card if it
+    /// has one, else its row on its parent's card; `None` if neither shows.
+    pub(crate) fn entry_rect(&self, pointer: &str) -> Option<egui::Rect> {
+        if let Some(&i) = self.index.get(pointer) {
+            return Some(self.rects[i]);
+        }
+        let parent = json_view::parent_pointer(pointer)?;
+        let card = *self.index.get(parent)?;
+        let row = json_view::entry_index(self.value.pointer(parent)?, &json_view::last_key(pointer)?)?;
+        if row >= self.cards[card].rows {
+            return None;
+        }
+        let rect = self.rects[card];
+        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * row as f32;
+        Some(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), json_view::ROW_HEIGHT)))
+    }
+
     /// The topmost card under `world`: later cards draw on top.
     pub(crate) fn card_at(&self, world: egui::Pos2) -> Option<usize> {
         self.rects.iter().rposition(|rect| rect.contains(world))
@@ -301,11 +318,11 @@ impl App {
             });
         }
         let Some(level) = self.json_level.as_mut() else { return };
-        // The row lives on its parent's card; the root is its own.
-        let card = json_view::parent_pointer(pointer).unwrap_or("");
-        if let Some(rect) = level.index.get(card).map(|&i| level.rects[i]) {
-            let size = self.camera.rect.size();
-            self.camera.ease_to(egui::Rect::from_center_size(rect.center(), size));
+        // Pan only if the entry isn't already fully in view, judged where
+        // the camera is headed, so clicking what's on screen never moves it.
+        let view = self.camera.tween.as_ref().map_or(self.camera.rect, |t| t.to);
+        if let Some(target) = level.entry_rect(pointer).filter(|r| !view.contains_rect(*r)) {
+            self.camera.ease_to(egui::Rect::from_center_size(target.center(), view.size()));
         }
         let mut ancestor = String::new();
         level.outline.open.insert(String::new());
@@ -554,6 +571,25 @@ mod tests {
         app.apply_json_edit(JsonEdit::Select("/a/b".into()));
         app.apply_json_edit(JsonEdit::Select("/a/nope".into()));
         assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/a/b"));
+    }
+
+    #[test]
+    fn selecting_pans_only_to_an_entry_out_of_view() {
+        let users: Vec<_> = (0..45).map(|i| serde_json::json!({"name": format!("u{i}")})).collect();
+        let (mut app, j) = app_with_json("pan", &serde_json::json!({ "a": 1, "users": users }).to_string());
+        app.switch_group_level(Some(j));
+        let level = app.json_level.as_ref().unwrap();
+        let root = level.rects[level.index[""]];
+        let row = level.entry_rect("/a").unwrap();
+        assert!(root.contains_rect(row) && row.height() == json_view::ROW_HEIGHT, "a row on its parent's card");
+        app.camera.jump_to(root.expand(10.0));
+        app.apply_json_edit(JsonEdit::Select(String::new()));
+        app.apply_json_edit(JsonEdit::Select("/a".into()));
+        assert!(app.camera.tween.is_none(), "a visible entry leaves the camera where it was");
+        app.apply_json_edit(JsonEdit::Select("/users/40/name".into()));
+        let to = app.camera.tween.as_ref().expect("an off-screen entry pans").to;
+        let target = app.json_level.as_ref().unwrap().entry_rect("/users/40/name").unwrap();
+        assert!(to.contains_rect(target), "the camera heads to where the entry is in view");
     }
 
     #[test]
