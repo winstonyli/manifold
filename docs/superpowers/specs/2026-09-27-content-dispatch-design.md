@@ -156,8 +156,9 @@ until that file goes; they have no URL, so they can't refetch.
 
 ## Outcome
 
-Built across eight tasks (commits `2fdfdc7..2152826` on `dev`, this task
-adds the last commit). Rulings made along the way, decision only:
+Built across eight tasks and a final review's fixes (the commits after
+`2fdfdc7` on `dev`, up to "Pruning fails closed on an unreadable named
+session"). Rulings made along the way, decision only:
 
 Planning rulings:
 
