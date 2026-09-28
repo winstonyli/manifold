@@ -143,11 +143,9 @@ enum NodeAction {
     Refresh,
     /// A new tab at the node's source URL, beside it.
     OpenAsTab,
-    ExpandAsGraph,
     TogglePin,
     Duplicate,
     CopyUrl,
-    ViewJson,
     FitSubtree,
     /// Swaps the group menu's items for a name field (see
     /// `build_node_context_menu`); the menu stays open.
@@ -363,7 +361,6 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
         ItemNodeKind::Json => {
             let mut items = url_items(true);
             items.extend(file_items());
-            items.push(Button("Expand as Graph", A::ExpandAsGraph));
             finish("json_context_menu", 170.0, items, delete("Delete"))
         }
         ItemNodeKind::Tab => {
@@ -372,9 +369,6 @@ fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
                 Button("Duplicate", A::Duplicate),
                 Button("Copy URL", A::CopyUrl),
             ];
-            if view.has_json {
-                items.push(Button("View as JSON", A::ViewJson));
-            }
             items.push(Button("Fit Subtree", A::FitSubtree));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
@@ -414,8 +408,6 @@ struct NodeMenuView {
     has_url: bool,
     /// Tab only.
     pinned: bool,
-    /// Tab only.
-    has_json: bool,
     /// Unloaded only: the default engine isn't the one that failed, so
     /// the menu offers it.
     other_default_engine: bool,
@@ -544,41 +536,8 @@ fn resolve_content_path(dir: Option<&std::path::Path>, id: &str, stored: &str) -
         .map_or_else(|| stored.to_string(), |e| e.path().to_string_lossy().into_owned())
 }
 
-/// Recursively renders one `serde_json::Value` inside the JSON viewer's
-/// tree -- an object/array as a `CollapsingHeader` (its own children
-/// indented beneath, count shown in the header so a collapsed node still
-/// tells you how much it holds), a scalar as a plain `"key: value"` label.
-/// `top_level` only controls whether *this* node starts expanded --
-/// `false` for everything but the document root, so a large real-world
-/// payload doesn't dump every nested level open at once.
-fn draw_json_value(ui: &mut egui::Ui, key: &str, value: &serde_json::Value, top_level: bool) {
-    match value {
-        serde_json::Value::Object(map) => {
-            egui::CollapsingHeader::new(format!("{key}  {{{}}}", map.len())).default_open(top_level).show(ui, |ui| {
-                for (k, v) in map {
-                    draw_json_value(ui, k, v, false);
-                }
-            });
-        }
-        serde_json::Value::Array(items) => {
-            egui::CollapsingHeader::new(format!("{key}  [{}]", items.len())).default_open(top_level).show(ui, |ui| {
-                for (i, v) in items.iter().enumerate() {
-                    draw_json_value(ui, &i.to_string(), v, false);
-                }
-            });
-        }
-        // `Value`'s own `Display` already renders exactly the compact form
-        // wanted here -- a quoted string, a bare number, `true`/`false`, or
-        // `null` -- no need to match each scalar variant separately.
-        other => {
-            ui.label(format!("{key}: {other}"));
-        }
-    }
-}
-
-/// A one-line shape summary for a JSON node's own small graph card -- the
-/// full tree only ever shows in `build_json_viewer`'s own popup, so the
-/// card needs something glanceable instead: `{ N }`/`[ N ]` for a container,
+/// A one-line shape summary for a JSON node's own small graph card:
+/// `{ N }`/`[ N ]` for a container,
 /// or the scalar's own compact `Display` form (truncated if it would
 /// otherwise overflow a card this small).
 fn json_summary(value: &serde_json::Value) -> String {
@@ -1510,15 +1469,6 @@ struct App {
     /// frames after `node_menu` itself goes back to `None` -- see
     /// `fade_popup_state`.
     node_menu_cache: Option<(String, egui::Pos2, NodeMenuView)>,
-    /// `Some(node_id)` while that node's JSON content is showing full-screen
-    /// (`build_json_viewer`) -- a tab's own `TabPayload::json_body` (opened
-    /// from Tab view's toolbar button or Graph view's tab context menu's
-    /// "View as JSON") or a `JsonPayload::value` (opened by double-clicking
-    /// a JSON node's card), closed via its own close button or Escape. Not
-    /// `bool`: needs to remember *which* node, since either source can be
-    /// opened from Graph view for a node other than whichever tab is
-    /// focused.
-    json_viewer_node: Option<String>,
     /// `Ctrl+K` quick-switcher, if currently open — see `QuickSwitcher`'s
     /// own doc comment and `App::build_quick_switcher`.
     quick_switcher: Option<QuickSwitcher>,
@@ -1999,7 +1949,6 @@ impl Default for App {
             renaming_group: None,
             node_menu: None,
             node_menu_cache: None,
-            json_viewer_node: None,
             quick_switcher: None,
             quick_switcher_cache: None,
             shortcuts_help_open: false,
@@ -2602,11 +2551,11 @@ impl App {
             self.spawn_tab_async(TabSpawn { group: Some(group_id.clone()), ..spawn });
         }
 
-        // Deliberately left un-expanded -- the welcome page's own "Try it"
-        // section already tells the user to right-click this exact kind of
-        // node and pick "Expand as Graph" themselves, so pre-expanding it
-        // here would rob them of the discovery the copy is pointing at.
-        // Synthetic, not file-backed (`path` is a display-only label, not a
+        // Deliberately left as a plain card, not entered -- the welcome
+        // page's own "Try it" section already tells the user to
+        // double-click this exact kind of node themselves, so entering its
+        // level here would rob them of the discovery the copy is pointing
+        // at. Synthetic, not file-backed (`path` is a display-only label, not a
         // real path -- see `JsonPayload`'s own doc comment on `key` for the
         // same "inherited path, no real ownership" reasoning `key: Some`
         // leaves use, though this node uses `key: None` since it's a
@@ -2760,7 +2709,6 @@ impl App {
                             pinned,
                             zoom_factor,
                             swap_target: None,
-                            json_body: None,
                         }),
                     },
                 );
@@ -4746,120 +4694,6 @@ impl App {
         Ok(())
     }
 
-    /// "Expand as Graph" -- explodes a JSON node's structure into real,
-    /// nested graph nodes: an object/array becomes a `Group` (matching this
-    /// app's existing unlimited Group-nesting model), a scalar becomes a
-    /// plain `JsonPayload` leaf (see that struct's own doc comment for why
-    /// no new node kind exists for this). Read-only and one-way, per this
-    /// feature's own design doc
-    /// (`docs/superpowers/specs/2026-09-19-json-expand-as-graph-design.md`):
-    /// there's no "collapse back". The groups and leaves are saved like any
-    /// other node (`GroupPayload::from_json` marks the groups). The original
-    /// card is replaced by the root group under a fresh id, keeping its
-    /// `pos`/`group`/`color`, since a store node never changes kind: after
-    /// this there's no compact card left to click back to, only
-    /// "Add File..." to bring the file back as a fresh node. A bare scalar at the JSON's
-    /// own root has nothing to explode into -- this just leaves such a
-    /// node as it already is, a harmless no-op rather than something worth
-    /// guarding against.
-    fn expand_json_as_graph(&mut self, json_node_id: &str) {
-        let Some((path, value)) =
-            self.nodes.get(json_node_id).and_then(|n| n.as_json().map(|j| (j.path.clone(), j.value.clone())))
-        else {
-            return;
-        };
-        let has_entries = match &value {
-            serde_json::Value::Object(map) => !map.is_empty(),
-            serde_json::Value::Array(items) => !items.is_empty(),
-            _ => false,
-        };
-        if has_entries {
-            // A store node never changes kind, so the card becomes a group
-            // under a fresh id, keeping its place, group, color and draw
-            // order; the JSON node is deleted from the store.
-            let Some(mut node) = self.nodes.remove(json_node_id) else { return };
-            let root_id = self.alloc_node_id();
-            node.payload =
-                NodePayload::Group(GroupPayload { name: download_filename(&path).to_string(), from_json: true });
-            self.nodes.insert(root_id.clone(), node);
-            for id in self.node_order.iter_mut().filter(|id| *id == json_node_id) {
-                *id = root_id.clone();
-            }
-            for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(json_node_id)) {
-                node.parent = Some(root_id.clone());
-            }
-            for slot in [&mut self.dragging, &mut self.hovered, &mut self.json_viewer_node] {
-                if slot.as_deref() == Some(json_node_id) {
-                    *slot = None;
-                }
-            }
-            self.expand_json_entries(&root_id, &value, &path);
-            // Viewing the node's JSON level (headless EXPANDJSONASGRAPH):
-            // the view follows the card to its new id, like `node_order`
-            // and the parent links above, instead of naming a removed node.
-            if self.current_group.as_deref() == Some(json_node_id) {
-                self.switch_group_level(Some(root_id));
-            }
-        }
-    }
-
-    /// Recursive step shared by `expand_json_as_graph`: creates one child
-    /// node per entry of `value` (already known to be an `Object`/`Array`)
-    /// inside `parent_group_id`, recursing into any entry that's itself a
-    /// container. `path` is the *source file's* path, inherited by every
-    /// leaf purely for "Reveal in Explorer"/"Copy Path" display purposes --
-    /// it does not mean the leaf independently owns that file (see
-    /// `JsonPayload`'s own doc comment on `key`).
-    fn expand_json_entries(&mut self, parent_group_id: &str, value: &serde_json::Value, path: &str) {
-        let entries: Vec<(String, &serde_json::Value)> = match value {
-            serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
-            serde_json::Value::Array(items) => items.iter().enumerate().map(|(i, v)| (format!("[{i}]"), v)).collect(),
-            _ => return,
-        };
-        let parent_pos = self.nodes.get(parent_group_id).map(|n| n.pos).unwrap_or(GRAPH_WORLD_CENTER);
-        for (key, entry_value) in entries {
-            if matches!(entry_value, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
-                let id = self.alloc_node_id();
-                let pos = parent_pos + graph_layout::spawn_jitter(&id);
-                self.nodes.insert(
-                    id.clone(),
-                    GraphNode {
-                        parent: None,
-                        group: Some(parent_group_id.to_string()),
-                        pos,
-                        vel: egui::Vec2::ZERO,
-                        color: None,
-                        payload: NodePayload::Group(GroupPayload { name: key, from_json: true }),
-                    },
-                );
-                self.node_order.push(id.clone());
-                self.expand_json_entries(&id, entry_value, path);
-            } else {
-                let id = self.alloc_node_id();
-                let pos = parent_pos + graph_layout::spawn_jitter(&id);
-                self.nodes.insert(
-                    id.clone(),
-                    GraphNode {
-                        parent: None,
-                        group: Some(parent_group_id.to_string()),
-                        pos,
-                        vel: egui::Vec2::ZERO,
-                        color: None,
-                        payload: NodePayload::Json(JsonPayload {
-                            path: path.to_string(),
-                            value: entry_value.clone(),
-                            key: Some(key),
-                            error: None,
-                            url: None,
-                            view: json_view::JsonView::default(),
-                        }),
-                    },
-                );
-                self.node_order.push(id);
-            }
-        }
-    }
-
     /// The Graph toolbar's single "+ File" button -- one file picker
     /// covering every locally-addable node kind, dispatching whatever it
     /// picks through `insert_content` (see that method, and `content`'s own
@@ -5272,8 +5106,7 @@ impl App {
     /// Removes one node with its kind's full cleanup, recording nothing: a
     /// Group recurses (`destroy_group`), a Tab goes through `destroy_tab`,
     /// and a Download/Note/Image/Pdf/Json frees its GPU texture if it's an
-    /// Image/Pdf, clears `json_viewer_node` if it was showing this node,
-    /// then `remove_node`s it.
+    /// Image/Pdf, then `remove_node`s it.
     /// (Before this was shared, `destroy_tab`'s own no-op-on-non-tab guard
     /// left every non-tab, non-group member of a closed group merely
     /// reparented by `dissolve_group`, never actually destroyed -- a gap
@@ -5295,9 +5128,6 @@ impl App {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.free_image(id);
                     }
-                }
-                if self.json_viewer_node.as_deref() == Some(id) {
-                    self.json_viewer_node = None;
                 }
                 self.remove_node(id);
             }
@@ -5372,14 +5202,12 @@ impl App {
 
     fn node_menu_view(&self, id: &str) -> Option<NodeMenuView> {
         let node = self.nodes.get(id)?;
-        let tab = node.as_tab();
         Some(NodeMenuView {
             kind: item_node_kind(&node.payload),
             has_group: node.group.is_some(),
             color: node.color,
             has_url: node.source_url().is_some(),
             pinned: node.payload.pinned(),
-            has_json: tab.is_some_and(|t| t.json_body.is_some()),
             other_default_engine: node
                 .payload
                 .as_unloaded()
@@ -5413,10 +5241,6 @@ impl App {
             }
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),
-            NodeAction::ExpandAsGraph => {
-                self.expand_json_as_graph(id);
-                self.save_session();
-            }
             NodeAction::TogglePin => {
                 if let Some(pinned) = self.nodes.get_mut(id).and_then(|n| n.payload.pinned_mut()) {
                     *pinned = !*pinned;
@@ -5428,7 +5252,6 @@ impl App {
                     ctx.copy_text(url.to_string());
                 }
             }
-            NodeAction::ViewJson => self.json_viewer_node = Some(id.to_string()),
             NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
@@ -5632,7 +5455,6 @@ impl App {
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
-        self.build_json_viewer(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
@@ -6400,7 +6222,6 @@ mod tests {
                 color: None,
                 has_url: false,
                 pinned: false,
-                has_json: false,
                 other_default_engine: false,
                 failed: false,
                 renaming: None,
@@ -6419,23 +6240,17 @@ mod tests {
                 .collect();
             (config.area_id, config.min_width, items.join(" | "))
         }
-        fn menu(
-            kind: ItemNodeKind,
-            has_group: bool,
-            pinned: bool,
-            has_json: bool,
-            headless: bool,
-        ) -> (&'static str, f32, String) {
-            let view = NodeMenuView { has_group, pinned, has_json, ..view_of(kind) };
+        fn menu(kind: ItemNodeKind, has_group: bool, pinned: bool, headless: bool) -> (&'static str, f32, String) {
+            let view = NodeMenuView { has_group, pinned, ..view_of(kind) };
             menu_of(&view, headless)
         }
         for has_group in [false, true] {
             // Every kind can join a group (drag onto it), so every menu
             // offers "Remove from Group" when grouped.
             let g = if has_group { " | --- | Remove from Group" } else { "" };
-            let menu = |kind, pinned, has_json| menu(kind, has_group, pinned, has_json, false);
+            let menu = |kind, pinned| menu(kind, has_group, pinned, false);
             assert_eq!(
-                menu(ItemNodeKind::Download, false, false),
+                menu(ItemNodeKind::Download, false),
                 (
                     "download_context_menu",
                     170.0,
@@ -6443,11 +6258,11 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Note, false, false),
+                menu(ItemNodeKind::Note, false),
                 ("note_context_menu", 150.0, format!("Copy Text | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
-                menu(ItemNodeKind::Image, false, false),
+                menu(ItemNodeKind::Image, false),
                 (
                     "image_context_menu",
                     170.0,
@@ -6455,19 +6270,19 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Pdf, false, false),
+                menu(ItemNodeKind::Pdf, false),
                 ("pdf_context_menu", 170.0, format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete"))
             );
             assert_eq!(
-                menu(ItemNodeKind::Json, false, false),
+                menu(ItemNodeKind::Json, false),
                 (
                     "json_context_menu",
                     170.0,
-                    format!("Open Containing Folder | Copy Path | Expand as Graph | <colors>{g} | --- | Delete")
+                    format!("Open Containing Folder | Copy Path | <colors>{g} | --- | Delete")
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Tab, false, false),
+                menu(ItemNodeKind::Tab, false),
                 (
                     "tab_context_menu",
                     150.0,
@@ -6475,11 +6290,11 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Tab, true, true).2,
-                format!("Unpin | Duplicate | Copy URL | View as JSON | Fit Subtree | <colors>{g} | --- | Close")
+                menu(ItemNodeKind::Tab, true).2,
+                format!("Unpin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
             );
             assert_eq!(
-                menu(ItemNodeKind::Group, false, false),
+                menu(ItemNodeKind::Group, false),
                 (
                     "group_context_menu",
                     150.0,
@@ -6487,7 +6302,7 @@ mod tests {
                 )
             );
             assert_eq!(
-                menu(ItemNodeKind::Unloaded, false, false),
+                menu(ItemNodeKind::Unloaded, false),
                 ("unloaded_tab_context_menu", 170.0, format!("Open | Pin | Copy URL | <colors>{g} | --- | Close"))
             );
         }
@@ -6500,10 +6315,7 @@ mod tests {
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
         // Export Group's file dialog can't run headless.
-        assert_eq!(
-            menu(ItemNodeKind::Group, false, false, false, true).2,
-            "Rename | <colors> | --- | Dissolve | Close Group"
-        );
+        assert_eq!(menu(ItemNodeKind::Group, false, false, true).2, "Rename | <colors> | --- | Dissolve | Close Group");
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
         let with_url = |kind| NodeMenuView { kind, has_url: true, ..view_of(kind) };
@@ -6513,7 +6325,7 @@ mod tests {
         );
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Json), false).2,
-            "Refresh | Open as Tab | Open Containing Folder | Copy Path | Expand as Graph | <colors> | --- | Delete"
+            "Refresh | Open as Tab | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Note), false).2,

@@ -72,16 +72,14 @@ wrap_render_process_handler! {
                 return 0;
             }
 
-            // Only reply for an actual outcome -- `manifold` already
-            // clears a tab's `json_body` on any real URL change regardless
-            // of which engine it's on (see `EngineToHost::JsonBody`'s own
-            // doc comment), and a missing/unreadable `document.contentType`
-            // needs no reply at all (unlike the other three engines, which
-            // always forward whatever content-type string they got -- CEF's
-            // own `eval` can genuinely come back empty if the V8 context
-            // isn't in a state to run it, which isn't "this page has no
-            // content-type", so treating that as silence rather than an
-            // empty-string report is deliberate here).
+            // Only reply for an actual outcome -- a missing/unreadable
+            // `document.contentType` needs no reply at all (unlike the
+            // other three engines, which always forward whatever
+            // content-type string they got -- CEF's own `eval` can
+            // genuinely come back empty if the V8 context isn't in a state
+            // to run it, which isn't "this page has no content-type", so
+            // treating that as silence rather than an empty-string report
+            // is deliberate here).
             match frame.v8_context().map(|context| eval_page_kind(&context)) {
                 Some(Some(PageKind::Json(body))) => {
                     if let Some(mut reply) = process_message_create(Some(&JSON_BODY_RESULT.into())) {

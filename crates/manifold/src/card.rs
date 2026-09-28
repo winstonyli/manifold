@@ -1318,8 +1318,7 @@ impl App {
     /// `+ N more` -- sized by `json_view::preview_size` and painted by the
     /// JSON level's own `paint_json_content`, so the two never disagree
     /// about what a root looks like. Double-click enters the level
-    /// (`current_group`/`sync_json_level`), the same one "View as JSON"
-    /// builds.
+    /// (`current_group`/`sync_json_level`).
     pub(crate) fn paint_json_body(
         &mut self,
         ui: &mut egui::Ui,

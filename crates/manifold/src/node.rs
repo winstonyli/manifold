@@ -297,25 +297,24 @@ pub(crate) struct PdfOutcome {
 /// A locally-added JSON file, embedded directly on the graph -- the fourth
 /// new kind built on the unified model. Unlike `Image`/`Pdf`, there's no GPU
 /// texture at all: the card is drawn with plain egui widgets (a compact
-/// shape summary), and the full content reuses the exact same collapsible-
-/// tree popup (`draw_json_value`/`build_json_viewer`) already built for a
-/// tab's own "View as JSON" -- see `App::json_viewer_node`'s own doc comment
-/// for how that popup now serves both sources. `value` is parsed once, at
-/// creation (`App::add_json_node`, via a real file picker, same
-/// headless-unavailable posture `ImagePayload` already has) or at session
-/// restore -- like `ImagePayload`, a bad/no-longer-JSON file just means
-/// that one node is skipped at restore rather than failing the whole
-/// session load.
+/// shape summary), and double-clicking it enters the node's own JSON level
+/// (`App::json_level`, drawn by `draw_json_level`) rather than opening a
+/// popup. `value` is parsed once, at creation (`App::add_json_node`, via a
+/// real file picker, same headless-unavailable posture `ImagePayload`
+/// already has) or at session restore -- like `ImagePayload`, a
+/// bad/no-longer-JSON file just means that one node is skipped at restore
+/// rather than failing the whole session load.
 pub(crate) struct JsonPayload {
     pub(crate) path: String,
     pub(crate) value: serde_json::Value,
     /// The JSON key (or `[index]` for an array element) this value came
     /// from -- `None` for a genuine top-level file-backed JSON node (its
-    /// card just shows the value's own shape), `Some(k)` for a leaf created
-    /// by "Expand as Graph" (see `App::expand_json_entries`), whose card
-    /// shows `"{k}: {value}"` instead so it's clear which field this is.
-    /// A leaf (`key.is_some()`) is stored as its own `JsonLeaf` node, not
-    /// this field -- see `GroupPayload::from_json`.
+    /// card just shows the value's own shape), `Some(k)` for a leaf that an
+    /// older build's "Expand as Graph" made, whose card shows `"{k}: {value}"`
+    /// instead so it's clear which field this is. Such a leaf is stored as
+    /// its own `JsonLeaf` node, not this field, but still loads from a
+    /// session saved before that feature was removed -- see
+    /// `GroupPayload::from_json`.
     pub(crate) key: Option<String>,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
@@ -413,14 +412,6 @@ pub(crate) struct TabPayload {
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     pub(crate) swap_target: Option<EngineKind>,
-    /// The current page's own raw JSON text, if `EngineToHost::JsonBody`
-    /// reported it as one -- see that message's own doc comment for
-    /// detection/per-engine support. Cleared back to `None` whenever this
-    /// tab's url changes for real (same gate `history` and the session save
-    /// already use, in `handle_engine_message`), so navigating away from a JSON response doesn't leave
-    /// a stale "View as JSON" affordance pointing at content that's no
-    /// longer showing.
-    pub(crate) json_body: Option<String>,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -593,8 +584,9 @@ impl GraphNode {
 /// members and nesting are saved in the session store (`session_sync`).
 pub(crate) struct GroupPayload {
     pub(crate) name: String,
-    /// Made by "Expand as Graph" (`App::expand_json_as_graph`). Saved like
-    /// any group, as are the JSON leaves inside it.
+    /// Made by an older build's "Expand as Graph", now removed. Saved like
+    /// any group, as are the JSON leaves inside it, so a session saved by
+    /// that build still loads.
     pub(crate) from_json: bool,
 }
 

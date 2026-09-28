@@ -318,10 +318,8 @@ pub enum EngineToHost {
     /// back to the browser process over a `ProcessMessage` -- no V8
     /// extension needed, just CEF's own real mechanism for a renderer to
     /// return a value at all (see `manifold-engine-cef`'s `render_process_
-    /// handler.rs`). Cleared (an empty page) whenever the same tab's own
-    /// URL changes for real, same as any other per-navigation state — see
-    /// `App::json_body`'s own doc comment. The host also converts the tab
-    /// to a `Json` node from this same body, right away -- see
+    /// handler.rs`). The host converts the tab to a `Json` node from this
+    /// same body, right away -- see
     /// `RedirectableContent`'s own doc comment for why JSON takes this
     /// separate route instead of that message's own refetch-and-check path.
     JsonBody { body: String },

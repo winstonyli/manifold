@@ -286,11 +286,6 @@ pub enum DebugCommand {
     Split(EngineKind),
     /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
     CloseSplit,
-    /// The JSON node context menu's "Expand as Graph" button, targeting an
-    /// explicit node id instead of `self.focused` (`ADDFILE` doesn't
-    /// focus the node it creates, so a headless test can't rely on focus
-    /// here) — see `App::expand_json_as_graph`.
-    ExpandJsonAsGraph(String),
     /// Select the entry at this JSON Pointer on the current JSON level
     /// (empty: the root).
     JsonSelect(String),
@@ -303,9 +298,9 @@ pub enum DebugCommand {
     /// Search the current JSON level.
     JsonSearch(String),
     /// A group card's own "Close" context-menu action, targeting an
-    /// explicit group id instead of `self.focused` -- same "deterministic
-    /// headless test" reasoning as `ExpandJsonAsGraph`. No-ops if `id`
-    /// isn't actually a group. See `App::close_group`.
+    /// explicit group id instead of `self.focused`, since a headless test
+    /// can't rely on focus. No-ops if `id` isn't actually a group. See
+    /// `App::close_group`.
     CloseGroup(String),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
@@ -433,7 +428,6 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
-    ("EXPANDJSONASGRAPH id", "\"Expand as Graph\" on the JSON node `id`"),
     ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
     ("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level"),
     ("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level"),
@@ -694,7 +688,6 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "EXPANDJSONASGRAPH" => non_empty(DebugCommand::ExpandJsonAsGraph),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),

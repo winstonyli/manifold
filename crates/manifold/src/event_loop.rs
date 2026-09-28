@@ -971,10 +971,6 @@ impl App {
             }
             DebugCommand::Split(kind) => self.start_split(kind),
             DebugCommand::CloseSplit => self.close_split(),
-            DebugCommand::ExpandJsonAsGraph(id) => {
-                self.expand_json_as_graph(&id);
-                self.save_session();
-            }
             DebugCommand::JsonSelect(pointer) => self.apply_json_edit(JsonEdit::Select(pointer)),
             DebugCommand::JsonToggle(pointer) => self.apply_json_edit(JsonEdit::Toggle(pointer)),
             DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
@@ -1299,7 +1295,6 @@ impl App {
                     None => self.skip_convert.remove(tab_id),
                 };
                 if url_changed {
-                    node.json_body = None;
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);
@@ -1382,16 +1377,11 @@ impl App {
                 }
             }
             // The engine's own in-memory page text, already sent over IPC --
-            // still kept on the tab (so a tab kept via "Open as tab" still
-            // offers "View as JSON"), then saved and converted right away,
-            // same as any other content kind. Written on the UI thread,
-            // unlike every other kind's fetch: it's already in hand, so
-            // there's nothing to background.
+            // saved and converted right away, same as any other content
+            // kind. Written on the UI thread, unlike every other kind's
+            // fetch: it's already in hand, so there's nothing to background.
             EngineToHost::JsonBody { body } => {
-                let url = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).map(|tab| {
-                    tab.json_body = Some(body.clone());
-                    tab.url.clone()
-                });
+                let url = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|tab| tab.url.clone());
                 if self.skip_convert.contains_key(tab_id) {
                     return false;
                 }

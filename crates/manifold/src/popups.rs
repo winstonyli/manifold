@@ -1,6 +1,6 @@
 //! The anchored toolbar popups (recently closed, bookmarks, history,
 //! downloads, tab actions) and the floating windows: find bar, quick
-//! switcher, shortcuts help, import confirm and the JSON viewer.
+//! switcher, shortcuts help and import confirm.
 
 use super::*;
 
@@ -1078,72 +1078,6 @@ impl App {
         }
         if cancel {
             self.pending_import = None;
-        }
-    }
-
-    /// Full-screen popup showing one node's JSON content as a real
-    /// collapsible tree -- either a tab's own `TabPayload::json_body`
-    /// (opened from Tab view's toolbar button or Graph view's tab context
-    /// menu's "View as JSON", kept for a JSON tab reopened via "Open as
-    /// tab" -- an ordinary JSON page converts to a node on its own, see
-    /// `EngineToHost::JsonBody`'s own doc comment) or a `JsonPayload::value`
-    /// (opened by double-clicking a JSON node's card). Not tied to
-    /// whichever view is currently active (see `json_viewer_node`'s own doc
-    /// comment), so this renders every frame regardless of `view_mode`.
-    pub(crate) fn build_json_viewer(&mut self, ui: &mut egui::Ui) {
-        let Some(id) = self.json_viewer_node.clone() else { return };
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.json_viewer_node = None;
-            return;
-        }
-        // A JSON node's own `value` is already parsed -- shown directly, no
-        // fallback needed. A tab's `json_body` is raw text: the engine's
-        // own `document.contentType` check already confirmed
-        // `application/json` before this ever got set, but a server can lie
-        // about its own header, so re-parsing here still needs a fallback.
-        enum Source {
-            Parsed(serde_json::Value),
-            Raw(String),
-        }
-        let Some(source) = self.nodes.get(&id).and_then(|n| {
-            if let Some(json) = n.as_json() {
-                Some(Source::Parsed(json.value.clone()))
-            } else {
-                n.as_tab().and_then(|t| t.json_body.clone()).map(Source::Raw)
-            }
-        }) else {
-            self.json_viewer_node = None;
-            return;
-        };
-        let mut close = false;
-        egui::Area::new(egui::Id::new("json_viewer"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                dialog_frame(ui).show(ui, |ui| {
-                    ui.set_width(560.0);
-                    ui.set_height(520.0);
-                    ui.horizontal(|ui| {
-                        ui.label(heading_text("JSON"));
-                        if ui.button("Close").clicked() {
-                            close = true;
-                        }
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical().show(ui, |ui| match source {
-                        Source::Parsed(value) => draw_json_value(ui, "root", &value, true),
-                        Source::Raw(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-                            Ok(value) => draw_json_value(ui, "root", &value, true),
-                            Err(err) => {
-                                ui.colored_label(DANGER_COLOR, format!("Invalid JSON: {err}"));
-                                ui.add(egui::Label::new(&body).wrap());
-                            }
-                        },
-                    });
-                });
-            });
-        if close {
-            self.json_viewer_node = None;
         }
     }
 }

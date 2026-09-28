@@ -316,7 +316,6 @@ impl App {
             toggle_popup(&mut self.open_popup, AnchoredPopup::SplitEngine);
         }
         actions.split_engine_button_rect = Some(split_engine_response.rect);
-        let has_json = self.nodes.get(focused_id).and_then(|n| n.as_tab()).is_some_and(|n| n.json_body.is_some());
         let is_bookmarked = self
             .nodes
             .get(focused_id)
@@ -327,29 +326,12 @@ impl App {
             let mut grow = |r: egui::Rect| {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             };
-            if has_json {
-                let response =
-                    chip_icon_button(ui, egui::Id::new("icon_btn_view_json"), egui_phosphor::light::BRACKETS_CURLY)
-                        .on_hover_text("View as JSON");
-                grow(response.rect);
-                if response.clicked() {
-                    self.json_viewer_node = Some(focused_id.to_string());
-                }
-            }
             // `selectable_label`, same reasoning as elsewhere in
             // this toolbar -- a pressed look for "already
             // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
             // a star glyph's tofu risk. Sits right after the address
             // bar, mirroring Chrome/Firefox's own star icon at the
-            // address bar's right edge. Deliberately still
-            // `selectable_label` here rather than `chip_icon_button`
-            // (unlike its sibling `chip_icon_button` above for the
-            // JSON-viewer icon): no filled/bold bookmark glyph exists
-            // in `egui_phosphor::light` to express the pressed state
-            // another way, and losing the bookmarked-state affordance
-            // entirely is worse than this one icon's border/height not
-            // quite matching its `chip_icon_button` neighbor in the
-            // same chip.
+            // address bar's right edge.
             let bookmark =
                 ui.selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE).on_hover_text("Bookmark");
             grow(bookmark.rect);

@@ -631,15 +631,4 @@ mod tests {
         let result = app.json_level.as_ref().unwrap().search.result.clone().expect("the worker answers");
         assert_eq!(result.matches, ["/99999"]);
     }
-
-    #[test]
-    fn expanding_the_viewed_json_node_follows_it_to_its_group() {
-        let (mut app, j) = app_with_json("expand", r#"{"a": 1}"#);
-        app.switch_group_level(Some(j.clone()));
-        app.expand_json_as_graph(&j);
-        let root = app.current_group.clone().expect("the view is on a level");
-        assert_ne!(root, j);
-        assert!(app.nodes[&root].as_group().is_some_and(|g| g.from_json), "the view is the expanded root group");
-        assert!(app.json_level.is_none());
-    }
 }

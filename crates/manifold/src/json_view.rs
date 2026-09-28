@@ -1,9 +1,3 @@
-// Used from Task 5 on; removed in Task 10. Not gated to `not(test)`: under
-// `--all-targets` the test binary compiles with `cfg(test)` crate-wide, so a
-// `cfg_attr(not(test), ...)` gate never applies there and the still-unused
-// constants (only some are exercised by this file's own unit tests) trip
-// `-D warnings` in the test target too.
-#![allow(dead_code)]
 //! The JSON level's pure model (spec
 //! `docs/superpowers/specs/2026-09-27-json-node-rework-design.md`): the
 //! saved view overrides (`VIEW`), JSON Pointers and accessor paths, the
