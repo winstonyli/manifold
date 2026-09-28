@@ -29,8 +29,6 @@ pub(crate) struct JsonLevel {
     pub(crate) outline: Outline,
     pub(crate) search: Search,
     /// A context menu: the pointer it acts on and where it opened (screen).
-    // Read once Task 7 draws the JSON context menu.
-    #[allow(dead_code)]
     pub(crate) menu: Option<(String, egui::Pos2)>,
 }
 
@@ -59,7 +57,7 @@ pub(crate) struct Search {
     #[allow(dead_code)]
     pub(crate) pending: Option<(String, mpsc::Receiver<SearchResult>)>,
     /// Ctrl+F: focus the search box on the next draw.
-    // Read once Task 7 adds Ctrl+F.
+    // Set by Ctrl+F (Task 7); read once Task 8 draws the search box.
     #[allow(dead_code)]
     pub(crate) focus: bool,
 }
@@ -72,9 +70,16 @@ pub(crate) enum JsonEdit {
     /// A dragged card's new top-left.
     Moved(String, egui::Pos2),
     Relayout,
-    // Constructed once Task 7's context menu picks a colour.
-    #[allow(dead_code)]
+    /// A card header's colour, `0x00RRGGBB` (plan ruling 4), or none.
     Color(String, Option<u32>),
+}
+
+/// What a copy takes from an entry (spec "Copy").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyWhat {
+    Value,
+    Key,
+    Path,
 }
 
 impl JsonLevel {
@@ -124,6 +129,11 @@ impl JsonLevel {
         let value = self.value.pointer(pointer)?;
         let (key, _) = json_view::entries(value).take(self.cards[card].rows).nth(row)?;
         Some(json_view::child_pointer(pointer, &key))
+    }
+
+    /// The topmost card under `world`: later cards draw on top.
+    pub(crate) fn card_at(&self, world: egui::Pos2) -> Option<usize> {
+        self.rects.iter().rposition(|rect| rect.contains(world))
     }
 
     /// Whether `world` is on card `card`'s `+ N more` row.
@@ -203,6 +213,19 @@ impl App {
             JsonEdit::Relayout => self.edit_json_view(|view, _, _| view.clear_positions()),
             JsonEdit::Color(pointer, color) => self.edit_json_view(|view, _, _| view.entry(&pointer).color = color),
         }
+    }
+
+    /// What a copy puts on the clipboard for the entry at `pointer`
+    /// (spec "Copy"); `None` if it doesn't resolve.
+    pub(crate) fn json_copy_text(&self, pointer: &str, what: CopyWhat) -> Option<String> {
+        let level = self.json_level.as_ref()?;
+        let value = level.value.pointer(pointer)?;
+        Some(match what {
+            CopyWhat::Value => json_view::copy_value_text(value),
+            CopyWhat::Key => json_view::last_key(pointer).unwrap_or_default(),
+            CopyWhat::Path if self.json_accessor_paths => json_view::accessor_path(&level.value, pointer),
+            CopyWhat::Path => pointer.to_string(),
+        })
     }
 
     /// Runs a search on the current JSON level (Task 8 adds the worker
@@ -356,6 +379,33 @@ mod tests {
             None,
             "the header is the card, not a row"
         );
+    }
+
+    #[test]
+    fn copy_texts_follow_the_selection_and_the_path_form() {
+        let (mut app, j) = app_with_json("copy", r#"{"users": [{"name": "Ada", "a/b": 1}]}"#);
+        app.switch_group_level(Some(j));
+        let copy = |app: &App, p: &str, what| app.json_copy_text(p, what);
+        assert_eq!(copy(&app, "/users/0/name", CopyWhat::Value).as_deref(), Some("Ada"));
+        assert_eq!(
+            copy(&app, "/users/0", CopyWhat::Value).as_deref(),
+            Some("{\n  \"name\": \"Ada\",\n  \"a/b\": 1\n}")
+        );
+        assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Key).as_deref(), Some("a/b"));
+        assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Path).as_deref(), Some("/users/0/a~1b"));
+        app.json_accessor_paths = true;
+        assert_eq!(copy(&app, "/users/0/a~1b", CopyWhat::Path).as_deref(), Some(r#"users[0]["a/b"]"#));
+        assert_eq!(copy(&app, "/nope", CopyWhat::Value), None);
+    }
+
+    #[test]
+    fn the_topmost_card_under_a_point_is_hit() {
+        let (mut app, j) = app_with_json("card_at", r#"{"a": {"x": 1}}"#);
+        app.switch_group_level(Some(j));
+        app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(0.0, 0.0))); // onto the root
+        let level = app.json_level.as_ref().unwrap();
+        assert_eq!(level.card_at(egui::pos2(5.0, 5.0)), Some(1), "later cards draw on top");
+        assert_eq!(level.card_at(egui::pos2(-50.0, -50.0)), None);
     }
 
     #[test]

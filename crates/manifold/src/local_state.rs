@@ -33,6 +33,16 @@ pub(crate) struct LocalState {
     /// Recently Closed, oldest first (plan ruling 7).
     #[serde(default)]
     pub closed: Vec<JsonDoc>,
+    /// Copy path on a JSON level gives the accessor form
+    /// (`users[0].name`) rather than a JSON Pointer.
+    #[serde(default)]
+    pub json_accessor_paths: bool,
+    /// The JSON outline panel is hidden.
+    #[serde(default)]
+    pub json_outline_hidden: bool,
+    /// The JSON outline panel's width, once resized.
+    #[serde(default)]
+    pub json_outline_width: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -146,5 +156,22 @@ mod tests {
         let state = with_pos(3.0);
         assert_eq!(LocalState::from_bytes(&state.to_bytes()), Some(state));
         assert_eq!(LocalState::from_bytes(b"\x00not json"), None);
+    }
+
+    #[test]
+    fn json_level_preferences_round_trip_and_default_off() {
+        let state = LocalState {
+            json_accessor_paths: true,
+            json_outline_hidden: true,
+            json_outline_width: Some(310.0),
+            ..LocalState::default()
+        };
+        let back = LocalState::from_bytes(&state.to_bytes()).unwrap();
+        assert_eq!(
+            (back.json_accessor_paths, back.json_outline_hidden, back.json_outline_width),
+            (true, true, Some(310.0))
+        );
+        let old = LocalState::from_bytes(br#"{}"#).unwrap();
+        assert_eq!((old.json_accessor_paths, old.json_outline_hidden, old.json_outline_width), (false, false, None));
     }
 }

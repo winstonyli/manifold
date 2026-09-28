@@ -1487,6 +1487,8 @@ struct App {
     json_outline_visible: bool,
     /// Its width in points, as last drawn (local state).
     json_outline_width: f32,
+    /// Copy path's form on a JSON level (local state).
+    json_accessor_paths: bool,
     /// `(group_id, draft_name)` once renaming has started -- either the
     /// toolbar's group-name button (only shown while `current_group` is
     /// `Some`) or the top-level right-click context menu's own "Rename"
@@ -1993,6 +1995,7 @@ impl Default for App {
             json_level: None,
             json_outline_visible: true,
             json_outline_width: 260.0,
+            json_accessor_paths: false,
             renaming_group: None,
             node_menu: None,
             node_menu_cache: None,
@@ -5167,10 +5170,15 @@ impl App {
         }
     }
 
-    /// `Ctrl+F` / headless `OPENFINDBAR` — only meaningful in Tab view, same
-    /// as `Ctrl+L`. Opening with existing text immediately re-searches for
+    /// `Ctrl+F` / headless `OPENFINDBAR` — the find bar in Tab view, the
+    /// search box on a JSON level, nothing elsewhere (same as `Ctrl+L`). Opening with existing text immediately re-searches for
     /// it (matches a real browser's find bar remembering the last term).
     fn open_find_bar_shortcut(&mut self) {
+        // On a JSON level, Ctrl+F searches the value instead.
+        if self.view_mode == ViewMode::Graph && self.json_level.is_some() {
+            self.focus_json_search();
+            return;
+        }
         if !self.showing_tab_view() {
             return;
         }

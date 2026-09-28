@@ -683,6 +683,7 @@ impl App {
             self.build_recently_closed_popup(ui, rect, fade);
         }
         self.build_node_menu(ui);
+        self.build_json_menu(ui);
     }
 
     /// The Graph view's toolbar row: the group breadcrumb, "+ New Tab",
@@ -759,7 +760,14 @@ impl App {
                         } else {
                             name.clone()
                         };
-                        if i + 1 == crumb_count {
+                        if i + 1 == crumb_count && on_json_level {
+                            // The Json node itself: its name is its file's,
+                            // so there is nothing to rename.
+                            let label = ui.label(&display_name);
+                            if display_name != *name {
+                                label.on_hover_text(name);
+                            }
+                        } else if i + 1 == crumb_count {
                             let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
                             if is_renaming {
                                 if let Some((_, draft)) = &mut self.renaming_group {
@@ -786,7 +794,6 @@ impl App {
                                     format!("Click to rename ({name})")
                                 })
                                 .clicked()
-                                && !on_json_level
                             {
                                 actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
                             }
@@ -813,6 +820,9 @@ impl App {
                             // button above.
                             ui.label(egui_phosphor::light::CARET_RIGHT);
                         }
+                    }
+                    if on_json_level {
+                        self.render_json_bar(ui);
                     }
                 }
                 // "+ New Tab" is the only toolbar spawn action kept --
@@ -996,6 +1006,10 @@ impl App {
     /// the Settings page itself needs no such check here, since it's now
     /// a separate `ViewMode` `build_graph_ui` never runs under at all.
     pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui) {
+        if self.json_level.is_some() {
+            self.handle_json_keys(ui);
+            return;
+        }
         if self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
@@ -1084,9 +1098,20 @@ impl App {
                     }
                     Some(LevelItem { kind: LevelItemKind::JsonCard, .. }) => {
                         self.rect_select_start = None;
+                        if let Some(level) = self.json_level.as_mut() {
+                            if let Some(i) = level.card_at(world_pos) {
+                                let target =
+                                    level.row_at(i, world_pos).unwrap_or_else(|| level.cards[i].pointer.clone());
+                                level.selected = Some(target.clone());
+                                level.menu = Some((target, pos));
+                            }
+                        }
                     }
                     None => {
                         self.node_menu = None;
+                        if let Some(level) = self.json_level.as_mut() {
+                            level.menu = None;
+                        }
                         self.rect_select_start = Some(pos);
                     }
                 }

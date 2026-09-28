@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use super::*;
-use crate::json_level::JsonEdit;
+use crate::json_level::{CopyWhat, JsonEdit};
 use crate::json_view::{self, Card};
 
 /// Text height in world units (plan ruling 11).
@@ -56,8 +56,6 @@ pub(crate) fn rgb(hex: u32) -> egui::Color32 {
 }
 
 /// A colour as `0x00RRGGBB`, the way `session_sync::color_value` stores one.
-// Called once Task 7's context menu stores a picked colour.
-#[allow(dead_code)]
 pub(crate) fn rgb_u32(color: egui::Color32) -> u32 {
     u32::from_be_bytes([0, color.r(), color.g(), color.b()])
 }
@@ -467,6 +465,142 @@ impl App {
         if let Some(level) = self.json_level.as_mut() {
             for (i, delta) in moves {
                 level.rects[i] = level.rects[i].translate(delta);
+            }
+        }
+    }
+
+    /// The JSON level's part of the graph toolbar, after the breadcrumb
+    /// (spec "Copy"): the selected path, Copy value, Copy path with its
+    /// form menu, Relayout and the outline toggle.
+    pub(crate) fn render_json_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(level) = self.json_level.as_ref() else { return };
+        let selected = level.selected.clone();
+        ui.separator();
+        let shown = selected.as_deref().map(|p| if p.is_empty() { "/" } else { p }).unwrap_or("nothing selected");
+        ui.add(egui::Label::new(egui::RichText::new(shown).monospace().weak()).truncate()).on_hover_text(shown);
+        ui.add_enabled_ui(selected.is_some(), |ui| {
+            if ui.button("Copy value").on_hover_text("Ctrl+C").clicked() {
+                self.copy_json(ui.ctx(), selected.as_deref(), CopyWhat::Value);
+            }
+            if ui.button("Copy path").on_hover_text("Ctrl+Shift+C").clicked() {
+                self.copy_json(ui.ctx(), selected.as_deref(), CopyWhat::Path);
+            }
+        });
+        // A phosphor caret, not a raw "▾": the app font's tofu-box rule.
+        ui.menu_button(egui_phosphor::light::CARET_DOWN, |ui| {
+            if ui.selectable_label(!self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
+                self.json_accessor_paths = false;
+                ui.close();
+            }
+            if ui.selectable_label(self.json_accessor_paths, "Accessor  users[0].name").clicked() {
+                self.json_accessor_paths = true;
+                ui.close();
+            }
+        })
+        .response
+        .on_hover_text("Copy path's form");
+        if ui.button("Relayout").on_hover_text("Forget every moved card's position").clicked() {
+            self.apply_json_edit(JsonEdit::Relayout);
+        }
+        let outline = egui_phosphor::light::LIST_BULLETS;
+        if ui.selectable_label(self.json_outline_visible, outline).on_hover_text("Outline").clicked() {
+            self.json_outline_visible = !self.json_outline_visible;
+        }
+    }
+
+    fn copy_json(&mut self, ctx: &egui::Context, pointer: Option<&str>, what: CopyWhat) {
+        if let Some(text) = pointer.and_then(|p| self.json_copy_text(p, what)) {
+            ctx.copy_text(text);
+        }
+    }
+
+    /// The right-click menu of a JSON card or row: Copy value / key /
+    /// path, Collapse or Expand (cards), and the colour swatches (cards).
+    /// Closes on a click elsewhere or Escape.
+    pub(crate) fn build_json_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(level) = self.json_level.as_ref() else { return };
+        let Some((pointer, pos)) = level.menu.clone() else { return };
+        let card = level.index.get(&pointer).map(|&i| &level.cards[i]);
+        let is_card = card.is_some();
+        // Only a card with entries collapses, as with a header double-click:
+        // a scalar or empty root has nothing to hide.
+        let has_entries = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
+        let collapsed = card.filter(|_| has_entries).map(|c| c.collapsed);
+        let color = self.current_json_node().and_then(|j| j.view.get(&pointer)).and_then(|o| o.color).map(rgb);
+        let mut close = false;
+        let mut edit = None;
+        let area = egui::Area::new(egui::Id::new("json_context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ui.ctx(), |ui| {
+                popup_frame(ui).show(ui, |ui| {
+                    ui.set_min_width(150.0);
+                    for (label, what) in
+                        [("Copy value", CopyWhat::Value), ("Copy key", CopyWhat::Key), ("Copy path", CopyWhat::Path)]
+                    {
+                        // The root has no key.
+                        if what == CopyWhat::Key && pointer.is_empty() {
+                            continue;
+                        }
+                        if ui.button(label).clicked() {
+                            self.copy_json(ui.ctx(), Some(&pointer), what);
+                            close = true;
+                        }
+                    }
+                    if let Some(collapsed) = collapsed {
+                        ui.separator();
+                        if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
+                            edit = Some(JsonEdit::Toggle(pointer.clone()));
+                            close = true;
+                        }
+                    }
+                    if is_card {
+                        if let Some(picked) = color_swatch_row(ui, color) {
+                            edit = Some(JsonEdit::Color(pointer.clone(), picked.map(rgb_u32)));
+                            close = true;
+                        }
+                    }
+                });
+            });
+        if area.response.clicked_elsewhere() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        if let Some(edit) = edit {
+            self.apply_json_edit(edit);
+        }
+        if close {
+            if let Some(level) = self.json_level.as_mut() {
+                level.menu = None;
+            }
+        }
+    }
+
+    /// Ctrl+F on a JSON level (routed here from the global shortcut, which
+    /// consumes the key): shows the outline and focuses its search box.
+    pub(crate) fn focus_json_search(&mut self) {
+        if let Some(level) = self.json_level.as_mut() {
+            self.json_outline_visible = true;
+            level.search.focus = true;
+        }
+    }
+
+    /// Keys on a JSON level, in place of the graph's arrow-key focus
+    /// moves: copy (plan ruling 13) and Escape to clear the selection
+    /// (Ctrl+F is `focus_json_search`). Skipped while a text field has the
+    /// keyboard.
+    pub(crate) fn handle_json_keys(&mut self, ui: &egui::Ui) {
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let copy = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)).then_some(i.modifiers.shift));
+        if let Some(shift) = copy {
+            let selected = self.json_level.as_ref().and_then(|l| l.selected.clone());
+            self.copy_json(ui.ctx(), selected.as_deref(), if shift { CopyWhat::Path } else { CopyWhat::Value });
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if let Some(level) = self.json_level.as_mut() {
+                level.menu = None;
+                level.selected = None;
             }
         }
     }

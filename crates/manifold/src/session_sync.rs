@@ -1009,6 +1009,9 @@ impl App {
             camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group.clone())),
             nodes,
             closed: self.closed.iter().map(|e| e.doc.clone()).collect(),
+            json_accessor_paths: self.json_accessor_paths,
+            json_outline_hidden: !self.json_outline_visible,
+            json_outline_width: Some(self.json_outline_width),
         }
     }
 
@@ -1037,6 +1040,11 @@ impl App {
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
         self.groups_collapsed = state.groups_collapsed;
         self.restore_closed(state.closed);
+        self.json_accessor_paths = state.json_accessor_paths;
+        self.json_outline_visible = !state.json_outline_hidden;
+        if let Some(width) = state.json_outline_width {
+            self.json_outline_width = width;
+        }
         // Item view showing a tab still spawning (`focused` names it, but
         // it's not in `self.nodes` yet -- a tab's restore is always async):
         // `build_tab_view_ui` bounces an unknown-tab Item view back to
