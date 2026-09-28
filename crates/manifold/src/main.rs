@@ -14,6 +14,7 @@ mod history;
 mod image_view;
 mod input;
 mod json_file;
+mod json_view;
 mod level;
 mod local_state;
 mod node;
