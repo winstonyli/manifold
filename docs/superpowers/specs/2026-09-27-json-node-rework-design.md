@@ -1,6 +1,6 @@
 # JSON node rework: record cards and an outline
 
-Status: design approved in brainstorming, 2026-09-27. Mockups:
+Status: implemented, 2026-09-27. Mockups:
 `.superpowers/brainstorm/16377-1790563937/content/json-level-v2.html`
 (git-ignored).
 
@@ -162,8 +162,10 @@ explicit), added to `kind_fields(Kind::Json)`. It holds compact JSON
 keyed by pointer. Only overrides are stored:
 
 ```json
-{"/users/0": {"pos": [520, 20], "collapsed": true, "color": 3}, "/users": {"pages": 2}}
+{"/users/0": {"pos": [520, 20], "collapsed": true, "color": 40563}, "/users": {"pages": 2}}
 ```
+
+`color` is stored as `0x00RRGGBB`, like a node's colour (`session_sync::color_value`) — `40563` is `0x00009E73`, `TAG_COLOR_PALETTE`'s teal.
 
 - Positions are in level coordinates, with the root card at the origin.
 - The field is last-writer-wins as a whole: if two replicas change the
@@ -224,6 +226,35 @@ render as ordinary nodes, and are not converted. `FROM_JSON`, `KEY` and
   in the accessor form).
 - The headless probe above, and smoke-test coverage for entering a JSON
   level.
+
+## Outcome
+
+Implemented across Tasks 1-11 ("JSON level: the level-source seam" through
+"JSON level: smoke-test coverage, a drive.sh probe and docs"). Rulings made
+while implementing that changed or sharpened this spec:
+
+- `preserve_order` is on (serde_json), so keys show in file order
+  everywhere a `serde_json::Map` is serialized, not just on a JSON level.
+- Only non-empty containers get their own card; `{}`/`[]` render inline as
+  a row, and a scalar root is a header showing the value.
+- The outline shows every entry of an open container without paging (only
+  cards page); during a search it shows exactly the matches and their
+  ancestors, all open.
+- Search matches object keys and scalar values, not array indices (which
+  would match every `0`).
+- Entering a Json node whose file failed to load is refused; double-click
+  does nothing on its error card.
+- Selecting an entry that doesn't resolve in the value is ignored (no
+  selection, no reveal); selecting one that does pans the camera only when
+  it isn't already fully on-screen, not unconditionally.
+- The current crumb on a JSON level is a plain label — the spec's
+  "can't be renamed" is enforced there, not just left unimplemented.
+- The parent-level preview card for a Json node has no port dots (nothing
+  for them to point at from outside the level).
+- `TabPayload.json_body` is removed (Task 10): the JSON viewer popup was
+  its only reader, and it's now write-only once that popup is gone.
+  `manifold-engine-webview2/assets/welcome.html`'s "Try it" card, part of
+  the same removal, no longer points at "Expand as Graph".
 
 ## Future directions
 

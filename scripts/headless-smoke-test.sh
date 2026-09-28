@@ -15,7 +15,8 @@
 # the overloaded and empty groups' border colors (needs Pillow);
 # closing a group holding an image and a nested group, then reopening
 # it (REOPENTAB) nested as it was; `ADDFILE` for each content kind; a tab
-# at a local JSON or PDF converting into its node; quit. The drop checks
+# at a local JSON or PDF converting into its node; entering a dropped
+# JSON's level via JSONSELECT/JSONSEARCH and leaving it; quit. The drop checks
 # click cards where EXPORTSTATE's `cards` says they are, after the layout
 # stops moving (`settle`), not at fixed coordinates.
 #
@@ -470,6 +471,22 @@ check_query after_drop "the dropped note's screen center is within 60px of (400,
     "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
 check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
     "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
+
+# Entering the dropped JSON file: its level, driven by the JSON commands,
+# then back out. `{"a": 1}` is one root card with one row.
+send "DOUBLECLICK $(query after_drop "xy('$json_id')")"
+settle json_in
+check_query json_in "double-clicking a Json card enters its level" \
+    "s['json_level'] and s['json_level']['root'] == '$json_id' and s['current_group'] == '$json_id'"
+check_query json_in "the JSON level shows the root card" \
+    "[c['pointer'] for c in s['json_level']['cards']] == [''] and cards['$json_id#']['kind'] == 'JsonCard'"
+send "JSONSELECT /a"
+send "JSONSEARCH a"
+check_state json_search "JSONSELECT and JSONSEARCH reach the level" \
+    "s['json_level']['selected'] == '/a' and s['json_level']['matches'] == ['/a']"
+send "CLICK 22 17"
+check_state json_out "the back button leaves the JSON level" \
+    "s['json_level'] is None and s['current_group'] != '$json_id'"
 
 # The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
 # each checked by the new card's kind: a PDF, a `.bin` (a Download card)
