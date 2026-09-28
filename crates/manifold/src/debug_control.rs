@@ -230,7 +230,7 @@ pub enum DebugCommand {
     /// The Graph toolbar's "+ File" button with an explicit path instead of
     /// a real file dialog — same "bypass the dialog entirely" reason as
     /// `ExportSession`/`PrintToPdf`. The point, if given, is a window point
-    /// like a drop there (Task 7); with none, the file is jittered around
+    /// like a drop there; with none, the file is jittered around
     /// world center at the current level, the same as the picker. See
     /// `App::add_file_at`.
     AddFile(String, Option<(f32, f32)>),
@@ -287,7 +287,7 @@ pub enum DebugCommand {
     /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
     CloseSplit,
     /// The JSON node context menu's "Expand as Graph" button, targeting an
-    /// explicit node id instead of `self.focused` (a plain `ADDJSON` doesn't
+    /// explicit node id instead of `self.focused` (`ADDFILE` doesn't
     /// focus the node it creates, so a headless test can't rely on focus
     /// here) — see `App::expand_json_as_graph`.
     ExpandJsonAsGraph(String),

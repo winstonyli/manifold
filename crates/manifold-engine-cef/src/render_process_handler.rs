@@ -19,7 +19,7 @@ pub const JSON_BODY_RESULT: &str = "json-body-result";
 /// -- same request/`document.contentType` check as `JSON_BODY_RESULT`, just
 /// the other branch; carries the raw content-type string as its one
 /// argument, same as every other engine forwards it, so `manifold`'s own
-/// allowlist (not this handler) decides what it means.
+/// `content::kind_of` (not this handler) decides what it means.
 pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// See `ipc_protocol::EngineToHost::AudioPlayingChanged`'s own doc comment
 /// for why CEF never sent this before -- a real native read would need the
@@ -115,7 +115,7 @@ impl RenderProcessHandlerBuilder {
 enum PageKind {
     Json(String),
     /// Any other (non-JSON) content-type, carried through verbatim --
-    /// `manifold`'s own `redirect_fetch::classify` allowlist is what
+    /// `manifold`'s own `content::kind_of` is what
     /// actually decides whether it means anything.
     Other(String),
 }

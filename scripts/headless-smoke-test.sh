@@ -14,9 +14,10 @@
 # (reparent, the cycle refusal) and ejecting a rectangle-selected tab;
 # the overloaded and empty groups' border colors (needs Pillow);
 # closing a group holding an image and a nested group, then reopening
-# it (REOPENTAB) nested as it was;
-# quit. The drop checks click cards where EXPORTSTATE's `cards` says they
-# are, after the layout stops moving (`settle`), not at fixed coordinates.
+# it (REOPENTAB) nested as it was; `ADDFILE` for each content kind; a tab
+# at a local JSON or PDF converting into its node; quit. The drop checks
+# click cards where EXPORTSTATE's `cards` says they are, after the layout
+# stops moving (`settle`), not at fixed coordinates.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
 # focuses another tab), left to manual verification (see project memory
@@ -449,16 +450,9 @@ else
         "s['current_group'] == '$inner' and len(tabs) == 2"
 fi
 
-# Task 7: drag and drop. Headless `ADDFILE <path> X Y` places a file the
-# same way a real drop does (`drop_file`) -- Graph view here (Tab view is
-# never entered in this whole "Recently Closed" section above), at the
-# world position under the dropped point, so its on-screen center should
-# land back near that point. Fanning out several drops landing in the same
-# frame (`drop_batch`) is the unit tests' job
-# (`several_drops_in_a_frame_fan_out`, `drop_file_lands_beside_the_focused_
-# tab_in_its_own_group`) -- back-to-back `ADDFILE`s here never reliably
-# land in the same rendered frame (checked live: they didn't, every run),
-# so this only checks the two cards exist and land near the drop point.
+# Drag and drop: `ADDFILE <path> X Y` places a file the way a real drop
+# does (`drop_file`), in Graph view here, so each card lands near X Y.
+# Same-frame fan-out is left to the unit tests.
 printf 'a dropped note\n' >"$out_dir/drop.txt"
 printf '{"a": 1}\n' >"$out_dir/drop.json"
 state before_drop 1 >/dev/null
@@ -477,15 +471,10 @@ check_query after_drop "the dropped note's screen center is within 60px of (400,
 check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
     "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
 
-# Task 8: the remaining `ADDFILE` kinds, alongside the image (the
-# icon-64.png ADDFILE above, checked via outer_built's Image count) and
-# the .txt/.json drops just above. A PDF, an unrecognized `.bin` (a
-# finished Download card) and a `.md` note -- proving Note dispatch
-# comes from sniffing the bytes, not the `.txt` extension -- are each
-# checked the same way: by the new card's kind. `.html` goes further: it
-# becomes a Tab (`insert_content`'s `K::Page` arm calls `spawn_tab_at`),
-# so after `WAITTABS` its card is clicked to focus it into Tab view, and
-# `focused_url` is checked to start with `file://`.
+# The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
+# each checked by the new card's kind: a PDF, a `.bin` (a Download card)
+# and a `.md` (a Note by its bytes, not its extension). `.html` becomes a
+# Tab, which is clicked into Tab view to check its `file://` url.
 printf '%%PDF-1.4\n' >"$out_dir/doc.pdf"
 printf '# a markdown note\n' >"$out_dir/note.md"
 printf '\xffbinary\xfedata' >"$out_dir/data.bin"
@@ -515,6 +504,54 @@ if [ "$html_id" != none ]; then
     sleep 1
     check_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
 fi
+
+# Engine-side conversion, no network: a tab typed to a local JSON or
+# PDF file goes, and a node of that kind takes its place, keeping the
+# file:// url. Checked on EXPORTSESSION, which carries each node's url.
+printf '{"converted": [1, 2]}\n' >"$out_dir/conv.json"
+printf '%%PDF-1.4\n' >"$out_dir/conv.pdf"
+# `converted NAME FILE KIND` succeeds once NAME.json (a session export) has
+# a KIND node whose url is a file:// one ending in /FILE, and no tab there.
+converted() {
+    python - "$out_dir/$1.json" "$2" "$3" <<'EOF'
+import json, sys
+nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
+at = lambda n: n.get("url", "").startswith("file://") and n.get("url", "").endswith("/" + sys.argv[2])
+sys.exit(0 if any(n["kind"] == sys.argv[3] and at(n) for n in nodes) and not any(n["kind"] == "tab" and at(n) for n in nodes) else 1)
+EOF
+}
+# NEWTAB doesn't focus the tab it opens, and a conversion drops to Graph
+# view with nothing focused, so this types into whichever tab NEXTTAB
+# lands on.
+convert_focused_tab() { # $1=file $2=kind (as EXPORTSESSION names it)
+    local url name="conv_$2" i
+    url="file:///$(cygpath -m "$out_dir/$1" | sed 's/ /%20/g')"
+    send "WAITTABS"
+    state "focus_$2" 's["tab_view"]' >/dev/null || send "NEXTTAB"
+    # Let the tab's own load settle, or its address-bar update overwrites
+    # the typed url before ENTER.
+    send "SLEEP 3"
+    if ! state "focus_$2" 's["tab_view"] and url' >/dev/null; then
+        failed "no tab focused to type $1 into (see focus_$2.json)"
+        return
+    fi
+    send "ADDRESSBAR $url"
+    send "SLEEP 1"
+    send "ENTER"
+    for i in $(seq 1 50); do
+        rm -f "$out_dir/$name.json"
+        send "EXPORTSESSION $out_dir_win\\$name.json"
+        wait_for_file "$out_dir/$name.json"
+        if converted "$name" "$1" "$2"; then
+            pass "a tab at a local $1 becomes a $2 node with its file:// url"
+            return
+        fi
+        sleep 0.3
+    done
+    failed "a tab at a local $1 never became a $2 node (see $name.json)"
+}
+convert_focused_tab conv.json json
+convert_focused_tab conv.pdf pdf
 
 send "QUIT"
 if wait "$browser_pid"; then

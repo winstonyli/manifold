@@ -3792,7 +3792,9 @@ impl App {
     }
 
     /// `destroy_tab` without the save: a tab another replica deleted
-    /// (`remove_remotely_deleted`), whose removal is not a local edit.
+    /// (`remove_remotely_deleted`), whose removal is not a local edit, or
+    /// a tab converting into a node (`redirect_tab_to_content`), which
+    /// saves once after inserting it.
     fn remove_tab(&mut self, id: &str) {
         let Some(parent) = self.nodes.get(id).filter(|n| n.payload.saved_tab().is_some()).map(|n| n.parent.clone())
         else {

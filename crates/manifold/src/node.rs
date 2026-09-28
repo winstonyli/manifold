@@ -228,12 +228,10 @@ pub(crate) struct NotePayload {
 /// A locally-added picture, embedded directly on the graph -- the second
 /// new node kind built on the unified model (see `NotePayload`'s own doc
 /// comment for the first). Unlike a tab's thumbnail or a favicon, this
-/// isn't fetched or re-rendered continuously: `path` is decoded once, at
-/// creation (`App::add_image_node`, via a real file picker -- blocks on
-/// OS/human input, so unavailable in headless mode, same reasoning every
-/// other file-dialog action here has) or at session restore, and the
-/// resulting texture (`GpuState::images`, keyed by this node's own id)
-/// never changes after that. `width`/`height` are the *decoded* image's
+/// isn't fetched or re-rendered continuously: `path` is decoded at
+/// creation (`App::insert_content`, from the picker, a drop, `ADDFILE`
+/// or a converted tab), at session restore, or after a Refresh into the
+/// texture `GpuState::images` keeps under this node's own id. `width`/`height` are the *decoded* image's
 /// real pixel dimensions, kept so the card can size itself to the image's
 /// own aspect ratio instead of stretching/squashing it into a fixed box.
 /// Persisted in the session store (`field::PATH`) as just the file
@@ -533,7 +531,6 @@ impl GraphNode {
     }
 
     /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on (Refresh, Open as tab); removed there.
     pub(crate) fn source_url(&self) -> Option<&str> {
         match &self.payload {
             NodePayload::Image(p) => p.url.as_deref(),

@@ -172,8 +172,8 @@ pub struct GpuState {
     favicons: HashMap<String, ThumbTexture>,
     favicon_order: std::collections::VecDeque<String>,
     /// Keyed by *node id*, unlike `favicons` -- an image node's own file is
-    /// decoded once at creation/restore (see `App::add_image_node`), not
-    /// re-fetched, and each node is its own independent picture even if two
+    /// decoded at creation, restore or Refresh (see `App::insert_content`),
+    /// and each node is its own independent picture even if two
     /// nodes happen to point at the same file, so there's no origin-style
     /// sharing to do and no unbounded-growth risk needing `favicons`' own
     /// FIFO eviction -- bounded by however many image nodes the user
@@ -771,9 +771,9 @@ impl GpuState {
     /// `create_texture_with_data` registration as `upload_favicon`, in its
     /// own map since an image node's picture is unrelated in size/lifetime
     /// to a favicon or a tab's content thumbnail. `key` is a *node id* (see
-    /// `images`' own doc comment), and this is only ever called once per
-    /// node (at creation or session restore) -- an image node's picture
-    /// never changes after that the way a tab's thumbnail does every frame.
+    /// `images`' own doc comment), called at creation, restore or after a
+    /// Refresh (which frees the old one first), not every frame like a
+    /// tab's thumbnail.
     pub fn upload_image(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
         let texture = self.device.create_texture_with_data(
             &self.queue,
