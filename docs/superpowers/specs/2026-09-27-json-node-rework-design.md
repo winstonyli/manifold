@@ -118,32 +118,42 @@ today's error card and Retry.
 
 ## Model
 
-### Derived cards
+### Level sources
 
-Entering a Json node generates one `GraphNode` per visible card:
+A level's contents come from a **level source** instead of every piece
+of graph chrome reading `self.nodes` and `current_group` directly. This
+was the brainstorm's parked refactor (C); the user chose it during
+planning (2026-09-27), because JSON is its second implementation
+straight away and the shared chrome then works on both kinds of level.
 
-- `payload: NodePayload::JsonCard { root: <json node id>, pointer }`
-- `group: Some(<json node id>)`
-- `id: "<json node id>#<pointer>"`: deterministic, so selection
-  survives a relayout, and never a valid `NodeId`.
+- `LevelItem { id, kind, rect }`, where `kind` is `Node(ItemNodeKind)`
+  or `JsonCard`, is what the shared code sees. `App::level_items()`
+  lists the current level's items bottom-first, in draw order: stored
+  nodes kind by kind in `GRAPH_DRAW_ORDER`, or a JSON level's cards.
+- Built on `level_items()`: fit and Reset View, the minimap, the LOD
+  visible count, the settle key, the right-click hit test, and
+  `EXPORTSTATE`'s `cards`. `level_edges()` gives each source's edges:
+  `parent` links for stored nodes, row ports for JSON.
+- Layout is a per-source strategy: `layout_current_level()` runs the
+  force settle for stored nodes and the tree layout for a JSON level.
+- Each source paints and handles input for its own items: stored nodes
+  keep `draw_graph_card` unchanged, and JSON cards get their own painter.
+- The refactor lands first, in behaviour-preserving steps, before any
+  JSON work.
 
-A card doesn't copy its value. It reads its rows through the root's
-`value.pointer(pointer)` each frame. Edges are drawn by the JSON level
-renderer from row ports. They are not `parent` links.
+A JSON level is `App::json_level: Option<JsonLevel>`, present exactly
+while `current_group` names a Json node. It holds the visible cards,
+their world rects, the selection, and the outline's and search's state.
+It is rebuilt from the node's `value` and view overrides whenever those
+change, and never enters `self.nodes`, so nothing about it can reach the
+store, Recently Closed, export, pruning or any other all-node walk. A
+card's id is `<json node id>#<pointer>`.
 
-Leaving the level removes every `JsonCard` of that root and clears
-`dragging`, `hovered` and the selection when they point at one. If the
-restored `current_group` is a Json node, the cards are regenerated on
-load. Refresh (content dispatch) regenerates them in place.
-
-The payload is a new **variant**, not a flag, so every exhaustive
-`match` on `NodePayload` fails to compile until it handles `JsonCard`.
-The compiler then audits the all-node walks: `shared_nodes()`, export,
-the pruning keep set, Recently Closed, the filter, the group-delete
-cascade and `EXPORTSTATE` counts. `shared_nodes()` skips the variant
-explicitly rather than relying on the id failing to parse. Any walk
-that uses `if let` or a wildcard instead is found by grepping
-`self.nodes` and is handled explicitly.
+New nodes never land inside a Json node. Every creation site uses
+`insertion_group()`, which on a JSON level is the Json node's own group,
+and the creation controls (New Tab, New Note, New Group, Import Group,
+the empty-canvas menu) are hidden on JSON levels. The breadcrumb names
+the Json node by its file name, and it can't be renamed.
 
 ### Saved view state
 
@@ -219,10 +229,10 @@ render as ordinary nodes, and are not converted. `FROM_JSON`, `KEY` and
 
 - **Table mode** for arrays of same-shaped objects: columns are keys and
   rows are elements. It is the natural view for API responses.
-- **Level-source refactor (C):** make a level's contents come from a
-  source trait (stored nodes, or a JSON value) instead of generating
-  `GraphNode`s into `self.nodes`. It was parked in brainstorming; this
-  design's variant keeps it possible.
+- **More level sources:** a PDF's pages, a folder or archive listing,
+  table mode. Each is one new `LevelItemKind` arm and its painter.
+- **Tree layout for tab trees:** the layout strategy is per source, so
+  tab forests could opt into the JSON level's tree layout.
 - **Per-pointer VIEW merging:** a store map type so concurrent view
   edits on two replicas both survive.
 - **Editing** values in place. The level is read-only for now.
