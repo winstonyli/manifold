@@ -39,10 +39,10 @@ pub(crate) const IMAGE_NODE_MAX_SIZE: egui::Vec2 = egui::vec2(220.0, 220.0);
 /// page dimensions `PdfOutcome` carries.
 pub(crate) const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 
-/// A JSON node's card size -- always this fixed box, never derived from
-/// content the way `Image`/`Pdf`'s own sizing is: there's no natural aspect
-/// ratio for a JSON document, and the card only ever shows a compact shape
-/// summary (double-click opens the real content in `build_json_viewer`).
+/// A JSON leaf's (from an old "Expand as Graph") or error card's fixed box
+/// -- there's no root to preview in either case, just a one-line summary or
+/// the missing-file card. A file-backed Json card is sized by
+/// `json_view::preview_size` instead (see `node_card_size`).
 pub(crate) const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
 /// Graph toolbar filter: when `filter` doesn't match any of `haystacks`,
@@ -536,6 +536,11 @@ pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
         NodePayload::Image(image) if image.error.is_some() => PDF_PENDING_NODE_SIZE,
         NodePayload::Image(image) => image_node_card_size(image.width, image.height),
         NodePayload::Pdf(pdf) => pdf_card_size(pdf),
+        // A file's own card previews its root (spec "The card at the
+        // parent level"); a leaf or an error card keeps the small box.
+        NodePayload::Json(json) if json.key.is_none() && json.error.is_none() => {
+            crate::json_view::preview_size(&json.value)
+        }
         NodePayload::Json(_) => JSON_NODE_SIZE,
         NodePayload::Group(_) => GROUP_NODE_SIZE,
     }
@@ -1306,11 +1311,15 @@ impl App {
         body
     }
 
-    /// Json: always the same fixed `JSON_NODE_SIZE` box (see its
-    /// own doc comment for why) -- no GPU texture, just an icon
-    /// plus `json_summary`'s own compact shape label. Double-click
-    /// opens the full tree in `build_json_viewer`, the same popup a
-    /// tab's own "View as JSON" already uses.
+    /// Json: an error card keeps the missing-file box, and a leaf from an
+    /// old "Expand as Graph" keeps its one-line summary (both fixed at
+    /// `JSON_NODE_SIZE`). A file-backed node instead previews its root --
+    /// the file name, `{n}`/`[n]`, up to `PREVIEW_ROWS` root rows and
+    /// `+ N more` -- sized by `json_view::preview_size` and painted by the
+    /// JSON level's own `paint_json_content`, so the two never disagree
+    /// about what a root looks like. Double-click enters the level
+    /// (`current_group`/`sync_json_level`), the same one "View as JSON"
+    /// builds.
     pub(crate) fn paint_json_body(
         &mut self,
         ui: &mut egui::Ui,
@@ -1326,39 +1335,59 @@ impl App {
             body.tooltip = Some(error);
             return body;
         }
-        let Some(summary) = self.nodes.get(id).and_then(|n| n.as_json()).map(|json| match &json.key {
-            Some(key) => {
-                let key_display = if key.chars().count() > 16 {
-                    format!("{}…", key.chars().take(15).collect::<String>())
-                } else {
-                    key.clone()
-                };
-                format!("{key_display}: {}", json_summary(&json.value))
+        let Some(json) = self.nodes.get(id).and_then(|n| n.as_json()) else { return body };
+        let text = !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+        if json.key.is_some() {
+            // A leaf from an old "Expand as Graph": its one-line summary.
+            let key = json.key.clone().unwrap_or_default();
+            let key_display =
+                if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
+            let summary = format!("{key_display}: {}", json_summary(&json.value));
+            if text {
+                let center = rect.center();
+                let color = ui.visuals().text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(center),
+                        egui::Align2::CENTER_CENTER,
+                        summary,
+                        egui::FontId::proportional(12.0),
+                        color,
+                    );
+                }));
             }
-            None => json_summary(&json.value),
-        }) else {
             return body;
-        };
-        if !self.graph_lod_simplified && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-            let json_center = rect.center();
-            let summary_color = ui.visuals().text_color();
-            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                overlay_painter.text(
-                    project(json_center) + egui::vec2(0.0, -12.0),
-                    egui::Align2::CENTER_CENTER,
-                    egui_phosphor::light::BRACKETS_CURLY,
-                    egui::FontId::proportional(22.0),
-                    ACCENT,
-                );
-                overlay_painter.text(
-                    project(json_center) + egui::vec2(0.0, 14.0),
-                    egui::Align2::CENTER_CENTER,
-                    summary,
-                    egui::FontId::proportional(12.0),
-                    summary_color,
-                );
-            }));
         }
+        let len = crate::json_view::entry_count(&json.value);
+        let rows = len.min(crate::json_view::PREVIEW_ROWS);
+        let card = crate::json_view::Card {
+            pointer: String::new(),
+            parent: None,
+            depth: 0,
+            collapsed: false,
+            rows,
+            more: len - rows,
+        };
+        let header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
+        let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);
+        let look = crate::json_level_ui::CardLook {
+            palette: &pal,
+            text_color: ui.visuals().text_color(),
+            inv_zoom: 1.0 / zoom_scale,
+            text,
+            selected_row: None,
+            hit_rows: &[],
+        };
+        crate::json_level_ui::paint_json_content(
+            ui.painter(),
+            deferred_overlays,
+            rect,
+            &json.value,
+            &header,
+            rows,
+            len - rows,
+            &look,
+        );
         body
     }
 
@@ -1791,15 +1820,22 @@ mod tests {
             node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
             GROUP_NODE_SIZE
         );
-        let json = NodePayload::Json(JsonPayload {
-            path: "a.json".into(),
-            value: serde_json::json!({}),
-            key: None,
-            error: None,
-            url: None,
-            view: JsonView::default(),
-        });
-        assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
+        let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
+            NodePayload::Json(JsonPayload {
+                path: "a.json".into(),
+                value,
+                key: key.map(Into::into),
+                error: error.map(Into::into),
+                url: None,
+                view: JsonView::default(),
+            })
+        };
+        let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
+        assert_eq!(node_card_size(&json(five.clone(), None, None)), crate::json_view::preview_size(&five));
+        assert_eq!(node_card_size(&json(serde_json::json!({}), None, None)).x, crate::json_view::CARD_WIDTH);
+        // A leaf from an old "Expand as Graph" and an error card keep the small size.
+        assert_eq!(node_card_size(&json(serde_json::json!(1), Some("k"), None)), JSON_NODE_SIZE);
+        assert_eq!(node_card_size(&json(five, None, Some("missing"))), JSON_NODE_SIZE);
         assert_eq!(
             node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
