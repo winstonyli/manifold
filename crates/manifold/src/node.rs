@@ -314,8 +314,8 @@ pub(crate) struct JsonPayload {
     /// card just shows the value's own shape), `Some(k)` for a leaf created
     /// by "Expand as Graph" (see `App::expand_json_entries`), whose card
     /// shows `"{k}: {value}"` instead so it's clear which field this is.
-    /// Never persisted -- exploded leaves are session-only, like the
-    /// groups around them (`GroupPayload::from_json`).
+    /// A leaf (`key.is_some()`) is stored as its own `JsonLeaf` node, not
+    /// this field -- see `GroupPayload::from_json`.
     pub(crate) key: Option<String>,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
@@ -325,6 +325,9 @@ pub(crate) struct JsonPayload {
     /// fetched again from it. `None` for a local file, and for a leaf
     /// (`key.is_some()`, never persisted).
     pub(crate) url: Option<String>,
+    /// What the user changed about this node's level (spec "Saved view
+    /// state"): the store's `view` field. Empty for a leaf.
+    pub(crate) view: crate::json_view::JsonView,
 }
 
 /// A tab without an engine: asleep since a restore (only the focused tab
@@ -598,6 +601,7 @@ pub(crate) struct GroupPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_view::JsonView;
 
     // `Tab` is left out: `TabPayload` owns a live `EngineTab`, which a unit
     // test can't construct. Its arm is covered by live Tab-view runs instead.
@@ -640,7 +644,8 @@ mod tests {
                 value: serde_json::Value::Null,
                 key: None,
                 error: None,
-                url: None
+                url: None,
+                view: JsonView::default()
             })),
             ItemNodeKind::Json
         );

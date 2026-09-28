@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ipc_protocol::HostToEngine;
 
+use crate::json_view::JsonView;
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::node::{
     DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, TabPayload,
@@ -40,7 +41,8 @@ pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
         Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED],
         Kind::Group => &[POS, COLOR, NAME, FROM_JSON],
         Kind::Note => &[POS, COLOR, URL, TEXT],
-        Kind::Image | Kind::Pdf | Kind::Json => &[POS, COLOR, URL, PATH],
+        Kind::Image | Kind::Pdf => &[POS, COLOR, URL, PATH],
+        Kind::Json => &[POS, COLOR, URL, PATH, VIEW],
         Kind::Download => &[POS, COLOR, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Unknown(_) => &[],
@@ -347,6 +349,7 @@ impl App {
                     match &j.key {
                         None => {
                             fields.insert(field::URL, str(j.url.as_deref().unwrap_or("")));
+                            fields.insert(field::VIEW, str(&j.view.to_field()));
                             Kind::Json
                         }
                         Some(key) => {
@@ -467,7 +470,14 @@ impl App {
                 }
                 NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
                 NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
-                NodePayload::Json(p) if p.key.is_none() && changed(field::URL) => p.url = url_of(fields),
+                NodePayload::Json(p) if p.key.is_none() => {
+                    if changed(field::URL) {
+                        p.url = url_of(fields);
+                    }
+                    if changed(field::VIEW) {
+                        p.view = JsonView::from_field(&str_of(fields, field::VIEW));
+                    }
+                }
                 // Paths, keys and values never change after creation.
                 NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
             }
@@ -546,12 +556,24 @@ impl App {
             Kind::Json => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
-                    let payload =
-                        JsonPayload { path, value: serde_json::Value::Null, key: None, error: None, url: None };
+                    let payload = JsonPayload {
+                        path,
+                        value: serde_json::Value::Null,
+                        key: None,
+                        error: None,
+                        url: None,
+                        view: JsonView::default(),
+                    };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
                 } else if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
-                    let payload =
-                        JsonPayload { path, value: serde_json::Value::Null, key: None, error: Some(error), url: None };
+                    let payload = JsonPayload {
+                        path,
+                        value: serde_json::Value::Null,
+                        key: None,
+                        error: Some(error),
+                        url: None,
+                        view: JsonView::default(),
+                    };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
                 }
             }
@@ -559,7 +581,14 @@ impl App {
                 let text = str_of(fields, field::VALUE);
                 let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
                 let key = Some(str_of(fields, field::KEY));
-                let payload = JsonPayload { path: str_of(fields, field::PATH), value, key, error: None, url: None };
+                let payload = JsonPayload {
+                    path: str_of(fields, field::PATH),
+                    value,
+                    key,
+                    error: None,
+                    url: None,
+                    view: JsonView::default(),
+                };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
             }
             Kind::Download => {
@@ -576,6 +605,11 @@ impl App {
             node.color = color;
             if let Some(url) = node.source_url_mut() {
                 *url = url_of(fields);
+            }
+            if let NodePayload::Json(json) = &mut node.payload {
+                if json.key.is_none() {
+                    json.view = JsonView::from_field(&str_of(fields, field::VIEW));
+                }
             }
         }
         // The placeholder just inserted above (see `missing_with_url`)
@@ -1682,6 +1716,47 @@ pub(crate) mod tests {
             ),
         ]);
         assert_eq!(app_with(&nodes).shared_nodes(), nodes);
+    }
+
+    /// An App holding one Json node, id `id(1)`, loaded from a temp file.
+    fn app_with_json_file(name: &str) -> (App, String) {
+        let dir = crate::store::testutil::temp_dir(name);
+        let path = dir.join("v.json");
+        std::fs::write(&path, r#"{"users": [{"name": "a"}]}"#).unwrap();
+        let mut app = App::default();
+        let node = id(1).to_string();
+        app.insert_json_node_with_id(node.clone(), path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None)
+            .unwrap();
+        (app, node)
+    }
+
+    #[test]
+    fn a_json_nodes_view_round_trips_through_the_store() {
+        let (mut app, node) = app_with_json_file("json_view_field");
+        let NodePayload::Json(json) = &mut app.nodes.get_mut(&node).unwrap().payload else { unreachable!() };
+        json.view.entry("/users").collapsed = Some(true);
+
+        let shared = app.shared_nodes();
+        let fields = &shared[&id(1)].fields;
+        assert_eq!(fields.get(&field::VIEW), Some(&FieldValue::Str(r#"{"/users":{"collapsed":true}}"#.into())));
+
+        // Restoring those fields gives the same view back.
+        let mut restored = App::default();
+        restored.materialize(node.clone(), Kind::Json, fields, None, None);
+        let json = restored.nodes[&node].as_json().unwrap();
+        assert_eq!(json.view.get("/users").unwrap().collapsed, Some(true));
+    }
+
+    #[test]
+    fn a_remote_view_change_updates_the_node_in_place() {
+        let (mut app, node) = app_with_json_file("json_view_remote");
+        let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
+        let mut fields = app.shared_nodes()[&id(1)].fields.clone();
+        fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
+        app.materialize(node.clone(), Kind::Json, &fields, None, None);
+        let json = app.nodes[&node].as_json().unwrap();
+        assert_eq!(json.view.get("").unwrap().collapsed, Some(true));
+        assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
     }
 
     #[test]

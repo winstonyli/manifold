@@ -2614,6 +2614,7 @@ impl App {
                     key: None,
                     error: None,
                     url: None,
+                    view: json_view::JsonView::default(),
                 }),
             },
         );
@@ -4359,6 +4360,7 @@ impl App {
             NodePayload::Json(p) => Some(p.path.clone()),
             _ => None,
         };
+        let view = node.as_json().map(|j| j.view.clone()).unwrap_or_default();
         let at = self.node_order.iter().position(|n| n == id);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_image(id);
@@ -4383,6 +4385,7 @@ impl App {
                     key: None,
                     error: Some(error.clone()),
                     url: Some(url),
+                    view: json_view::JsonView::default(),
                 }),
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
@@ -4392,6 +4395,10 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(id) {
             (node.parent, node.color, node.group) = (parent, color, group);
+            if let NodePayload::Json(json) = &mut node.payload {
+                json.view = view;
+                json.view.retain_resolvable(&json.value);
+            }
         }
         if let (Some(at), Some(last)) = (at, self.node_order.pop()) {
             self.node_order.insert(at.min(self.node_order.len()), last);
@@ -4691,7 +4698,14 @@ impl App {
                 pos,
                 vel: egui::Vec2::ZERO,
                 color: None,
-                payload: NodePayload::Json(JsonPayload { path, value, key: None, error: None, url: None }),
+                payload: NodePayload::Json(JsonPayload {
+                    path,
+                    value,
+                    key: None,
+                    error: None,
+                    url: None,
+                    view: json_view::JsonView::default(),
+                }),
             },
         );
         self.node_order.push(id);
@@ -4797,6 +4811,7 @@ impl App {
                             key: Some(key),
                             error: None,
                             url: None,
+                            view: json_view::JsonView::default(),
                         }),
                     },
                 );
@@ -5862,6 +5877,7 @@ mod tests {
                 key: None,
                 error: None,
                 url: None,
+                view: json_view::JsonView::default(),
             }),
         );
         app.closed.push(ClosedEntry {
@@ -6284,6 +6300,7 @@ mod tests {
                 key: Some("k".into()),
                 error: None,
                 url: None,
+                view: json_view::JsonView::default(),
             }),
         );
         put_in(&mut app, &json0, &inner);
@@ -6318,6 +6335,7 @@ mod tests {
                 key: Some("k".into()),
                 error: None,
                 url: None,
+                view: json_view::JsonView::default(),
             }),
         );
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");

@@ -201,9 +201,11 @@ pub mod field {
     pub const PATH: u32 = 11;
     pub const KEY: u32 = 12;
     pub const VALUE: u32 = 13;
+    /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
+    pub const VIEW: u32 = 14;
 }
 
-pub static FIELDS: [FieldDef; 13] = [
+pub static FIELDS: [FieldDef; 14] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos, explicit: true },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color, explicit: false },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id, explicit: false },
@@ -219,6 +221,7 @@ pub static FIELDS: [FieldDef; 13] = [
     FieldDef { no: field::PATH, name: "path", ty: FieldType::Str, explicit: true },
     FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
     FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str, explicit: false },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -516,6 +519,10 @@ mod tests {
             assert!(seen.insert(def.no), "field {} twice", def.no);
             assert!(!RESERVED.contains(&def.no), "field {} is reserved", def.no);
         }
+        assert_eq!(field::VIEW, 14);
+        let view = field_by_name("view").unwrap();
+        assert_eq!(view.ty, FieldType::Str);
+        assert!(!view.explicit);
     }
 
     #[test]

@@ -1619,6 +1619,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_view::JsonView;
 
     /// A `CardView` for `kind` with nothing set, for tests to override.
     fn test_view(kind: ItemNodeKind) -> CardView {
@@ -1796,6 +1797,7 @@ mod tests {
             key: None,
             error: None,
             url: None,
+            view: JsonView::default(),
         });
         assert_eq!(node_card_size(&json), JSON_NODE_SIZE);
         assert_eq!(
@@ -1871,7 +1873,8 @@ mod tests {
                 value: serde_json::json!(1),
                 key: None,
                 error: None,
-                url: None
+                url: None,
+                view: JsonView::default()
             })),
             ["x.json"]
         );
