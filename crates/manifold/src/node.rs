@@ -329,6 +329,19 @@ pub(crate) struct JsonPayload {
     pub(crate) view: crate::json_view::JsonView,
 }
 
+impl JsonPayload {
+    /// Whether this node has a level to enter and a view to edit: a file's
+    /// node whose value parsed. Not a leaf, not an error card (plan ruling
+    /// 10), and not a refetch placeholder (`Null`, no error, its file not
+    /// here yet), whose view must outlive the fetch. A file that really
+    /// holds `null` is still on disk, so the stat runs only for `Null`.
+    pub(crate) fn enterable(&self) -> bool {
+        self.key.is_none()
+            && self.error.is_none()
+            && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
+    }
+}
+
 /// A tab without an engine: asleep since a restore (only the focused tab
 /// starts at launch), waking (a spawn in flight), or failed (its engine
 /// couldn't start: a crash restart, a restore or a retry). The card keeps

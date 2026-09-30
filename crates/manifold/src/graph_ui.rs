@@ -934,12 +934,19 @@ impl App {
                         ZoomChipAction::Out => graph_zoom_step = Some(1.0 / ZOOM_STEP),
                     }
                 }
-                ui.add(egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."));
+                // Not on a JSON level: it filters no cards there, and the
+                // outline has the level's own search.
+                if !on_json_level {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."),
+                    );
+                }
                 // Only shown once there's actually something to clear --
                 // same `egui_phosphor::light::X` glyph every other close/
                 // dismiss affordance in this app already uses, so this
                 // reads as "clear" at a glance rather than a new symbol.
-                if !self.graph_filter.is_empty()
+                if !on_json_level
+                    && !self.graph_filter.is_empty()
                     && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
                 {
                     self.graph_filter.clear();
@@ -1482,15 +1489,12 @@ impl App {
                     ItemNodeKind::Image if card.response.clicked() => {
                         pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
                     }
-                    // Enters the node's JSON level, unless it's a leaf or
-                    // its file failed to load (plan ruling 10).
+                    // Enters the node's JSON level, unless it's a leaf, its
+                    // file failed to load (plan ruling 10) or it's still
+                    // being refetched (`JsonPayload::enterable`).
                     ItemNodeKind::Json
                         if card.response.double_clicked()
-                            && self
-                                .nodes
-                                .get(id)
-                                .and_then(|n| n.as_json())
-                                .is_some_and(|j| j.key.is_none() && j.error.is_none()) =>
+                            && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                     {
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))
                     }

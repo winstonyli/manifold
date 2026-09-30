@@ -1250,6 +1250,7 @@ impl App {
     /// lands with the root (`materialize_imported`). Ends with
     /// `save_session`, same as `replace_running_session`/`reopen_closed`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
+        self.leave_json_level();
         let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
             Ok(imported) => imported,
             Err(err) => {

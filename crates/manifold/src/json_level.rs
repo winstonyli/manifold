@@ -42,8 +42,9 @@ pub(crate) struct Outline {
     pub(crate) rows: Vec<OutlineRow>,
     /// `open` or the search changed; `rows` is rebuilt before the next draw.
     pub(crate) dirty: bool,
-    /// Scroll this row into view on the next draw.
-    pub(crate) scroll_to: Option<usize>,
+    /// Scroll this entry's row into view on the next draw; resolved to a
+    /// row there, after any rebuild.
+    pub(crate) scroll_to: Option<String>,
 }
 
 #[derive(Default)]
@@ -165,6 +166,17 @@ impl App {
         node.as_json().filter(|json| json.key.is_none())
     }
 
+    /// Leaves a JSON level for the Json node's group, before placing a new
+    /// node the user should see land (a drop, an added file, an import, a
+    /// reopen): the level shows none of its group's nodes. Based on
+    /// `current_group`, like `insertion_group`, so it holds before the
+    /// first frame too.
+    pub(crate) fn leave_json_level(&mut self) {
+        if self.current_json_node().is_some() {
+            self.switch_group_level(self.insertion_group());
+        }
+    }
+
     /// Makes `json_level` match `current_group`: built on entering a Json
     /// node, relaid out when marked stale, dropped on leaving. Runs at the
     /// start of `build_graph_ui` and in `switch_group_level`.
@@ -173,11 +185,12 @@ impl App {
             self.json_level = None;
             return;
         };
-        // A Json node whose file failed to load has no level (plan ruling
-        // 10); a failed Refresh while viewing it, or a restart after its
-        // file moved, leaves to its group, where its card shows the error
-        // and Retry. Its group is never a Json node, so this recurses once.
-        if json.error.is_some() {
+        // A Json node whose file failed to load, or is still being
+        // refetched, has no level (plan ruling 10, `JsonPayload::enterable`);
+        // a failed Refresh while viewing it, or a restart after its file
+        // moved, leaves to its group, where its card shows the error and
+        // Retry. Its group is never a Json node, so this recurses once.
+        if !json.enterable() {
             let group = self.current_group.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.group.clone());
             self.switch_group_level(group);
             return;
@@ -195,15 +208,23 @@ impl App {
             }
             _ => self.json_level = Some(JsonLevel::new(id, json.value.clone(), &json.view)),
         }
+        // Here, not in the outline's build, so a worker's answer lands
+        // while the outline is hidden (headless `JSONSEARCH`).
+        self.receive_json_search();
     }
 
     /// Applies `edit` to the shown node's view, drops overrides that no
     /// longer resolve, relays the level out and saves (`VIEW` is diffed).
+    /// Only while the node holds a parsed value: pruning against an error
+    /// or refetch placeholder's `Null` would wipe the synced view.
     pub(crate) fn edit_json_view(&mut self, edit: impl FnOnce(&mut JsonView, &serde_json::Value, &HashSet<String>)) {
         let Some(level) = self.json_level.as_mut() else { return };
         let Some(NodePayload::Json(json)) = self.nodes.get_mut(&level.node_id).map(|n| &mut n.payload) else {
             return;
         };
+        if !json.enterable() {
+            return;
+        }
         edit(&mut json.view, &level.value, &level.expanded);
         json.view.retain_resolvable(&level.value);
         level.relayout(&json.view);
@@ -273,6 +294,18 @@ impl App {
     /// Takes a worker's answer if it has one, and rebuilds the outline's
     /// rows if they're stale. Runs each frame before the outline draws.
     pub(crate) fn poll_json_search(&mut self) {
+        self.receive_json_search();
+        let Some(level) = self.json_level.as_mut() else { return };
+        if level.outline.dirty {
+            let keep = level.search.result.as_ref().map(|r| &r.keep);
+            level.outline.rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
+            level.outline.dirty = false;
+        }
+    }
+
+    /// Takes a worker's answer if it has one, marking the outline stale.
+    /// Cheap (a `try_recv`), so it runs every frame from `sync_json_level`.
+    fn receive_json_search(&mut self) {
         let Some(level) = self.json_level.as_mut() else { return };
         if let Some((query, rx)) = &level.search.pending {
             match rx.try_recv() {
@@ -286,11 +319,6 @@ impl App {
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => level.search.pending = None,
             }
-        }
-        if level.outline.dirty {
-            let keep = level.search.result.as_ref().map(|r| &r.keep);
-            level.outline.rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
-            level.outline.dirty = false;
         }
     }
 
@@ -324,17 +352,19 @@ impl App {
         if let Some(target) = level.entry_rect(pointer).filter(|r| !view.contains_rect(*r)) {
             self.camera.ease_to(egui::Rect::from_center_size(target.center(), view.size()));
         }
+        // The rows are rebuilt only if this opened something (spec: "rebuilt
+        // only when its expansion or the search changes"); a search shows
+        // every kept row open regardless.
         let mut ancestor = String::new();
-        level.outline.open.insert(String::new());
+        let mut opened = level.outline.open.insert(String::new());
         for token in json_view::pointer_tokens(json_view::parent_pointer(pointer).unwrap_or("")) {
             ancestor = json_view::child_pointer(&ancestor, &token);
-            level.outline.open.insert(ancestor.clone());
+            opened |= level.outline.open.insert(ancestor.clone());
         }
-        let keep = level.search.result.as_ref().map(|r| &r.keep);
-        let rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
-        level.outline.scroll_to = rows.iter().position(|r| r.pointer == pointer);
-        level.outline.rows = rows;
-        level.outline.dirty = false;
+        if opened && level.search.result.is_none() {
+            level.outline.dirty = true;
+        }
+        level.outline.scroll_to = Some(pointer.to_string());
     }
 
     /// `EXPORTSTATE`'s `json_level` (spec "Headless"): the root id, the
@@ -545,6 +575,102 @@ mod tests {
         app.sync_json_level(); // the start of the next frame
         assert_eq!(app.current_group.as_deref(), Some(OUTER), "no level is built from the placeholder");
         assert!(app.json_level.is_none());
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_view() {
+        let dir = crate::store::testutil::temp_dir("json_level-failed_reload_view");
+        let mut app = App::default();
+        let body =
+            crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, br#"{"a": {"b": 1}}"#.to_vec())
+                .unwrap();
+        let source = ContentSource::Web { url: "https://x.test/j".into(), body };
+        app.insert_content(source, J.into(), egui::Vec2::ZERO, None).unwrap();
+        app.switch_group_level(Some(J.into()));
+        app.apply_json_edit(JsonEdit::Toggle("/a".into()));
+        app.apply_json_edit(JsonEdit::Moved("/a".into(), egui::pos2(500.0, 40.0)));
+        let before = app.nodes[J].as_json().unwrap().view.to_field();
+        assert_ne!(before, "", "the view has overrides to lose");
+        let bad = WebBody::File {
+            kind: crate::content::ContentKind::Json,
+            path: dir.join("missing.json").to_string_lossy().into_owned(),
+        };
+        app.reload_fetched_node(J, bad);
+        let json = app.nodes[J].as_json().unwrap();
+        assert!(json.error.is_some(), "the reload failed");
+        assert_eq!(json.view.to_field(), before, "the error card keeps the view for Retry");
+    }
+
+    #[test]
+    fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
+        let dir = crate::store::testutil::temp_dir("json_level-placeholder");
+        let mut app = App::default();
+        app.insert_placeholder_node(
+            OUTER.into(),
+            egui::Vec2::ZERO,
+            NodePayload::Group(GroupPayload { name: "outer".into(), from_json: false }),
+        );
+        // What `materialize` inserts for a missing file with a known URL.
+        let view = JsonView::from_field(r#"{"/a":{"collapsed":true}}"#);
+        let payload = JsonPayload {
+            path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
+            value: serde_json::Value::Null,
+            key: None,
+            error: None,
+            url: Some("https://x.test/j".into()),
+            view: view.clone(),
+        };
+        app.insert_placeholder_node(J.into(), egui::Vec2::ZERO, NodePayload::Json(payload));
+        app.nodes.get_mut(J).unwrap().group = Some(OUTER.into());
+        assert!(!app.nodes[J].as_json().unwrap().enterable());
+        app.switch_group_level(Some(J.into()));
+        assert_eq!(app.current_group.as_deref(), Some(OUTER), "entering leaves for the placeholder's group");
+        assert!(app.json_level.is_none());
+        assert_eq!(app.nodes[J].as_json().unwrap().view, view);
+    }
+
+    #[test]
+    fn nothing_is_created_out_of_sight_on_a_json_level() {
+        let (mut app, j) = app_with_json("create", r#"{"a": 1}"#);
+        app.view_mode = ViewMode::Graph;
+        app.switch_group_level(Some(j.clone()));
+        let count = app.nodes.len();
+        app.new_group_shortcut();
+        app.new_note_shortcut();
+        assert_eq!(app.nodes.len(), count, "the creation shortcuts do nothing here");
+        assert!(app.json_level.is_some());
+        // A drop leaves the level first, then lands where the user sees it.
+        let file = crate::store::testutil::temp_dir("json_level-create-drop").join("dropped.txt");
+        std::fs::write(&file, b"x").unwrap();
+        app.drop_file(file, egui::pos2(300.0, 300.0));
+        assert_eq!(app.current_group.as_deref(), Some(OUTER));
+        assert!(app.json_level.is_none());
+        let new: Vec<_> = app.nodes.values().filter(|n| n.as_note().is_some()).collect();
+        assert_eq!(new.len(), 1, "the dropped text file is a note");
+        assert_eq!(new[0].group.as_deref(), Some(OUTER));
+    }
+
+    #[test]
+    fn selecting_a_row_already_open_in_the_outline_does_not_rebuild_it() {
+        let (mut app, j) = app_with_json("outline_rebuild", r#"{"a": {"b": 1}, "c": {"d": 2}}"#);
+        app.switch_group_level(Some(j));
+        app.poll_json_search();
+        let rows = |app: &App| {
+            app.json_level.as_ref().unwrap().outline.rows.iter().map(|r| r.pointer.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(rows(&app), ["", "/a", "/c"]);
+        let built = app.json_level.as_ref().unwrap().outline.rows.as_ptr();
+        app.apply_json_edit(JsonEdit::Select("/c".into()));
+        let outline = &app.json_level.as_ref().unwrap().outline;
+        assert!(!outline.dirty, "the root was already open");
+        assert_eq!(outline.scroll_to.as_deref(), Some("/c"));
+        app.poll_json_search();
+        assert_eq!(app.json_level.as_ref().unwrap().outline.rows.as_ptr(), built, "the same rows, not rebuilt");
+        // Selecting inside a closed container opens it: a rebuild.
+        app.apply_json_edit(JsonEdit::Select("/a/b".into()));
+        assert!(app.json_level.as_ref().unwrap().outline.dirty);
+        app.poll_json_search();
+        assert_eq!(rows(&app), ["", "/a", "/a/b", "/c"]);
     }
 
     #[test]

@@ -33,6 +33,8 @@ const TOOLTIP_MAX_CHARS: usize = 2000;
 const OUTLINE_ROW_HEIGHT: f32 = 20.0;
 /// An outline row's open/close caret, and the gap left where a row has none.
 const CARET_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+/// The bar's selected-path label's widest, in points.
+const PATH_LABEL_MAX_WIDTH: f32 = 240.0;
 
 /// Which colour a value's text takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -487,7 +489,12 @@ impl App {
         let selected = level.selected.clone();
         ui.separator();
         let shown = selected.as_deref().map(|p| if p.is_empty() { "/" } else { p }).unwrap_or("nothing selected");
-        ui.add(egui::Label::new(egui::RichText::new(shown).monospace().weak()).truncate()).on_hover_text(shown);
+        // Capped, so a deep pointer can't push the buttons after it off
+        // the bar; the whole path is in the hover.
+        let label = egui::Label::new(egui::RichText::new(shown).monospace().weak()).truncate();
+        ui.allocate_ui(egui::vec2(PATH_LABEL_MAX_WIDTH, ui.available_height()), |ui| ui.add(label))
+            .inner
+            .on_hover_text(shown);
         ui.add_enabled_ui(selected.is_some(), |ui| {
             if ui.button("Copy value").on_hover_text("Ctrl+C").clicked() {
                 self.copy_json(ui.ctx(), selected.as_deref(), CopyWhat::Value);
@@ -674,7 +681,9 @@ impl App {
             .iter()
             .fold(OUTLINE_ROW_HEIGHT, |h, style| h.max(ui.text_style_height(style)));
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
-        if let Some(row) = level.outline.scroll_to.take() {
+        // `poll_json_search` has just rebuilt any stale rows, so the target
+        // resolves against what's drawn.
+        if let Some(row) = level.outline.scroll_to.take().and_then(|p| rows.iter().position(|r| r.pointer == p)) {
             scroll = scroll.vertical_scroll_offset((row as f32 * row_height - 80.0).max(0.0));
         }
         let mut clicked = None;

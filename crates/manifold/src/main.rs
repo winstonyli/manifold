@@ -2261,6 +2261,7 @@ impl App {
     /// "Lazy tabs"). An image or JSON file that's gone since is toasted and
     /// skipped; a PDF reopens as its error card. Ends with `save_session`.
     fn reopen_closed(&mut self, entry: ClosedEntry) {
+        self.leave_json_level();
         let imported = match store::json::import(&entry.doc, || self.alloc_node_id().parse().expect("a store id")) {
             Ok(imported) => imported,
             Err(err) => {
@@ -4089,7 +4090,12 @@ impl App {
     /// creates an empty group at whichever level is currently being
     /// viewed, nested under `current_group` if that's not the top level
     /// (see `GroupPayload`'s own doc comment on nesting).
+    /// Not on a JSON level (spec: creation controls are hidden there): the
+    /// group would be stored where the user can't see it.
     fn new_group_shortcut(&mut self) {
+        if self.current_json_node().is_some() {
+            return;
+        }
         let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_group_at(id, pos);
@@ -4119,7 +4125,11 @@ impl App {
     /// level is currently being viewed, same as "+ New Tab" and (now)
     /// "+ New Group" itself, since a note is a
     /// plain member of a level's subgraph like a tab or download is.
+    /// Not on a JSON level, like `new_group_shortcut`.
     fn new_note_shortcut(&mut self) {
+        if self.current_json_node().is_some() {
+            return;
+        }
         let id = self.alloc_node_id();
         let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
         self.insert_note_at(id, pos);
@@ -4372,9 +4382,14 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(id) {
             (node.parent, node.color, node.group) = (parent, color, group);
+            // The view goes back unpruned onto an error card: pruning
+            // against its `Null` would wipe, and sync away, every override
+            // a Retry should get back.
             if let NodePayload::Json(json) = &mut node.payload {
                 json.view = view;
-                json.view.retain_resolvable(&json.value);
+                if result.is_ok() {
+                    json.view.retain_resolvable(&json.value);
+                }
             }
         }
         if let (Some(at), Some(last)) = (at, self.node_order.pop()) {
@@ -4722,8 +4737,10 @@ impl App {
     }
 
     /// `path` as a new node at `pos`, or jittered around world center, at
-    /// the current level. The picker and `ADDFILE`.
+    /// the current level (a JSON level is left first). The picker and
+    /// `ADDFILE`.
     fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
+        self.leave_json_level();
         let id = self.alloc_node_id();
         let pos = pos.unwrap_or_else(|| GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id));
         let group = self.insertion_group();
@@ -4752,6 +4769,9 @@ impl App {
                 let _ = self.insert_content(ContentSource::Local(path), id, pos + fan_out, group);
             }
             None => {
+                // Leaving first: the drop point then maps into the level
+                // the node lands in, with no outline beside it.
+                self.leave_json_level();
                 let pos = self.graph_screen_point_to_world(point);
                 let _ = self.add_file_at(path, Some(pos + fan_out));
             }
@@ -5005,8 +5025,10 @@ impl App {
     }
 
     /// `Ctrl+F` / headless `OPENFINDBAR` — the find bar in Tab view, the
-    /// search box on a JSON level, nothing elsewhere (same as `Ctrl+L`). Opening with existing text immediately re-searches for
-    /// it (matches a real browser's find bar remembering the last term).
+    /// outline's search box on a JSON level (`focus_json_search`), nothing
+    /// elsewhere in Graph view. Opening the find bar with existing text
+    /// re-searches for it (matches a real browser's find bar remembering
+    /// the last term).
     fn open_find_bar_shortcut(&mut self) {
         // On a JSON level, Ctrl+F searches the value instead.
         if self.view_mode == ViewMode::Graph && self.json_level.is_some() {
