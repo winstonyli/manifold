@@ -1,6 +1,6 @@
 # One entry point for placing a node
 
-Status: draft for approval, 2026-09-30. Nothing here is implemented.
+Status: draft, policy B decided 2026-09-30; awaiting go-ahead to implement. Nothing here is implemented.
 Origin: Part C of `2026-09-30-main-split-and-engine-table-design.md`, after
 the main.rs split. Survey line numbers are at `1b82e41`; grep the names.
 
@@ -43,23 +43,22 @@ Non-goals: tabs (they become nodes when the engine answers, via
 centroid placement beyond calling the same helper, folding the node-kind
 enums.
 
-## Policy (approved: "proceed as recommended")
+## Policy (decided: policy B for all)
 
-- Notes, groups, tabs and downloads go to `insertion_group()` and the user
-  stays on the JSON level. The two early returns in `new_group_shortcut`
-  and `new_note_shortcut` go.
-- File adds (picker, `ADDFILE`, a graph-view drop) leave the JSON level
-  first, as now, because the picked file is content the user expects to see.
-- A drop onto Tab view beside the focused tab keeps the focused node's own
-  group (it is not `insertion_group()`; that group may differ from the
-  level being viewed).
+Creating any node from a JSON level leaves the level first
+(`leave_json_level()`), then places the node in `current_group`. This
+covers notes, groups, tabs, downloads and file adds, so the user always
+sees what they made, and the old refusals in `new_group_shortcut` and
+`new_note_shortcut` go. Reopen and import already work this way.
 
-Consequence to accept or reject: on a JSON level, `NEWGROUP`/`NEWNOTE` now
-create a node the user can't see until they leave the level. The old
-refusal existed for exactly that reason. Mitigation: a toast, "Added to
-<group name or top level>", when the level is a JSON level. If that feels
-wrong, the alternative is policy B (always leave the level first), which
-changes one line in the helper.
+Exception, unchanged: a drop onto Tab view beside the focused tab keeps
+the focused node's own group (it is not the level being viewed).
+
+Consequence: `placement()` needs `&mut self` (it leaves the level), and
+after it runs `insertion_group()` equals `current_group`, so creation
+sites stop calling `insertion_group()`. It stays for
+`switch_group_level` in `json_level.rs`, which still needs "the Json
+node's own group" to leave a level.
 
 ## Design
 
@@ -70,50 +69,52 @@ In `fetched.rs` (next to the other insert functions):
 pub(crate) struct Placement { pub group: Option<String>, pub pos: egui::Vec2 }
 
 impl App {
-    /// `insertion_group()` plus `pos`, or a jittered world-center spawn.
-    pub(crate) fn placement(&self, id: &str, pos: Option<egui::Vec2>) -> Placement;
+    /// Leaves a JSON level, then returns `current_group` with `pos`, or a
+    /// jittered world-center spawn for `id` when `pos` is `None`.
+    pub(crate) fn placement(&mut self, id: &str, pos: Option<egui::Vec2>) -> Placement;
 
-    /// Allocates an id, inserts a plain node at `placement`, appends to
-    /// `node_order`, returns the id. Does not save: the caller does, as
-    /// `apply_graph_action` already does once per action.
-    pub(crate) fn place_node(&mut self, payload: NodePayload, at: Placement) -> String;
+    /// Inserts a plain node at `at` under `id` (allocated when `None`),
+    /// appends to `node_order`, returns the id. Does not save: the caller
+    /// does, as `apply_graph_action` already does once per action.
+    pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String;
 }
 ```
 
 - `insert_group_at`, `insert_note_at`, `insert_placeholder_node`, the three
   `insert_*_node_with_id` bodies and the demo literals become
-  `place_node` calls. `insert_*_node_with_id` keep their `id` parameter,
-  since the id is chosen before the file is read; so `place_node` takes an
-  optional id (`Option<String>`, allocated when `None`).
+  `place_node` calls. The `_with_id` functions keep their `id` parameter,
+  since the id is chosen before the file is read.
 - `GroupSelected` calls `place_node` with its centroid position.
 - `insert_note_at`'s `save_session()` moves to its callers
   (`new_note_shortcut`, which then saves like `new_group_shortcut` does).
-- `add_file_at` and `drop_file` keep `leave_json_level()`; everything else
-  calls `placement()` for its group.
-- Tabs, reopen and import call `placement()` (or `insertion_group()`) for
-  the group only.
+- `add_file_at` and `drop_file` drop their own `leave_json_level()`
+  calls; `placement()` does it.
+- Tabs (`spawn_new_tab`, `spawn_tab_at` callers), reopen and import call
+  `placement()` for the group only.
 
 ## Steps
 
 One commit each, gate after each (fmt, clippy `-D warnings`, tests, smoke):
 
-1. `placement` and `place_node`, with tests: group is the Json node's own
-   group on a JSON level; the current group elsewhere; an explicit `pos`
+1. `placement` and `place_node`, with tests: on a JSON level it leaves the
+   level and gives the outer group; elsewhere the current group; an explicit `pos`
    wins; jitter is deterministic per id.
 2. Convert `insert_group_at`, `insert_note_at`, `GroupSelected`; drop the
-   two early returns; add the toast; move the note save. Tests: `NEWNOTE`
-   and `NEWGROUP` on a JSON level land in the outer group and keep the
-   level.
+   two early returns; move the note save. Tests: `NEWNOTE`
+   and `NEWGROUP` on a JSON level leave it and land in the outer group.
 3. Convert the `insert_*_node_with_id`, `insert_placeholder_node` and
    download literals (pure refactor, existing tests cover them).
 4. Convert the first-launch demo literals.
+5. Tabs: `spawn_new_tab`, `spawn_tab_at` and their callers take their group
+   from `placement()`, so a new tab from a JSON level leaves it (test:
+   `NEWTAB` on a JSON level).
 
 ## Risks
 
-- Step 2 is the only behaviour change. Steps 1, 3 and 4 are refactors.
+- Steps 2 and 5 change behaviour; steps 1, 3 and 4 are refactors.
 - `node_order` position: every literal site pushes to the end, which
   `place_node` keeps.
-- A node created on a JSON level is invisible there (see Policy).
+- A new tab made on a JSON level now leaves it, as a file add already does.
 
 ## Testing
 
