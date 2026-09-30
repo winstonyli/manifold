@@ -704,119 +704,7 @@ impl App {
         // now too, not just this one.
         toolbar_panel("graph_toolbar", ui, |ui| {
             ui.horizontal_centered(|ui| {
-                // Empty at the true top level; one entry per ancestor
-                // group otherwise (root-most first, current group
-                // last) -- groups nest now, so this is a real
-                // breadcrumb trail, not just "are we inside the one
-                // possible group or not." See `GroupPayload`'s own doc
-                // comment on nesting and `group_breadcrumb`'s own.
-                let breadcrumb = self.group_breadcrumb();
-                if !breadcrumb.is_empty() {
-                    // Goes up exactly one level (to the current group's
-                    // own parent, possibly another group, not straight
-                    // to the top) -- the breadcrumb trail below takes
-                    // the place "+ New Group" would otherwise fill in
-                    // the empty space "+ New Tab"/"Reset View" already
-                    // occupy at the top level. `CARET_LEFT`, not a raw
-                    // "◀" glyph -- the Tab toolbar's identical back
-                    // chevron already migrated to `egui_phosphor` for
-                    // this exact font's tofu-box risk with symbol
-                    // glyphs; this one had been missed.
-                    let leave_group_response =
-                        ui.button(egui_phosphor::light::CARET_LEFT).on_hover_text("Back one level");
-                    if leave_group_response.clicked() {
-                        actions.push(GraphAction::LeaveGroup);
-                    }
-                    leave_group_button_rect = Some(leave_group_response.rect);
-                    let crumb_count = breadcrumb.len();
-                    for (i, (id, name)) in breadcrumb.iter().enumerate() {
-                        // Each crumb's own name comes straight from a
-                        // Group's name -- unbounded, and now often an
-                        // object key or `[index]` from "Expand as
-                        // Graph" (see that feature's own doc comment),
-                        // which tend to run longer than a hand-typed
-                        // group name. A plain `ui.button(name)` has no
-                        // width limit of its own in this horizontal,
-                        // non-wrapping row, so a deeply-nested chain of
-                        // long names could push clean off the toolbar's
-                        // own visible edge -- the exact overflow this
-                        // toolbar's other buttons were already
-                        // confirmed live to hit once before (see the
-                        // icon-only button conversion elsewhere in this
-                        // file). Truncated the same char-count way
-                        // `json_summary` already bounds a JSON card's
-                        // own label, for the same "small fixed chrome,
-                        // not a place for arbitrarily long text" reason.
-                        let display_name = if name.chars().count() > 20 {
-                            format!("{}…", name.chars().take(19).collect::<String>())
-                        } else {
-                            name.clone()
-                        };
-                        if i + 1 == crumb_count && on_json_level {
-                            // The Json node itself: its name is its file's,
-                            // so there is nothing to rename.
-                            let label = ui.label(&display_name);
-                            if display_name != *name {
-                                label.on_hover_text(name);
-                            }
-                        } else if i + 1 == crumb_count {
-                            let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
-                            if is_renaming {
-                                if let Some((_, draft)) = &mut self.renaming_group {
-                                    let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
-                                    if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
-                                        response.request_focus();
-                                    }
-                                    if response.lost_focus() {
-                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                            actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
-                                        } else {
-                                            actions.push(GraphAction::Node(
-                                                id.clone(),
-                                                NodeAction::CommitRename(draft.clone()),
-                                            ));
-                                        }
-                                    }
-                                }
-                            } else if ui
-                                .button(&display_name)
-                                .on_hover_text(if display_name == *name {
-                                    "Click to rename".to_string()
-                                } else {
-                                    format!("Click to rename ({name})")
-                                })
-                                .clicked()
-                            {
-                                actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
-                            }
-                        } else {
-                            // An ancestor, not the current group itself
-                            // -- click to jump straight there (reuses
-                            // `GraphAction::EnterGroup`, the exact same "switch
-                            // current_group and ease the camera" effect
-                            // double-clicking a group card triggers;
-                            // it doesn't care which direction that is).
-                            if ui
-                                .button(&display_name)
-                                .on_hover_text(if display_name == *name {
-                                    "Jump to this group".to_string()
-                                } else {
-                                    format!("Jump to this group ({name})")
-                                })
-                                .clicked()
-                            {
-                                actions.push(GraphAction::EnterGroup(id.clone()));
-                            }
-                            // `CARET_RIGHT`, not a raw "›" glyph -- same
-                            // tofu-box reasoning as the back-one-level
-                            // button above.
-                            ui.label(egui_phosphor::light::CARET_RIGHT);
-                        }
-                    }
-                    if on_json_level {
-                        self.render_json_bar(ui);
-                    }
-                }
+                leave_group_button_rect = self.toolbar_breadcrumb(ui, on_json_level, &mut actions);
                 // "+ New Tab" is the only toolbar spawn action kept --
                 // it's also the sole recovery path when `self.nodes` is
                 // completely empty (see `build_graph_ui`'s early return),
@@ -831,154 +719,22 @@ impl App {
                 if !on_json_level && ui.button("+ New Tab").clicked() {
                     actions.push(GraphAction::NewTab(self.focused.clone()));
                 }
-                // These three buttons used to carry full text labels
-                // ("Import Group...", "Ungroup All", "Collapse Groups"/
-                // "Expand Groups") and, together with "+ New Group"/
-                // "+ New Tab"/"Reset View", made this toolbar cramped
-                // enough to confirm live (text touching the window
-                // edge at 1300pt wide). Switched to `egui_phosphor`
-                // icons instead of folding into a dropdown -- each
-                // stays a one-click action, just narrower, with the
-                // old label preserved as a hover tooltip so the action
-                // is still discoverable. All three now work at any
-                // level, not just the top -- see `GroupPayload`'s own
-                // doc comment on nesting; each already acts on
-                // `self.current_group`/`nodes_at_current_level(Group)`
-                // (its own level), never hardcoding the top level.
-                //
-                // The rule this toolbar actually follows, for any
-                // future addition: the identity/entry-point action that
-                // defines what this toolbar *is* ("+ New Tab") stays
-                // full text; everything else added later to relieve
-                // crowding goes icon-only with a hover tooltip carrying
-                // the old label, per this paragraph's own history.
-                // "Reset View" was the other text holdout until it
-                // became the zoom chip's Fit button (hover text keeps
-                // the name).
-                //
-                // Same "real file dialog blocks on OS/human input
-                // neither exists in headless mode" reasoning as every
-                // other Export/Import button -- `IMPORTGROUP <path>`
-                // calls the same underlying import directly instead.
                 if !on_json_level && (!self.headless || !groups_at_level.is_empty()) {
-                    toolbar_chip(ui, |ui| {
-                        let mut bounds: Option<egui::Rect> = None;
-                        let mut grow = |r: egui::Rect| {
-                            bounds = Some(bounds.map_or(r, |b| b.union(r)));
-                        };
-                        if !self.headless {
-                            let response = chip_icon_button(
-                                ui,
-                                egui::Id::new("icon_btn_import_group"),
-                                egui_phosphor::light::UPLOAD_SIMPLE,
-                            )
-                            .on_hover_text("Import Group...");
-                            grow(response.rect);
-                            if response.clicked() {
-                                actions.push(GraphAction::ImportGroup);
-                            }
-                        }
-                        if !groups_at_level.is_empty() {
-                            let response = chip_icon_button(
-                                ui,
-                                egui::Id::new("icon_btn_ungroup_all"),
-                                egui_phosphor::light::FOLDER_MINUS,
-                            )
-                            .on_hover_text("Ungroup All");
-                            grow(response.rect);
-                            if response.clicked() {
-                                actions.push(GraphAction::UngroupAll);
-                            }
-                        }
-                        if !groups_at_level.is_empty() {
-                            let (icon, hover) = if self.groups_collapsed {
-                                (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
-                            } else {
-                                (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
-                            };
-                            let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon)
-                                .on_hover_text(hover);
-                            grow(response.rect);
-                            if response.clicked() {
-                                self.groups_collapsed = !self.groups_collapsed;
-                            }
-                        }
-                        bounds.unwrap_or(ui.cursor())
-                    });
+                    self.toolbar_group_chip(ui, groups_at_level, &mut actions);
                 }
-                // −/+/100%/Fit in one chip (`render_zoom_chip`, shared
-                // with Image view). Fit is the old "Reset View"
-                // (re-fit every node at this level); the `%` readout
-                // keeps the current pan and only resets the scale.
-                let zoom = self.camera.zoom_pct / 100.0;
-                if let Some(action) = render_zoom_chip(
-                    ui,
-                    self.camera.zoom_pct,
-                    zoom > GRAPH_ZOOM_MIN + 1e-3,
-                    zoom < GRAPH_ZOOM_MAX - 1e-3,
-                    "Reset View (fit all)",
-                ) {
-                    match action {
-                        ZoomChipAction::Fit => reset_view = true,
-                        ZoomChipAction::Reset100 => reset_zoom = true,
-                        ZoomChipAction::In => graph_zoom_step = Some(ZOOM_STEP),
-                        ZoomChipAction::Out => graph_zoom_step = Some(1.0 / ZOOM_STEP),
-                    }
+                match self.toolbar_zoom(ui) {
+                    Some(ZoomChipAction::Fit) => reset_view = true,
+                    Some(ZoomChipAction::Reset100) => reset_zoom = true,
+                    Some(ZoomChipAction::In) => graph_zoom_step = Some(ZOOM_STEP),
+                    Some(ZoomChipAction::Out) => graph_zoom_step = Some(1.0 / ZOOM_STEP),
+                    None => {}
                 }
-                // Not on a JSON level: it filters no cards there, and the
-                // outline has the level's own search.
+                self.toolbar_filter(ui, on_json_level);
+                recently_closed_button_rect = self.toolbar_recently_closed(ui);
                 if !on_json_level {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."),
-                    );
+                    self.toolbar_selection(ui, &mut actions);
                 }
-                // Only shown once there's actually something to clear --
-                // same `egui_phosphor::light::X` glyph every other close/
-                // dismiss affordance in this app already uses, so this
-                // reads as "clear" at a glance rather than a new symbol.
-                if !on_json_level
-                    && !self.graph_filter.is_empty()
-                    && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
-                {
-                    self.graph_filter.clear();
-                }
-                if !self.closed.is_empty() {
-                    let label = format!("Recently Closed ({})", self.closed.len());
-                    let response = ui.button(label);
-                    if response.clicked() {
-                        toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
-                    }
-                    recently_closed_button_rect = Some(response.rect);
-                }
-                // Rectangle-select's own action bar: only shown once a
-                // right-drag has actually selected something (see
-                // `handle_rect_select`).
-                if !on_json_level && !self.selected_tabs.is_empty() {
-                    // Matches "+ New Group" above: groups the selection
-                    // into a new subgroup of whichever level is
-                    // currently being viewed, not just the top.
-                    if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
-                        actions.push(GraphAction::GroupSelected);
-                    }
-                    if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
-                        actions.push(GraphAction::CloseSelected);
-                    }
-                }
-                // Cloned rather than borrowed -- `self.tab_spawn_error =
-                // None` below needs `&mut self`, which a live `&String`
-                // borrow from `self.tab_spawn_error` would conflict
-                // with; this only ever clones a short error string, and
-                // only while one is actually being shown.
-                if let Some(err) = self.tab_spawn_error.clone() {
-                    ui.colored_label(DANGER_COLOR, &err);
-                    // No dismiss before this -- an error already easy to
-                    // miss in a packed row (now scrollable, see the
-                    // `ScrollArea` above) had no way to clear itself
-                    // short of a new spawn attempt overwriting it.
-                    if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
-                        self.tab_spawn_error = None;
-                    }
-                }
+                self.toolbar_spawn_error(ui);
                 shortcuts_help_button_rect = Some(self.render_universal_chip(ui));
             });
         });
@@ -990,6 +746,284 @@ impl App {
             shortcuts_help_button_rect,
             recently_closed_button_rect,
             leave_group_button_rect,
+        }
+    }
+
+    /// The breadcrumb trail with its back button, the rename box on the current group and, on a JSON level, the JSON bar. Returns the back button's rect.
+    fn toolbar_breadcrumb(
+        &mut self,
+        ui: &mut egui::Ui,
+        on_json_level: bool,
+        actions: &mut Vec<GraphAction>,
+    ) -> Option<egui::Rect> {
+        let mut leave_group_button_rect: Option<egui::Rect> = None;
+        // Empty at the true top level; one entry per ancestor
+        // group otherwise (root-most first, current group
+        // last) -- groups nest now, so this is a real
+        // breadcrumb trail, not just "are we inside the one
+        // possible group or not." See `GroupPayload`'s own doc
+        // comment on nesting and `group_breadcrumb`'s own.
+        let breadcrumb = self.group_breadcrumb();
+        if !breadcrumb.is_empty() {
+            // Goes up exactly one level (to the current group's
+            // own parent, possibly another group, not straight
+            // to the top) -- the breadcrumb trail below takes
+            // the place "+ New Group" would otherwise fill in
+            // the empty space "+ New Tab"/"Reset View" already
+            // occupy at the top level. `CARET_LEFT`, not a raw
+            // "◀" glyph -- the Tab toolbar's identical back
+            // chevron already migrated to `egui_phosphor` for
+            // this exact font's tofu-box risk with symbol
+            // glyphs; this one had been missed.
+            let leave_group_response = ui.button(egui_phosphor::light::CARET_LEFT).on_hover_text("Back one level");
+            if leave_group_response.clicked() {
+                actions.push(GraphAction::LeaveGroup);
+            }
+            leave_group_button_rect = Some(leave_group_response.rect);
+            let crumb_count = breadcrumb.len();
+            for (i, (id, name)) in breadcrumb.iter().enumerate() {
+                // Each crumb's own name comes straight from a
+                // Group's name -- unbounded, and now often an
+                // object key or `[index]` from "Expand as
+                // Graph" (see that feature's own doc comment),
+                // which tend to run longer than a hand-typed
+                // group name. A plain `ui.button(name)` has no
+                // width limit of its own in this horizontal,
+                // non-wrapping row, so a deeply-nested chain of
+                // long names could push clean off the toolbar's
+                // own visible edge -- the exact overflow this
+                // toolbar's other buttons were already
+                // confirmed live to hit once before (see the
+                // icon-only button conversion elsewhere in this
+                // file). Truncated the same char-count way
+                // `json_summary` already bounds a JSON card's
+                // own label, for the same "small fixed chrome,
+                // not a place for arbitrarily long text" reason.
+                let display_name = if name.chars().count() > 20 {
+                    format!("{}…", name.chars().take(19).collect::<String>())
+                } else {
+                    name.clone()
+                };
+                if i + 1 == crumb_count && on_json_level {
+                    // The Json node itself: its name is its file's,
+                    // so there is nothing to rename.
+                    let label = ui.label(&display_name);
+                    if display_name != *name {
+                        label.on_hover_text(name);
+                    }
+                } else if i + 1 == crumb_count {
+                    let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
+                    if is_renaming {
+                        if let Some((_, draft)) = &mut self.renaming_group {
+                            let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+                            if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
+                                response.request_focus();
+                            }
+                            if response.lost_focus() {
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    actions.push(GraphAction::Node(id.clone(), NodeAction::CancelRename));
+                                } else {
+                                    actions
+                                        .push(GraphAction::Node(id.clone(), NodeAction::CommitRename(draft.clone())));
+                                }
+                            }
+                        }
+                    } else if ui
+                        .button(&display_name)
+                        .on_hover_text(if display_name == *name {
+                            "Click to rename".to_string()
+                        } else {
+                            format!("Click to rename ({name})")
+                        })
+                        .clicked()
+                    {
+                        actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
+                    }
+                } else {
+                    // An ancestor, not the current group itself
+                    // -- click to jump straight there (reuses
+                    // `GraphAction::EnterGroup`, the exact same "switch
+                    // current_group and ease the camera" effect
+                    // double-clicking a group card triggers;
+                    // it doesn't care which direction that is).
+                    if ui
+                        .button(&display_name)
+                        .on_hover_text(if display_name == *name {
+                            "Jump to this group".to_string()
+                        } else {
+                            format!("Jump to this group ({name})")
+                        })
+                        .clicked()
+                    {
+                        actions.push(GraphAction::EnterGroup(id.clone()));
+                    }
+                    // `CARET_RIGHT`, not a raw "›" glyph -- same
+                    // tofu-box reasoning as the back-one-level
+                    // button above.
+                    ui.label(egui_phosphor::light::CARET_RIGHT);
+                }
+            }
+            if on_json_level {
+                self.render_json_bar(ui);
+            }
+        }
+        leave_group_button_rect
+    }
+
+    /// Import / Ungroup All / Collapse chip for the groups at this level.
+    fn toolbar_group_chip(&mut self, ui: &mut egui::Ui, groups_at_level: &[String], actions: &mut Vec<GraphAction>) {
+        // These three buttons used to carry full text labels
+        // ("Import Group...", "Ungroup All", "Collapse Groups"/
+        // "Expand Groups") and, together with "+ New Group"/
+        // "+ New Tab"/"Reset View", made this toolbar cramped
+        // enough to confirm live (text touching the window
+        // edge at 1300pt wide). Switched to `egui_phosphor`
+        // icons instead of folding into a dropdown -- each
+        // stays a one-click action, just narrower, with the
+        // old label preserved as a hover tooltip so the action
+        // is still discoverable. All three now work at any
+        // level, not just the top -- see `GroupPayload`'s own
+        // doc comment on nesting; each already acts on
+        // `self.current_group`/`nodes_at_current_level(Group)`
+        // (its own level), never hardcoding the top level.
+        //
+        // The rule this toolbar actually follows, for any
+        // future addition: the identity/entry-point action that
+        // defines what this toolbar *is* ("+ New Tab") stays
+        // full text; everything else added later to relieve
+        // crowding goes icon-only with a hover tooltip carrying
+        // the old label, per this paragraph's own history.
+        // "Reset View" was the other text holdout until it
+        // became the zoom chip's Fit button (hover text keeps
+        // the name).
+        //
+        // Same "real file dialog blocks on OS/human input
+        // neither exists in headless mode" reasoning as every
+        // other Export/Import button -- `IMPORTGROUP <path>`
+        // calls the same underlying import directly instead.
+        toolbar_chip(ui, |ui| {
+            let mut bounds: Option<egui::Rect> = None;
+            let mut grow = |r: egui::Rect| {
+                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+            };
+            if !self.headless {
+                let response =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_import_group"), egui_phosphor::light::UPLOAD_SIMPLE)
+                        .on_hover_text("Import Group...");
+                grow(response.rect);
+                if response.clicked() {
+                    actions.push(GraphAction::ImportGroup);
+                }
+            }
+            if !groups_at_level.is_empty() {
+                let response =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_ungroup_all"), egui_phosphor::light::FOLDER_MINUS)
+                        .on_hover_text("Ungroup All");
+                grow(response.rect);
+                if response.clicked() {
+                    actions.push(GraphAction::UngroupAll);
+                }
+            }
+            if !groups_at_level.is_empty() {
+                let (icon, hover) = if self.groups_collapsed {
+                    (egui_phosphor::light::CORNERS_OUT, "Expand Groups")
+                } else {
+                    (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
+                };
+                let response =
+                    chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon).on_hover_text(hover);
+                grow(response.rect);
+                if response.clicked() {
+                    self.groups_collapsed = !self.groups_collapsed;
+                }
+            }
+            bounds.unwrap_or(ui.cursor())
+        });
+    }
+
+    /// The zoom chip; what it asks for, if anything.
+    fn toolbar_zoom(&self, ui: &mut egui::Ui) -> Option<ZoomChipAction> {
+        // −/+/100%/Fit in one chip (`render_zoom_chip`, shared
+        // with Image view). Fit is the old "Reset View"
+        // (re-fit every node at this level); the `%` readout
+        // keeps the current pan and only resets the scale.
+        let zoom = self.camera.zoom_pct / 100.0;
+        render_zoom_chip(
+            ui,
+            self.camera.zoom_pct,
+            zoom > GRAPH_ZOOM_MIN + 1e-3,
+            zoom < GRAPH_ZOOM_MAX - 1e-3,
+            "Reset View (fit all)",
+        )
+    }
+
+    /// The filter box and its clear button (not on a JSON level).
+    fn toolbar_filter(&mut self, ui: &mut egui::Ui, on_json_level: bool) {
+        // Not on a JSON level: it filters no cards there, and the
+        // outline has the level's own search.
+        if !on_json_level {
+            ui.add(egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."));
+        }
+        // Only shown once there's actually something to clear --
+        // same `egui_phosphor::light::X` glyph every other close/
+        // dismiss affordance in this app already uses, so this
+        // reads as "clear" at a glance rather than a new symbol.
+        if !on_json_level
+            && !self.graph_filter.is_empty()
+            && ui.button(egui_phosphor::light::X).on_hover_text("Clear filter").clicked()
+        {
+            self.graph_filter.clear();
+        }
+    }
+
+    /// "Recently Closed (n)"; returns its rect for the popup anchor.
+    fn toolbar_recently_closed(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
+        let mut recently_closed_button_rect: Option<egui::Rect> = None;
+        if !self.closed.is_empty() {
+            let label = format!("Recently Closed ({})", self.closed.len());
+            let response = ui.button(label);
+            if response.clicked() {
+                toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
+            }
+            recently_closed_button_rect = Some(response.rect);
+        }
+        recently_closed_button_rect
+    }
+
+    /// Group/Close Selected, shown once a rectangle select has picked something.
+    fn toolbar_selection(&self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
+        // Rectangle-select's own action bar: only shown once a
+        // right-drag has actually selected something (see
+        // `handle_rect_select`).
+        if !self.selected_tabs.is_empty() {
+            // Matches "+ New Group" above: groups the selection
+            // into a new subgroup of whichever level is
+            // currently being viewed, not just the top.
+            if ui.button(format!("Group Selected ({})", self.selected_tabs.len())).clicked() {
+                actions.push(GraphAction::GroupSelected);
+            }
+            if ui.button(format!("Close Selected ({})", self.selected_tabs.len())).clicked() {
+                actions.push(GraphAction::CloseSelected);
+            }
+        }
+    }
+
+    /// The last tab-spawn error with its dismiss button.
+    fn toolbar_spawn_error(&mut self, ui: &mut egui::Ui) {
+        // Cloned rather than borrowed -- `self.tab_spawn_error =
+        // None` below needs `&mut self`, which a live `&String`
+        // borrow from `self.tab_spawn_error` would conflict
+        // with; this only ever clones a short error string, and
+        // only while one is actually being shown.
+        if let Some(err) = self.tab_spawn_error.clone() {
+            ui.colored_label(DANGER_COLOR, &err);
+            // No dismiss before this -- an error already easy to
+            // miss in a packed row (now scrollable, see the
+            // `ScrollArea` above) had no way to clear itself
+            // short of a new spawn attempt overwriting it.
+            if ui.button(egui_phosphor::light::X).on_hover_text("Dismiss").clicked() {
+                self.tab_spawn_error = None;
+            }
         }
     }
 
