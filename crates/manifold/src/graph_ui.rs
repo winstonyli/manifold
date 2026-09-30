@@ -290,7 +290,8 @@ impl App {
             GraphAction::Node(id, action) => self.apply_node_action(ctx, &id, action),
             GraphAction::NewTab(parent) => {
                 let home_page = self.settings.home_page.clone();
-                let group = self.insertion_group();
+                self.leave_json_level();
+                let group = self.current_group.clone();
                 self.spawn_new_tab(parent, group, &home_page);
             }
             GraphAction::NewNote(pos) => {

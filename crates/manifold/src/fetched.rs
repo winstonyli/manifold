@@ -591,10 +591,8 @@ impl App {
     /// the current level (a JSON level is left first). The picker and
     /// `ADDFILE`.
     pub(crate) fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
-        self.leave_json_level();
         let id = self.alloc_node_id();
-        let pos = pos.unwrap_or_else(|| GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id));
-        let group = self.insertion_group();
+        let Placement { group, pos } = self.placement(&id, pos);
         self.insert_content(ContentSource::Local(path), id, pos, group)
     }
 

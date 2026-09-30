@@ -271,7 +271,14 @@ impl App {
     pub(crate) fn new_tab_shortcut(&mut self) {
         let home_page = self.settings.home_page.clone();
         let parent = self.focused.clone();
-        let group = self.group_of(&parent);
+        // From a JSON level: leave it, and land in the level then shown (the
+        // focused id may be a level card, not a stored node).
+        let group = if self.current_json_node().is_some() {
+            self.leave_json_level();
+            self.current_group.clone()
+        } else {
+            self.group_of(&parent)
+        };
         self.spawn_new_tab(parent, group, &home_page);
     }
 

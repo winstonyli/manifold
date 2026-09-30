@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_new_note_or_group_from_a_json_level_leaves_it_and_lands_in_the_outer_group() {
-        let (mut app, j) = app_with_json("create", "[1]");
+        let (mut app, j) = app_with_json("create_note_group", "[1]");
         for create in [App::new_note_shortcut, App::new_group_shortcut] {
             app.switch_group_level(Some(j.clone()));
             let before = app.node_order.len();
@@ -467,6 +467,16 @@ mod tests {
             let made = &app.nodes[app.node_order.last().unwrap()];
             assert_eq!(made.group.as_deref(), Some(OUTER));
         }
+    }
+
+    #[test]
+    fn a_new_tab_from_a_json_level_leaves_it_and_spawns_in_the_outer_group() {
+        let (mut app, j) = app_with_json("new_tab", "[1]");
+        app.switch_group_level(Some(j));
+        app.new_tab_shortcut();
+        assert!(app.json_level.is_none(), "the level was left");
+        let (spawn, _) = app.test_spawns.last().expect("a tab spawn was issued");
+        assert_eq!(spawn.group.as_deref(), Some(OUTER));
     }
 
     #[test]

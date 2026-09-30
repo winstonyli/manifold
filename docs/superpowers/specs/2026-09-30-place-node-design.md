@@ -1,6 +1,6 @@
 # One entry point for placing a node
 
-Status: draft, policy B decided 2026-09-30; awaiting go-ahead to implement. Nothing here is implemented.
+Status: implemented 2026-09-30 (policy B). `add_file_at` uses `placement`; `drop_file` keeps its own `leave_json_level()` because its drop point is mapped to world coordinates after the level changes.
 Origin: Part C of `2026-09-30-main-split-and-engine-table-design.md`, after
 the main.rs split. Survey line numbers are at `1b82e41`; grep the names.
 
