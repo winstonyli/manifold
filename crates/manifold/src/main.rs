@@ -1841,40 +1841,18 @@ impl App {
         let welcome = "manifold://welcome".to_string();
         self.spawn_tab_async(TabSpawn::new(welcome_id, welcome, kind, egui::Vec2::ZERO, SpawnPurpose::Restore, zoom));
 
-        let note_id = self.alloc_node_id();
-        self.nodes.insert(
-            note_id.clone(),
-            GraphNode {
-                parent: None,
-                group: None,
-                pos: egui::vec2(-300.0, 0.0),
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Note(NotePayload {
-                    text: "This is a Note -- drag it anywhere, or right-click to delete it \
+        let note = NodePayload::Note(NotePayload {
+            text: "This is a Note -- drag it anywhere, or right-click to delete it \
                            (undo via \"Recently Closed\" if you change your mind)."
-                        .to_string(),
-                    editing: false,
-                    url: None,
-                }),
-            },
-        );
-        self.node_order.push(note_id);
+                .to_string(),
+            editing: false,
+            url: None,
+        });
+        self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
-        let group_id = self.alloc_node_id();
         let group_pos = egui::vec2(300.0, 0.0);
-        self.nodes.insert(
-            group_id.clone(),
-            GraphNode {
-                parent: None,
-                group: None,
-                pos: group_pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Group(GroupPayload { name: "Try grouping".to_string(), from_json: false }),
-            },
-        );
-        self.node_order.push(group_id.clone());
+        let group = NodePayload::Group(GroupPayload { name: "Try grouping".to_string(), from_json: false });
+        let group_id = self.place_node(None, group, Placement { group: None, pos: group_pos });
         // A small fixed offset, not `graph_layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
         // layout (see its own doc comment), which is far too large for
@@ -1901,30 +1879,19 @@ impl App {
         // same "inherited path, no real ownership" reasoning `key: Some`
         // leaves use, though this node uses `key: None` since it's a
         // genuine standalone JSON node, not an exploded leaf).
-        let json_id = self.alloc_node_id();
-        self.nodes.insert(
-            json_id.clone(),
-            GraphNode {
-                parent: None,
-                group: None,
-                pos: egui::vec2(0.0, -260.0),
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Json(JsonPayload {
-                    path: "(demo).json".to_string(),
-                    value: serde_json::json!({
-                        "project": "Manifold",
-                        "tags": ["browser", "graph-ui"],
-                        "version": {"major": 0, "minor": 1}
-                    }),
-                    key: None,
-                    error: None,
-                    url: None,
-                    view: json_view::JsonView::default(),
-                }),
-            },
-        );
-        self.node_order.push(json_id);
+        let json = NodePayload::Json(JsonPayload {
+            path: "(demo).json".to_string(),
+            value: serde_json::json!({
+                "project": "Manifold",
+                "tags": ["browser", "graph-ui"],
+                "version": {"major": 0, "minor": 1}
+            }),
+            key: None,
+            error: None,
+            url: None,
+            view: json_view::JsonView::default(),
+        });
+        self.place_node(None, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
 
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
