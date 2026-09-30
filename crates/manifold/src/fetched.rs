@@ -109,9 +109,7 @@ impl App {
     /// and for an image/JSON card whose file couldn't be loaded (see
     /// `ImagePayload::error`).
     pub(crate) fn insert_placeholder_node(&mut self, id: String, pos: egui::Vec2, payload: NodePayload) {
-        let node = GraphNode { parent: None, group: None, pos, vel: egui::Vec2::ZERO, color: None, payload };
-        self.nodes.insert(id.clone(), node);
-        self.node_order.push(id);
+        self.place_node(Some(id), payload, Placement { group: None, pos });
     }
 
     /// Content-dir names this session still uses, for `content::kept`:
@@ -442,10 +440,7 @@ impl App {
         group: Option<String>,
     ) {
         let payload = NotePayload { text, editing: false, url };
-        self.insert_placeholder_node(id.clone(), pos, NodePayload::Note(payload));
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.group = group;
-        }
+        self.place_node(Some(id), NodePayload::Note(payload), Placement { group, pos });
     }
 
     /// The insert every `image` card goes through: the caller picks the id,
@@ -485,18 +480,11 @@ impl App {
         if let Some(gpu) = &mut self.gpu {
             gpu.upload_image(&id, rgba.as_raw(), width, height);
         }
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group,
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Image(ImagePayload { path, width, height, error: None, url: None }),
-            },
+        self.place_node(
+            Some(id),
+            NodePayload::Image(ImagePayload { path, width, height, error: None, url: None }),
+            Placement { group, pos },
         );
-        self.node_order.push(id);
         Ok(())
     }
 
@@ -529,18 +517,11 @@ impl App {
     /// never having existed the way a bad image file does.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
         self.pdf_fetcher.request(id.clone(), path.clone());
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group,
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Pdf(PdfPayload { path, outcome: None, url: None }),
-            },
+        self.place_node(
+            Some(id),
+            NodePayload::Pdf(PdfPayload { path, outcome: None, url: None }),
+            Placement { group, pos },
         );
-        self.node_order.push(id);
     }
 
     /// The insert every `json` card goes through: the caller picks the id,
@@ -567,25 +548,15 @@ impl App {
                 return Err(err);
             }
         };
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group,
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Json(JsonPayload {
-                    path,
-                    value,
-                    key: None,
-                    error: None,
-                    url: None,
-                    view: json_view::JsonView::default(),
-                }),
-            },
-        );
-        self.node_order.push(id);
+        let payload = NodePayload::Json(JsonPayload {
+            path,
+            value,
+            key: None,
+            error: None,
+            url: None,
+            view: json_view::JsonView::default(),
+        });
+        self.place_node(Some(id), payload, Placement { group, pos });
         Ok(())
     }
 
