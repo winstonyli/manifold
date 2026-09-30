@@ -438,20 +438,7 @@ impl App {
         let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
         let items = self.level_items();
 
-        // Level-of-detail: count how many nodes at this level actually
-        // intersect the viewport, then flip `graph_lod_simplified` with a
-        // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
-        // why. Uses this frame's not-yet-updated `camera.rect`, the
-        // same one-frame-stale viewport the render loops' own cull check
-        // already accepts.
-        let lod_visible_count: usize = items.iter().filter(|item| item.rect.intersects(self.camera.rect)).count();
-        if self.graph_lod_simplified {
-            if lod_visible_count < LOD_RESTORE_COUNT {
-                self.graph_lod_simplified = false;
-            }
-        } else if lod_visible_count > LOD_SIMPLIFY_COUNT {
-            self.graph_lod_simplified = true;
-        }
+        self.update_graph_lod(&items);
 
         let GraphToolbar {
             mut actions,
@@ -469,19 +456,7 @@ impl App {
         // order doesn't decide what paints on top, though: see
         // `overlay_painter`'s own comment for why its layer is
         // `Order::Middle`.
-        // See `GraphCamera::frame_restored`.
-        if self.camera.frame_restored && self.tab_spawns_in_flight == 0 {
-            self.camera.frame_restored = false;
-            // Settled first, as in `switch_group_level`: fitting the
-            // pre-settle positions would leave spread-out nodes off screen.
-            self.layout_current_level();
-            self.graph_settled_key = Some(self.current_level_settle_key());
-            self.camera.jump_to(self.fit_all_nodes_scene_rect());
-        }
-        if reset_view {
-            self.camera.jump_to(self.fit_all_nodes_scene_rect());
-            self.pending_new_node = None;
-        }
+        self.apply_camera_requests(reset_view);
 
         if self.nodes.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -506,16 +481,7 @@ impl App {
         // from `response.drag_delta()` in the per-node loop below,
         // independent of this, and everything else should stay exactly
         // where it is for the whole gesture.
-        if self.dragging.is_none() {
-            // Same formula `current_level_settle_key()` computes, just
-            // built from this frame's already-cached `items` instead of
-            // redoing the level scan a second time.
-            let current_key = (self.current_group.clone(), items.len());
-            if self.graph_settled_key.as_ref() != Some(&current_key) {
-                self.layout_current_level();
-                self.graph_settled_key = Some(current_key);
-            }
-        }
+        self.settle_level_if_changed(items.len());
 
         self.handle_graph_keys(ui);
 
@@ -556,20 +522,7 @@ impl App {
         // any other magnified image would, which is normal/expected).
         self.build_json_outline(ui);
         let scene_outer_rect = ui.available_rect_before_wrap();
-        if reset_zoom {
-            // Keeps the current pan (unlike "Reset View", which re-fits
-            // everything) -- `graph_world_to_screen_transform` derives
-            // `zoom_scale` as `screen_size / camera.rect.size()`
-            // (`.min_elem()` of the two axis ratios), so matching the world
-            // rect's size to the screen's own size on both axes makes that
-            // ratio exactly 1.0, the definition of "100%" this readout uses.
-            let center = self.camera.rect.center();
-            self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
-        }
-        if let Some(factor) = graph_zoom_step {
-            self.camera.rect =
-                step_scene_rect(self.camera.rect, factor, scene_outer_rect.size(), GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        }
+        self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.camera.zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
@@ -667,6 +620,83 @@ impl App {
         // above already exists this frame -- see this function's own note
         // by `shortcuts_help_button_rect`/`recently_closed_button_rect` for
         // why these can't be built back where those rects are computed.
+        self.build_graph_popups(ui, shortcuts_help_button_rect, recently_closed_button_rect);
+    }
+
+    /// Flips `graph_lod_simplified` with hysteresis from how many of `items` are in view.
+    fn update_graph_lod(&mut self, items: &[LevelItem]) {
+        // Level-of-detail: count how many nodes at this level actually
+        // intersect the viewport, then flip `graph_lod_simplified` with a
+        // hysteresis gap -- see `LOD_SIMPLIFY_COUNT`'s own doc comment for
+        // why. Uses this frame's not-yet-updated `camera.rect`, the
+        // same one-frame-stale viewport the render loops' own cull check
+        // already accepts.
+        let lod_visible_count: usize = items.iter().filter(|item| item.rect.intersects(self.camera.rect)).count();
+        if self.graph_lod_simplified {
+            if lod_visible_count < LOD_RESTORE_COUNT {
+                self.graph_lod_simplified = false;
+            }
+        } else if lod_visible_count > LOD_SIMPLIFY_COUNT {
+            self.graph_lod_simplified = true;
+        }
+    }
+
+    /// Applies a pending frame-restore and the toolbar's Fit request to the camera.
+    fn apply_camera_requests(&mut self, reset_view: bool) {
+        // See `GraphCamera::frame_restored`.
+        if self.camera.frame_restored && self.tab_spawns_in_flight == 0 {
+            self.camera.frame_restored = false;
+            // Settled first, as in `switch_group_level`: fitting the
+            // pre-settle positions would leave spread-out nodes off screen.
+            self.layout_current_level();
+            self.graph_settled_key = Some(self.current_level_settle_key());
+            self.camera.jump_to(self.fit_all_nodes_scene_rect());
+        }
+        if reset_view {
+            self.camera.jump_to(self.fit_all_nodes_scene_rect());
+            self.pending_new_node = None;
+        }
+    }
+
+    /// Re-lays-out the level when its node set changed size, unless a drag is in progress.
+    fn settle_level_if_changed(&mut self, item_count: usize) {
+        if self.dragging.is_none() {
+            // Same formula `current_level_settle_key()` computes, just
+            // built from this frame's already-cached `items` instead of
+            // redoing the level scan a second time.
+            let current_key = (self.current_group.clone(), item_count);
+            if self.graph_settled_key.as_ref() != Some(&current_key) {
+                self.layout_current_level();
+                self.graph_settled_key = Some(current_key);
+            }
+        }
+    }
+
+    /// Applies the zoom chip's 100% and step requests to the camera rect.
+    fn apply_zoom_requests(&mut self, scene_outer_rect: egui::Rect, reset_zoom: bool, graph_zoom_step: Option<f32>) {
+        if reset_zoom {
+            // Keeps the current pan (unlike "Reset View", which re-fits
+            // everything) -- `graph_world_to_screen_transform` derives
+            // `zoom_scale` as `screen_size / camera.rect.size()`
+            // (`.min_elem()` of the two axis ratios), so matching the world
+            // rect's size to the screen's own size on both axes makes that
+            // ratio exactly 1.0, the definition of "100%" this readout uses.
+            let center = self.camera.rect.center();
+            self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
+        }
+        if let Some(factor) = graph_zoom_step {
+            self.camera.rect =
+                step_scene_rect(self.camera.rect, factor, scene_outer_rect.size(), GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        }
+    }
+
+    /// Popups and menus built last, after the node-decoration layer exists this frame.
+    fn build_graph_popups(
+        &mut self,
+        ui: &mut egui::Ui,
+        shortcuts_help_button_rect: Option<egui::Rect>,
+        recently_closed_button_rect: Option<egui::Rect>,
+    ) {
         self.build_shortcuts_help(ui, shortcuts_help_button_rect);
         let ctx = ui.ctx().clone();
         if let Some((rect, fade)) =
