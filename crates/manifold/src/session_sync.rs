@@ -568,11 +568,13 @@ impl App {
             }
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
-                if missing_with_url {
-                    let payload = ImagePayload { path, width: 0, height: 0, error: None, url: None };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
-                } else if let Err(error) = self.insert_image_node_with_id(id.clone(), path.clone(), pos, None) {
-                    let payload = ImagePayload { path, width: 0, height: 0, error: Some(error), url: None };
+                let error = if missing_with_url {
+                    None
+                } else {
+                    self.insert_image_node_with_id(id.clone(), path.clone(), pos, None).err()
+                };
+                if missing_with_url || error.is_some() {
+                    let payload = ImagePayload { path, width: 0, height: 0, error, url: None };
                     self.insert_placeholder_node(id.clone(), pos, NodePayload::Image(payload));
                 }
             }
@@ -587,22 +589,17 @@ impl App {
             }
             Kind::Json => {
                 let path = content_path.clone().unwrap_or_default();
-                if missing_with_url {
+                let error = if missing_with_url {
+                    None
+                } else {
+                    self.insert_json_node_with_id(id.clone(), path.clone(), pos, None).err()
+                };
+                if missing_with_url || error.is_some() {
                     let payload = JsonPayload {
                         path,
                         value: serde_json::Value::Null,
                         key: None,
-                        error: None,
-                        url: None,
-                        view: JsonView::default(),
-                    };
-                    self.insert_placeholder_node(id.clone(), pos, NodePayload::Json(payload));
-                } else if let Err(error) = self.insert_json_node_with_id(id.clone(), path.clone(), pos, None) {
-                    let payload = JsonPayload {
-                        path,
-                        value: serde_json::Value::Null,
-                        key: None,
-                        error: Some(error),
+                        error,
                         url: None,
                         view: JsonView::default(),
                     };
