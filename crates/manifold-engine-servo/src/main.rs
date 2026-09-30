@@ -471,65 +471,9 @@ fn key_to_servo_key(key: HostKeyCode) -> Key {
     }
 }
 
+/// `KeyCode::dom_code` is the DOM `KeyboardEvent.code` string, which is what `Code` parses.
 fn key_to_servo_code(key: HostKeyCode) -> Code {
-    match key {
-        HostKeyCode::KeyA => Code::KeyA,
-        HostKeyCode::KeyB => Code::KeyB,
-        HostKeyCode::KeyC => Code::KeyC,
-        HostKeyCode::KeyD => Code::KeyD,
-        HostKeyCode::KeyE => Code::KeyE,
-        HostKeyCode::KeyF => Code::KeyF,
-        HostKeyCode::KeyG => Code::KeyG,
-        HostKeyCode::KeyH => Code::KeyH,
-        HostKeyCode::KeyI => Code::KeyI,
-        HostKeyCode::KeyJ => Code::KeyJ,
-        HostKeyCode::KeyK => Code::KeyK,
-        HostKeyCode::KeyL => Code::KeyL,
-        HostKeyCode::KeyM => Code::KeyM,
-        HostKeyCode::KeyN => Code::KeyN,
-        HostKeyCode::KeyO => Code::KeyO,
-        HostKeyCode::KeyP => Code::KeyP,
-        HostKeyCode::KeyQ => Code::KeyQ,
-        HostKeyCode::KeyR => Code::KeyR,
-        HostKeyCode::KeyS => Code::KeyS,
-        HostKeyCode::KeyT => Code::KeyT,
-        HostKeyCode::KeyU => Code::KeyU,
-        HostKeyCode::KeyV => Code::KeyV,
-        HostKeyCode::KeyW => Code::KeyW,
-        HostKeyCode::KeyX => Code::KeyX,
-        HostKeyCode::KeyY => Code::KeyY,
-        HostKeyCode::KeyZ => Code::KeyZ,
-        HostKeyCode::Digit0 => Code::Digit0,
-        HostKeyCode::Digit1 => Code::Digit1,
-        HostKeyCode::Digit2 => Code::Digit2,
-        HostKeyCode::Digit3 => Code::Digit3,
-        HostKeyCode::Digit4 => Code::Digit4,
-        HostKeyCode::Digit5 => Code::Digit5,
-        HostKeyCode::Digit6 => Code::Digit6,
-        HostKeyCode::Digit7 => Code::Digit7,
-        HostKeyCode::Digit8 => Code::Digit8,
-        HostKeyCode::Digit9 => Code::Digit9,
-        HostKeyCode::Enter => Code::Enter,
-        HostKeyCode::Backspace => Code::Backspace,
-        HostKeyCode::Tab => Code::Tab,
-        HostKeyCode::Space => Code::Space,
-        HostKeyCode::Escape => Code::Escape,
-        HostKeyCode::Delete => Code::Delete,
-        HostKeyCode::ArrowLeft => Code::ArrowLeft,
-        HostKeyCode::ArrowRight => Code::ArrowRight,
-        HostKeyCode::ArrowUp => Code::ArrowUp,
-        HostKeyCode::ArrowDown => Code::ArrowDown,
-        HostKeyCode::Home => Code::Home,
-        HostKeyCode::End => Code::End,
-        HostKeyCode::PageUp => Code::PageUp,
-        HostKeyCode::PageDown => Code::PageDown,
-        HostKeyCode::ShiftLeft => Code::ShiftLeft,
-        HostKeyCode::ShiftRight => Code::ShiftRight,
-        HostKeyCode::ControlLeft => Code::ControlLeft,
-        HostKeyCode::ControlRight => Code::ControlRight,
-        HostKeyCode::AltLeft => Code::AltLeft,
-        HostKeyCode::AltRight => Code::AltRight,
-    }
+    key.dom_code().parse().expect("every KeyCode's DOM code is a keyboard_types::Code")
 }
 
 fn translate_modifiers(bits: u8) -> Modifiers {
@@ -565,5 +509,17 @@ fn translate_mouse_button(button: ipc_protocol::MouseButton) -> ServoMouseButton
         ipc_protocol::MouseButton::Left => ServoMouseButton::Left,
         ipc_protocol::MouseButton::Middle => ServoMouseButton::Middle,
         ipc_protocol::MouseButton::Right => ServoMouseButton::Right,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_host_key_has_a_servo_code() {
+        for &key in HostKeyCode::ALL {
+            assert_eq!(key_to_servo_code(key).to_string(), key.dom_code());
+        }
     }
 }
