@@ -1232,16 +1232,11 @@ impl App {
             } else if let Ok(buf) =
                 SharedFrameBuffer::open_existing(frame_path(&update.socket_id), update.width, update.height)
             {
-                // The engine-host truncates-then-grows this file when
-                // (re)creating it (see SharedFrameBuffer::create), which
-                // briefly exposes a 0-byte or otherwise wrong-sized file to
-                // a concurrent reader. Skip this frame rather than panic on
-                // a mismatched slice — the next redraw tries again.
-                let expected_len = (update.width as usize) * (update.height as usize) * 4;
-                if buf.as_slice().len() == expected_len {
-                    if let Some(gpu) = &mut self.gpu {
-                        gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format);
-                    }
+                // `open_existing` refuses a file of the wrong size (the engine-host
+                // truncates-then-grows it on resize), so a frame caught mid-resize
+                // is skipped and the next redraw tries again.
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format);
                 }
             }
         }

@@ -74,8 +74,17 @@ impl SharedFrameBuffer {
         Ok(Self { mmap, path, width, height })
     }
 
+    /// `InvalidData` when the file isn't `width * height * 4` bytes: the engine-host
+    /// truncates then regrows it on resize, so a reader can briefly see the wrong size.
     pub fn open_existing(path: PathBuf, width: u32, height: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let expected = u64::from(width) * u64::from(height) * 4;
+        if file.metadata()?.len() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "frame buffer file is not width * height * 4 bytes",
+            ));
+        }
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         Ok(Self { mmap, path, width, height })
     }
@@ -99,5 +108,21 @@ impl SharedFrameBuffer {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_existing_refuses_a_file_of_the_wrong_size() {
+        let name = format!("test-open-existing-{}", std::process::id());
+        let created = SharedFrameBuffer::create(&name, 4, 2).unwrap();
+        assert!(SharedFrameBuffer::open_existing(frame_path(&name), 4, 2).is_ok());
+        let err = SharedFrameBuffer::open_existing(frame_path(&name), 8, 8).err().expect("size mismatch");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        drop(created);
+        let _ = std::fs::remove_file(frame_path(&name));
     }
 }
