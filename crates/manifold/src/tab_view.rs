@@ -403,38 +403,7 @@ impl App {
         // Missing (mid-respawn), or a failed tab's card.
         if !self.nodes.get(&focused_id).is_some_and(|n| n.as_tab().is_some()) {
             if self.pending_respawn_focus.as_deref() == Some(focused_id.as_str()) {
-                // An engine swap or crash recovery is respawning the tab
-                // the user is currently looking at — stay in Tab view
-                // (don't bounce to Graph, see `pending_respawn_focus`'s doc
-                // comment) and show a lightweight placeholder (with just
-                // enough chrome to still escape to Graph) instead of
-                // nothing until it reappears in `self.nodes`.
-                // An Unloaded card still in `self.nodes` (state `Waking`)
-                // is a tab being woken from sleep; anything else missing
-                // here (a crash respawn, or an engine swap) is a real tab
-                // reconnecting.
-                let label = if self.nodes.get(&focused_id).and_then(|n| n.as_unloaded()).is_some() {
-                    "Loading…"
-                } else {
-                    "Reconnecting…"
-                };
-                let mut back_to_graph = false;
-                toolbar_panel("tab_strip_respawning", ui, |ui| {
-                    ui.horizontal_centered(|ui| {
-                        if render_return_to_graph(ui) {
-                            back_to_graph = true;
-                        }
-                        ui.add(egui::Spinner::new().size(12.0));
-                        ui.label(label);
-                    });
-                });
-                if back_to_graph {
-                    self.view_mode = ViewMode::Graph;
-                    return;
-                }
-                ui.centered_and_justified(|ui| {
-                    ui.add(egui::Spinner::new().size(32.0));
-                });
+                self.build_respawn_placeholder(ui, &focused_id);
             } else {
                 self.view_mode = ViewMode::Graph;
             }
@@ -513,61 +482,7 @@ impl App {
         // never reached anything and just silently dismissed the dropdown.
         let combined = self.address_bar.combined();
         if editing_address && !combined.is_empty() {
-            let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-            let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-            if arrow_down {
-                self.address_bar.highlighted = Some(match self.address_bar.highlighted {
-                    Some(i) if i + 1 < combined.len() => i + 1,
-                    _ => 0,
-                });
-            }
-            if arrow_up {
-                self.address_bar.highlighted = Some(match self.address_bar.highlighted {
-                    Some(i) if i > 0 => i - 1,
-                    _ => combined.len() - 1,
-                });
-            }
-
-            if let Some(rect) = address_bar_rect {
-                let mut accepted = None;
-                egui::Area::new(egui::Id::new("address_suggestions"))
-                    .fixed_pos(rect.left_bottom())
-                    .order(egui::Order::Foreground)
-                    .show(ui.ctx(), |ui| {
-                        // Inner width minus the frame's padding and border, so the
-                        // dropdown lines up with the address bar's edges.
-                        let frame = popup_frame(ui);
-                        let inner_width = rect.width() - frame.total_margin().sum().x;
-                        frame.show(ui, |ui| {
-                            ui.set_width(inner_width);
-                            // `ui.set_width` alone only sets the *container's*
-                            // layout width (affects wrapping/available_width),
-                            // not an individual `Button`'s own size — left
-                            // unset, each row was only as wide as its own
-                            // text, producing a ragged right edge instead of
-                            // a uniform list. `min_size`'s width stretches
-                            // each row to fill the container; height stays
-                            // `0.0` (no minimum) so natural row height/padding
-                            // is untouched.
-                            let full_width = ui.available_width();
-                            for (idx, suggestion) in combined.iter().enumerate() {
-                                let highlighted = self.address_bar.highlighted == Some(idx);
-                                let mut button = egui::Button::new(suggestion.label())
-                                    .truncate()
-                                    .min_size(egui::vec2(full_width, 0.0));
-                                if highlighted {
-                                    button = button.fill(ACCENT);
-                                }
-                                if ui.add(button).clicked() {
-                                    accepted = Some(suggestion.clone());
-                                }
-                            }
-                        });
-                    });
-                if let Some(suggestion) = accepted {
-                    self.accept_suggestion(suggestion, &focused_id);
-                }
-            }
+            self.build_address_suggestions(ui, &combined, address_bar_rect, &focused_id);
         }
 
         if enter_pressed {
@@ -630,33 +545,7 @@ impl App {
         // since the secondary pane has no toolbar of its own to put it in
         // (view-only in this first cut, see `split_tab`'s own doc comment).
         if let Some(split_id) = self.split_tab.clone() {
-            let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-            let screen_size =
-                self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
-            let screen_max_y = screen_size.height as f32 / ppp;
-            let divider_x = (screen_size.width as f32 / ppp) / 2.0;
-            let kind = self.nodes.get(&split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
-            ui.painter().line_segment(
-                [egui::pos2(divider_x, CHROME_HEIGHT_POINTS), egui::pos2(divider_x, screen_max_y)],
-                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
-            );
-            egui::Area::new(egui::Id::new("split_pane_label"))
-                .fixed_pos(egui::pos2(divider_x + 8.0, CHROME_HEIGHT_POINTS + 6.0))
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::default()
-                        .fill(TOOLBAR_FILL)
-                        .corner_radius(4u8)
-                        .inner_margin(egui::Margin::symmetric(8, 3))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if let Some(kind) = kind {
-                                    engine_dot(ui, kind, 8.0);
-                                }
-                                ui.label(kind.map(engine_label).unwrap_or("?"));
-                            });
-                        });
-                });
+            self.build_split_pane_label(ui, &split_id);
         }
         // A freshly-spawned or just-respawned tab's content pane draws as
         // plain black until its engine-host's first real frame arrives (see
@@ -668,21 +557,7 @@ impl App {
         // still a first cut per `split_tab`'s own doc comment) is left as-is.
         let has_content = self.gpu.as_ref().is_some_and(|g| g.has_tab_texture(&focused_id));
         if !has_content {
-            let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-            let screen_size =
-                self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
-            let screen_width = screen_size.width as f32 / ppp;
-            let screen_height = screen_size.height as f32 / ppp;
-            let primary_width = if self.split_tab.is_some() { screen_width / 2.0 } else { screen_width };
-            let content_rect = egui::Rect::from_min_max(
-                egui::pos2(0.0, CHROME_HEIGHT_POINTS),
-                egui::pos2(primary_width, screen_height),
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.add(egui::Spinner::new().size(32.0));
-                });
-            });
+            self.build_content_spinner(ui);
         }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
@@ -706,5 +581,153 @@ impl App {
             self.navigate_tab(&focused_id, url);
             self.address_bar.dismiss();
         }
+    }
+
+    /// Stand-in while the focused tab is being respawned or woken: just enough chrome to escape to Graph.
+    fn build_respawn_placeholder(&mut self, ui: &mut egui::Ui, focused_id: &str) {
+        // An engine swap or crash recovery is respawning the tab
+        // the user is currently looking at — stay in Tab view
+        // (don't bounce to Graph, see `pending_respawn_focus`'s doc
+        // comment) and show a lightweight placeholder (with just
+        // enough chrome to still escape to Graph) instead of
+        // nothing until it reappears in `self.nodes`.
+        // An Unloaded card still in `self.nodes` (state `Waking`)
+        // is a tab being woken from sleep; anything else missing
+        // here (a crash respawn, or an engine swap) is a real tab
+        // reconnecting.
+        let label = if self.nodes.get(focused_id).and_then(|n| n.as_unloaded()).is_some() {
+            "Loading…"
+        } else {
+            "Reconnecting…"
+        };
+        let mut back_to_graph = false;
+        toolbar_panel("tab_strip_respawning", ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                if render_return_to_graph(ui) {
+                    back_to_graph = true;
+                }
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(label);
+            });
+        });
+        if back_to_graph {
+            self.view_mode = ViewMode::Graph;
+            return;
+        }
+        ui.centered_and_justified(|ui| {
+            ui.add(egui::Spinner::new().size(32.0));
+        });
+    }
+
+    /// The address-bar suggestion dropdown: Up/Down move the highlight, a click accepts a row.
+    fn build_address_suggestions(
+        &mut self,
+        ui: &mut egui::Ui,
+        combined: &[Suggestion],
+        address_bar_rect: Option<egui::Rect>,
+        focused_id: &str,
+    ) {
+        let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+        let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+        if arrow_down {
+            self.address_bar.highlighted = Some(match self.address_bar.highlighted {
+                Some(i) if i + 1 < combined.len() => i + 1,
+                _ => 0,
+            });
+        }
+        if arrow_up {
+            self.address_bar.highlighted = Some(match self.address_bar.highlighted {
+                Some(i) if i > 0 => i - 1,
+                _ => combined.len() - 1,
+            });
+        }
+
+        if let Some(rect) = address_bar_rect {
+            let mut accepted = None;
+            egui::Area::new(egui::Id::new("address_suggestions"))
+                .fixed_pos(rect.left_bottom())
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    // Inner width minus the frame's padding and border, so the
+                    // dropdown lines up with the address bar's edges.
+                    let frame = popup_frame(ui);
+                    let inner_width = rect.width() - frame.total_margin().sum().x;
+                    frame.show(ui, |ui| {
+                        ui.set_width(inner_width);
+                        // `ui.set_width` alone only sets the *container's*
+                        // layout width (affects wrapping/available_width),
+                        // not an individual `Button`'s own size — left
+                        // unset, each row was only as wide as its own
+                        // text, producing a ragged right edge instead of
+                        // a uniform list. `min_size`'s width stretches
+                        // each row to fill the container; height stays
+                        // `0.0` (no minimum) so natural row height/padding
+                        // is untouched.
+                        let full_width = ui.available_width();
+                        for (idx, suggestion) in combined.iter().enumerate() {
+                            let highlighted = self.address_bar.highlighted == Some(idx);
+                            let mut button =
+                                egui::Button::new(suggestion.label()).truncate().min_size(egui::vec2(full_width, 0.0));
+                            if highlighted {
+                                button = button.fill(ACCENT);
+                            }
+                            if ui.add(button).clicked() {
+                                accepted = Some(suggestion.clone());
+                            }
+                        }
+                    });
+                });
+            if let Some(suggestion) = accepted {
+                self.accept_suggestion(suggestion, focused_id);
+            }
+        }
+    }
+
+    /// The split pane's engine label and the divider line between the panes.
+    fn build_split_pane_label(&self, ui: &mut egui::Ui, split_id: &str) {
+        let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+        let screen_size =
+            self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let screen_max_y = screen_size.height as f32 / ppp;
+        let divider_x = (screen_size.width as f32 / ppp) / 2.0;
+        let kind = self.nodes.get(split_id).and_then(|n| n.as_tab()).map(|t| t.tab.kind);
+        ui.painter().line_segment(
+            [egui::pos2(divider_x, CHROME_HEIGHT_POINTS), egui::pos2(divider_x, screen_max_y)],
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+        );
+        egui::Area::new(egui::Id::new("split_pane_label"))
+            .fixed_pos(egui::pos2(divider_x + 8.0, CHROME_HEIGHT_POINTS + 6.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(TOOLBAR_FILL)
+                    .corner_radius(4u8)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(kind) = kind {
+                                engine_dot(ui, kind, 8.0);
+                            }
+                            ui.label(kind.map(engine_label).unwrap_or("?"));
+                        });
+                    });
+            });
+    }
+
+    /// A spinner over the primary pane until its first frame arrives.
+    fn build_content_spinner(&self, ui: &mut egui::Ui) {
+        let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+        let screen_size =
+            self.window.as_ref().map(|w| w.inner_size()).unwrap_or(winit::dpi::PhysicalSize::new(1024, 768));
+        let screen_width = screen_size.width as f32 / ppp;
+        let screen_height = screen_size.height as f32 / ppp;
+        let primary_width = if self.split_tab.is_some() { screen_width / 2.0 } else { screen_width };
+        let content_rect =
+            egui::Rect::from_min_max(egui::pos2(0.0, CHROME_HEIGHT_POINTS), egui::pos2(primary_width, screen_height));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.add(egui::Spinner::new().size(32.0));
+            });
+        });
     }
 }
