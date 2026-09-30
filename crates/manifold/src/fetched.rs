@@ -85,23 +85,11 @@ impl App {
         };
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: Some(tab_id),
-                group: node_group,
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Download(DownloadPayload {
-                    path,
-                    bytes_received: 0,
-                    total_bytes,
-                    completed: false,
-                }),
-            },
-        );
-        self.node_order.push(id);
+        let payload = NodePayload::Download(DownloadPayload { path, bytes_received: 0, total_bytes, completed: false });
+        self.place_node(Some(id.clone()), payload, Placement { group: node_group, pos });
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.parent = Some(tab_id); // the edge from the tab it came from
+        }
     }
 
     /// Inserts a node showing `payload` at `pos`, top level and uncolored:
