@@ -273,6 +273,11 @@ pub enum HostToEngine {
     Shutdown,
 }
 
+/// The script every engine that reports `JsonBody`/`RedirectableContent` (all but CEF, which
+/// evals the two properties itself) runs once a load finishes. It returns `"json\n<body>"` for a
+/// JSON response, `"type\n<content type>"` for any other, and null when the page has none.
+pub const PAGE_KIND_SCRIPT: &str = "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();";
+
 /// Messages sent from an engine-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a

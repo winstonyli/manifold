@@ -236,12 +236,7 @@ pub fn register_handlers(
                 Ok(())
             }));
             unsafe {
-                let _ = webview_for_json.ExecuteScript(
-                    &HSTRING::from(
-                        "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
-                    ),
-                    &exec_handler,
-                );
+                let _ = webview_for_json.ExecuteScript(&HSTRING::from(ipc_protocol::PAGE_KIND_SCRIPT), &exec_handler);
             }
             Ok(())
         }));

@@ -121,18 +121,15 @@ impl WebViewDelegate for Delegate {
         if complete {
             let json_body = self.json_body.clone();
             let redirect_content_type = self.redirect_content_type.clone();
-            webview.evaluate_javascript(
-                "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
-                move |result| {
-                    if let Ok(JSValue::String(text)) = result {
-                        if let Some(body) = text.strip_prefix("json\n") {
-                            *json_body.borrow_mut() = Some(body.to_string());
-                        } else if let Some(content_type) = text.strip_prefix("type\n") {
-                            *redirect_content_type.borrow_mut() = Some(content_type.to_string());
-                        }
+            webview.evaluate_javascript(ipc_protocol::PAGE_KIND_SCRIPT, move |result| {
+                if let Ok(JSValue::String(text)) = result {
+                    if let Some(body) = text.strip_prefix("json\n") {
+                        *json_body.borrow_mut() = Some(body.to_string());
+                    } else if let Some(content_type) = text.strip_prefix("type\n") {
+                        *redirect_content_type.borrow_mut() = Some(content_type.to_string());
                     }
-                },
-            );
+                }
+            });
         }
     }
 

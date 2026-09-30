@@ -399,24 +399,20 @@ fn main() {
             if was_loading && !nav_now.4 {
                 let pending_json = pending_json_body.clone();
                 let pending_redirect = pending_redirect_content_type.clone();
-                webview.run_javascript(
-                    "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
-                    gtk::gio::Cancellable::NONE,
-                    move |result| {
-                        if let Ok(js_result) = result {
-                            if let Some(value) = js_result.js_value() {
-                                if value.is_string() {
-                                    let text = value.to_str().to_string();
-                                    if let Some(body) = text.strip_prefix("json\n") {
-                                        *pending_json.borrow_mut() = Some(body.to_string());
-                                    } else if let Some(content_type) = text.strip_prefix("type\n") {
-                                        *pending_redirect.borrow_mut() = Some(content_type.to_string());
-                                    }
+                webview.run_javascript(ipc_protocol::PAGE_KIND_SCRIPT, gtk::gio::Cancellable::NONE, move |result| {
+                    if let Ok(js_result) = result {
+                        if let Some(value) = js_result.js_value() {
+                            if value.is_string() {
+                                let text = value.to_str().to_string();
+                                if let Some(body) = text.strip_prefix("json\n") {
+                                    *pending_json.borrow_mut() = Some(body.to_string());
+                                } else if let Some(content_type) = text.strip_prefix("type\n") {
+                                    *pending_redirect.borrow_mut() = Some(content_type.to_string());
                                 }
                             }
                         }
-                    },
-                );
+                    }
+                });
             }
         }
 
