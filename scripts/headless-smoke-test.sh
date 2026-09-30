@@ -16,7 +16,7 @@
 # closing a group holding an image and a nested group, then reopening
 # it (REOPENTAB) nested as it was; `ADDFILE` for each content kind; a tab
 # at a local JSON or PDF converting into its node; entering a dropped
-# JSON's level via JSONSELECT/JSONSEARCH and leaving it; quit. The drop checks
+# JSON's level via JSONSELECT/JSONSEARCH and leaving it, NEWNOTE from that level; quit. The drop checks
 # click cards where EXPORTSTATE's `cards` says they are, after the layout
 # stops moving (`settle`), not at fixed coordinates.
 #
@@ -487,6 +487,20 @@ check_state json_search "JSONSELECT and JSONSEARCH reach the level" \
 send "CLICK 22 17"
 check_state json_out "the back button leaves the JSON level" \
     "s['json_level'] is None and s['current_group'] != '$json_id'"
+
+# Creating from a JSON level leaves it first (spec place-node-design): a new
+# note lands in the level the user then sees, not out of sight beside the
+# Json node.
+settle json_out2
+send "DOUBLECLICK $(query json_out2 "xy('$json_id')")"
+settle json_in2
+check_query json_in2 "re-entering the JSON level" "s['json_level'] and s['current_group'] == '$json_id'"
+notes_before=$(query json_out2 'sorted(i for i, c in cards.items() if c["kind"] == "Note")')
+send "NEWNOTE"
+settle json_note
+check_query json_note "NEWNOTE from a JSON level leaves it" "s['json_level'] is None and s['current_group'] != '$json_id'"
+check_query json_note "the new note is a card on the level now shown" \
+    "len([i for i, c in cards.items() if c['kind'] == 'Note']) == len(eval('''$notes_before''')) + 1"
 
 # The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
 # each checked by the new card's kind: a PDF, a `.bin` (a Download card)
