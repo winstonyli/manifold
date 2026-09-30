@@ -10,6 +10,11 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Uses `postcard`, not `bincode`: bincode is unmaintained as of
 /// RUSTSEC-2025-0141 (the whole crate, not just a bad 3.0.0 release) and
 /// its own advisory recommends postcard as a replacement.
+/// The most one message (or one raw frame) may carry: a 4096x4096 RGBA frame is
+/// 64 MiB. A peer announcing more is broken or hostile, and is refused before
+/// any buffer is allocated.
+pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
 pub struct MessageChannel<S> {
     stream: S,
 }
@@ -21,6 +26,9 @@ impl<S: Read + Write> MessageChannel<S> {
 
     pub fn send<T: Serialize>(&mut self, msg: &T) -> io::Result<()> {
         let bytes = postcard::to_allocvec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if bytes.len() > MAX_MESSAGE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "message larger than MAX_MESSAGE_BYTES"));
+        }
         self.stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
         self.stream.write_all(&bytes)?;
         self.stream.flush()
@@ -30,6 +38,9 @@ impl<S: Read + Write> MessageChannel<S> {
         let mut len_buf = [0u8; 4];
         self.stream.read_exact(&mut len_buf)?;
         let len = u32::from_le_bytes(len_buf) as usize;
+        if len > MAX_MESSAGE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "message larger than MAX_MESSAGE_BYTES"));
+        }
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf)?;
         postcard::from_bytes(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -40,6 +51,9 @@ impl<S: Read + Write> MessageChannel<S> {
     /// WSL2-hosted engine-host has no shared memory segment with the
     /// Windows host process.
     pub fn recv_raw(&mut self, len: usize) -> io::Result<Vec<u8>> {
+        if len > MAX_MESSAGE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "raw frame larger than MAX_MESSAGE_BYTES"));
+        }
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf)?;
         Ok(buf)
@@ -52,5 +66,27 @@ impl<S: Read + Write> MessageChannel<S> {
 
     pub fn into_inner(self) -> S {
         self.stream
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_huge_length_prefix_is_refused_before_allocating() {
+        let mut bytes = u32::MAX.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[0; 8]);
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<u8>().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_message_round_trips() {
+        let mut out = MessageChannel::new(Cursor::new(Vec::new()));
+        out.send(&"hello".to_string()).unwrap();
+        let mut back = MessageChannel::new(Cursor::new(out.into_inner().into_inner()));
+        assert_eq!(back.recv::<String>().unwrap(), "hello");
     }
 }
