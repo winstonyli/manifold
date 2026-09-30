@@ -207,3 +207,86 @@ impl App {
         self.save_session();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Closing a group records it and every live member at any depth as
+    /// one store-shaped entry, root first: `entry.doc.nodes[0]` is the
+    /// group itself, and `worth_reopening` drops a blank note and a
+    /// completed download along the way (a download has nothing sensible
+    /// to reopen, the same as before this test's rewrite for Task 8).
+    /// These are today's selection rules -- which ids, in what order, and
+    /// which roots give `None` -- kept exactly as the pre-store-snapshot
+    /// version of this test pinned them.
+    #[test]
+    fn closed_entry_snapshots_the_whole_subtree() {
+        use crate::session_sync::tests::{add, app_on};
+        let path = store::testutil::temp_dir("closed-entry").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
+
+        let outer = add(&mut app, NodePayload::Group(GroupPayload { name: "Outer".into(), from_json: false }));
+        let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
+        put_in(&mut app, &note0, &outer);
+        let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
+        put_in(&mut app, &note1, &outer);
+        let inner = add(&mut app, NodePayload::Group(GroupPayload { name: "Inner".into(), from_json: false }));
+        put_in(&mut app, &inner, &outer);
+        let img0 = add(
+            &mut app,
+            NodePayload::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None, url: None }),
+        );
+        put_in(&mut app, &img0, &inner);
+        let json0 = add(
+            &mut app,
+            NodePayload::Json(JsonPayload {
+                path: "d.json".into(),
+                value: 1.into(),
+                key: Some("k".into()),
+                error: None,
+                url: None,
+                view: json_view::JsonView::default(),
+            }),
+        );
+        put_in(&mut app, &json0, &inner);
+        let dl0 = add(
+            &mut app,
+            NodePayload::Download(DownloadPayload {
+                path: "f.bin".into(),
+                bytes_received: 1,
+                total_bytes: Some(1),
+                completed: true,
+            }),
+        );
+        put_in(&mut app, &dl0, &inner);
+        let note2 = add(&mut app, NodePayload::Note(NotePayload { text: "outside".into(), editing: false, url: None }));
+
+        let entry = closed_entry(&app, &outer).unwrap();
+        let ids: Vec<&str> = entry.doc.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
+            "a blank note and a completed download are both skipped"
+        );
+        assert_eq!(entry.doc.nodes[0].kind, "group");
+        assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
+        assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
+
+        let leaf_outside = add(
+            &mut app,
+            NodePayload::Json(JsonPayload {
+                path: "d.json".into(),
+                value: 1.into(),
+                key: Some("k".into()),
+                error: None,
+                url: None,
+                view: json_view::JsonView::default(),
+            }),
+        );
+        assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
+        assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
+        assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
+    }
+}
