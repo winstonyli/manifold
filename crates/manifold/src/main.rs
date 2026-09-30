@@ -2129,42 +2129,22 @@ impl App {
         self.peek_suppressed = self.hovered.clone();
     }
 
-    /// Shared by `new_group_shortcut` (fresh id/jittered position) and the
-    /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
+    /// Shared by `new_group_shortcut` (`pos` `None`: a jittered spawn) and
+    /// the empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
     /// which passes the exact position that was right-clicked instead.
-    fn insert_group_at(&mut self, id: String, pos: egui::Vec2) {
+    /// Doesn't save; the caller does.
+    fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let name = self.default_group_name();
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group: self.insertion_group(),
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Group(GroupPayload { name, from_json: false }),
-            },
-        );
-        self.node_order.push(id);
+        let at = self.placement(&id, pos);
+        self.place_node(Some(id), NodePayload::Group(GroupPayload { name, from_json: false }), at);
     }
 
-    /// Shared by `new_note_shortcut` (fresh id/jittered position) and the
-    /// empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
-    /// which passes the exact position that was right-clicked instead.
-    fn insert_note_at(&mut self, id: String, pos: egui::Vec2) {
-        self.nodes.insert(
-            id.clone(),
-            GraphNode {
-                parent: None,
-                group: self.insertion_group(),
-                pos,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload: NodePayload::Note(NotePayload { text: String::new(), editing: true, url: None }),
-            },
-        );
-        self.node_order.push(id);
-        self.save_session();
+    /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
+    /// Doesn't save; the caller does.
+    fn insert_note_at(&mut self, id: String, pos: Option<egui::Vec2>) {
+        let at = self.placement(&id, pos);
+        let note = NotePayload { text: String::new(), editing: true, url: None };
+        self.place_node(Some(id), NodePayload::Note(note), at);
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.

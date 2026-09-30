@@ -178,16 +178,11 @@ impl App {
     /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
     /// creates an empty group at whichever level is currently being
     /// viewed, nested under `current_group` if that's not the top level
-    /// (see `GroupPayload`'s own doc comment on nesting).
-    /// Not on a JSON level (spec: creation controls are hidden there): the
-    /// group would be stored where the user can't see it.
+    /// (see `GroupPayload`'s own doc comment on nesting). From a JSON
+    /// level, leaves it first (`placement`).
     pub(crate) fn new_group_shortcut(&mut self) {
-        if self.current_json_node().is_some() {
-            return;
-        }
         let id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        self.insert_group_at(id, pos);
+        self.insert_group_at(id, None);
         self.save_session();
     }
 
@@ -195,14 +190,11 @@ impl App {
     /// level is currently being viewed, same as "+ New Tab" and (now)
     /// "+ New Group" itself, since a note is a
     /// plain member of a level's subgraph like a tab or download is.
-    /// Not on a JSON level, like `new_group_shortcut`.
+    /// Leaves a JSON level first, like `new_group_shortcut`.
     pub(crate) fn new_note_shortcut(&mut self) {
-        if self.current_json_node().is_some() {
-            return;
-        }
         let id = self.alloc_node_id();
-        let pos = GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(&id);
-        self.insert_note_at(id, pos);
+        self.insert_note_at(id, None);
+        self.save_session();
     }
 
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph

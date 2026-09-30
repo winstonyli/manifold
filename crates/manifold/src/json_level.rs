@@ -443,6 +443,46 @@ mod tests {
     }
 
     #[test]
+    fn placement_leaves_a_json_level_and_uses_the_outer_group() {
+        let (mut app, j) = app_with_json("placement", "[1]");
+        app.switch_group_level(Some(j));
+        let at = app.placement("n", None);
+        assert_eq!(at.group.as_deref(), Some(OUTER));
+        assert_eq!(app.current_group.as_deref(), Some(OUTER), "the level was left");
+        assert!(app.json_level.is_none());
+        assert_eq!(at.pos, GRAPH_WORLD_CENTER + graph_layout::spawn_jitter("n"), "no pos: jittered spawn");
+        let explicit = egui::vec2(3.0, 4.0);
+        assert_eq!(app.placement("n", Some(explicit)).pos, explicit, "an explicit pos wins");
+    }
+
+    #[test]
+    fn a_new_note_or_group_from_a_json_level_leaves_it_and_lands_in_the_outer_group() {
+        let (mut app, j) = app_with_json("create", "[1]");
+        for create in [App::new_note_shortcut, App::new_group_shortcut] {
+            app.switch_group_level(Some(j.clone()));
+            let before = app.node_order.len();
+            create(&mut app);
+            assert_eq!(app.node_order.len(), before + 1);
+            assert!(app.json_level.is_none(), "the level was left");
+            let made = &app.nodes[app.node_order.last().unwrap()];
+            assert_eq!(made.group.as_deref(), Some(OUTER));
+        }
+    }
+
+    #[test]
+    fn place_node_inserts_at_the_placement_and_returns_the_id() {
+        let (mut app, _) = app_with_json("place_node", "[1]");
+        let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
+        let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
+        let id = app.place_node(None, note(), at);
+        let node = &app.nodes[&id];
+        assert_eq!((node.group.as_deref(), node.pos, node.parent.is_none()), (Some(OUTER), egui::vec2(1.0, 2.0), true));
+        assert_eq!(app.node_order.last(), Some(&id));
+        let at = Placement { group: None, pos: egui::Vec2::ZERO };
+        assert_eq!(app.place_node(Some("fixed".into()), note(), at), "fixed", "a given id is kept");
+    }
+
+    #[test]
     fn new_nodes_land_beside_the_json_node_not_inside_it() {
         let (mut app, j) = app_with_json("insertion", "[1]");
         app.current_group = Some(j.clone()); // before any frame syncs the level
@@ -630,15 +670,10 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_created_out_of_sight_on_a_json_level() {
+    fn a_drop_from_a_json_level_leaves_it_and_lands_where_the_user_sees_it() {
         let (mut app, j) = app_with_json("create", r#"{"a": 1}"#);
         app.view_mode = ViewMode::Graph;
         app.switch_group_level(Some(j.clone()));
-        let count = app.nodes.len();
-        app.new_group_shortcut();
-        app.new_note_shortcut();
-        assert_eq!(app.nodes.len(), count, "the creation shortcuts do nothing here");
-        assert!(app.json_level.is_some());
         // A drop leaves the level first, then lands where the user sees it.
         let file = crate::store::testutil::temp_dir("json_level-create-drop").join("dropped.txt");
         std::fs::write(&file, b"x").unwrap();

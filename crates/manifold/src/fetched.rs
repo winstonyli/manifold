@@ -44,7 +44,34 @@ pub(crate) fn skip_convert_after(entry: Option<bool>, url_changed: bool, loading
     Some(settled || !loading)
 }
 
+/// Where a new node lands (spec `2026-09-30-place-node-design.md`).
+pub(crate) struct Placement {
+    pub(crate) group: Option<String>,
+    pub(crate) pos: egui::Vec2,
+}
+
 impl App {
+    /// Where a new node `id` goes: `current_group` at `pos`, or at a
+    /// jittered world-center spawn when `pos` is `None`. A JSON level is
+    /// left first, so the node lands in the level the user then sees.
+    pub(crate) fn placement(&mut self, id: &str, pos: Option<egui::Vec2>) -> Placement {
+        self.leave_json_level();
+        let pos = pos.unwrap_or_else(|| GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(id));
+        Placement { group: self.current_group.clone(), pos }
+    }
+
+    /// Inserts an uncolored node showing `payload` at `at` under `id`
+    /// (allocated when `None`) and appends it to `node_order`. Doesn't
+    /// save: the caller does, as `apply_graph_action` does once per action.
+    pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
+        let id = id.unwrap_or_else(|| self.alloc_node_id());
+        let node =
+            GraphNode { parent: None, group: at.group, pos: at.pos, vel: egui::Vec2::ZERO, color: None, payload };
+        self.nodes.insert(id.clone(), node);
+        self.node_order.push(id.clone());
+        id
+    }
+
     /// A download node for `path`, started from tab `tab_id`: placed next
     /// to that tab, in the tab's group, with an edge from it. Shared by an
     /// engine's `DownloadStarted` and the headless `ADDDOWNLOAD <path>`

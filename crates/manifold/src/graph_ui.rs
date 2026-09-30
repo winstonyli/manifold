@@ -295,11 +295,11 @@ impl App {
             }
             GraphAction::NewNote(pos) => {
                 let id = self.alloc_node_id();
-                self.insert_note_at(id, pos);
+                self.insert_note_at(id, Some(pos));
             }
             GraphAction::NewGroup(pos) => {
                 let id = self.alloc_node_id();
-                self.insert_group_at(id, pos);
+                self.insert_group_at(id, Some(pos));
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
             GraphAction::GroupSelected => {
@@ -320,18 +320,8 @@ impl App {
                     .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
                 let pos = sum / count;
                 let name = self.default_group_name();
-                self.nodes.insert(
-                    id.clone(),
-                    GraphNode {
-                        parent: None,
-                        group: self.insertion_group(),
-                        pos,
-                        vel: egui::Vec2::ZERO,
-                        color: None,
-                        payload: NodePayload::Group(GroupPayload { name, from_json: false }),
-                    },
-                );
-                self.node_order.push(id.clone());
+                let at = self.placement(&id, Some(pos));
+                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload { name, from_json: false }), at);
                 for tab_id in self.selected_tabs.drain() {
                     if let Some(node) = self.nodes.get_mut(&tab_id) {
                         node.group = Some(id.clone());

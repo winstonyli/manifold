@@ -2169,9 +2169,9 @@ pub(crate) mod tests {
         let dir = crate::store::testutil::temp_dir("group-json");
         let mut app = app_on(&dir.join("session.mnf"), 1);
         let g = app.alloc_node_id();
-        app.insert_group_at(g.clone(), egui::vec2(0.0, 0.0));
+        app.insert_group_at(g.clone(), Some(egui::vec2(0.0, 0.0)));
         let n = app.alloc_node_id();
-        app.insert_note_at(n.clone(), egui::vec2(10.0, 0.0));
+        app.insert_note_at(n.clone(), Some(egui::vec2(10.0, 0.0)));
         app.nodes.get_mut(&n).unwrap().group = Some(g.clone());
         let json = app.export_group_json(&g).unwrap();
         assert_eq!(json.nodes.len(), 2);

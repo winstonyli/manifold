@@ -109,7 +109,7 @@ impl App {
             Some((DropEffect::GroupWith, Some(other))) => {
                 let group = self.alloc_node_id();
                 let pos = self.nodes.get(&other).map_or(egui::Vec2::ZERO, |n| n.pos);
-                self.insert_group_at(group.clone(), pos);
+                self.insert_group_at(group.clone(), Some(pos));
                 let unit = self.take_drag_unit(id);
                 for member in std::iter::once(other).chain(unit) {
                     if let Some(node) = self.nodes.get_mut(&member) {
