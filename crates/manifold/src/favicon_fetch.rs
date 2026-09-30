@@ -168,14 +168,18 @@ fn read_png(path: &Path) -> Option<FaviconImage> {
     Some(FaviconImage { rgba: image.into_raw(), width, height })
 }
 
-/// `https://example.org:8080` -> `https_example.org_8080.png`: every
-/// character a file name can't safely hold becomes `_`.
+/// `https://example.org:8080` -> `https_3a_2f_2fexample.org_3a8080.png`: every
+/// character a file name can't safely hold (and `_` itself) becomes `_` and its
+/// two hex digits, so two origins never share a file.
 fn cache_file_name(origin: &str) -> String {
-    let name: String = origin
-        .replace("://", "_")
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
-        .collect();
+    let mut name = String::new();
+    for b in origin.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' {
+            name.push(b as char);
+        } else {
+            name.push_str(&format!("_{b:02x}"));
+        }
+    }
     format!("{name}.png")
 }
 
@@ -234,6 +238,7 @@ mod tests {
 
     #[test]
     fn a_cache_file_name_is_the_origin_made_safe() {
-        assert_eq!(cache_file_name("https://example.org:8080"), "https_example.org_8080.png");
+        assert_eq!(cache_file_name("https://example.org:8080"), "https_3a_2f_2fexample.org_3a8080.png");
+        assert_ne!(cache_file_name("https://a:1"), cache_file_name("https://a_1"));
     }
 }
