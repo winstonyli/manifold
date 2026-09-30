@@ -1068,7 +1068,13 @@ fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> b
             Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
             _ => false,
         },
-        _ => true,
+        store::model::Kind::Tab
+        | store::model::Kind::Group
+        | store::model::Kind::Image
+        | store::model::Kind::Pdf
+        | store::model::Kind::Json
+        | store::model::Kind::JsonLeaf
+        | store::model::Kind::Unknown(_) => true,
     }
 }
 

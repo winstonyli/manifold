@@ -49,7 +49,12 @@ impl NodePayload {
         match self {
             NodePayload::Tab(t) => Some((&t.url, t.tab.kind)),
             NodePayload::Unloaded(t) => Some((&t.url, t.kind)),
-            _ => None,
+            NodePayload::Download(_)
+            | NodePayload::Group(_)
+            | NodePayload::Note(_)
+            | NodePayload::Image(_)
+            | NodePayload::Pdf(_)
+            | NodePayload::Json(_) => None,
         }
     }
 
@@ -59,7 +64,12 @@ impl NodePayload {
         match self {
             NodePayload::Tab(t) => Some((&t.title, &t.url)),
             NodePayload::Unloaded(t) => Some((&t.title, &t.url)),
-            _ => None,
+            NodePayload::Download(_)
+            | NodePayload::Group(_)
+            | NodePayload::Note(_)
+            | NodePayload::Image(_)
+            | NodePayload::Pdf(_)
+            | NodePayload::Json(_) => None,
         }
     }
 
@@ -67,7 +77,12 @@ impl NodePayload {
         match self {
             NodePayload::Tab(t) => Some(&mut t.pinned),
             NodePayload::Unloaded(t) => Some(&mut t.pinned),
-            _ => None,
+            NodePayload::Download(_)
+            | NodePayload::Group(_)
+            | NodePayload::Note(_)
+            | NodePayload::Image(_)
+            | NodePayload::Pdf(_)
+            | NodePayload::Json(_) => None,
         }
     }
 
@@ -76,7 +91,12 @@ impl NodePayload {
         match self {
             NodePayload::Tab(t) => t.pinned,
             NodePayload::Unloaded(t) => t.pinned,
-            _ => false,
+            NodePayload::Download(_)
+            | NodePayload::Group(_)
+            | NodePayload::Note(_)
+            | NodePayload::Image(_)
+            | NodePayload::Pdf(_)
+            | NodePayload::Json(_) => false,
         }
     }
 
