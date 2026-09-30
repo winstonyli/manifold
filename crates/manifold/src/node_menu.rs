@@ -291,18 +291,6 @@ pub(crate) struct NodeMenuView {
     renaming: Option<String>,
 }
 
-/// What a click on `render_zoom_chip` asked for. The chip holds no zoom
-/// state of its own -- each caller applies this to whatever "zoom" means
-/// in its own view (Graph: the camera's `camera.rect`; Image view:
-/// `ImageViewState`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ZoomChipAction {
-    Out,
-    In,
-    Reset100,
-    Fit,
-}
-
 impl App {
     /// The minimal right-click context menu: one "Open in new tab" item at
     /// `self.context_menu`'s position, if a menu is currently showing.
