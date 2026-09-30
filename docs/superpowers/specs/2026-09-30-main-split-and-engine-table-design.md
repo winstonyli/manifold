@@ -1,6 +1,12 @@
 # Splitting main.rs and one engine table
 
-Status: draft for approval, 2026-09-30. Nothing here is implemented.
+Status: approved and implemented, 2026-09-30. Part A is b75860e. Part B is
+seven move commits (`closed`, `node_menu`, `view_modes`, `graph_nav`,
+`shortcuts`, `fetched`, `tabs`), listed in `.git-blame-ignore-revs`; main.rs
+went from 6,424 to 2,733 lines. Two deviations: the tests for `closed` and
+`fetched` moved with them, while the rest stay in main.rs (they cover
+`App` basics); `ZoomChipAction` went to `node_menu` as listed, though
+`render_zoom_chip` stays in main.rs. Part C (`place_node`) is not started.
 Origin: the full-codebase review (findings 4 and 5), after the JSON node
 rework.
 
