@@ -261,7 +261,7 @@ while implementing that changed or sharpened this spec:
 - **Table mode** for arrays of same-shaped objects: columns are keys and
   rows are elements. It is the natural view for API responses.
 - **More level sources:** a PDF's pages, a folder or archive listing,
-  table mode. Each is one new `LevelItemKind` arm and its painter.
+  table mode. Each needs a `LevelItemKind` arm, a painter, and a branch in the `level.rs` methods (see README, "A graph level's own source").
 - **Tree layout for tab trees:** the layout strategy is per source, so
   tab forests could opt into the JSON level's tree layout.
 - **Per-pointer VIEW merging:** a store map type so concurrent view
