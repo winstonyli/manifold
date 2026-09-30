@@ -234,74 +234,6 @@ pub fn send_input(
     }
 }
 
-/// `windowsVirtualKeyCode`/`code`/`key` for `Input.dispatchKeyEvent` --
-/// CDP's own field names, not this project's own naming. `nativeVirtualKeyCode`
-/// is sent equal to `windowsVirtualKeyCode` (true on Windows, the only
-/// platform WebView2 runs on). Left/right variants of a modifier key share
-/// one generic virtual-key code (`VK_SHIFT`/`VK_CONTROL`/`VK_MENU`) the same
-/// way real Windows key messages do -- `code` alone still tells the page
-/// which physical side was pressed.
-fn key_info(key: KeyCode) -> (u32, &'static str, &'static str) {
-    match key {
-        KeyCode::KeyA => (0x41, "KeyA", "a"),
-        KeyCode::KeyB => (0x42, "KeyB", "b"),
-        KeyCode::KeyC => (0x43, "KeyC", "c"),
-        KeyCode::KeyD => (0x44, "KeyD", "d"),
-        KeyCode::KeyE => (0x45, "KeyE", "e"),
-        KeyCode::KeyF => (0x46, "KeyF", "f"),
-        KeyCode::KeyG => (0x47, "KeyG", "g"),
-        KeyCode::KeyH => (0x48, "KeyH", "h"),
-        KeyCode::KeyI => (0x49, "KeyI", "i"),
-        KeyCode::KeyJ => (0x4A, "KeyJ", "j"),
-        KeyCode::KeyK => (0x4B, "KeyK", "k"),
-        KeyCode::KeyL => (0x4C, "KeyL", "l"),
-        KeyCode::KeyM => (0x4D, "KeyM", "m"),
-        KeyCode::KeyN => (0x4E, "KeyN", "n"),
-        KeyCode::KeyO => (0x4F, "KeyO", "o"),
-        KeyCode::KeyP => (0x50, "KeyP", "p"),
-        KeyCode::KeyQ => (0x51, "KeyQ", "q"),
-        KeyCode::KeyR => (0x52, "KeyR", "r"),
-        KeyCode::KeyS => (0x53, "KeyS", "s"),
-        KeyCode::KeyT => (0x54, "KeyT", "t"),
-        KeyCode::KeyU => (0x55, "KeyU", "u"),
-        KeyCode::KeyV => (0x56, "KeyV", "v"),
-        KeyCode::KeyW => (0x57, "KeyW", "w"),
-        KeyCode::KeyX => (0x58, "KeyX", "x"),
-        KeyCode::KeyY => (0x59, "KeyY", "y"),
-        KeyCode::KeyZ => (0x5A, "KeyZ", "z"),
-        KeyCode::Digit0 => (0x30, "Digit0", "0"),
-        KeyCode::Digit1 => (0x31, "Digit1", "1"),
-        KeyCode::Digit2 => (0x32, "Digit2", "2"),
-        KeyCode::Digit3 => (0x33, "Digit3", "3"),
-        KeyCode::Digit4 => (0x34, "Digit4", "4"),
-        KeyCode::Digit5 => (0x35, "Digit5", "5"),
-        KeyCode::Digit6 => (0x36, "Digit6", "6"),
-        KeyCode::Digit7 => (0x37, "Digit7", "7"),
-        KeyCode::Digit8 => (0x38, "Digit8", "8"),
-        KeyCode::Digit9 => (0x39, "Digit9", "9"),
-        KeyCode::Enter => (0x0D, "Enter", "Enter"),
-        KeyCode::Backspace => (0x08, "Backspace", "Backspace"),
-        KeyCode::Tab => (0x09, "Tab", "Tab"),
-        KeyCode::Space => (0x20, "Space", " "),
-        KeyCode::Escape => (0x1B, "Escape", "Escape"),
-        KeyCode::Delete => (0x2E, "Delete", "Delete"),
-        KeyCode::ArrowLeft => (0x25, "ArrowLeft", "ArrowLeft"),
-        KeyCode::ArrowUp => (0x26, "ArrowUp", "ArrowUp"),
-        KeyCode::ArrowRight => (0x27, "ArrowRight", "ArrowRight"),
-        KeyCode::ArrowDown => (0x28, "ArrowDown", "ArrowDown"),
-        KeyCode::PageUp => (0x21, "PageUp", "PageUp"),
-        KeyCode::PageDown => (0x22, "PageDown", "PageDown"),
-        KeyCode::End => (0x23, "End", "End"),
-        KeyCode::Home => (0x24, "Home", "Home"),
-        KeyCode::ShiftLeft => (0x10, "ShiftLeft", "Shift"),
-        KeyCode::ShiftRight => (0x10, "ShiftRight", "Shift"),
-        KeyCode::ControlLeft => (0x11, "ControlLeft", "Control"),
-        KeyCode::ControlRight => (0x11, "ControlRight", "Control"),
-        KeyCode::AltLeft => (0x12, "AltLeft", "Alt"),
-        KeyCode::AltRight => (0x12, "AltRight", "Alt"),
-    }
-}
-
 /// `ipc_protocol::modifiers`' bit positions (`SHIFT`/`CONTROL`/`ALT`/`SUPER`)
 /// don't match CDP's own `Input.dispatchKeyEvent`/`dispatchMouseEvent`
 /// `modifiers` bitmask (`Alt=1, Ctrl=2, Meta=4, Shift=8`) -- translated
@@ -324,7 +256,9 @@ fn cdp_modifiers(mods: u8) -> u32 {
 }
 
 fn dispatch_key_event(webview: &ICoreWebView2, cdp_type: &str, key: KeyCode, mods: u8) {
-    let (vk, code, key_name) = key_info(key);
+    // Left/right variants of a modifier share one generic virtual-key code, as real Windows key
+    // messages do; `code` alone tells the page which side was pressed.
+    let (vk, code, key_name) = (key.windows_vk_generic(), key.dom_code(), key.dom_key());
     let params = serde_json::json!({
         "type": cdp_type,
         "windowsVirtualKeyCode": vk,

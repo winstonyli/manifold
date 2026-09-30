@@ -453,89 +453,20 @@ fn parse_mouse_button(name: &str) -> MouseButton {
     }
 }
 
-/// Maps a debug command's key name to `ipc_protocol::KeyCode` — the same
-/// engine-agnostic key set every real engine-host translation table already
-/// covers (see that type's own doc comment), not winit's own `KeyCode`.
+/// Maps a debug command's key name (`Enter`, `ShiftLeft`, `KeyA`, ...: the DOM
+/// code, `KeyCode::dom_code`) to `ipc_protocol::KeyCode`. A bare letter or
+/// digit (`"a"`, `"5"`) is accepted too, for convenience.
 fn parse_key_code(name: &str) -> Option<KeyCode> {
-    Some(match name {
-        "Enter" => KeyCode::Enter,
-        "Backspace" => KeyCode::Backspace,
-        "Tab" => KeyCode::Tab,
-        "Space" => KeyCode::Space,
-        "Escape" => KeyCode::Escape,
-        "Delete" => KeyCode::Delete,
-        "ArrowLeft" => KeyCode::ArrowLeft,
-        "ArrowRight" => KeyCode::ArrowRight,
-        "ArrowUp" => KeyCode::ArrowUp,
-        "ArrowDown" => KeyCode::ArrowDown,
-        "Home" => KeyCode::Home,
-        "End" => KeyCode::End,
-        "PageUp" => KeyCode::PageUp,
-        "PageDown" => KeyCode::PageDown,
-        "ShiftLeft" => KeyCode::ShiftLeft,
-        "ShiftRight" => KeyCode::ShiftRight,
-        "ControlLeft" => KeyCode::ControlLeft,
-        "ControlRight" => KeyCode::ControlRight,
-        "AltLeft" => KeyCode::AltLeft,
-        "AltRight" => KeyCode::AltRight,
-        _ => return parse_single_char_key(name),
-    })
-}
-
-/// `KeyA`..`KeyZ` and `Digit0`..`Digit9` follow a regular naming scheme, so
-/// generate the match from the single character instead of spelling out 36
-/// arms — also accepts a bare letter/digit (`"a"`, `"5"`) for convenience.
-fn parse_single_char_key(name: &str) -> Option<KeyCode> {
+    if let Some(key) = KeyCode::ALL.iter().copied().find(|k| k.dom_code() == name) {
+        return Some(key);
+    }
     let mut chars = name.chars();
-    let ch = chars.next()?;
+    let ch = chars.next().filter(char::is_ascii_alphanumeric)?;
     if chars.next().is_some() {
         return None;
     }
-    match ch.to_ascii_uppercase() {
-        c @ 'A'..='Z' => Some(match c {
-            'A' => KeyCode::KeyA,
-            'B' => KeyCode::KeyB,
-            'C' => KeyCode::KeyC,
-            'D' => KeyCode::KeyD,
-            'E' => KeyCode::KeyE,
-            'F' => KeyCode::KeyF,
-            'G' => KeyCode::KeyG,
-            'H' => KeyCode::KeyH,
-            'I' => KeyCode::KeyI,
-            'J' => KeyCode::KeyJ,
-            'K' => KeyCode::KeyK,
-            'L' => KeyCode::KeyL,
-            'M' => KeyCode::KeyM,
-            'N' => KeyCode::KeyN,
-            'O' => KeyCode::KeyO,
-            'P' => KeyCode::KeyP,
-            'Q' => KeyCode::KeyQ,
-            'R' => KeyCode::KeyR,
-            'S' => KeyCode::KeyS,
-            'T' => KeyCode::KeyT,
-            'U' => KeyCode::KeyU,
-            'V' => KeyCode::KeyV,
-            'W' => KeyCode::KeyW,
-            'X' => KeyCode::KeyX,
-            'Y' => KeyCode::KeyY,
-            'Z' => KeyCode::KeyZ,
-            _ => unreachable!(),
-        }),
-        c @ '0'..='9' => Some(match c {
-            '0' => KeyCode::Digit0,
-            '1' => KeyCode::Digit1,
-            '2' => KeyCode::Digit2,
-            '3' => KeyCode::Digit3,
-            '4' => KeyCode::Digit4,
-            '5' => KeyCode::Digit5,
-            '6' => KeyCode::Digit6,
-            '7' => KeyCode::Digit7,
-            '8' => KeyCode::Digit8,
-            '9' => KeyCode::Digit9,
-            _ => unreachable!(),
-        }),
-        _ => None,
-    }
+    let code = if ch.is_ascii_digit() { format!("Digit{ch}") } else { format!("Key{}", ch.to_ascii_uppercase()) };
+    KeyCode::ALL.iter().copied().find(|k| k.dom_code() == code)
 }
 
 /// `ADDFILE <path>` or `ADDFILE <path> <x> <y>` -- `rest` is non-empty. The

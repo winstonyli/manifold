@@ -26,24 +26,124 @@ pub enum MouseButton {
 /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
 /// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
 /// winit's key into this; each engine-host translates this into whatever
-/// its own embedding API wants — see each engine-host's own translation
-/// table, kept local to that crate the same way `MouseButton` translation
-/// already is.
+/// its own embedding API wants. Two encodings are standards rather than one
+/// engine's own, so they live here with the table (`key_codes!`): the DOM
+/// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
+/// Servo's `Code`/`Key` stay in their engine crates.
 ///
 /// Deliberately not exhaustive — common keys only (letters, digits,
 /// navigation, the usual modifiers and editing keys) covers real usage
 /// (typing into a page's form fields, basic shortcuts) without trying to
 /// enumerate every key on every keyboard layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[rustfmt::skip]
-pub enum KeyCode {
-    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
-    KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
-    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
-    Enter, Backspace, Tab, Space, Escape, Delete,
-    ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
-    Home, End, PageUp, PageDown,
-    ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight,
+/// One row per key: the variant (which is also its DOM `KeyboardEvent.code`),
+/// its Windows virtual-key code, and its DOM `KeyboardEvent.key`. Generates
+/// the enum, `KeyCode::ALL` and the accessors, so the table exists once.
+macro_rules! key_codes {
+    ($($name:ident $vk:literal $key:literal;)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub enum KeyCode {
+            $($name,)*
+        }
+
+        impl KeyCode {
+            /// Every key, in declaration order.
+            pub const ALL: &'static [KeyCode] = &[$(KeyCode::$name,)*];
+
+            /// The DOM `KeyboardEvent.code` (`"KeyA"`, `"ShiftLeft"`), which is the variant's own name.
+            pub fn dom_code(self) -> &'static str {
+                match self {
+                    $(KeyCode::$name => stringify!($name),)*
+                }
+            }
+
+            /// The DOM `KeyboardEvent.key` (`"a"`, `"Enter"`, `" "`). Left and right modifiers share one.
+            pub fn dom_key(self) -> &'static str {
+                match self {
+                    $(KeyCode::$name => $key,)*
+                }
+            }
+
+            /// The Windows virtual-key code (`VK_*`). Modifiers use the side-specific codes
+            /// (`VK_LSHIFT`, ...); `windows_vk_generic` folds them to `VK_SHIFT` and friends.
+            pub fn windows_vk(self) -> u32 {
+                match self {
+                    $(KeyCode::$name => $vk,)*
+                }
+            }
+        }
+    };
+}
+
+key_codes! {
+    KeyA 0x41 "a";
+    KeyB 0x42 "b";
+    KeyC 0x43 "c";
+    KeyD 0x44 "d";
+    KeyE 0x45 "e";
+    KeyF 0x46 "f";
+    KeyG 0x47 "g";
+    KeyH 0x48 "h";
+    KeyI 0x49 "i";
+    KeyJ 0x4A "j";
+    KeyK 0x4B "k";
+    KeyL 0x4C "l";
+    KeyM 0x4D "m";
+    KeyN 0x4E "n";
+    KeyO 0x4F "o";
+    KeyP 0x50 "p";
+    KeyQ 0x51 "q";
+    KeyR 0x52 "r";
+    KeyS 0x53 "s";
+    KeyT 0x54 "t";
+    KeyU 0x55 "u";
+    KeyV 0x56 "v";
+    KeyW 0x57 "w";
+    KeyX 0x58 "x";
+    KeyY 0x59 "y";
+    KeyZ 0x5A "z";
+    Digit0 0x30 "0";
+    Digit1 0x31 "1";
+    Digit2 0x32 "2";
+    Digit3 0x33 "3";
+    Digit4 0x34 "4";
+    Digit5 0x35 "5";
+    Digit6 0x36 "6";
+    Digit7 0x37 "7";
+    Digit8 0x38 "8";
+    Digit9 0x39 "9";
+    Enter 0x0D "Enter";
+    Backspace 0x08 "Backspace";
+    Tab 0x09 "Tab";
+    Space 0x20 " ";
+    Escape 0x1B "Escape";
+    Delete 0x2E "Delete";
+    ArrowLeft 0x25 "ArrowLeft";
+    ArrowRight 0x27 "ArrowRight";
+    ArrowUp 0x26 "ArrowUp";
+    ArrowDown 0x28 "ArrowDown";
+    Home 0x24 "Home";
+    End 0x23 "End";
+    PageUp 0x21 "PageUp";
+    PageDown 0x22 "PageDown";
+    ShiftLeft 0xA0 "Shift";
+    ShiftRight 0xA1 "Shift";
+    ControlLeft 0xA2 "Control";
+    ControlRight 0xA3 "Control";
+    AltLeft 0xA4 "Alt";
+    AltRight 0xA5 "Alt";
+}
+
+impl KeyCode {
+    /// `windows_vk` with left/right modifiers folded to the generic `VK_SHIFT` (0x10),
+    /// `VK_CONTROL` (0x11) and `VK_MENU` (0x12), as real Windows key messages and CDP carry them.
+    pub fn windows_vk_generic(self) -> u32 {
+        match self.windows_vk() {
+            0xA0 | 0xA1 => 0x10,
+            0xA2 | 0xA3 => 0x11,
+            0xA4 | 0xA5 => 0x12,
+            vk => vk,
+        }
+    }
 }
 
 /// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
@@ -338,4 +438,32 @@ pub enum EngineToHost {
     /// any content type but `application/json`, which comes as `JsonBody`
     /// instead and converts from that body.
     RedirectableContent { content_type: String },
+}
+
+#[cfg(test)]
+mod key_code_tests {
+    use super::*;
+
+    #[test]
+    fn dom_code_is_the_variant_name_and_vk_codes_are_distinct_per_key() {
+        for &key in KeyCode::ALL {
+            assert_eq!(key.dom_code(), format!("{key:?}"));
+        }
+        let mut vks: Vec<u32> = KeyCode::ALL.iter().map(|k| k.windows_vk()).collect();
+        vks.sort();
+        vks.dedup();
+        assert_eq!(vks.len(), KeyCode::ALL.len());
+    }
+
+    #[test]
+    fn spot_checks_against_the_old_per_engine_tables() {
+        assert_eq!(KeyCode::KeyA.windows_vk(), 0x41);
+        assert_eq!(KeyCode::Digit9.windows_vk(), 0x39);
+        assert_eq!(KeyCode::PageUp.windows_vk(), 0x21);
+        assert_eq!(KeyCode::AltRight.windows_vk(), 0xA5);
+        assert_eq!(KeyCode::AltRight.windows_vk_generic(), 0x12);
+        assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
+        assert_eq!(KeyCode::Space.dom_key(), " ");
+        assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
 }
