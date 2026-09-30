@@ -290,7 +290,12 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
         FieldValue::Str(s) if !s.is_empty() => w.str(no, s),
         FieldValue::Bool(true) => w.varint(no, 1),
         FieldValue::Engine(code) if *code != 0 => w.varint(no, *code),
-        _ => {}
+        // The empty or zero value of each type is "absent": nothing is written.
+        FieldValue::Color(None)
+        | FieldValue::Id(None)
+        | FieldValue::Str(_)
+        | FieldValue::Bool(false)
+        | FieldValue::Engine(_) => {}
     }
     *out = w.into_bytes();
 }

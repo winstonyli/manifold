@@ -320,6 +320,9 @@ fn id_message(id: NodeId, actors: &Actors) -> Writer {
 }
 
 fn decode_id(buf: &[u8], actors: &Actors) -> Result<NodeId, JournalError> {
+    // The `_ => {}` arms in this file's decoders skip fields a newer build wrote (forward
+    // compatibility); `keep_unknown` keeps an ops or unknown frame whole, but a rewritten
+    // snapshot (`decode_snapshot`) drops them.
     let (mut index, mut counter) = (0, 0);
     for field in Reader::new(buf) {
         let field = field?;
@@ -531,6 +534,13 @@ fn op_actors(op: &Op) -> Vec<ActorId> {
 
 /// Ops: `{1: actor*, 2: op*}`, the frame's table with the author first
 /// (index 0) and then every other actor its ops name, in first-use order.
+// The body field numbers of an op message, named once for `ops_message` and
+// `decode_ops` so a new op kind can't fall through to another's decoding.
+const OP_CREATE: u32 = 4;
+const OP_SET: u32 = 5;
+const OP_MOVE: u32 = 6;
+const OP_DELETE: u32 = 7;
+
 /// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
 /// previous op in the frame), 3: logical, then one body field: 4 Create
 /// {1: node, 2: kind, 3: fields}, 5 Set {1: node, 2: field, 3: value
@@ -567,7 +577,7 @@ fn ops_message(ops: &[Op]) -> Vec<u8> {
                 if !fields.is_empty() {
                     b.bytes(3, fields);
                 }
-                4
+                OP_CREATE
             }
             OpBody::Set { node, field, enc } => {
                 b.message(1, &id_message(*node, actors));
@@ -575,18 +585,18 @@ fn ops_message(ops: &[Op]) -> Vec<u8> {
                 if !enc.is_empty() {
                     b.bytes(3, enc);
                 }
-                5
+                OP_SET
             }
             OpBody::Move { node, group } => {
                 b.message(1, &id_message(*node, actors));
                 if let Some(group) = group {
                     b.message(2, &id_message(*group, actors));
                 }
-                6
+                OP_MOVE
             }
             OpBody::Delete { node } => {
                 b.message(1, &id_message(*node, actors));
-                7
+                OP_DELETE
             }
         };
         o.message(field, &b);
@@ -616,7 +626,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
                 1 => counter_delta = f.value.u64()?,
                 2 => ms_delta = f.value.u64()?,
                 3 => logical = f.value.u32()?,
-                4..=7 => body = Some((f.no, f.value.bytes()?)),
+                OP_CREATE..=OP_DELETE => body = Some((f.no, f.value.bytes()?)),
                 _ => {}
             }
         }
@@ -633,22 +643,23 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
             let f = f?;
             match (kind, f.no) {
                 (_, 1) => node = Some(decode_id(f.value.bytes()?, actors)?),
-                (4 | 5, 2) => num = f.value.u64()?,
-                (6, 2) => group = Some(decode_id(f.value.bytes()?, actors)?),
-                (4 | 5, 3) => blob = f.value.bytes()?.to_vec(),
+                (OP_CREATE | OP_SET, 2) => num = f.value.u64()?,
+                (OP_MOVE, 2) => group = Some(decode_id(f.value.bytes()?, actors)?),
+                (OP_CREATE | OP_SET, 3) => blob = f.value.bytes()?.to_vec(),
                 _ => {}
             }
         }
         let node = node.ok_or_else(|| JournalError::Corrupt("op without a node".into()))?;
         let body = match kind {
-            4 => OpBody::Create { node, kind: Kind::from_code(num), fields: blob },
-            5 => OpBody::Set {
+            OP_CREATE => OpBody::Create { node, kind: Kind::from_code(num), fields: blob },
+            OP_SET => OpBody::Set {
                 node,
                 field: u32::try_from(num).map_err(|_| JournalError::Corrupt("field number".into()))?,
                 enc: blob,
             },
-            6 => OpBody::Move { node, group },
-            _ => OpBody::Delete { node },
+            OP_MOVE => OpBody::Move { node, group },
+            OP_DELETE => OpBody::Delete { node },
+            _ => unreachable!("the body field is one of OP_CREATE..=OP_DELETE"),
         };
         ops.push(Op { id: NodeId { actor: author, counter }, hlc: Hlc { ms, logical }, body });
     }

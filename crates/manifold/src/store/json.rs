@@ -43,7 +43,13 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
         FieldValue::Str(s) if !s.is_empty() => Value::String(s.clone()),
         FieldValue::Bool(true) => Value::Bool(true),
         FieldValue::Engine(code) if *code != 0 => Value::String(ENGINES.get(*code as usize - 1)?.to_string()),
-        _ => return None,
+        // The empty or zero value of each type is "absent", so it has no JSON.
+        FieldValue::Pos(..)
+        | FieldValue::Color(None)
+        | FieldValue::Id(None)
+        | FieldValue::Str(_)
+        | FieldValue::Bool(false)
+        | FieldValue::Engine(_) => return None,
     })
 }
 
