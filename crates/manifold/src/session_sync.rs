@@ -399,97 +399,131 @@ impl App {
         let color = fields.get(&field::COLOR).and_then(color_of);
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
-        if let Some(node) = self.nodes.get_mut(&id) {
-            let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
-            if seen.as_ref().is_none_or(|s| s.group != now.group) {
-                node.group = group;
-            }
-            if changed(field::COLOR) {
-                node.color = color;
-            }
-            if changed(field::POS) {
-                node.pos = pos;
-                node.vel = egui::Vec2::ZERO;
-            }
-            if kind == Kind::Tab && changed(field::PARENT) {
-                node.parent = id_of(fields, field::PARENT);
-            }
-            let mut swap = None;
-            let mut store_load = false;
-            match &mut node.payload {
-                NodePayload::Tab(tab) => {
-                    if changed(field::PINNED) {
-                        tab.pinned = bool_of(fields, field::PINNED);
-                    }
-                    let url = str_of(fields, field::URL);
-                    if changed(field::URL) && tab.url != url {
-                        tab.url = url.clone();
-                        tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
-                        store_load = true;
-                    }
-                    let want = engine_field(fields);
-                    if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
-                        swap = Some(want);
-                    }
-                }
-                NodePayload::Unloaded(tab) => {
-                    if changed(field::PINNED) {
-                        tab.pinned = bool_of(fields, field::PINNED);
-                    }
-                    if changed(field::URL) {
-                        tab.url = str_of(fields, field::URL);
-                    }
-                    if changed(field::ENGINE) {
-                        tab.kind = engine_field(fields);
-                    }
-                }
-                NodePayload::Group(g) => {
-                    if changed(field::NAME) {
-                        g.name = str_of(fields, field::NAME);
-                    }
-                    if changed(field::FROM_JSON) {
-                        g.from_json = bool_of(fields, field::FROM_JSON);
-                    }
-                }
-                NodePayload::Note(n) => {
-                    if changed(field::TEXT) {
-                        n.text = str_of(fields, field::TEXT);
-                    }
-                    if changed(field::URL) {
-                        n.url = url_of(fields);
-                    }
-                }
-                NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
-                NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
-                NodePayload::Json(p) if p.key.is_none() => {
-                    if changed(field::URL) {
-                        p.url = url_of(fields);
-                    }
-                    if changed(field::VIEW) {
-                        p.view = JsonView::from_field(&str_of(fields, field::VIEW));
-                    }
-                }
-                // Paths, keys and values never change after creation.
-                NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
-            }
-            // Another replica changed the view of the level being shown:
-            // relaid out on the next sync.
-            if changed(field::VIEW) {
-                if let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) {
-                    level.stale = true;
-                }
-            }
-            if store_load {
-                self.note_host_load(&id);
-                // The replica that navigated converts it, if it's content;
-                // converting here too would add a second node.
-                self.skip_convert.insert(id.clone(), false);
-            }
-            if let Some(target) = swap {
-                self.start_swap_to(&id, target);
-            }
+        if self.update_live_node(&id, kind, fields, group.clone(), pos, color, &seen, &now) {
             return;
         }
+        self.insert_materialized(id, kind, fields, group, local);
+    }
+
+    /// Applies `fields` to the live node `id` where they differ from what this replica last saw (`seen`).
+    /// False when there is no such node.
+    #[allow(clippy::too_many_arguments)] // the pieces `materialize` already worked out
+    fn update_live_node(
+        &mut self,
+        id: &str,
+        kind: Kind,
+        fields: &Fields,
+        group: Option<String>,
+        pos: egui::Vec2,
+        color: Option<egui::Color32>,
+        seen: &Option<Shared>,
+        now: &Shared,
+    ) -> bool {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return false;
+        };
+        let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
+        if seen.as_ref().is_none_or(|s| s.group != now.group) {
+            node.group = group;
+        }
+        if changed(field::COLOR) {
+            node.color = color;
+        }
+        if changed(field::POS) {
+            node.pos = pos;
+            node.vel = egui::Vec2::ZERO;
+        }
+        if kind == Kind::Tab && changed(field::PARENT) {
+            node.parent = id_of(fields, field::PARENT);
+        }
+        let mut swap = None;
+        let mut store_load = false;
+        match &mut node.payload {
+            NodePayload::Tab(tab) => {
+                if changed(field::PINNED) {
+                    tab.pinned = bool_of(fields, field::PINNED);
+                }
+                let url = str_of(fields, field::URL);
+                if changed(field::URL) && tab.url != url {
+                    tab.url = url.clone();
+                    tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
+                    store_load = true;
+                }
+                let want = engine_field(fields);
+                if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
+                    swap = Some(want);
+                }
+            }
+            NodePayload::Unloaded(tab) => {
+                if changed(field::PINNED) {
+                    tab.pinned = bool_of(fields, field::PINNED);
+                }
+                if changed(field::URL) {
+                    tab.url = str_of(fields, field::URL);
+                }
+                if changed(field::ENGINE) {
+                    tab.kind = engine_field(fields);
+                }
+            }
+            NodePayload::Group(g) => {
+                if changed(field::NAME) {
+                    g.name = str_of(fields, field::NAME);
+                }
+                if changed(field::FROM_JSON) {
+                    g.from_json = bool_of(fields, field::FROM_JSON);
+                }
+            }
+            NodePayload::Note(n) => {
+                if changed(field::TEXT) {
+                    n.text = str_of(fields, field::TEXT);
+                }
+                if changed(field::URL) {
+                    n.url = url_of(fields);
+                }
+            }
+            NodePayload::Image(p) if changed(field::URL) => p.url = url_of(fields),
+            NodePayload::Pdf(p) if changed(field::URL) => p.url = url_of(fields),
+            NodePayload::Json(p) if p.key.is_none() => {
+                if changed(field::URL) {
+                    p.url = url_of(fields);
+                }
+                if changed(field::VIEW) {
+                    p.view = JsonView::from_field(&str_of(fields, field::VIEW));
+                }
+            }
+            // Paths, keys and values never change after creation.
+            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_) => {}
+        }
+        // Another replica changed the view of the level being shown:
+        // relaid out on the next sync.
+        if changed(field::VIEW) {
+            if let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) {
+                level.stale = true;
+            }
+        }
+        if store_load {
+            self.note_host_load(id);
+            // The replica that navigated converts it, if it's content;
+            // converting here too would add a second node.
+            self.skip_convert.insert(id.to_string(), false);
+        }
+        if let Some(target) = swap {
+            self.start_swap_to(id, target);
+        }
+        true
+    }
+
+    /// Creates the node `id` of `kind` from `fields` (a file card whose file is gone gets a placeholder).
+    fn insert_materialized(
+        &mut self,
+        id: String,
+        kind: Kind,
+        fields: &Fields,
+        group: Option<String>,
+        local: Option<&LocalNode>,
+    ) {
+        let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
+        let color = fields.get(&field::COLOR).and_then(color_of);
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`resolve_content_path`).
