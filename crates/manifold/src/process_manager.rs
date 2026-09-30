@@ -682,11 +682,17 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     // listen_remote's doc comment) — only at its default-gateway IP, which
     // changes across WSL2 restarts, so it's discovered fresh here rather
     // than hardcoded.
+    // A random secret the engine must send before it is accepted: the listener is on
+    // every interface (`listen_remote`). It sits in this command line, visible to the
+    // same user's processes only.
+    let mut token = [0u8; transport::TOKEN_LEN];
+    getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
     let command = format!(
-        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(tab_id),
         shell_quote(initial_url),
         port,
+        transport::token_to_hex(&token),
         shell_quote(&binary_path),
     );
     let mut child = Command::new("wsl.exe")
@@ -712,7 +718,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     // half-started `wsl.exe` launcher before surfacing the error — leaving
     // it running would just orphan a second attempt at the same port/tab
     // the next time this is retried.
-    let control = match transport::accept_remote(&listener, WEBKIT_CONNECT_TIMEOUT) {
+    let control = match transport::accept_remote(&listener, WEBKIT_CONNECT_TIMEOUT, &token) {
         Ok(control) => control,
         Err(e) => {
             let _ = child.kill();

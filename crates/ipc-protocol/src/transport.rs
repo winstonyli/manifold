@@ -143,6 +143,25 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
 /// Windows host at its default-gateway IP (`ip route`'s `default via`
 /// address, which is the host's own `vEthernet (WSL)` adapter) — see
 /// `connect_remote`'s caller in manifold-engine-webkit for the matching side.
+/// The secret a spawned WSL engine-host must present (`ENGINE_TOKEN`, as hex).
+pub const TOKEN_LEN: usize = 16;
+pub type Token = [u8; TOKEN_LEN];
+
+pub fn token_to_hex(token: &Token) -> String {
+    token.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn token_from_hex(hex: &str) -> Option<Token> {
+    if hex.len() != TOKEN_LEN * 2 || !hex.is_ascii() {
+        return None;
+    }
+    let mut token = [0u8; TOKEN_LEN];
+    for (i, byte) in token.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(token)
+}
+
 pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }
@@ -159,14 +178,23 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
 /// cold one, and per an earlier investigation, occasionally hours). Polling
 /// via `set_nonblocking` rather than a dedicated accept-with-deadline API,
 /// since `std::net::TcpListener` has none.
-pub fn accept_remote(listener: &TcpListener, timeout: Duration) -> io::Result<RemoteTransport> {
+/// A connection is accepted only once it sends `token` (see `connect_remote`): the
+/// listener is on every interface, so without it the first host on the network to
+/// connect would become the engine. Connections that send another token, or none
+/// within a second, are dropped and the wait continues until `timeout`.
+pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -> io::Result<RemoteTransport> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
-            Ok((stream, _addr)) => {
+            Ok((mut stream, _addr)) => {
                 stream.set_nonblocking(false)?;
-                return Ok(MessageChannel::new(stream));
+                stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                let mut sent = [0u8; TOKEN_LEN];
+                if stream.read_exact(&mut sent).is_ok() && &sent == token {
+                    stream.set_read_timeout(None)?;
+                    return Ok(MessageChannel::new(stream));
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
@@ -184,8 +212,10 @@ pub fn accept_remote(listener: &TcpListener, timeout: Duration) -> io::Result<Re
 
 /// `host` is the Windows side's address as reachable from inside WSL2 —
 /// the default-gateway IP, not 127.0.0.1 (see `listen_remote`).
-pub fn connect_remote(host: &str, port: u16) -> io::Result<RemoteTransport> {
-    let stream = TcpStream::connect((host, port))?;
+/// Sends `token` first, which `accept_remote` checks.
+pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<RemoteTransport> {
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.write_all(token)?;
     Ok(MessageChannel::new(stream))
 }
 
@@ -211,7 +241,7 @@ mod tests {
         let timeout = Duration::from_millis(200);
 
         let start = Instant::now();
-        let result = accept_remote(&listener, timeout);
+        let result = accept_remote(&listener, timeout, &[7; TOKEN_LEN]);
         let elapsed = start.elapsed();
 
         let err = match result {
@@ -249,5 +279,37 @@ mod tests {
             elapsed < timeout * 10,
             "accept_local_pair took {elapsed:?}, expected roughly 2x the {timeout:?} timeout"
         );
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn the_token_round_trips_through_hex() {
+        let token: Token = std::array::from_fn(|i| (i * 17) as u8);
+        assert_eq!(token_from_hex(&token_to_hex(&token)), Some(token));
+        assert_eq!(token_from_hex("zz"), None);
+        assert_eq!(token_from_hex(&"é".repeat(16)), None);
+    }
+
+    #[test]
+    fn only_a_peer_with_the_token_is_accepted() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token: Token = [9; TOKEN_LEN];
+        let intruder = std::thread::spawn(move || {
+            let _ = connect_remote("127.0.0.1", port, &[1; TOKEN_LEN]);
+        });
+        let engine = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            connect_remote("127.0.0.1", port, &[9; TOKEN_LEN]).unwrap()
+        });
+        let mut accepted = accept_remote(&listener, Duration::from_secs(5), &token).expect("the real engine");
+        let mut engine = engine.join().unwrap();
+        intruder.join().unwrap();
+        engine.send(&1u8).unwrap();
+        assert_eq!(accepted.recv::<u8>().unwrap(), 1);
     }
 }

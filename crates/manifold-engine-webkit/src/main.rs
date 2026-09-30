@@ -52,7 +52,11 @@ fn main() {
     // shared memory with the Windows host process, so this engine-host
     // uses RemoteTransport, not the SharedFrameBuffer the other engines
     // use).
-    let control = transport::connect_remote(&host_ip, port).expect("connect to manifold");
+    // The secret process_manager.rs generated for this spawn; manifold drops any
+    // connection that doesn't send it first.
+    let token = transport::token_from_hex(&std::env::var("ENGINE_TOKEN").expect("ENGINE_TOKEN env var required"))
+        .expect("ENGINE_TOKEN must be 32 hex digits");
+    let control = transport::connect_remote(&host_ip, port, &token).expect("connect to manifold");
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");
     let mut to_host = MessageChannel::new(stream);
