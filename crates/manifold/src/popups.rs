@@ -208,8 +208,7 @@ impl App {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         match node.kind.as_str() {
             "tab" => {
-                let code = store::model::ENGINES.iter().position(|e| *e == str_field("engine")).unwrap_or(0) as u64 + 1;
-                engine_dot(ui, session_sync::engine_of(code), 8.0);
+                engine_dot(ui, EngineKind::from_name(&str_field("engine")).unwrap_or(EngineKind::Servo), 8.0);
                 title.map_or_else(|| str_field("url"), str::to_string)
             }
             "group" => {

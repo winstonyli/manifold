@@ -1218,9 +1218,10 @@ impl App {
             if !self.nodes.contains_key(&update.tab_id) {
                 continue;
             }
-            let format = match update.kind {
-                EngineKind::Servo | EngineKind::Webkit => wgpu::TextureFormat::Rgba8UnormSrgb,
-                EngineKind::Cef | EngineKind::Webview2 => wgpu::TextureFormat::Bgra8UnormSrgb,
+            let format = if update.kind.desc().bgra {
+                wgpu::TextureFormat::Bgra8UnormSrgb
+            } else {
+                wgpu::TextureFormat::Rgba8UnormSrgb
             };
             if let Some(pixels) = update.pixels {
                 // RemoteTransport engine-host (WebKit over WSL2): no shared

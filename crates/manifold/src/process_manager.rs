@@ -122,14 +122,53 @@ pub enum EngineKind {
     Webview2,
 }
 
+/// What each engine is: the one place its name, store code, binary, label and
+/// pixel order live. `desc` is an exhaustive `match`, so a new `EngineKind`
+/// fails to compile until it has a row here.
+pub(crate) struct EngineDesc {
+    /// The string `settings.json`, session exports and the `engine` store field hold.
+    pub(crate) name: &'static str,
+    /// The store's `engine` field code: `store::model::ENGINES[code - 1]` is `name`.
+    pub(crate) code: u64,
+    pub(crate) binary: &'static str,
+    pub(crate) label: &'static str,
+    /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
+    pub(crate) bgra: bool,
+}
+
 impl EngineKind {
-    fn binary_name(self) -> &'static str {
+    pub(crate) const ALL: [EngineKind; 4] =
+        [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2];
+
+    pub(crate) fn desc(self) -> EngineDesc {
         match self {
-            EngineKind::Servo => "manifold-engine-servo",
-            EngineKind::Cef => "manifold-engine-cef",
-            EngineKind::Webkit => "manifold-engine-webkit",
-            EngineKind::Webview2 => "manifold-engine-webview2",
+            EngineKind::Servo => {
+                EngineDesc { name: "servo", code: 1, binary: "manifold-engine-servo", label: "Servo", bgra: false }
+            }
+            EngineKind::Cef => {
+                EngineDesc { name: "cef", code: 2, binary: "manifold-engine-cef", label: "Blink (CEF)", bgra: true }
+            }
+            EngineKind::Webkit => {
+                EngineDesc { name: "webkit", code: 3, binary: "manifold-engine-webkit", label: "WebKit", bgra: false }
+            }
+            EngineKind::Webview2 => EngineDesc {
+                name: "webview2",
+                code: 4,
+                binary: "manifold-engine-webview2",
+                label: "WebView2",
+                bgra: true,
+            },
         }
+    }
+
+    /// Case-insensitive, so the headless `SPLIT` argument and the stored
+    /// lowercase names share one parser.
+    pub(crate) fn from_name(name: &str) -> Option<EngineKind> {
+        Self::ALL.into_iter().find(|k| k.desc().name.eq_ignore_ascii_case(name))
+    }
+
+    pub(crate) fn from_code(code: u64) -> Option<EngineKind> {
+        Self::ALL.into_iter().find(|k| k.desc().code == code)
     }
 }
 
@@ -142,23 +181,12 @@ pub(crate) mod engine_kind_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
-        let name = match kind {
-            EngineKind::Servo => "servo",
-            EngineKind::Cef => "cef",
-            EngineKind::Webkit => "webkit",
-            EngineKind::Webview2 => "webview2",
-        };
-        name.serialize(s)
+        kind.desc().name.serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
         let name = String::deserialize(d)?;
-        Ok(match name.as_str() {
-            "cef" => EngineKind::Cef,
-            "webkit" => EngineKind::Webkit,
-            "webview2" => EngineKind::Webview2,
-            _ => EngineKind::Servo,
-        })
+        EngineKind::from_name(&name).ok_or_else(|| serde::de::Error::custom(format!("unknown engine {name:?}")))
     }
 }
 
@@ -367,11 +395,11 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// to `manifold.exe`. No download step writes there yet; the fallback
 /// just means adding one later won't require touching this lookup.
 fn engine_binary_path(kind: EngineKind) -> PathBuf {
-    let file_name = if cfg!(windows) { format!("{}.exe", kind.binary_name()) } else { kind.binary_name().to_string() };
+    let file_name = if cfg!(windows) { format!("{}.exe", kind.desc().binary) } else { kind.desc().binary.to_string() };
     let sibling = match kind {
-        EngineKind::Servo => sibling_binary(kind.binary_name()),
+        EngineKind::Servo => sibling_binary(kind.desc().binary),
         EngineKind::Cef => {
-            let mut path = sibling_binary(kind.binary_name());
+            let mut path = sibling_binary(kind.desc().binary);
             path.pop();
             path.push("cef-runtime");
             path.push(&file_name);
@@ -381,7 +409,7 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
         // the `webview2-com` crate, or a lone DLL at worst) — no ANGLE-style
         // filename collision with Servo/CEF's runtime files, so no isolation
         // directory needed like CEF's `cef-runtime/` above.
-        EngineKind::Webview2 => sibling_binary(kind.binary_name()),
+        EngineKind::Webview2 => sibling_binary(kind.desc().binary),
         EngineKind::Webkit => unreachable!("Webkit is spawned via wsl.exe, not a local path"),
     };
     if sibling.exists() {

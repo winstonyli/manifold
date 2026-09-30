@@ -4,12 +4,7 @@
 use super::*;
 
 pub(crate) fn engine_label(kind: EngineKind) -> &'static str {
-    match kind {
-        EngineKind::Servo => "Servo",
-        EngineKind::Cef => "Blink (CEF)",
-        EngineKind::Webkit => "WebKit",
-        EngineKind::Webview2 => "WebView2",
-    }
+    kind.desc().label
 }
 
 /// A distinct color per engine (loosely nodding to each project's own

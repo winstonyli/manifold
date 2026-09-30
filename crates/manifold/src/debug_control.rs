@@ -442,13 +442,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
 /// convention (`settings.json` and session exports use the same strings) --
 /// `SPLIT`'s one argument.
 fn parse_engine_kind(name: &str) -> Option<EngineKind> {
-    match name.to_ascii_lowercase().as_str() {
-        "servo" => Some(EngineKind::Servo),
-        "cef" => Some(EngineKind::Cef),
-        "webkit" => Some(EngineKind::Webkit),
-        "webview2" => Some(EngineKind::Webview2),
-        _ => None,
-    }
+    EngineKind::from_name(name)
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {

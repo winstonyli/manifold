@@ -80,22 +80,13 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
 
 /// `store::model::ENGINES` order: code `n` is `ENGINES[n - 1]`.
 pub(crate) fn engine_code(kind: EngineKind) -> u64 {
-    match kind {
-        EngineKind::Servo => 1,
-        EngineKind::Cef => 2,
-        EngineKind::Webkit => 3,
-        EngineKind::Webview2 => 4,
-    }
+    kind.desc().code
 }
 
-/// Unknown codes fall back to Servo, as `engine_kind_serde` does for names.
+/// The engine for a stored code. `0` is an absent field (a tab whose engine
+/// was never set), which is Servo, the first engine.
 pub(crate) fn engine_of(code: u64) -> EngineKind {
-    match code {
-        2 => EngineKind::Cef,
-        3 => EngineKind::Webkit,
-        4 => EngineKind::Webview2,
-        _ => EngineKind::Servo,
-    }
+    EngineKind::from_code(code).unwrap_or(EngineKind::Servo)
 }
 
 /// The ops that make `doc` show `live` (spec "Local edits become ops").
@@ -2061,12 +2052,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn engine_codes_follow_the_store_table() {
-        for kind in [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2] {
-            let name = crate::store::model::ENGINES[engine_code(kind) as usize - 1];
-            assert_eq!(serde_json::to_value(Wrap(kind)).unwrap(), serde_json::json!(name));
+    fn engine_table_matches_the_store_and_round_trips() {
+        for (i, kind) in EngineKind::ALL.into_iter().enumerate() {
+            let desc = kind.desc();
+            assert_eq!(desc.code, i as u64 + 1, "codes are 1-based positions in ALL");
+            assert_eq!(crate::store::model::ENGINES[i], desc.name, "the store names the same engine");
+            assert_eq!(serde_json::to_value(Wrap(kind)).unwrap(), serde_json::json!(desc.name));
             assert_eq!(engine_of(engine_code(kind)), kind);
+            assert_eq!(EngineKind::from_name(&desc.name.to_uppercase()), Some(kind));
         }
+        assert_eq!(EngineKind::from_name("gecko"), None);
+        assert_eq!(EngineKind::from_code(0), None);
     }
 
     #[derive(serde::Serialize)]
