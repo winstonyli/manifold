@@ -465,6 +465,12 @@ impl GpuState {
     /// texture` when a new one is unavoidable, so callers holding onto that
     /// id never see it silently change.
     pub fn upload_frame(&mut self, tab_id: &str, pixels: &[u8], width: u32, height: u32, format: wgpu::TextureFormat) {
+        // The size comes from an engine-host (over TCP for WebKit): a frame that isn't
+        // `width * height * 4` bytes, or is empty or past the device limit, would panic in wgpu.
+        if !frame_is_valid(pixels.len(), width, height, self.device.limits().max_texture_dimension_2d) {
+            eprintln!("gpu: dropped a {width}x{height} frame of {} bytes for tab {tab_id}", pixels.len());
+            return;
+        }
         let reuse_main =
             self.tab_textures.get(tab_id).is_some_and(|t| t.width == width && t.height == height && t.format == format);
         if reuse_main {
@@ -1175,5 +1181,29 @@ impl GpuState {
         });
 
         RenderOutcome { surface_ok: true, screenshot_result }
+    }
+}
+
+/// Whether `len` bytes are a whole RGBA/BGRA frame of `width` x `height`
+/// that a texture of at most `max_dim` per side can hold.
+fn frame_is_valid(len: usize, width: u32, height: u32, max_dim: u32) -> bool {
+    width > 0
+        && height > 0
+        && width <= max_dim
+        && height <= max_dim
+        && len as u64 == u64::from(width) * u64::from(height) * 4
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::frame_is_valid;
+
+    #[test]
+    fn only_whole_frames_within_the_device_limit_are_valid() {
+        assert!(frame_is_valid(2 * 3 * 4, 2, 3, 8192));
+        assert!(!frame_is_valid(2 * 3 * 4 - 1, 2, 3, 8192), "short");
+        assert!(!frame_is_valid(2 * 3 * 4 + 1, 2, 3, 8192), "long");
+        assert!(!frame_is_valid(0, 0, 3, 8192), "empty");
+        assert!(!frame_is_valid(16384 * 4, 16384, 1, 8192), "past the limit");
     }
 }
