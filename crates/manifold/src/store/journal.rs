@@ -321,8 +321,8 @@ fn id_message(id: NodeId, actors: &Actors) -> Writer {
 
 fn decode_id(buf: &[u8], actors: &Actors) -> Result<NodeId, JournalError> {
     // The `_ => {}` arms in this file's decoders skip fields a newer build wrote (forward
-    // compatibility); `keep_unknown` keeps an ops or unknown frame whole, but a rewritten
-    // snapshot (`decode_snapshot`) drops them.
+    // compatibility). Nothing is lost: a frame that doesn't re-encode to itself sets
+    // `keep_unknown`, which stops the journal being compacted or rewritten (`should_compact`).
     let (mut index, mut counter) = (0, 0);
     for field in Reader::new(buf) {
         let field = field?;
