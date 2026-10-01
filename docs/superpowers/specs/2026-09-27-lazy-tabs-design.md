@@ -294,17 +294,24 @@ Refused for the tab Tab view is showing and for the split pane's tab. A
 group's "Sleep Tabs" sleeps each of its live tabs except those two.
 `scripts/sleep-probe.sh` checks tab, asleep, woken on WebView2 and CEF.
 
+## Idle sleep (2026-09-30)
+
+`Settings::idle_sleep_minutes` (`None` = never, the default; the settings page offers 10, 30 or 60). `idle_sleep::IdleClock` keeps each live tab's last moment on screen; `App::drain_tab_events` calls `sweep_idle_tabs` every 10 s, which updates the clocks (setting on or off, so turning it on counts earlier idle time) and runs `sleep_tab` on tabs out of sight for the limit. On screen means the Tab-view tab or the split pane's tab; a tab playing audio, pinned (the graph pin) or still loading counts as seen. The find bar needs no check: it exists only on the focused tab in Tab view and closes when focus moves. Headless `IDLESWEEP secs` runs one sweep with a limit in seconds; `scripts/sleep-probe.sh` covers it.
+
 ## Deferred
 
 - **Cached thumbnails.** Save each tab's last picture as a small image
   in the profile and show it, dimmed, on its sleeping card. Needs a
   cache with cleanup, and stores images of visited pages on disk.
-- **Sleeping after idle** (skipping tabs playing audio, downloading,
-  or with the find bar open), off by default with a setting for the idle
-  time. The manual "Sleep" is done (see "Sleep" below); `Ctrl+Tab`
-  (`cycle_focused_tab`) still wakes every sleeping tab it passes through
-  on its way to the one the user stops on, and each stays loaded until
-  slept by hand. Opening a failed card retries
+- **Smarter idle sleep.** The plain timer is done (see "Idle sleep"
+  below). Not done: skipping a tab with a download in flight (no per-tab
+  flag on the host yet), and choosing victims by memory pressure instead
+  of a fixed time: sleep only when engine memory passes a budget, ranked
+  by idle time x engine-process memory with graph distance from the
+  focused node as the tie-break, plus a page-side dirty-form check.
+  `Ctrl+Tab` (`cycle_focused_tab`) still wakes every sleeping tab it
+  passes through on its way to the one the user stops on, and each stays
+  loaded until slept. Opening a failed card retries
   it (`retry_missing_file`'s tab branch), and a second failure returns it
   to Graph view with a toast rather than leaving Tab view on a dead
   placeholder.

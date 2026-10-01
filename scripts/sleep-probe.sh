@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Usage: [ENGINES="webview2 cef"] scripts/sleep-probe.sh
 #
-# Checks "Sleep" (`App::sleep_tab`, headless `SLEEPNODE id`) per engine: a
-# live tab becomes an unloaded card, and opening that card starts the engine
-# again and brings the tab back, under the same id. One headless instance on
+# Checks "Sleep" per engine, two ways: the menu action (`App::sleep_tab`,
+# headless `SLEEPNODE id`) and idle auto-sleep (`App::sweep_idle_tabs`,
+# headless `IDLESWEEP secs`, run twice 3 s apart: the first sweep starts the
+# clock). Either way a live tab becomes an unloaded card, and opening that
+# card starts the engine again and brings the tab back, under the same id. One headless instance on
 # a fresh isolated APPDATA per engine, tab at a local page
 # (scripts/probe_server.py), state read back through EXPORTSTATE.
 # Build first: cargo build -p manifold -p manifold-engine-cef -p manifold-engine-webview2.
@@ -35,8 +37,9 @@ cards() {
 }
 
 status=0
+for case in ${CASES:-manual idle}; do
 for engine in ${ENGINES:-webview2 cef}; do
-    profile="$out/appdata-$engine"
+    profile="$out/appdata-$case-$engine"
     mkdir -p "$profile/manifold"
     echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"$engine\"}" >"$profile/manifold/settings.json"
     echo "{\"nodes\": [{\"id\": \"t1\", \"kind\": \"tab\", \"url\": \"http://127.0.0.1:$port/\", \"engine\": \"$engine\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
@@ -47,16 +50,22 @@ for engine in ${ENGINES:-webview2 cef}; do
     # `-n +1`: plain `tail -f` starts with only the last 10 lines.
     APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
     inst=$!
-    st() { cygpath -w "$out/$engine-$1.json"; }
+    st() { cygpath -w "$out/$case-$engine-$1.json"; }
     {
         echo WAITTABS
         echo "SLEEP 4"
         echo "EXPORTSTATE $(st live)"
     } >>"$cmd"
-    for _ in $(seq 60); do [ -s "$out/$engine-live.json" ] && break; sleep 0.5; done
-    id="$(cards "$out/$engine-live.json" | cut -d: -f1)"
+    for _ in $(seq 60); do [ -s "$out/$case-$engine-live.json" ] && break; sleep 0.5; done
+    id="$(cards "$out/$case-$engine-live.json" | cut -d: -f1)"
     {
-        echo "SLEEPNODE $id"
+        if [ "$case" = manual ]; then
+            echo "SLEEPNODE $id"
+        else
+            echo "IDLESWEEP 9999"
+            echo "SLEEP 3"
+            echo "IDLESWEEP 2"
+        fi
         echo "SLEEP 1"
         echo "EXPORTSTATE $(st asleep)"
         # Opening the card wakes it; the open is a click on the card in Graph view.
@@ -69,13 +78,14 @@ for engine in ${ENGINES:-webview2 cef}; do
     wait "$inst" 2>/dev/null
     inst=""
 
-    got="$(cards "$out/$engine-live.json") | $(cards "$out/$engine-asleep.json") | $(cards "$out/$engine-woken.json")"
+    got="$(cards "$out/$case-$engine-live.json") | $(cards "$out/$case-$engine-asleep.json") | $(cards "$out/$case-$engine-woken.json")"
     want="$id:Tab | $id:Unloaded | $id:Tab"
     if [ "$got" = "$want" ]; then
-        echo "PASS: $engine: tab, asleep, woken again"
+        echo "PASS: $case $engine: tab, asleep, woken again"
     else
-        echo "FAIL: $engine: got [$got], wanted [$want]"
+        echo "FAIL: $case $engine: got [$got], wanted [$want]"
         status=1
     fi
+done
 done
 exit $status

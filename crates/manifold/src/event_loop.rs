@@ -981,6 +981,7 @@ impl App {
                     self.close_node(&id);
                 }
             }
+            DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
             DebugCommand::SleepNode(id) => {
                 if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
                     self.sleep_group(&id);
@@ -1127,6 +1128,11 @@ impl App {
         }
         if changed {
             self.save_session();
+        }
+
+        if self.idle_clock.due(std::time::Instant::now()) {
+            let limit = self.settings.idle_sleep_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60));
+            self.sweep_idle_tabs(limit);
         }
 
         for (origin, result) in self.favicon_fetcher.tick() {

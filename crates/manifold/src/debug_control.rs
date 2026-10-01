@@ -306,6 +306,9 @@ pub enum DebugCommand {
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::sleep_tab`.
     SleepNode(String),
+    /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
+    /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
+    IdleSweep(u64),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -439,6 +442,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("SLEEPNODE id", "Sleep the tab `id` (or every tab of the group `id`), same as its \"Sleep\" context-menu action"),
+    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds sleep (the clock updates on every sweep)"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -620,6 +624,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
+        "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),

@@ -14,6 +14,7 @@ mod graph_layout;
 mod graph_nav;
 mod graph_ui;
 mod history;
+mod idle_sleep;
 mod image_view;
 mod input;
 mod json_file;
@@ -845,6 +846,8 @@ struct App {
     /// split closes, `focused` changes to a different tab, or this tab
     /// closes out from under the split -- see `close_split`.
     split_tab: Option<String>,
+    /// When each live tab was last on screen, for idle auto-sleep.
+    idle_clock: idle_sleep::IdleClock,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -1285,6 +1288,7 @@ impl Default for App {
             viewed_image: None,
             image_view: ImageViewState::default(),
             split_tab: None,
+            idle_clock: idle_sleep::IdleClock::default(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,

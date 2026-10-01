@@ -145,6 +145,35 @@ impl App {
         if ui.add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY)).lost_focus() {
             self.save_settings();
         }
+
+        ui.add_space(8.0);
+        ui.label("Put background tabs to sleep after");
+        ui.horizontal(|ui| {
+            let mut minutes = self.settings.idle_sleep_minutes;
+            let label = match minutes {
+                Some(m) => format!("{m} min"),
+                None => "Never".to_string(),
+            };
+            for (text, value) in [("Never", None), ("10 min", Some(10)), ("30 min", Some(30)), ("60 min", Some(60))] {
+                if ui.selectable_label(label == text, text).clicked() {
+                    minutes = value;
+                }
+            }
+            if minutes != self.settings.idle_sleep_minutes {
+                self.settings.idle_sleep_minutes = minutes;
+                self.save_settings();
+            }
+        });
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "Applies to open tabs. Sleeping closes the page; waking reloads it. Pinned tabs and tabs playing audio stay awake.",
+                )
+                .small()
+                .weak(),
+            )
+            .wrap(),
+        );
     }
 
     /// Settings, "Current Tab": engine, mute, screenshot, print.

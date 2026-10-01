@@ -516,6 +516,27 @@ impl App {
         true
     }
 
+    /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
+    /// sleeps those out of sight for `limit`. `limit` is the setting's
+    /// `idle_sleep_minutes`, or the headless `IDLESWEEP`'s seconds.
+    pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
+        let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
+        let views = self.nodes.iter().filter_map(|(id, n)| {
+            let t = n.as_tab()?;
+            Some(crate::idle_sleep::TabIdleView {
+                id,
+                on_screen: on_screen.as_deref() == Some(id) || self.split_tab.as_deref() == Some(id),
+                audio_playing: t.audio_playing,
+                pinned: t.pinned,
+                loading: t.loading,
+            })
+        });
+        let idle = self.idle_clock.sweep(std::time::Instant::now(), limit, views);
+        for id in idle {
+            self.sleep_tab(&id);
+        }
+    }
+
     /// "Sleep Tabs" on a group: `sleep_tab` for each of its live tabs.
     /// Returns how many slept.
     pub(crate) fn sleep_group(&mut self, id: &str) -> usize {

@@ -116,6 +116,12 @@ pub struct Settings {
     /// way `home_page`/`default_starting_engine` do.
     #[serde(default = "default_already_shown")]
     pub has_shown_first_launch_demo: bool,
+    /// Minutes a background tab may sit out of sight before it goes back to
+    /// sleep (`App::sleep_tab`); `None` (the default) never does. Applies to
+    /// tabs already open, unlike the new-tab defaults above. See
+    /// `idle_sleep`.
+    #[serde(default)]
+    pub idle_sleep_minutes: Option<u32>,
 }
 
 fn default_already_shown() -> bool {
@@ -134,6 +140,7 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             has_shown_first_launch_demo: false,
+            idle_sleep_minutes: None,
         }
     }
 }
