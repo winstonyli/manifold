@@ -17,6 +17,9 @@
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
+# Opt-in (not in the default set): hover-graph hover-json hover-tabview, which
+# sweep the mouse along the toolbar and report where a hover moves anything
+# other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
@@ -132,6 +135,46 @@ reset() {
     done
     echo "reset: not back at the top level" >&2
 }
+# hover_scan NAME: with the app in the view NAME, shoot it at rest and with the
+# mouse at every HOVER_STEP px along the top bar, into $OUT/hover/NAME/.
+hover_scan() {
+    local d="$OUT/hover/$1" x
+    rm -rf "$d"; mkdir -p "$d"
+    send "MOUSEMOVE 5 790" "SLEEP 1"; settle
+    send "SCREENSHOT $(w "$d/rest.png")"; wait_file "$d/rest.png"
+    for x in $(seq 4 "${HOVER_STEP:-14}" "${SIZE% *}"); do
+        send "MOUSEMOVE $x ${HOVER_Y:-16}" "SLEEP 0.3"
+        send "SCREENSHOT $(w "$d/x$(printf %04d "$x").png")"; wait_file "$d/x$(printf %04d "$x").png"
+    done
+    send "MOUSEMOVE 5 790"
+    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-34}" </dev/null
+}
+# hover_column NAME X0 [Y0 Y1]: the same down the column at X0 (the settings page's widgets).
+hover_column() {
+    local d="$OUT/hover/$1" y
+    rm -rf "$d"; mkdir -p "$d"
+    send "MOUSEMOVE 1270 990" "SLEEP 1"; settle
+    send "SCREENSHOT $(w "$d/rest.png")"; wait_file "$d/rest.png"
+    for y in $(seq "${3:-44}" "${HOVER_STEP:-14}" "${4:-960}"); do
+        send "MOUSEMOVE $2 $y" "SLEEP 0.3"
+        send "SCREENSHOT $(w "$d/y$(printf %04d "$y").png")"; wait_file "$d/y$(printf %04d "$y").png"
+    done
+    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-520}" y </dev/null
+}
+# focus_scan NAME X Y...: rest, then a click at each X Y (focusing whatever is
+# there), into $OUT/hover/NAME/ as x<N>.png; Escape between. Same report as hover_scan.
+focus_scan() {
+    local d="$OUT/hover/$1" i=0; shift
+    rm -rf "$d"; mkdir -p "$d"
+    send "MOUSEMOVE 5 790" "SLEEP 1"; settle
+    send "SCREENSHOT $(w "$d/rest.png")"; wait_file "$d/rest.png"
+    while [ $# -ge 2 ]; do
+        i=$((i + 1)); send "CLICK $1 $2" "SLEEP 0.5" "MOUSEMOVE 5 790" "SLEEP 0.5"
+        send "SCREENSHOT $(w "$d/x$(printf %04d "$i").png")"; wait_file "$d/x$(printf %04d "$i").png"
+        send ESCAPE "SLEEP 0.5"; shift 2
+    done
+    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-34}" </dev/null
+}
 has() { case " $VIEWS " in *" $1 "*) return 0 ;; esac; return 1; }
 
 send "RESIZE $SIZE" WAITTABS "SLEEP 3"
@@ -148,6 +191,8 @@ for v in tab:Tab group:Group note:Note; do
         read -r x y < <(center "${v##*:}"); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot "$name"; reset
     fi
 done
+if has hover-graph; then hover_scan graph; fi
+if has focus-graph; then focus_scan graph 385 16 235 16; fi
 # Right-click on empty canvas: the New Tab/Note/Group card.
 if has graph-newnode-menu; then
     send "MOUSEMOVE 700 150" "MOUSEDOWN 700 150 right" "MOUSEUP 700 150 right" "SLEEP 1"; shot graph-newnode-menu; reset
@@ -163,20 +208,25 @@ if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filte
 if has graph-group; then
     read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
 fi
-if has json-level || has json-menu || has json-tooltip; then
+if has json-level || has json-menu || has json-tooltip || has hover-json; then
     read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"
     has json-level && shot json-level
+    has hover-json && hover_scan json
     if has json-tooltip; then send "MOUSEMOVE $JSON_TIP_X 16" "SLEEP 2"; shot json-tooltip; send "MOUSEMOVE 5 790"; fi
     # Right-click the first card the level lays out (data.json at 1280x800).
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine; then
+if has tabview || has hover-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
+    has hover-tabview && hover_scan tabview
     if has tabview-dropdown; then send "ADDRESSBAR exam" "SLEEP 2"; shot tabview-dropdown; send ESCAPE "SLEEP 1"; fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
+    if has hover-find; then
+        send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_Y=${FIND_Y:-60} HOVER_BAND=${FIND_BAND:-90} hover_scan find; send CLOSEFINDBAR
+    fi
     # The Split button opens the engine picker.
     if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
@@ -191,12 +241,13 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
+if has settings || has hover-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
     send "SESSIONNAMETEXT demo" "SAVESESSIONAS demo" "SLEEP 1"
     has settings && shot settings
+    if has hover-settings; then hover_column settings 40; fi
     # Engine picker (Default starting engine) and the search-engine combo.
     if has settings-engine; then send "CLICK 63 180" "SLEEP 1"; shot settings-engine; send "CLICK 1100 300" "SLEEP 1"; fi
     if has settings-engine-tab; then send "CLICK 119 513" "SLEEP 1"; shot settings-engine-tab; send "CLICK 1100 300" "SLEEP 1"; fi

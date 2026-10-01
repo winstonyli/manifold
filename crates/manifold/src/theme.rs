@@ -35,9 +35,53 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
         .inner_margin(egui::Margin::same(4))
 }
 
+/// Adds `button` with no border in any state, at the same size in every state.
+/// Not `Button::stroke(NONE)`: egui sizes a button's padding for the stroke its
+/// *state's visuals* have (padding minus the stroke width) and only then applies
+/// the override, so a button whose hovered visuals have a 1 px stroke but whose
+/// override has none is 2 px narrower hovered than at rest, and every widget
+/// after it in the row shifts. Zeroing the strokes in the visuals keeps the
+/// padding the same in every state.
+pub(crate) fn add_borderless(ui: &mut egui::Ui, enabled: bool, button: egui::Button) -> egui::Response {
+    let none = egui::Stroke::NONE;
+    let w = &mut ui.visuals_mut().widgets;
+    let saved =
+        [w.noninteractive.bg_stroke, w.inactive.bg_stroke, w.hovered.bg_stroke, w.active.bg_stroke, w.open.bg_stroke];
+    for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        state.bg_stroke = none;
+    }
+    let response = ui.add_enabled(enabled, button);
+    let w = &mut ui.visuals_mut().widgets;
+    for (state, stroke) in
+        [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open].into_iter().zip(saved)
+    {
+        state.bg_stroke = stroke;
+    }
+    response
+}
+
+/// Runs `add` with no border on widgets at rest. A button drawn only when hovered
+/// (`selectable_label`, `toggle_value`, `Button::selectable`) has its frame
+/// stripped at rest, so it is laid out without its stroke but padded for it
+/// (padding minus the stroke width); the hovered frame then adds the stroke back
+/// and the widget grows by twice the stroke width, pushing what follows. With no
+/// resting stroke the padding is the full amount in both states.
+pub(crate) fn rest_borderless<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let saved = ui.visuals().widgets.inactive.bg_stroke;
+    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    let result = add(ui);
+    ui.visuals_mut().widgets.inactive.bg_stroke = saved;
+    result
+}
+
+/// `ui.selectable_label` that does not change size on hover; see [`rest_borderless`].
+pub(crate) fn selectable_label(ui: &mut egui::Ui, selected: bool, text: impl Into<egui::WidgetText>) -> egui::Response {
+    rest_borderless(ui, |ui| ui.selectable_label(selected, text))
+}
+
 /// The one solid-gold button a toolbar has: its main action.
 pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(egui::Button::new(egui::RichText::new(label).color(BG)).fill(ACCENT).stroke(egui::Stroke::NONE))
+    add_borderless(ui, true, egui::Button::new(egui::RichText::new(label).color(BG)).fill(ACCENT))
 }
 
 /// Compact rows for a menu or dropdown, applied inside its `popup_frame`:
@@ -441,10 +485,7 @@ pub(crate) fn chip_icon_button_enabled(
         ui.visuals().widgets.hovered.fg_stroke.color,
         hover_t,
     );
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg).stroke(egui::Stroke::NONE),
-    );
+    let response = add_borderless(ui, enabled, egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg));
     ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
     response
 }
@@ -486,5 +527,72 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     // unbounded rect.
     if rect.is_finite() {
         ui.painter().set(chip_bg_slot, egui::Shape::rect_filled(rect, 6.0, TOOLBAR_FILL.gamma_multiply(1.6)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The size of the widget `add` lays out, after a few frames with the mouse over it or not
+    /// (a widget's state comes from the previous frame, so one frame is not enough).
+    fn size_of(hover: bool, add: &dyn Fn(&mut egui::Ui) -> egui::Response) -> egui::Vec2 {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        let mut size = egui::Vec2::ZERO;
+        let mut hovered = false;
+        for _ in 0..4 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                ..Default::default()
+            };
+            if hover {
+                input.events.push(egui::Event::PointerMoved(egui::pos2(12.0, 10.0)));
+            }
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = add(ui);
+                size = response.rect.size();
+                hovered = response.hovered();
+            });
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+        }
+        assert_eq!(hovered, hover, "the pointer should be over the widget exactly when hovering (size {size:?})");
+        size
+    }
+
+    /// Hovering must not resize a button: it would shift everything after it in the row.
+    #[test]
+    fn hovering_a_widget_does_not_resize_it() {
+        // The toolbar's spacing and unframed resting buttons, as `toolbar_panel` sets them.
+        fn in_toolbar(ui: &mut egui::Ui) {
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        }
+        type Case = (&'static str, Box<dyn Fn(&mut egui::Ui) -> egui::Response>);
+        let cases: Vec<Case> = vec![
+            ("primary_button", Box::new(|ui| primary_button(ui, "+ New Tab"))),
+            (
+                "chip_icon_button",
+                Box::new(|ui| {
+                    in_toolbar(ui);
+                    chip_icon_button_enabled(ui, egui::Id::new("icon"), "X", true)
+                }),
+            ),
+            (
+                "primary_button in the toolbar",
+                Box::new(|ui| {
+                    in_toolbar(ui);
+                    primary_button(ui, "+ New Tab")
+                }),
+            ),
+            ("button", Box::new(|ui| ui.button("Save"))),
+            ("selectable_label", Box::new(|ui| selectable_label(ui, false, "Mute"))),
+            ("selected selectable_label", Box::new(|ui| selectable_label(ui, true, "Mute"))),
+        ];
+        for (name, add) in cases {
+            let rest = size_of(false, &*add);
+            let hover = size_of(true, &*add);
+            assert_eq!(rest, hover, "{name}: {rest:?} at rest, {hover:?} hovered");
+        }
     }
 }

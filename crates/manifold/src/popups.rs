@@ -725,7 +725,10 @@ impl App {
                         if response.changed() {
                             text_changed = true;
                         }
-                        if ui.toggle_value(&mut self.find.match_case, "Aa").on_hover_text("Match case").changed() {
+                        if rest_borderless(ui, |ui| ui.toggle_value(&mut self.find.match_case, "Aa"))
+                            .on_hover_text("Match case")
+                            .changed()
+                        {
                             text_changed = true;
                         }
                         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -940,7 +943,7 @@ impl App {
                         for (i, id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
                             if is_live {
-                                if ui.selectable_label(i == selected_index, label).clicked() {
+                                if selectable_label(ui, i == selected_index, label).clicked() {
                                     jump_to = Some(id.clone());
                                 }
                             } else {

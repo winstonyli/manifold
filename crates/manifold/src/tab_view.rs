@@ -353,7 +353,7 @@ impl App {
             // bar, mirroring Chrome/Firefox's own star icon at the
             // address bar's right edge.
             let bookmark =
-                ui.selectable_label(is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE).on_hover_text("Bookmark");
+                selectable_label(ui, is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE).on_hover_text("Bookmark");
             grow(bookmark.rect);
             if bookmark.clicked() {
                 actions.toggle_bookmark_requested = true;

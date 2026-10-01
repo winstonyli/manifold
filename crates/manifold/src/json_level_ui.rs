@@ -524,11 +524,11 @@ impl App {
             // A phosphor caret, not a raw "▾": the app font's tofu-box rule.
             let form = ui
                 .menu_button(egui_phosphor::light::CARET_DOWN, |ui| {
-                    if ui.selectable_label(!self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
+                    if selectable_label(ui, !self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
                         self.json_accessor_paths = false;
                         ui.close();
                     }
-                    if ui.selectable_label(self.json_accessor_paths, "Accessor  users[0].name").clicked() {
+                    if selectable_label(ui, self.json_accessor_paths, "Accessor  users[0].name").clicked() {
                         self.json_accessor_paths = true;
                         ui.close();
                     }
@@ -544,7 +544,7 @@ impl App {
         let outline = egui_phosphor::light::LIST_BULLETS;
         // On is a raised fill, not the gold selection color: gold is the primary action's.
         let on = if self.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
-        let toggle = ui.add(egui::Button::new(outline).fill(on).stroke(egui::Stroke::NONE));
+        let toggle = add_borderless(ui, true, egui::Button::new(outline).fill(on));
         if toggle.on_hover_text("Outline").clicked() {
             self.json_outline_visible = !self.json_outline_visible;
         }
@@ -745,7 +745,7 @@ impl App {
                     if hit {
                         text = text.background_color(SEARCH_HIT.gamma_multiply(0.3));
                     }
-                    if ui.add(egui::Button::selectable(selected, text)).clicked() {
+                    if rest_borderless(ui, |ui| ui.add(egui::Button::selectable(selected, text))).clicked() {
                         clicked = Some(row.pointer.clone());
                     }
                     if let Some(label) = parent.filter(|p| p.is_array()).and_then(|_| json_view::label(value)) {

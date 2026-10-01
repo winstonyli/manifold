@@ -96,7 +96,7 @@ impl App {
                 menu_item_style(ui);
                 for engine in SearchEngine::ALL {
                     let selected = self.settings.default_search_engine == engine;
-                    if ui.selectable_label(selected, engine.label()).clicked() && !selected {
+                    if selectable_label(ui, selected, engine.label()).clicked() && !selected {
                         self.settings.default_search_engine = engine;
                         self.save_settings();
                     }
@@ -156,7 +156,7 @@ impl App {
                 None => "Never".to_string(),
             };
             for (text, value) in [("Never", None), ("10 min", Some(10)), ("30 min", Some(30)), ("60 min", Some(60))] {
-                if ui.selectable_label(label == text, text).clicked() {
+                if selectable_label(ui, label == text, text).clicked() {
                     minutes = value;
                 }
             }
@@ -213,7 +213,7 @@ impl App {
                 } else {
                     format!("{} Mute", egui_phosphor::light::SPEAKER_HIGH)
                 };
-                if ui.selectable_label(node_muted, mute_label).clicked() {
+                if selectable_label(ui, node_muted, mute_label).clicked() {
                     req.mute_toggle = true;
                 }
                 ui.horizontal(|ui| {
