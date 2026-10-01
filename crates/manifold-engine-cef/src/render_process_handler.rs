@@ -31,6 +31,11 @@ pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// the reply is a real boolean argument, not a string.
 pub const CHECK_AUDIO_PLAYING: &str = "check-audio-playing";
 pub const AUDIO_PLAYING_RESULT: &str = "audio-playing-result";
+/// See `ipc_protocol::EngineToHost::PageState`: the renderer evals
+/// `ipc_protocol::PAGE_STATE_SCRIPT` and replies with its raw text, which
+/// `main.rs` parses with `ipc_protocol::PageState::parse`.
+pub const CHECK_PAGE_STATE: &str = "check-page-state";
+pub const PAGE_STATE_RESULT: &str = "page-state-result";
 
 #[derive(Clone)]
 pub struct EngineRenderProcessHandler {}
@@ -65,6 +70,24 @@ wrap_render_process_handler! {
                         args.set_bool(0, playing as i32);
                     }
                     frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
+                }
+                return 1;
+            }
+            if name == CHECK_PAGE_STATE {
+                // Only reply when the eval produced text: silence means "could not tell".
+                let text = frame.v8_context().and_then(|context| {
+                    context.enter();
+                    let text = eval_string(&context, ipc_protocol::PAGE_STATE_SCRIPT);
+                    context.exit();
+                    text
+                });
+                if let Some(text) = text {
+                    if let Some(mut reply) = process_message_create(Some(&PAGE_STATE_RESULT.into())) {
+                        if let Some(args) = reply.argument_list() {
+                            args.set_string(0, Some(&text.as_str().into()));
+                        }
+                        frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
+                    }
                 }
                 return 1;
             }

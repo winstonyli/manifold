@@ -16,14 +16,17 @@ use cef::*;
 use ipc_protocol::{EngineToHost, HostToEngine, InputEvent, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::{new_shared_audio_playing, new_shared_json_body, new_shared_redirect_content_type, ClientBuilder};
+use client::{
+    new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_redirect_content_type,
+    ClientBuilder,
+};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
-use render_process_handler::CHECK_AUDIO_PLAYING;
+use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
@@ -155,6 +158,7 @@ fn main() {
     let json_body = new_shared_json_body();
     let redirect_content_type = new_shared_redirect_content_type();
     let audio_playing = new_shared_audio_playing();
+    let page_state = new_shared_page_state();
     let mut last_reported_audio_playing = false;
     let mut last_audio_poll = std::time::Instant::now();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
@@ -182,6 +186,7 @@ fn main() {
             json_body.clone(),
             redirect_content_type.clone(),
             audio_playing.clone(),
+            page_state.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -267,7 +272,22 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
-                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
+                HostToEngine::QueryPageState => {
+                    if let Some(frame) = browser.main_frame() {
+                        if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
+                            frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                        }
+                    }
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    if let Some(frame) = browser.main_frame() {
+                        frame.execute_java_script(
+                            Some(&ipc_protocol::restore_scroll_script(x, y).as_str().into()),
+                            None,
+                            0,
+                        );
+                    }
+                }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(host) = browser.host() {
                         host.find(Some(&text.as_str().into()), true as _, match_case as _, false as _);
@@ -380,6 +400,12 @@ fn main() {
 
         if let Some(content_type) = redirect_content_type.borrow_mut().take() {
             let _ = control.send(&EngineToHost::RedirectableContent { content_type });
+        }
+
+        if let Some(text) = page_state.borrow_mut().take() {
+            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                let _ = control.send(&EngineToHost::PageState(state));
+            }
         }
 
         // See `AUDIO_PLAYING_POLL_INTERVAL`'s own doc comment for why this
