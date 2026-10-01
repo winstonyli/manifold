@@ -177,6 +177,19 @@ struct TextItem {
     max_width: f32,
 }
 
+/// Snaps a zoom scale to one of `STEPS_PER_OCTAVE` geometric steps per
+/// doubling. egui caches a text layout by font size and width, so a size that
+/// changes every zoom frame re-shapes all visible text every frame; snapped,
+/// the layouts survive until the zoom crosses a step. The text ends up at
+/// most half a step (about 4%) off the card's true scale.
+fn quantize_scale(scale: f32) -> f32 {
+    const STEPS_PER_OCTAVE: f32 = 8.0;
+    if !(scale.is_finite() && scale > 0.0) {
+        return scale;
+    }
+    ((scale.log2() * STEPS_PER_OCTAVE).round() / STEPS_PER_OCTAVE).exp2()
+}
+
 /// Queues a card's text as one overlay. The scale comes from `project`
 /// at paint time, so the text never lags the card by a frame.
 fn push_card_text(deferred_overlays: &mut DeferredOverlays, items: Vec<TextItem>) {
@@ -184,7 +197,7 @@ fn push_card_text(deferred_overlays: &mut DeferredOverlays, items: Vec<TextItem>
         return;
     }
     deferred_overlays.push(Box::new(move |painter, project| {
-        let scale = project(egui::pos2(1.0, 0.0)).x - project(egui::Pos2::ZERO).x;
+        let scale = quantize_scale(project(egui::pos2(1.0, 0.0)).x - project(egui::Pos2::ZERO).x);
         let font = egui::FontId::proportional(TEXT_SIZE * scale);
         for item in items {
             let mut job = egui::text::LayoutJob::simple_singleline(item.text, font.clone(), item.color);
@@ -758,6 +771,21 @@ mod tests {
 
     use super::*;
     use crate::json_view::{default_expanded, visible_cards, JsonView};
+
+    #[test]
+    fn quantized_scale_is_stable_within_a_step_and_close_to_the_input() {
+        // Nearby zoom frames share one layout size...
+        assert_eq!(quantize_scale(1.00), quantize_scale(1.02));
+        // ...a doubling is exactly 8 steps, powers of two are fixed points...
+        assert!((quantize_scale(2.0) - 2.0).abs() < 1e-6 && (quantize_scale(0.25) - 0.25).abs() < 1e-6);
+        // ...and no scale is more than half a step (2^(1/16), about 4.4%) off.
+        for i in 1..400 {
+            let s = 0.05 * i as f32;
+            assert!((quantize_scale(s) / s - 1.0).abs() < 0.045, "scale {s}");
+        }
+        // Non-finite and non-positive scales pass through unchanged.
+        assert!(quantize_scale(f32::NAN).is_nan() && quantize_scale(0.0) == 0.0);
+    }
 
     #[test]
     fn rows_show_keys_or_indices_labels_and_typed_values() {
