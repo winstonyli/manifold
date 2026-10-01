@@ -203,6 +203,8 @@ fn main() {
     // script-eval check every engine that sends either message uses.
     let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_redirect_content_type: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Filled by the `QueryPageState` script callback, drained and sent each tick.
+    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
 
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
@@ -317,7 +319,31 @@ fn main() {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
                     let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
                 }
-                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
+                HostToEngine::QueryPageState => {
+                    let pending = pending_page_state.clone();
+                    webview.run_javascript(
+                        ipc_protocol::PAGE_STATE_SCRIPT,
+                        gtk::gio::Cancellable::NONE,
+                        move |result| {
+                            if let Ok(js_result) = result {
+                                if let Some(value) = js_result.js_value() {
+                                    if value.is_string() {
+                                        if let Some(state) = ipc_protocol::PageState::parse(&value.to_str()) {
+                                            *pending.borrow_mut() = Some(state);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    webview.run_javascript(
+                        &ipc_protocol::restore_scroll_script(x, y),
+                        gtk::gio::Cancellable::NONE,
+                        |_| {},
+                    );
+                }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(controller) = &find_controller {
                         let mut options = FindOptions::WRAP_AROUND;
@@ -430,6 +456,10 @@ fn main() {
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::JsonBody { body });
+        }
+
+        if let Some(state) = pending_page_state.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {

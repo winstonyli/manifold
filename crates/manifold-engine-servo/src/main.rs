@@ -194,6 +194,9 @@ fn main() {
         redirect_content_type: Rc::new(RefCell::new(None)),
     });
 
+    // Filled by the `QueryPageState` script callback, drained and sent each tick.
+    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
+
     let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
         .url(Url::parse(&initial_url).expect("parse initial url"))
         .delegate(delegate.clone())
@@ -287,7 +290,19 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
-                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
+                HostToEngine::QueryPageState => {
+                    let pending = pending_page_state.clone();
+                    webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {
+                        if let Ok(JSValue::String(text)) = result {
+                            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                                *pending.borrow_mut() = Some(state);
+                            }
+                        }
+                    });
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    webview.evaluate_javascript(ipc_protocol::restore_scroll_script(x, y), |_| {});
+                }
                 // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see
@@ -329,6 +344,10 @@ fn main() {
 
         if let Some(body) = delegate.json_body.borrow_mut().take() {
             let _ = control.send(&EngineToHost::JsonBody { body });
+        }
+
+        if let Some(state) = pending_page_state.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::PageState(state));
         }
 
         if let Some(content_type) = delegate.redirect_content_type.borrow_mut().take() {
