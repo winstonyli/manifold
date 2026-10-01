@@ -394,6 +394,8 @@ pub(crate) fn paint_card_control(
                 // sit with the rest of this app's warm palette
                 // instead of against it.
                 let waveform_color = egui::Color32::from_rgb(150, 190, 90);
+                // An idle window draws at a lower rate than the bars need.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
                 let t = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs_f64())

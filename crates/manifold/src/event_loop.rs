@@ -103,12 +103,12 @@ impl ApplicationHandler<UserEvent> for App {
                 window.request_redraw();
             }
         } else if self.is_idle() {
-            // Nothing changed for a while: draw at `IDLE_FRAME` instead of
+            // Nothing changed for a while: draw at `IDLE_FRAME` (or sooner when egui asks) instead of
             // every vsync (a frame costs ~4 ms of CPU in the present wait
             // even when nothing moved). Any event wakes the loop at once.
             let now = std::time::Instant::now();
             if now >= self.next_idle_frame {
-                self.next_idle_frame = now + IDLE_FRAME;
+                self.next_idle_frame = now + self.idle_interval;
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -399,9 +399,12 @@ impl ApplicationHandler<UserEvent> for App {
                 let egui_output = self.run_egui_frame();
                 // egui asks for the next frame itself while something it
                 // draws is animating.
-                if egui_output.as_ref().is_some_and(|o| o.viewport_output.values().any(|v| v.repaint_delay.is_zero())) {
+                let repaint_in =
+                    egui_output.as_ref().and_then(|o| o.viewport_output.values().map(|v| v.repaint_delay).min());
+                if repaint_in.is_some_and(|d| d.is_zero()) {
                     self.mark_active();
                 }
+                self.idle_interval = repaint_in.map_or(IDLE_FRAME, |d| d.min(IDLE_FRAME));
 
                 self.render_frame(egui_output);
                 if !self.is_idle() {
@@ -420,7 +423,7 @@ impl ApplicationHandler<UserEvent> for App {
 /// Without activity for this long the loop slows down (see `about_to_wait`).
 const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 /// An idle loop's frame interval.
-const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
+pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
 /// Engine frames per second that count as activity (video, an animation);
 /// an idle page still sends a few.
 const BUSY_FRAMES: u32 = 6;

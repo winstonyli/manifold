@@ -1067,6 +1067,9 @@ struct App {
     frame_burst: (std::time::Instant, u32),
     /// When an idle loop next draws.
     next_idle_frame: std::time::Instant,
+    /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
+    /// for a repaint sooner (`request_repaint_after`).
+    idle_interval: std::time::Duration,
     /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
     /// on restore (`hide_tabs_for_minimize`).
     hidden_for_minimize: Vec<String>,
@@ -1361,6 +1364,7 @@ impl Default for App {
             last_activity: std::time::Instant::now(),
             frame_burst: (std::time::Instant::now(), 0),
             next_idle_frame: std::time::Instant::now(),
+            idle_interval: event_loop::IDLE_FRAME,
             hidden_for_minimize: Vec::new(),
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
@@ -2321,6 +2325,7 @@ impl App {
             self.save_toast = None;
             return;
         }
+        ui.ctx().request_repaint();
         let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
         let remaining = SAVE_TOAST_DURATION.saturating_sub(elapsed);
         let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);

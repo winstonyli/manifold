@@ -544,6 +544,9 @@ impl App {
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
 
         self.camera.advance();
+        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
+            ui.ctx().request_repaint();
+        }
         self.camera.fill(scene_outer_rect);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
