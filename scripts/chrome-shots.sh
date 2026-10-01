@@ -17,7 +17,8 @@
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
-# Opt-in (not in the default set): hover-graph hover-json hover-tabview, which
+# Opt-in (not in the default set): hover-graph hover-json hover-tabview hover-find hover-settings,
+# and Tab-key scans tab-graph tab-tabview tab-settings, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -234,9 +235,10 @@ if has json-level || has json-menu || has json-tooltip || has hover-json; then
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has hover-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown; then
+if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
+    has tab-tabview && tab_scan tabview 12
     has hover-tabview && hover_scan tabview
     if has tabview-dropdown; then send "ADDRESSBAR exam" "SLEEP 2"; shot tabview-dropdown; send ESCAPE "SLEEP 1"; fi
     if has hover-dropdown; then
@@ -264,12 +266,13 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has hover-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
+if has settings || has hover-settings || has tab-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
     send "SESSIONNAMETEXT demo" "SAVESESSIONAS demo" "SLEEP 1"
     has settings && shot settings
+    if has tab-settings; then HOVER_BAND=1000 tab_scan settings 24; fi
     if has hover-settings; then hover_column settings 40; fi
     # Engine picker (Default starting engine) and the search-engine combo.
     if has settings-engine; then send "CLICK 63 180" "SLEEP 1"; shot settings-engine; send "CLICK 1100 300" "SLEEP 1"; fi
