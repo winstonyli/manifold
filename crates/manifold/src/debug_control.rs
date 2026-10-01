@@ -655,8 +655,22 @@ pub fn print_help() {
 /// piped script exits cleanly instead of hanging forever.
 pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
+        // `--script <file>` reads the commands from a file instead of stdin,
+        // for a run that has no stdin to pipe (the elevated `Samply` task).
+        let args: Vec<String> = std::env::args().collect();
+        let script = args.iter().position(|a| a == "--script").and_then(|i| args.get(i + 1));
+        let input: Box<dyn std::io::BufRead> = match script {
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => Box::new(std::io::BufReader::new(file)),
+                Err(e) => {
+                    eprintln!("--script {path}: {e}");
+                    let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
+                    return;
+                }
+            },
+            None => Box::new(std::io::stdin().lock()),
+        };
+        for line in input.lines() {
             let Ok(line) = line else { break };
             match parse_line(&line) {
                 Some(DebugCommand::WaitTabs(timeout)) => {

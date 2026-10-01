@@ -11,11 +11,22 @@ use std::path::PathBuf;
 /// file there renames it aside. Every caller already treats `None` as
 /// "nothing saved", so tests start from defaults. A test that needs files
 /// uses `store::testutil::temp_dir` and passes the path in.
+///
+/// `--profile-dir <dir>` names the folder itself instead (for a run that
+/// can't set `APPDATA`, like one started by the elevated `Samply` task).
 pub fn dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("manifold"))
+    let args: Vec<String> = std::env::args().collect();
+    dir_from(&args, std::env::var_os("APPDATA"))
+}
+
+fn dir_from(args: &[String], appdata: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    match args.iter().position(|a| a == "--profile-dir").and_then(|i| args.get(i + 1)) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => Some(PathBuf::from(appdata?).join("manifold")),
+    }
 }
 
 /// Where CEF engine-hosts keep their browser data: one throwaway
@@ -62,6 +73,17 @@ mod tests {
         assert_eq!(super::engine_data_dir(), None);
         assert_eq!(super::cef_cache_dir(), None);
         assert_eq!(super::content_dir(), None);
+    }
+
+    #[test]
+    fn profile_dir_flag_beats_appdata() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let appdata = Some(std::ffi::OsString::from("A"));
+        assert_eq!(super::dir_from(&args(&["m", "--profile-dir", "P"]), appdata.clone()), Some("P".into()));
+        assert_eq!(super::dir_from(&args(&["m", "--profile-dir", "P"]), None), Some("P".into()));
+        assert_eq!(super::dir_from(&args(&["m"]), appdata.clone()), Some(Path::new("A").join("manifold")));
+        assert_eq!(super::dir_from(&args(&["m", "--profile-dir"]), appdata), Some(Path::new("A").join("manifold")));
+        assert_eq!(super::dir_from(&args(&["m"]), None), None);
     }
 
     /// `App::default()` loads settings, bookmarks and history. Under test

@@ -319,6 +319,8 @@ Since 2026-09-25, day-to-day work goes on `dev`, and `main` moves only at releas
 target/debug/manifold.exe --headless
 ```
 
+`--script <file>` reads the commands from a file instead of stdin (EOF quits, as for stdin), and `--profile-dir <dir>` uses `<dir>` as the profile folder instead of `%APPDATA%manifold`. Together they let a run with no stdin and no way to set `APPDATA` stay isolated, such as one started by the elevated `Samply` task (`~/.claude/SAMPLY.md`), which otherwise would use the real profile.
+
 Runs the same app, but the window is positioned far off-screen (not `--visible(false)` — a genuinely invisible window's swapchain never successfully acquires a frame on Windows, DWM permanently reports it occluded; an off-screen-but-visible window keeps rendering normally while never overlapping the user's actual screen) and driven entirely by a text-command protocol read from stdin, one command per line, instead of real OS input. This exists so live GUI testing of this app doesn't have to fight Windows' foreground-lock (`SetForegroundWindow` can be silently refused while the user is active on their own machine — see project memory) or contend visually with whatever the user is doing.
 
 Commands:
