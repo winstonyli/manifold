@@ -78,6 +78,25 @@ impl ApplicationHandler<UserEvent> for App {
         self.close_store();
     }
 
+    /// A minimized window shows nothing, so instead of redrawing every
+    /// frame (`ControlFlow::Poll`) the loop sleeps and ticks every
+    /// `MINIMIZED_TICK`: just the bookkeeping that doesn't need a frame
+    /// (engine messages, store, idle sleep), no egui pass and no present.
+    /// Measured 2026-10-01: a minimized window still cost ~16% of a core.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let minimized = self.is_minimized();
+        if minimized {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + MINIMIZED_TICK));
+            self.minimized_tick();
+        } else if self.was_minimized {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        self.was_minimized = minimized;
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Debug(cmd) => {
@@ -317,6 +336,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            // No frame while minimized, and no `request_redraw`, so the loop
+            // stops spinning; `about_to_wait` ticks it instead.
+            WindowEvent::RedrawRequested if self.is_minimized() => {}
             WindowEvent::RedrawRequested => {
                 self.poll_store();
                 let focused_tab = self
@@ -353,7 +375,22 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// How often a minimized window's loop wakes (see `about_to_wait`).
+const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl App {
+    /// Whether the real (non-headless) window is minimized.
+    fn is_minimized(&self) -> bool {
+        !self.headless && self.window.as_ref().is_some_and(|w| w.is_minimized() == Some(true))
+    }
+
+    /// What a frame does before building its UI, minus the UI itself.
+    fn minimized_tick(&mut self) {
+        self.poll_store();
+        self.drain_tab_events();
+        self.finish_transition_if_done();
+    }
+
     /// `RedrawRequested`: builds this frame's UI (`build_ui`), with the
     /// raw input adjusted first. `None` without a window or egui state yet.
     pub(crate) fn run_egui_frame(&mut self) -> Option<egui::FullOutput> {

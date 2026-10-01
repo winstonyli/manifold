@@ -1051,6 +1051,10 @@ struct App {
     /// stdin instead of real OS input. See `debug_control`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
+    /// Whether the last `about_to_wait` found the window minimized: the
+    /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
+    /// way back resumes redrawing.
+    was_minimized: bool,
     /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
     /// added to the next frame's egui input exactly like real key presses
     /// (see `run_egui_frame`), so they take the same code paths and, like
@@ -1337,6 +1341,7 @@ impl Default for App {
             favicon_origin_cache: HashMap::new(),
             graph_settled_key: None,
             headless: false,
+            was_minimized: false,
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
             pending_focus: None,
