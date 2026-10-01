@@ -749,7 +749,7 @@ impl App {
                 // anyway (their sole consumption site is unreachable
                 // from the early-return branch) -- removing them is a
                 // pure simplification, not a capability loss.
-                if !on_json_level && ui.button("+ New Tab").clicked() {
+                if !on_json_level && primary_button(ui, "+ New Tab").clicked() {
                     actions.push(GraphAction::NewTab(self.focused.clone()));
                 }
                 if !on_json_level && (!self.headless || !groups_at_level.is_empty()) {

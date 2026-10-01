@@ -1,0 +1,109 @@
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap');
+
+  .ed-panel { background:#17140f; border:1px solid #3a3225; border-radius:8px; padding:18px; font-family:'IBM Plex Serif', Georgia, serif; color:#e9e2d3; }
+  .ed-label { font-family:'Space Grotesk',sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.07em; color:#7a6f56; margin-bottom:10px; display:block; text-align:center; }
+  .pair { display:flex; gap:16px; }
+  .pair > div { flex:1; }
+
+  /* ---- elevation mockups: a small graph card, normal vs hovered ---- */
+  .gcard { width:100%; height:96px; background:#1d1a14; border:1px solid #3a3225; position:relative; display:flex; flex-direction:column; justify-content:flex-end; padding:10px; box-sizing:border-box; }
+  .gcard .title { font-size:12.5px; }
+  .gcard .meta { font-family:'Space Grotesk',sans-serif; font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; color:#7a6f56; margin-bottom:3px; }
+
+  .elev-glow .gcard.hover { border-color:#c98a3a; box-shadow: 0 0 10px 2px rgba(215,162,74,0.35), 0 0 26px 6px rgba(215,162,74,0.14); }
+  .elev-hairline .gcard.hover { border-color:#d7a24a; }
+  .elev-hairline .gcard.hover .title { text-decoration:underline; text-underline-offset:3px; color:#d7a24a; }
+
+  /* ---- radius mockups: toolbar row + card, sharp vs soft ---- */
+  .radius-demo .toolbar { display:flex; gap:8px; margin-bottom:12px; }
+  .radius-demo .nav { width:26px; height:26px; border:1px solid #3a3225; display:flex; align-items:center; justify-content:center; font-family:'Space Grotesk',sans-serif; font-size:12px; color:#a89a78; }
+  .radius-demo .addr { flex:1; border:1px solid #3a3225; padding:5px 10px; font-size:12px; color:#c7bda3; }
+  .radius-demo .btn { border:1px solid #d7a24a; color:#d7a24a; padding:6px 14px; font-size:12px; font-family:'Space Grotesk',sans-serif; display:inline-block; margin-right:8px; }
+  .radius-demo .chk { width:14px; height:14px; border:1px solid #6b5f45; display:inline-block; vertical-align:middle; margin-right:6px; }
+  .radius-demo .mini-card { margin-top:12px; border:1px solid #3a3225; background:#1d1a14; padding:10px; font-size:12px; }
+
+  .sharp .nav, .sharp .addr, .sharp .btn, .sharp .chk, .sharp .mini-card { border-radius:0; }
+  .soft .nav, .soft .addr, .soft .btn, .soft .chk, .soft .mini-card { border-radius:3px; }
+
+  .cards .card { padding:16px; }
+</style>
+
+<h2>Elevation and radius, as actual mockups</h2>
+<p class="subtitle">Each option below renders the real effect, not a description &mdash; click your pick. (Reconnected after a server hiccup &mdash; same content as before.)</p>
+
+<h3>1. Card elevation on hover</h3>
+<div class="cards">
+  <div class="card" data-choice="elevation-glow" onclick="toggleSelect(this)">
+    <div class="ed-panel elev-glow">
+      <span class="ed-label">Gold glow</span>
+      <div class="pair">
+        <div>
+          <div class="gcard">
+            <div class="meta">Tab &middot; Servo</div>
+            <div class="title">docs.rs/wgpu</div>
+          </div>
+          <div class="ed-label" style="margin-top:6px">Normal</div>
+        </div>
+        <div>
+          <div class="gcard hover">
+            <div class="meta">Tab &middot; Servo</div>
+            <div class="title">docs.rs/wgpu</div>
+          </div>
+          <div class="ed-label" style="margin-top:6px">Hovered</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card" data-choice="elevation-hairline" onclick="toggleSelect(this)">
+    <div class="ed-panel elev-hairline">
+      <span class="ed-label">Hairline lift</span>
+      <div class="pair">
+        <div>
+          <div class="gcard">
+            <div class="meta">Tab &middot; Servo</div>
+            <div class="title">docs.rs/wgpu</div>
+          </div>
+          <div class="ed-label" style="margin-top:6px">Normal</div>
+        </div>
+        <div>
+          <div class="gcard hover">
+            <div class="meta">Tab &middot; Servo</div>
+            <div class="title">docs.rs/wgpu</div>
+          </div>
+          <div class="ed-label" style="margin-top:6px">Hovered</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>2. Corner radius, applied consistently</h3>
+<div class="cards">
+  <div class="card" data-choice="radius-sharp" onclick="toggleSelect(this)">
+    <div class="ed-panel radius-demo sharp">
+      <span class="ed-label">Fully sharp (0px)</span>
+      <div class="toolbar">
+        <div class="nav">&larr;</div>
+        <div class="nav">&rarr;</div>
+        <div class="addr">manifold.dev/graph</div>
+      </div>
+      <span class="chk"></span><span style="font-size:12px">Restore session</span>
+      <div style="margin-top:10px"><span class="btn">Apply</span><span class="btn" style="border-color:#4a4030;color:#a89a78">Cancel</span></div>
+      <div class="mini-card">Tab card / dialog corner</div>
+    </div>
+  </div>
+  <div class="card" data-choice="radius-soft" onclick="toggleSelect(this)">
+    <div class="ed-panel radius-demo soft">
+      <span class="ed-label">Slightly softened (2px)</span>
+      <div class="toolbar">
+        <div class="nav">&larr;</div>
+        <div class="nav">&rarr;</div>
+        <div class="addr">manifold.dev/graph</div>
+      </div>
+      <span class="chk"></span><span style="font-size:12px">Restore session</span>
+      <div style="margin-top:10px"><span class="btn">Apply</span><span class="btn" style="border-color:#4a4030;color:#a89a78">Cancel</span></div>
+      <div class="mini-card">Tab card / dialog corner</div>
+    </div>
+  </div>
+</div>

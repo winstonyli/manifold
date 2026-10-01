@@ -1,0 +1,78 @@
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Instrument+Serif&family=Instrument+Serif:ital@1&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&family=Space+Grotesk:wght@400;500&display=swap');
+
+  .fpanel { background:#17140f; border:1px solid #3a3225; border-radius:5px; padding:18px; color:#e9e2d3; font-family:'Literata', Georgia, serif; }
+  .flabel { font-family:'Space Grotesk',sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.07em; color:#7a6f56; margin-bottom:14px; display:block; }
+
+  .dialog-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+  .section-header { font-size:15px; font-weight:600; margin:16px 0 8px 0; padding-bottom:6px; border-bottom:1px solid #3a3225; }
+  .card-name { font-size:13.5px; font-weight:600; }
+  .card-name-small { font-size:11.5px; font-weight:600; }
+
+  .body-txt { font-size:13px; color:#c7bda3; margin-bottom:4px; }
+
+  .fcard { border:1px solid #c98a3a; border-radius:2px; background:#1d1a14; padding:9px 11px; margin-top:8px; box-shadow: 0 0 10px 1px rgba(215,162,74,0.22); display:flex; align-items:center; gap:8px; }
+  .fcard .swatch { width:10px; height:10px; border-radius:50%; background:#d7a24a; flex-shrink:0; }
+
+  .row { display:flex; align-items:center; justify-content:space-between; font-size:12.5px; padding:6px 0; }
+
+  .playfair .dialog-title, .playfair .section-header, .playfair .card-name, .playfair .card-name-small { font-family:'Playfair Display', Georgia, serif; }
+  .instrument .dialog-title, .instrument .section-header, .instrument .card-name, .instrument .card-name-small { font-family:'Instrument Serif', Georgia, serif; font-style:italic; font-weight:400; }
+  .instrument .dialog-title { font-size:25px; }
+  .instrument .section-header { font-size:17px; }
+  .literata-only .dialog-title, .literata-only .section-header, .literata-only .card-name, .literata-only .card-name-small { font-family:'Literata', Georgia, serif; font-weight:700; font-variation-settings:'opsz' 30; }
+
+  .split3 { display:flex; gap:14px; }
+  .split3 > div { flex:1; min-width:0; }
+</style>
+
+<h2>...and Literata for both, as a third option</h2>
+<p class="subtitle">No second typeface at all &mdash; Literata Bold for headings, Literata Regular for body. One font family, weight does the differentiating work. Same three spots as before, now three-way.</p>
+
+<div class="split3">
+
+  <div class="fpanel playfair">
+    <span class="flabel">B &mdash; Playfair Display heading</span>
+    <div class="dialog-title">Recently Closed</div>
+    <div class="body-txt">Reopen a tab you closed by mistake.</div>
+    <div class="section-header">Appearance</div>
+    <div class="row"><span>Zoom factor</span><span style="color:#7a6f56">124%</span></div>
+    <div class="fcard"><div class="swatch"></div><div class="card-name">Research Cluster</div></div>
+  </div>
+
+  <div class="fpanel instrument">
+    <span class="flabel">D &mdash; Instrument Serif heading</span>
+    <div class="dialog-title">Recently Closed</div>
+    <div class="body-txt">Reopen a tab you closed by mistake.</div>
+    <div class="section-header">Appearance</div>
+    <div class="row"><span>Zoom factor</span><span style="color:#7a6f56">124%</span></div>
+    <div class="fcard"><div class="swatch"></div><div class="card-name">Research Cluster</div></div>
+  </div>
+
+  <div class="fpanel literata-only">
+    <span class="flabel">E &mdash; Literata Bold heading (no second font)</span>
+    <div class="dialog-title">Recently Closed</div>
+    <div class="body-txt">Reopen a tab you closed by mistake.</div>
+    <div class="section-header">Appearance</div>
+    <div class="row"><span>Zoom factor</span><span style="color:#7a6f56">124%</span></div>
+    <div class="fcard"><div class="swatch"></div><div class="card-name">Research Cluster</div></div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px">Tradeoff: E is the "boring but safe" choice &mdash; one font file, zero risk of two serifs clashing, but headings only differ from body by weight/size, so they carry less visual distinction than B or D give you for free. Fewer moving parts to get wrong, less "editorial" personality.</p>
+
+<div class="options">
+  <div class="option" data-choice="heading-playfair-final2" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>Playfair Display</h3><p>Distinct heading identity, upright, safe at density.</p></div>
+  </div>
+  <div class="option" data-choice="heading-instrument-final2" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content"><h3>Instrument Serif</h3><p>Most personality, always-italic commitment.</p></div>
+  </div>
+  <div class="option" data-choice="heading-literata-only" onclick="toggleSelect(this)">
+    <div class="letter">E</div>
+    <div class="content"><h3>Literata only</h3><p>One font everywhere, simplest to implement and maintain, least distinctive.</p></div>
+  </div>
+</div>

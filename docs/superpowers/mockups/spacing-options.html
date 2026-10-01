@@ -1,0 +1,99 @@
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,700&family=Literata:opsz,wght@7..72,400&family=Space+Grotesk:wght@400;500&display=swap');
+
+  .fpanel { background:#17140f; border:1px solid #3a3225; border-radius:2px; color:#e9e2d3; font-family:'Literata', Georgia, serif; }
+  .flabel { font-family:'Space Grotesk',sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.07em; color:#7a6f56; display:block; }
+
+  .heading { font-family:'Newsreader', Georgia, serif; font-weight:700; }
+  .section-header { font-family:'Newsreader', Georgia, serif; font-weight:700; border-bottom:1px solid #3a3225; }
+
+  .row { display:flex; align-items:center; justify-content:space-between; font-size:12.5px; }
+  .btn { border-radius:2px; font-size:12.5px; display:inline-block; }
+  .btn.primary { background:#d7a24a; color:#17140f; border:1px solid #d7a24a; font-weight:600; }
+  .btn.ghost { background:transparent; color:#a89a78; border:1px solid #3a3225; }
+  .chk { width:14px; height:14px; border:1px solid #6b5f45; border-radius:2px; display:inline-block; vertical-align:middle; }
+  .chk.on { background:#d7a24a; border-color:#d7a24a; }
+
+  /* ---- Compact (current numbers, new palette/font/radius) ---- */
+  .compact { padding:14px; }
+  .compact .heading { font-size:18px; margin-bottom:8px; }
+  .compact .section-header { font-size:13px; margin:10px 0 6px 0; padding-bottom:4px; }
+  .compact .row { padding:5px 0; gap:6px; }
+  .compact .btn { padding:5px 11px; margin-right:6px; }
+  .compact .chk { margin-right:6px; }
+  .compact .body-txt { font-size:12px; margin-bottom:8px; }
+
+  /* ---- Airy (editorial spacing) ---- */
+  .airy { padding:28px; }
+  .airy .heading { font-size:21px; margin-bottom:16px; letter-spacing:0.01em; }
+  .airy .section-header { font-size:14px; margin:22px 0 12px 0; padding-bottom:9px; letter-spacing:0.02em; }
+  .airy .row { padding:10px 0; gap:10px; }
+  .airy .btn { padding:8px 18px; margin-right:10px; }
+  .airy .chk { margin-right:9px; }
+  .airy .body-txt { font-size:13px; margin-bottom:16px; line-height:1.6; }
+
+  .split { display:flex; gap:16px; }
+  .split > div { flex:1; }
+</style>
+
+<h2>Spacing: compact (current numbers) vs. airy (editorial)</h2>
+<p class="subtitle">Same settings panel, same palette/fonts/radius already decided &mdash; only padding, gaps, and line-height change. Also shows the button/divider convention: filled gold for primary, hairline-outlined for secondary.</p>
+
+<div class="split">
+
+  <div class="fpanel compact">
+    <span class="flabel">Compact &mdash; today's numbers (item_spacing 6/4, button_padding 8/4)</span>
+    <div class="heading">Settings</div>
+    <div class="body-txt">Changes apply immediately and are saved automatically.</div>
+
+    <div class="section-header">Appearance</div>
+    <div class="row"><span>Default search engine</span><span style="color:#7a6f56">DuckDuckGo</span></div>
+    <div class="row"><span><span class="chk on"></span>Restore session on launch</span></div>
+    <div class="row"><span><span class="chk"></span>Show first-launch demo</span></div>
+
+    <div class="section-header">Danger zone</div>
+    <div class="row"><span>Clear all history</span>
+      <span><span class="btn primary">Confirm</span><span class="btn ghost">Cancel</span></span>
+    </div>
+  </div>
+
+  <div class="fpanel airy">
+    <span class="flabel">Airy &mdash; roughly 1.6&times; the gaps/padding, +line-height</span>
+    <div class="heading">Settings</div>
+    <div class="body-txt">Changes apply immediately and are saved automatically.</div>
+
+    <div class="section-header">Appearance</div>
+    <div class="row"><span>Default search engine</span><span style="color:#7a6f56">DuckDuckGo</span></div>
+    <div class="row"><span><span class="chk on"></span>Restore session on launch</span></div>
+    <div class="row"><span><span class="chk"></span>Show first-launch demo</span></div>
+
+    <div class="section-header">Danger zone</div>
+    <div class="row"><span>Clear all history</span>
+      <span><span class="btn primary">Confirm</span><span class="btn ghost">Cancel</span></span>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px">Tradeoff: airy reads calmer and more "document," but costs real estate &mdash; settings/dialogs need more scrolling, and the graph view's own toolbar (already fairly packed with icons) would need to stay compact regardless since it's screen-space-constrained. A middle path is to apply airy spacing to dialogs/settings/menus only, and leave the graph canvas's own toolbar/node chrome at today's tighter numbers.</p>
+
+<div class="options">
+  <div class="option" data-choice="spacing-compact" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content"><h3>Keep compact everywhere</h3><p>No spacing change, just palette/font/radius.</p></div>
+  </div>
+  <div class="option" data-choice="spacing-airy-everywhere" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>Airy everywhere</h3><p>Apply the looser numbers globally, including the graph toolbar.</p></div>
+  </div>
+  <div class="option" data-choice="spacing-airy-dialogs-only" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content"><h3>Airy for dialogs/menus/settings, compact for the graph toolbar</h3><p>Splits the difference &mdash; the recommended one, given the toolbar's real estate constraint.</p></div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:20px">Two smaller items, answerable in words rather than pictures:</p>
+<ul style="font-size:13px; line-height:1.8; color:#c7bda3">
+  <li><b>Selection-highlight stroke</b>: currently pure white on the accent fill. Once accent is gold, keep white (crisp) or switch to the warm cream text color (softer, matches the palette)?</li>
+  <li><b>Icon weight</b>: Phosphor icons are currently the "Regular" weight. Stay Regular, or switch to "Light" for something a touch more delicate that matches the serif typography?</li>
+</ul>

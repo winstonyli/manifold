@@ -35,6 +35,11 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
         .inner_margin(egui::Margin::same(4))
 }
 
+/// The one solid-gold button a toolbar has: its main action.
+pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(label).color(BG)).fill(ACCENT).stroke(egui::Stroke::NONE))
+}
+
 /// Compact rows for a menu or dropdown, applied inside its `popup_frame`:
 /// no gap between rows, tighter padding, and no resting fill, so a row shows
 /// only its text until hovered or highlighted, then fills the full width.
@@ -359,6 +364,10 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            // Soft-filled fields and borderless buttons: the raised fill
+            // alone separates them from the bar (approved toolbar mockup).
+            ui.visuals_mut().extreme_bg_color = SURFACE_RAISED;
+            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
         });
 }
@@ -460,6 +469,11 @@ pub(crate) fn chip_icon_button_enabled(
 /// of its own widgets' rects -- exact by construction, since each
 /// widget's own returned `Response::rect` is real.
 pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
+    // A hairline between this chip and whatever came before it in the row.
+    if ui.min_rect().width() > 1.0 {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, SURFACE_HOVER);
+    }
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
     let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(1.0, 0.0), egui::Sense::hover());
     ui.spacing_mut().item_spacing.x = 2.0;
