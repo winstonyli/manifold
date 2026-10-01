@@ -576,6 +576,7 @@ impl App {
             .fixed_pos(pos)
             .show(ui.ctx(), |ui| {
                 popup_frame(ui).show(ui, |ui| {
+                    menu_item_style(ui);
                     ui.set_min_width(150.0);
                     for (label, what) in
                         [("Copy value", CopyWhat::Value), ("Copy key", CopyWhat::Key), ("Copy path", CopyWhat::Path)]
@@ -590,7 +591,9 @@ impl App {
                         }
                     }
                     if let Some(collapsed) = collapsed {
+                        ui.add_space(3.0);
                         ui.separator();
+                        ui.add_space(3.0);
                         if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
                             edit = Some(JsonEdit::Toggle(pointer.clone()));
                             close = true;

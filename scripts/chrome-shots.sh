@@ -12,7 +12,7 @@
 # Each view starts from Graph view at the top level and leaves the app
 # there, so VIEWS picks any subset and a run is ~40 s. Views:
 #   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note
-#   graph-filter graph-group json-level
+#   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed
@@ -30,7 +30,7 @@ SIZE="${SIZE:-1280 800}"
 CROP_PX="${CROP_PX:-110}"
 # The "Recently Closed (n)" toolbar button, which appears once a card is closed.
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -149,8 +149,12 @@ if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filte
 if has graph-group; then
     read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
 fi
-if has json-level; then
-    read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"; shot json-level; reset
+if has json-level || has json-menu; then
+    read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"
+    has json-level && shot json-level
+    # Right-click the first card the level lays out (data.json at 1280x800).
+    if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
+    reset
 fi
 if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
