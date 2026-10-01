@@ -1283,6 +1283,8 @@ impl App {
     pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
         match msg {
             EngineToHost::FrameReady { .. } => {}
+            // Handled in a later task (sleep with page state); ignored until then.
+            EngineToHost::PageState(_) => {}
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {

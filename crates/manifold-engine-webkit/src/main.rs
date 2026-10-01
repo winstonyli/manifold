@@ -317,6 +317,7 @@ fn main() {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
                     let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
                 }
+                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(controller) = &find_controller {
                         let mut options = FindOptions::WRAP_AROUND;

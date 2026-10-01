@@ -267,6 +267,7 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(host) = browser.host() {
                         host.find(Some(&text.as_str().into()), true as _, match_case as _, false as _);

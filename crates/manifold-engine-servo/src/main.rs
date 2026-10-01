@@ -287,6 +287,7 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
                 // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see

@@ -301,6 +301,7 @@ fn main() {
                     let url = nav_state.borrow().url.clone();
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
                 }
+                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(find) = &find_state {
                         find.start(&text, match_case);

@@ -6,7 +6,8 @@ pub mod transport;
 pub use channel::MessageChannel;
 pub use frame_buffer::{frame_path, SharedFrameBuffer};
 pub use messages::{
-    modifiers, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, PageKindReply, TabState, PAGE_KIND_SCRIPT,
+    modifiers, restore_scroll_script, EngineToHost, HostToEngine, InputEvent, KeyCode, MouseButton, PageKindReply,
+    PageState, TabState, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT,
 };
 pub use transport::{LocalTransport, RemoteTransport};
 

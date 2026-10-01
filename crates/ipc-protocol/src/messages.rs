@@ -226,6 +226,14 @@ pub enum HostToEngine {
     /// capture-and-send step is gated on this.
     SetVisible(bool),
     GetState,
+    /// Asks for the page's scroll position and dirty-form flag
+    /// (`PAGE_STATE_SCRIPT`); the engine answers with `EngineToHost::PageState`.
+    /// Sent before a tab sleeps. An engine that cannot answer stays silent
+    /// and the host gives up after a few seconds.
+    QueryPageState,
+    /// Scrolls the page to `(x, y)` once, with retries (`restore_scroll_script`).
+    /// Sent after a woken tab's first load.
+    RestoreScroll { x: f64, y: f64 },
     /// Begin (or replace) a find-in-page search for `text` in this tab,
     /// jumping to the nearest match. Sent when the find bar's text changes,
     /// or the bar opens with existing text. Supported by CEF, WebKit, and
@@ -298,6 +306,51 @@ impl PageKindReply {
     }
 }
 
+/// Returns `"<scrollX> <scrollY> <1|0>"`: where the page is scrolled and
+/// whether any form field differs from its default (the dirty-form check
+/// of idle sleep). A text/number input, textarea or select counts when its
+/// value differs from its default; a checkbox or radio when `checked` does;
+/// a `contenteditable` element when it has any text. Button-like inputs are
+/// ignored. Pages that keep state outside form elements are not detected.
+pub const PAGE_STATE_SCRIPT: &str = "(function(){var d=false;var els=document.querySelectorAll('input,textarea,select,[contenteditable]');for(var i=0;i<els.length&&!d;i++){var e=els[i];var t=(e.type||'').toLowerCase();if(e.tagName==='INPUT'){if(t==='button'||t==='submit'||t==='reset'||t==='image'||t==='hidden'||t==='file'){continue;}if(t==='checkbox'||t==='radio'){d=e.checked!==e.defaultChecked;}else{d=e.value!==e.defaultValue;}}else if(e.tagName==='TEXTAREA'){d=e.value!==e.defaultValue;}else if(e.tagName==='SELECT'){for(var j=0;j<e.options.length;j++){if(e.options[j].selected!==e.options[j].defaultSelected){d=true;break;}}}else if(e.isContentEditable){d=(e.textContent||'')!=='';}}return (window.scrollX||0)+' '+(window.scrollY||0)+' '+(d?1:0);})();";
+
+/// A tab's page state at the moment of `HostToEngine::QueryPageState`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageState {
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub dirty_form: bool,
+}
+
+impl PageState {
+    /// Parses `PAGE_STATE_SCRIPT`'s result; `None` for any other text.
+    pub fn parse(text: &str) -> Option<PageState> {
+        let mut parts = text.split_whitespace();
+        let scroll_x: f64 = parts.next()?.parse().ok().filter(|v: &f64| v.is_finite())?;
+        let scroll_y: f64 = parts.next()?.parse().ok().filter(|v: &f64| v.is_finite())?;
+        let dirty_form = match parts.next()? {
+            "1" => true,
+            "0" => false,
+            _ => return None,
+        };
+        parts.next().is_none().then_some(PageState { scroll_x, scroll_y, dirty_form })
+    }
+}
+
+/// Scrolls to `(x, y)`, retrying on animation frames for up to 3 s until the
+/// page is tall (wide) enough to reach it, then to the nearest reachable
+/// point. Gives up at once if the user scrolls first (wheel, key, touch).
+/// A non-finite coordinate is replaced by 0, so no `NaN`/`inf` reaches the
+/// page as source.
+pub fn restore_scroll_script(x: f64, y: f64) -> String {
+    let f = |v: f64| if v.is_finite() { v } else { 0.0 };
+    format!(
+        "(function(x,y){{var stop=false;var end=Date.now()+3000;['wheel','keydown','touchstart'].forEach(function(n){{addEventListener(n,function(){{stop=true;}},{{once:true,passive:true}});}});function go(){{if(stop){{return;}}var de=document.documentElement;var reach=de.scrollHeight-innerHeight>=y&&de.scrollWidth-innerWidth>=x;if(reach||Date.now()>=end){{scrollTo(x,y);return;}}scrollTo(x,y);requestAnimationFrame(go);}}go();}})({},{});",
+        f(x),
+        f(y)
+    )
+}
+
 /// Messages sent from an engine-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
@@ -331,6 +384,7 @@ pub enum EngineToHost {
         user_started: Option<bool>,
     },
     StateSnapshot(TabState),
+    PageState(PageState),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
@@ -503,5 +557,35 @@ mod page_kind_tests {
         assert_eq!(PageKindReply::parse("type\nimage/png"), Some(PageKindReply::Other("image/png".into())));
         assert_eq!(PageKindReply::parse("text/html"), None);
         assert_eq!(PageKindReply::parse(""), None);
+    }
+}
+
+#[cfg(test)]
+mod page_state_tests {
+    use super::*;
+
+    #[test]
+    fn page_state_parses_the_scripts_three_numbers() {
+        assert_eq!(
+            PageState::parse("12.5 340 1"),
+            Some(PageState { scroll_x: 12.5, scroll_y: 340.0, dirty_form: true })
+        );
+        assert_eq!(PageState::parse("0 0 0"), Some(PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false }));
+    }
+
+    #[test]
+    fn page_state_rejects_anything_else() {
+        for bad in ["", "1 2", "a b c", "1 2 3 4", "1 2 2", "NaN 0 0", "inf 0 0"] {
+            assert_eq!(PageState::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn restore_scroll_script_embeds_only_finite_numbers() {
+        let s = restore_scroll_script(1.5, 2400.0);
+        assert!(s.contains("1.5") && s.contains("2400"), "{s}");
+        // A non-finite value must not reach the page as JS source.
+        assert_eq!(restore_scroll_script(f64::NAN, 5.0), restore_scroll_script(0.0, 5.0));
+        assert_eq!(restore_scroll_script(1.0, f64::INFINITY), restore_scroll_script(1.0, 0.0));
     }
 }
