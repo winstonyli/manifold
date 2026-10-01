@@ -16,7 +16,7 @@
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
-#   settings-engine settings-combo toast
+#   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
@@ -31,7 +31,9 @@ SIZE="${SIZE:-1280 800}"
 CROP_PX="${CROP_PX:-110}"
 # The "Recently Closed (n)" toolbar button, which appears once a card is closed.
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view settings-engine settings-combo toast"
+# A JSON bar button with a tooltip (Copy value).
+JSON_TIP_X="${JSON_TIP_X:-120}"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -161,19 +163,22 @@ if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filte
 if has graph-group; then
     read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
 fi
-if has json-level || has json-menu; then
+if has json-level || has json-menu || has json-tooltip; then
     read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"
     has json-level && shot json-level
+    if has json-tooltip; then send "MOUSEMOVE $JSON_TIP_X 16" "SLEEP 2"; shot json-tooltip; send "MOUSEMOVE 5 790"; fi
     # Right-click the first card the level lays out (data.json at 1280x800).
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split; then
+if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     if has tabview-dropdown; then send "ADDRESSBAR exam" "SLEEP 2"; shot tabview-dropdown; send ESCAPE "SLEEP 1"; fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
+    # The Split button opens the engine picker.
+    if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
 fi
@@ -186,7 +191,7 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has settings-engine || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
+if has settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
@@ -194,6 +199,7 @@ if has settings || has settings-engine || has settings-combo || has popup-bookma
     has settings && shot settings
     # Engine picker (Default starting engine) and the search-engine combo.
     if has settings-engine; then send "CLICK 63 180" "SLEEP 1"; shot settings-engine; send "CLICK 1100 300" "SLEEP 1"; fi
+    if has settings-engine-tab; then send "CLICK 119 513" "SLEEP 1"; shot settings-engine-tab; send "CLICK 1100 300" "SLEEP 1"; fi
     if has settings-combo; then send "CLICK 80 87" "SLEEP 1"; shot settings-combo; send "CLICK 1100 300" "SLEEP 1"; fi
     # The Lists buttons on the settings page (fixed layout at the default size).
     for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
