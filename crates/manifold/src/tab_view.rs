@@ -2,6 +2,7 @@
 //! toolbar, address bar and the spawned engine's content pane).
 
 use super::*;
+use crate::nav_history::{Dir, NavAction};
 
 /// Tab view's address bar and its autocomplete dropdown.
 pub(crate) struct AddressBar {
@@ -114,6 +115,22 @@ pub(crate) struct ItemToolbarFrame {
 }
 
 impl App {
+    /// A Back or Forward click on tab `id`: the engine's own history, or,
+    /// for a tab whose engine was replaced, a load of the host's neighbour
+    /// URL (see `nav_history`).
+    pub(crate) fn navigate_history(&mut self, id: &str, dir: Dir) {
+        let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
+        let engine_can = if dir == Dir::Back { node.can_go_back } else { node.can_go_forward };
+        let action = self.nav_history.entry(id.to_string()).or_default().go(dir, engine_can);
+        match action {
+            NavAction::Native => {
+                node.tab.send(&if dir == Dir::Back { HostToEngine::GoBack } else { HostToEngine::GoForward })
+            }
+            NavAction::Load(url) => node.tab.send(&HostToEngine::Navigate { url, referrer: None }),
+            NavAction::None => {}
+        }
+    }
+
     /// The Item toolbar's shared frame -- the design spec's three layers,
     /// outer to inner. Layer 2 ("Graph") sits at the leading edge. Layer 1
     /// (the Universal chip) is drawn *first* into a right-to-left trailing
@@ -189,6 +206,9 @@ impl App {
     ) -> ItemToolbarActions {
         let mut actions = ItemToolbarActions::default();
         let node = self.nodes[focused_id].as_tab().unwrap();
+        let history = self.nav_history.get(focused_id);
+        let can_go_back = history.map_or(node.can_go_back, |h| h.can_go_back(node.can_go_back));
+        let can_go_forward = history.map_or(node.can_go_forward, |h| h.can_go_forward(node.can_go_forward));
         toolbar_chip(ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {
@@ -204,7 +224,7 @@ impl App {
                 ui,
                 egui::Id::new("icon_btn_back"),
                 egui_phosphor::light::CARET_LEFT,
-                node.can_go_back,
+                can_go_back,
             );
             grow(back.rect);
             if back.clicked() {
@@ -214,7 +234,7 @@ impl App {
                 ui,
                 egui::Id::new("icon_btn_forward"),
                 egui_phosphor::light::CARET_RIGHT,
-                node.can_go_forward,
+                can_go_forward,
             );
             grow(forward.rect);
             if forward.clicked() {
@@ -519,14 +539,9 @@ impl App {
                 self.address_bar.dismiss();
             }
         }
-        if go_back {
-            if let Some(node) = self.nodes.get_mut(&focused_id).and_then(|n| n.as_tab_mut()) {
-                node.tab.send(&HostToEngine::GoBack);
-            }
-        }
-        if go_forward {
-            if let Some(node) = self.nodes.get_mut(&focused_id).and_then(|n| n.as_tab_mut()) {
-                node.tab.send(&HostToEngine::GoForward);
+        for (requested, dir) in [(go_back, Dir::Back), (go_forward, Dir::Forward)] {
+            if requested {
+                self.navigate_history(&focused_id, dir);
             }
         }
         if reload_requested {

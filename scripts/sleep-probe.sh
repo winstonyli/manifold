@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: [CASES="manual idle scroll dirty"] [ENGINES="webview2 cef"] scripts/sleep-probe.sh
+# Usage: [CASES="manual idle scroll dirty history"] [ENGINES="webview2 cef"] scripts/sleep-probe.sh
 #
 # Checks "Sleep" per engine. Sleep is two-phase: `App::request_sleep` asks
 # the page for its state (`QueryPageState`) and `finish_sleep` sleeps on the
@@ -11,6 +11,8 @@
 #   scroll  a tall page (/tall) scrolled with PageDown in Tab view, slept
 #           from Graph view and woken: the page must come back at the
 #           position it had (|before - after| <= 2 px, before > 0).
+#   history two more pages, then sleep and wake; Back twice and Forward once
+#           must retrace them (the host keeps the list, `nav_history`).
 #   dirty   /tall?dirty=1 has an input changed from its default: idle sleep
 #           must leave it awake, manual Sleep must still sleep it.
 # Opening a card starts the engine again and brings the tab back, under the
@@ -107,6 +109,36 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo WAITTABS
             echo "SLEEP 6"
             ;;
+        history)
+            # Two more pages in Tab view, then sleep, wake and go Back twice.
+            echo GRAPHDOWN
+            echo GRAPHOPEN
+            echo "SLEEP 6"
+            for page in p2 p3; do
+                echo "ADDRESSBAR http://127.0.0.1:$port/$page"
+                echo "SLEEP 1"
+                echo ENTER
+                echo "SLEEP 3"
+            done
+            echo "EXPORTSTATE $(st pre)"
+            echo ESCAPE
+            echo "SLEEP 2"
+            echo "SLEEPNODE $id"
+            echo "SLEEP 2"
+            echo GRAPHOPEN
+            echo WAITTABS
+            echo "SLEEP 5"
+            echo "EXPORTSTATE $(st woken)"
+            echo GOBACK
+            echo "SLEEP 3"
+            echo "EXPORTSTATE $(st back1)"
+            echo GOBACK
+            echo "SLEEP 3"
+            echo "EXPORTSTATE $(st back2)"
+            echo GOFORWARD
+            echo "SLEEP 3"
+            echo "EXPORTSTATE $(st fwd)"
+            ;;
         dirty)
             echo "IDLESWEEP 9999"
             echo "SLEEP 3"
@@ -143,6 +175,14 @@ for engine in ${ENGINES:-webview2 cef}; do
             want="before > 0, |before - after| <= 2"
         fi
         what="scroll kept across sleep ($got)"
+        ;;
+    history)
+        url_of() {
+            python -P -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["focused_url"].rsplit("/", 1)[-1] or "/")' "$(cygpath -w "$out/$case-$engine-$1.json")" </dev/null
+        }
+        got="woken=$(url_of woken) back=$(url_of back1) back=$(url_of back2) forward=$(url_of fwd)"
+        want="woken=p3 back=p2 back=/ forward=p2"
+        what="Back and Forward after sleep and wake ($got)"
         ;;
     dirty)
         got="$(cards "$out/$case-$engine-stay.json") | $(cards "$out/$case-$engine-slept.json")"

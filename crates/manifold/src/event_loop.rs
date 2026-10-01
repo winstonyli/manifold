@@ -3,6 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
+use crate::nav_history::Dir;
 use crate::sleep_state::SleepWhy;
 
 impl ApplicationHandler<UserEvent> for App {
@@ -1009,6 +1010,12 @@ impl App {
             DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
             DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
             DebugCommand::Reload => self.reload_focused_tab_shortcut(),
+            DebugCommand::GoBack | DebugCommand::GoForward => {
+                if let Some(id) = self.focused.clone() {
+                    let dir = if matches!(cmd, DebugCommand::GoBack) { Dir::Back } else { Dir::Forward };
+                    self.navigate_history(&id, dir);
+                }
+            }
             DebugCommand::NewGroup => self.new_group_shortcut(),
             DebugCommand::NewNote => self.new_note_shortcut(),
             DebugCommand::AddFile(path, None) => {
@@ -1364,6 +1371,7 @@ impl App {
                     return false;
                 };
                 let url = self.reported_url(tab_id, url, current);
+                self.nav_history.entry(tab_id.to_string()).or_default().observe(&url, loading);
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };

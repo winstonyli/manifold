@@ -223,6 +223,9 @@ pub enum DebugCommand {
     TogglePin,
     /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
     Reload,
+    /// The toolbar's Back / Forward buttons, on the focused tab.
+    GoBack,
+    GoForward,
     /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
     NewGroup,
     /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
@@ -423,6 +426,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
     ("TOGGLEPIN", "Ctrl+P -- pin/unpin the focused tab"),
     ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
+    ("GOBACK", "Back button on the focused tab"),
+    ("GOFORWARD", "Forward button on the focused tab"),
     ("NEWGROUP", "Ctrl+Shift+G -- new group"),
     ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
     (
@@ -607,6 +612,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "PRINTTOPDF" => non_empty(DebugCommand::PrintToPdf),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
+        "GOBACK" => Some(DebugCommand::GoBack),
+        "GOFORWARD" => Some(DebugCommand::GoForward),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
         "ADDFILE" => (!rest.is_empty()).then(|| parse_add_file(rest)).flatten(),

@@ -23,6 +23,7 @@ mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
+mod nav_history;
 mod node;
 mod node_menu;
 mod pdf;
@@ -853,6 +854,9 @@ struct App {
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
+    /// Each tab's back/forward list as the host saw it, by tab id: kept
+    /// when the tab's engine is replaced (crash, wake, swap). See `nav_history`.
+    nav_history: HashMap<String, nav_history::NavHistory>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -1303,6 +1307,7 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             saved_scroll: HashMap::new(),
+            nav_history: HashMap::new(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,

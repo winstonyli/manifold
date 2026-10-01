@@ -65,6 +65,11 @@ impl App {
         if generation != self.session_generation {
             return;
         }
+        // A replaced engine (crash, wake, swap) knows only `url`: from here
+        // Back and Forward come from the host's list.
+        if let Some(history) = self.nav_history.get_mut(&id) {
+            history.engine_reset();
+        }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
         // the new tab pointing at a group id nothing can navigate into —
@@ -630,6 +635,7 @@ impl App {
         self.skip_convert.remove(id);
         self.pending_sleeps.remove(id);
         self.saved_scroll.remove(id);
+        self.nav_history.remove(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
