@@ -528,14 +528,13 @@ impl App {
 
     /// First phase of every sleep: validates as `sleep_now` does, asks the
     /// engine for its page state, and notes the request. `finish_sleep`
-    /// completes it when `EngineToHost::PageState` arrives; `sweep_idle_tabs`
-    /// drops requests nobody answered. Returns whether a query was sent.
+    /// completes it when `EngineToHost::PageState` arrives;
+    /// `expire_pending_sleeps` (run by `sweep_idle_tabs`) settles requests
+    /// nobody answered. Returns whether a query was sent.
     pub(crate) fn request_sleep(&mut self, id: &str, why: SleepWhy) -> bool {
         let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
         // A request nobody answered must not block a new one.
-        if self.pending_sleeps.get(id).is_some_and(|p| sleep_state::expired(p, std::time::Instant::now())) {
-            self.pending_sleeps.remove(id);
-        }
+        self.expire_pending_sleeps(std::time::Instant::now());
         if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
             return false;
         }
@@ -558,13 +557,35 @@ impl App {
         }
     }
 
+    /// Settles requests the engine never answered (hung page, no script
+    /// context). A manual one sleeps the tab anyway, without a scroll to
+    /// restore, so Sleep still works on a stuck tab; an idle one is dropped
+    /// and the tab's clock restarts so it is not asked again every sweep.
+    fn expire_pending_sleeps(&mut self, now: std::time::Instant) {
+        let dead: Vec<(String, SleepWhy)> = self
+            .pending_sleeps
+            .iter()
+            .filter(|(_, p)| sleep_state::expired(p, now))
+            .map(|(id, p)| (id.clone(), p.why))
+            .collect();
+        for (id, why) in dead {
+            self.pending_sleeps.remove(&id);
+            match why {
+                SleepWhy::Manual => {
+                    self.sleep_now(&id, None);
+                }
+                SleepWhy::Idle => self.idle_clock.restart(&id, now),
+            }
+        }
+    }
+
     /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
     /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
     /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
     /// seconds.
     pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
         let now = std::time::Instant::now();
-        self.pending_sleeps.retain(|_, p| !sleep_state::expired(p, now));
+        self.expire_pending_sleeps(now);
         let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
         let views = self.nodes.iter().filter_map(|(id, n)| {
             let t = n.as_tab()?;
@@ -728,6 +749,19 @@ mod tests {
     fn request_sleep_needs_a_live_tab() {
         let mut app = App::default();
         assert!(!app.request_sleep("missing", SleepWhy::Manual));
+        assert!(app.pending_sleeps.is_empty());
+    }
+
+    #[test]
+    fn unanswered_requests_are_settled_after_the_timeout() {
+        let mut app = App::default();
+        let t0 = std::time::Instant::now();
+        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle)] {
+            app.pending_sleeps.insert(id.into(), PendingSleep { why, sent: t0 });
+        }
+        app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
+        assert_eq!(app.pending_sleeps.len(), 2);
+        app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
         assert!(app.pending_sleeps.is_empty());
     }
 }

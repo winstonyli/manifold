@@ -288,8 +288,11 @@ A live tab's "Sleep" (tab context menu; "Sleep Tabs" on a group; headless
 (`2026-09-30-sleep-page-state-design.md`): `App::request_sleep` asks the
 engine for the page's state (`QueryPageState`: scroll position, and whether
 a form field differs from its default), and `finish_sleep` sleeps on the
-answer through `sleep_now`. A query unanswered after 5 s is dropped and the
-tab stays awake. `sleep_now` swaps the tab's payload for an
+answer through `sleep_now`. A query unanswered after 5 s is settled by
+`expire_pending_sleeps` (run by the 10 s idle sweep and by the next request):
+a manual one sleeps the tab anyway, without a scroll to restore, so Sleep
+works on a hung page; an idle one is dropped and the tab's idle clock
+restarts. `sleep_now` swaps the tab's payload for an
 `UnloadedTabPayload` in `Sleeping` state, which drops the `EngineTab` and so
 shuts the engine host down, and frees the tab's GPU textures. The card keeps
 its id, place, url, title, pin, mute and zoom, and saves as the same tab.
