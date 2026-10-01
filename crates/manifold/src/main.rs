@@ -1055,6 +1055,9 @@ struct App {
     /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
     /// way back resumes redrawing.
     was_minimized: bool,
+    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
+    /// on restore (`hide_tabs_for_minimize`).
+    hidden_for_minimize: Vec<String>,
     /// Key events from headless `ENTER`/`ESCAPE`/`ARROWDOWN`/`ARROWUP`,
     /// added to the next frame's egui input exactly like real key presses
     /// (see `run_egui_frame`), so they take the same code paths and, like
@@ -1342,6 +1345,7 @@ impl Default for App {
             graph_settled_key: None,
             headless: false,
             was_minimized: false,
+            hidden_for_minimize: Vec::new(),
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
             pending_focus: None,

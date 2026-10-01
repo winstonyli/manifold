@@ -87,9 +87,17 @@ impl ApplicationHandler<UserEvent> for App {
         let minimized = self.is_minimized();
         if minimized {
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + MINIMIZED_TICK));
+            if !self.was_minimized {
+                self.hide_tabs_for_minimize();
+            }
             self.minimized_tick();
         } else if self.was_minimized {
             event_loop.set_control_flow(ControlFlow::Poll);
+            for id in std::mem::take(&mut self.hidden_for_minimize) {
+                if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                    node.tab.set_visible(true);
+                }
+            }
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
@@ -176,11 +184,16 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size.width, size.height);
                 }
-                if let Some(id) = self.focused.clone() {
-                    self.send_resize_to(&id);
-                }
-                if let Some(id) = self.split_tab.clone() {
-                    self.send_resize_to(&id);
+                // A minimized window reports 0x0; resizing a page to that
+                // crashed the WebView2 engine ("Tab crashed, restarted" on
+                // restore). The restore's own `Resized` sends the real size.
+                if size.width > 0 && size.height > 0 {
+                    if let Some(id) = self.focused.clone() {
+                        self.send_resize_to(&id);
+                    }
+                    if let Some(id) = self.split_tab.clone() {
+                        self.send_resize_to(&id);
+                    }
                 }
                 // Not saved in headless mode -- see `Settings::window_width`'s
                 // own doc comment for why that would corrupt a real saved
@@ -382,6 +395,24 @@ impl App {
     /// Whether the real (non-headless) window is minimized.
     fn is_minimized(&self) -> bool {
         !self.headless && self.window.as_ref().is_some_and(|w| w.is_minimized() == Some(true))
+    }
+
+    /// Tells the tabs on screen (the focused tab in Tab view or mid-
+    /// transition, and the split pane) to stop capturing while minimized;
+    /// `about_to_wait` resumes them on restore. Measured 2026-10-01: the
+    /// engine and WebView2 kept using ~15% of a core behind a minimized window.
+    fn hide_tabs_for_minimize(&mut self) {
+        let mut ids = Vec::new();
+        if self.showing_tab_view() || self.transition.is_some() {
+            ids.extend(self.focused.clone());
+        }
+        ids.extend(self.split_tab.clone());
+        for id in ids {
+            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                node.tab.set_visible(false);
+                self.hidden_for_minimize.push(id);
+            }
+        }
     }
 
     /// What a frame does before building its UI, minus the UI itself.
