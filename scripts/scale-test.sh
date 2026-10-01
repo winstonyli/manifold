@@ -73,7 +73,7 @@ for n in "$@"; do
     spawned="$profile/spawned.json"
     start=$(date +%s.%N)
     # Commands come from a tail that exits with this script.
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
     inst=$!
     echo WAITTABS >>"$cmd"
     echo "EXPORTSTATE $(cygpath -w "$spawned")" >>"$cmd"

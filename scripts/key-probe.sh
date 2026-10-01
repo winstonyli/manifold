@@ -72,12 +72,10 @@ for engine in ${ENGINES:-webview2 cef}; do
 
     cmd="$profile/cmd"
     : >"$cmd"
-    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
+    APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
     inst=$!
     {
         echo WAITTABS
-        # The first command after WAITTABS needs a drawn frame to land; without this one the app quit early.
-        echo "EXPORTSTATE $(cygpath -w "$out/early-$engine.json")"
         echo "SLEEP 3"
         echo GRAPHDOWN
         echo GRAPHOPEN
