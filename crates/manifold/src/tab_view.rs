@@ -668,6 +668,7 @@ impl App {
                     let frame = popup_frame(ui);
                     let inner_width = rect.width() - frame.total_margin().sum().x;
                     frame.show(ui, |ui| {
+                        menu_item_style(ui);
                         ui.set_width(inner_width);
                         // `ui.set_width` alone only sets the *container's*
                         // layout width (affects wrapping/available_width),

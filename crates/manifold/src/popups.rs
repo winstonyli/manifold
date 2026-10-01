@@ -50,6 +50,7 @@ pub(crate) fn build_list_popup_frame(
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             popup_frame(ui).show(ui, |ui| {
+                menu_item_style(ui);
                 ui.set_min_width(min_width);
                 // An infinite cap makes egui lay out NaN rects; no cap
                 // lets the area size to its contents.
@@ -606,6 +607,7 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
+                    menu_item_style(ui);
                     ui.set_min_width(140.0);
                     if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
                         mute_others = true;

@@ -325,6 +325,7 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
+                    menu_item_style(ui);
                     if ui.button("Open in new tab").clicked() {
                         open_tab = true;
                         close = true;

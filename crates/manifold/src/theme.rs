@@ -32,7 +32,21 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
         .fill(TOOLBAR_FILL)
         .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
         .corner_radius(4u8)
-        .inner_margin(egui::Margin::same(6))
+        .inner_margin(egui::Margin::same(4))
+}
+
+/// Compact rows for a menu or dropdown, applied inside its `popup_frame`:
+/// no gap between rows, tighter padding, and no resting fill, so a row shows
+/// only its text until hovered or highlighted, then fills the full width.
+/// The global spacing is airier on purpose, which suits dialogs and the
+/// settings page but makes a menu of plain buttons look padded.
+pub(crate) fn menu_item_style(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+    style.spacing.item_spacing.y = 0.0;
+    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
 }
 
 /// `popup_frame` for centered dialogs (quick switcher, shortcuts help,
@@ -447,9 +461,10 @@ pub(crate) fn chip_icon_button_enabled(
 /// widget's own returned `Response::rect` is real.
 pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
-    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(1.0, 0.0), egui::Sense::hover());
+    ui.spacing_mut().item_spacing.x = 2.0;
     let content_rect = content(ui);
-    let (trail_rect, _) = ui.allocate_exact_size(egui::Vec2::new(5.0, 0.0), egui::Sense::hover());
+    let (trail_rect, _) = ui.allocate_exact_size(egui::Vec2::new(1.0, 0.0), egui::Sense::hover());
     let rect = lead_rect.union(content_rect).union(trail_rect);
     // Content that renders nothing can leave `ui.cursor()`'s fallback
     // infinite in one axis (`.max.x` for left-to-right layouts, `.min.x`
