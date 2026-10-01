@@ -309,6 +309,19 @@ group's "Sleep Tabs" sleeps each of its live tabs except those two.
   of a fixed time: sleep only when engine memory passes a budget, ranked
   by idle time x engine-process memory with graph distance from the
   focused node as the tie-break, plus a page-side dirty-form check.
+  Per-tab memory is readable on Windows (spike 2026-09-30, one live
+  tab per engine, debug build, a local page): each engine host owns its
+  own process subtree, WebView2's browser tree included (a null user-data
+  folder did not make hosts share one), so a tab's cost is the sum over
+  its host's descendants. WebView2 host + 6 `msedgewebview2` ≈ 380 MB
+  working set / 170 MB private; CEF host + 5 children ≈ 320 MB / 180 MB;
+  `manifold.exe` itself ≈ 210 MB working set. Use private bytes
+  (`GetProcessMemoryInfo`, `PrivateUsage`), not working set, which counts
+  shared pages; a snapshot walk (`CreateToolhelp32Snapshot`) finds the
+  descendants; system free memory is `GlobalMemoryStatusEx`. Needs the
+  windows-sys features `Win32_System_Diagnostics_ToolHelp`,
+  `Win32_System_ProcessStatus` and `Win32_System_SystemInformation`.
+  Not measured: several tabs at once, or a heavy page.
   `Ctrl+Tab` (`cycle_focused_tab`) still wakes every sleeping tab it
   passes through on its way to the one the user stops on, and each stays
   loaded until slept. Opening a failed card retries
