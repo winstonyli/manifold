@@ -43,6 +43,9 @@ w() { cygpath -w "$1"; }
 profile="$work/appdata"
 mkdir -p "$profile/manifold"
 echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
+# Rows for the Bookmarks and History popups.
+echo '[{"title": "Example Domain", "url": "https://example.com/", "folder": null}, {"title": "Rust docs", "url": "https://doc.rust-lang.org/", "folder": "Reading"}, {"title": "A rather long page title that has to be truncated by the popup", "url": "https://example.org/long", "folder": "Reading"}]' >"$profile/manifold/bookmarks.json"
+echo '[{"title": "Example Domain", "url": "https://example.com/"}, {"title": "Wikipedia", "url": "https://en.wikipedia.org/"}, {"title": "Hacker News", "url": "https://news.ycombinator.com/"}]' >"$profile/manifold/history.json"
 cat >"$work/seed.json" <<'EOF'
 {"nodes": [
  {"id": "t1", "kind": "tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
@@ -162,7 +165,7 @@ if has settings || has popup-bookmarks || has popup-history || has popup-downloa
     # The Lists buttons on the settings page (fixed layout at the default size).
     for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
         set -- $v
-        if has "$1"; then send "CLICK $2 677" "SLEEP 1"; shot "$1"; send "CLICK $2 677" "SLEEP 1"; fi
+        if has "$1"; then send "CLICK $2 677" "SLEEP 1"; shot "$1"; send "CLICK 1100 300" "SLEEP 1"; fi
     done
     send TOGGLESETTINGSPAGE "SLEEP 1"
 fi

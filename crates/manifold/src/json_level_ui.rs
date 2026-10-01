@@ -508,32 +508,44 @@ impl App {
         ui.allocate_ui(egui::vec2(PATH_LABEL_MAX_WIDTH, ui.available_height()), |ui| ui.add(label))
             .inner
             .on_hover_text(shown);
-        ui.add_enabled_ui(selected.is_some(), |ui| {
-            if ui.button("Copy value").on_hover_text("Ctrl+C").clicked() {
+        let enabled = selected.is_some();
+        toolbar_chip(ui, |ui| {
+            // Invisible at rest like the icon chips' buttons: the chip is the background.
+            let saved = ui.visuals().widgets.inactive.weak_bg_fill;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            let value = ui.add_enabled(enabled, egui::Button::new("Copy value")).on_hover_text("Ctrl+C");
+            if value.clicked() {
                 self.copy_json(ui.ctx(), selected.as_deref(), CopyWhat::Value);
             }
-            if ui.button("Copy path").on_hover_text("Ctrl+Shift+C").clicked() {
+            let path = ui.add_enabled(enabled, egui::Button::new("Copy path")).on_hover_text("Ctrl+Shift+C");
+            if path.clicked() {
                 self.copy_json(ui.ctx(), selected.as_deref(), CopyWhat::Path);
             }
+            // A phosphor caret, not a raw "▾": the app font's tofu-box rule.
+            let form = ui
+                .menu_button(egui_phosphor::light::CARET_DOWN, |ui| {
+                    if ui.selectable_label(!self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
+                        self.json_accessor_paths = false;
+                        ui.close();
+                    }
+                    if ui.selectable_label(self.json_accessor_paths, "Accessor  users[0].name").clicked() {
+                        self.json_accessor_paths = true;
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Copy path's form");
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = saved;
+            value.rect.union(path.rect).union(form.rect)
         });
-        // A phosphor caret, not a raw "▾": the app font's tofu-box rule.
-        ui.menu_button(egui_phosphor::light::CARET_DOWN, |ui| {
-            if ui.selectable_label(!self.json_accessor_paths, "JSON Pointer  /users/0/name").clicked() {
-                self.json_accessor_paths = false;
-                ui.close();
-            }
-            if ui.selectable_label(self.json_accessor_paths, "Accessor  users[0].name").clicked() {
-                self.json_accessor_paths = true;
-                ui.close();
-            }
-        })
-        .response
-        .on_hover_text("Copy path's form");
         if ui.button("Relayout").on_hover_text("Forget every moved card's position").clicked() {
             self.apply_json_edit(JsonEdit::Relayout);
         }
         let outline = egui_phosphor::light::LIST_BULLETS;
-        if ui.selectable_label(self.json_outline_visible, outline).on_hover_text("Outline").clicked() {
+        // On is a raised fill, not the gold selection color: gold is the primary action's.
+        let on = if self.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
+        let toggle = ui.add(egui::Button::new(outline).fill(on).stroke(egui::Stroke::NONE));
+        if toggle.on_hover_text("Outline").clicked() {
             self.json_outline_visible = !self.json_outline_visible;
         }
     }
