@@ -1,5 +1,5 @@
 //! `%APPDATA%\manifold`, the one folder the app keeps its files in:
-//! `settings.json`, `bookmarks.json`, `history.json`, the session store,
+//! `settings.json`, `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
 //! the named sessions, fetched content (`content_dir`) and CEF's throwaway
 //! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
 //! or, for engines, `engine_data_dir()`.

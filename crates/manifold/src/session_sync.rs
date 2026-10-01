@@ -820,6 +820,8 @@ impl App {
             crate::history::save(&self.history);
             self.history_dirty = false;
         }
+        let nodes = &self.nodes;
+        crate::nav_history::save(&mut self.nav_history, |id| nodes.contains_key(id));
     }
 
     /// Saves local edits (spec "Local edits become ops"): take the lock,

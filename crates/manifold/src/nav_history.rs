@@ -8,6 +8,14 @@
 //! the list's neighbour URL, a plain load with no scroll or form state, and
 //! the toolbar enables them from this list. Redirects and `pushState` are
 //! only approximated (see `observe`).
+//!
+//! The lists are saved to `tab-history.json`, keyed by node id, so a restart
+//! keeps them too (every restored tab's engine is new). The file is
+//! machine-local, not part of the shared session store: a list changes on
+//! every navigation, and the store shares only user-started URL changes.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Most entries kept per tab.
 const MAX_ENTRIES: usize = 50;
@@ -28,10 +36,19 @@ pub(crate) enum NavAction {
     None,
 }
 
+/// What `tab-history.json` holds for one tab.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Saved {
+    entries: Vec<String>,
+    index: usize,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct NavHistory {
     entries: Vec<String>,
     index: usize,
+    /// Changed since the last save.
+    dirty: bool,
     /// The engine's own history no longer matches `entries`.
     hosted: bool,
     /// The direction of the `GoBack`/`GoForward` just sent to the engine.
@@ -46,6 +63,12 @@ pub(crate) struct NavHistory {
 impl NavHistory {
     /// Folds in one `NavigationStateChanged` (many repeat the same URL).
     pub(crate) fn observe(&mut self, url: &str, loading: bool) {
+        let before = (self.entries.len(), self.index, self.entries.get(self.index).cloned());
+        self.fold(url, loading);
+        self.dirty |= before != (self.entries.len(), self.index, self.entries.get(self.index).cloned());
+    }
+
+    fn fold(&mut self, url: &str, loading: bool) {
         let was_loading = std::mem::replace(&mut self.loading, loading);
         if self.entries.is_empty() {
             self.entries.push(url.to_string());
@@ -81,8 +104,15 @@ impl NavHistory {
         }
     }
 
-    /// The tab's engine was replaced and now knows only the current page.
-    pub(crate) fn engine_reset(&mut self) {
+    /// The tab's engine was replaced and now knows only the page at `url`.
+    /// A list that doesn't end up at `url` (the tab moved while the app was
+    /// closed, or the file is stale) is dropped.
+    pub(crate) fn engine_reset(&mut self, url: &str) {
+        if self.entries.get(self.index).is_some_and(|e| e != url) {
+            self.entries.clear();
+            self.index = 0;
+            self.dirty = true;
+        }
         self.hosted = self.entries.len() > 1;
         self.pending = None;
         self.expecting = None;
@@ -122,8 +152,42 @@ impl NavHistory {
         };
         self.expecting = Some((self.entries[target].clone(), self.entries[self.index].clone()));
         self.index = target;
+        self.dirty = true;
         NavAction::Load(self.entries[target].clone())
     }
+}
+
+fn path() -> Option<PathBuf> {
+    Some(crate::profile::dir()?.join("tab-history.json"))
+}
+
+/// The saved lists. A missing or corrupt file (moved aside) gives none.
+pub(crate) fn load() -> HashMap<String, NavHistory> {
+    let Some(path) = path() else { return HashMap::new() };
+    let saved: HashMap<String, Saved> =
+        crate::json_file::load_or_move_aside(&path, "tab history").ok().flatten().unwrap_or_default();
+    saved
+        .into_iter()
+        .filter(|(_, s)| s.index < s.entries.len())
+        .map(|(id, s)| (id, NavHistory { entries: s.entries, index: s.index, ..NavHistory::default() }))
+        .collect()
+}
+
+/// Writes the lists of the tabs `keep` accepts (one-page lists add nothing
+/// and are left out) when any changed since the last save.
+pub(crate) fn save(lists: &mut HashMap<String, NavHistory>, keep: impl Fn(&str) -> bool) {
+    if !lists.values().any(|h| h.dirty) {
+        return;
+    }
+    let Some(path) = path() else { return };
+    lists.retain(|id, _| keep(id));
+    let saved: HashMap<&String, Saved> = lists
+        .iter()
+        .filter(|(_, h)| h.entries.len() > 1)
+        .map(|(id, h)| (id, Saved { entries: h.entries.clone(), index: h.index }))
+        .collect();
+    crate::json_file::save(&saved, &path, "tab history");
+    lists.values_mut().for_each(|h| h.dirty = false);
 }
 
 #[cfg(test)]
@@ -166,7 +230,7 @@ mod tests {
     fn a_replaced_engine_keeps_back_and_forward() {
         let mut h = NavHistory::default();
         visit(&mut h, &["x", "y", "z"]);
-        h.engine_reset();
+        h.engine_reset("z");
         // The new engine reports only the page it loaded, and no history.
         visit(&mut h, &["z"]);
         assert!(h.can_go_back(false));
@@ -188,7 +252,7 @@ mod tests {
     fn a_hosted_load_that_redirects_replaces_the_entry() {
         let mut h = NavHistory::default();
         visit(&mut h, &["x", "y"]);
-        h.engine_reset();
+        h.engine_reset("y");
         visit(&mut h, &["y"]);
         h.go(Dir::Back, false);
         visit(&mut h, &["x2"]);
@@ -200,9 +264,43 @@ mod tests {
     fn a_single_page_tab_stays_native_after_a_reset() {
         let mut h = NavHistory::default();
         visit(&mut h, &["a"]);
-        h.engine_reset();
+        h.engine_reset("a");
         assert!(h.can_go_back(true));
         assert_eq!(h.go(Dir::Back, false), NavAction::None);
+    }
+
+    #[test]
+    fn a_list_that_no_longer_ends_at_the_tabs_url_is_dropped() {
+        let mut h = NavHistory::default();
+        visit(&mut h, &["x", "y"]);
+        h.engine_reset("elsewhere");
+        assert!(!h.can_go_back(false));
+        visit(&mut h, &["elsewhere"]);
+        assert_eq!(h.entries, ["elsewhere"]);
+    }
+
+    #[test]
+    fn a_saved_list_round_trips_and_a_restored_tab_goes_back() {
+        let mut h = NavHistory::default();
+        visit(&mut h, &["x", "y", "z"]);
+        assert!(h.dirty);
+        let text = serde_json::to_string(&Saved { entries: h.entries.clone(), index: h.index }).unwrap();
+        let saved: Saved = serde_json::from_str(&text).unwrap();
+        let mut restored = NavHistory { entries: saved.entries, index: saved.index, ..NavHistory::default() };
+        restored.engine_reset("z");
+        visit(&mut restored, &["z"]);
+        assert_eq!(restored.go(Dir::Back, false), NavAction::Load("y".into()));
+    }
+
+    #[test]
+    fn only_a_change_marks_the_list_dirty() {
+        let mut h = NavHistory::default();
+        visit(&mut h, &["a", "b"]);
+        h.dirty = false;
+        h.observe("b", false);
+        assert!(!h.dirty);
+        h.observe("c", true);
+        assert!(h.dirty);
     }
 
     #[test]

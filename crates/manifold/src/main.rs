@@ -1307,7 +1307,7 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             saved_scroll: HashMap::new(),
-            nav_history: HashMap::new(),
+            nav_history: nav_history::load(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,

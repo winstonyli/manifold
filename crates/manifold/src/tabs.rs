@@ -68,7 +68,7 @@ impl App {
         // A replaced engine (crash, wake, swap) knows only `url`: from here
         // Back and Forward come from the host's list.
         if let Some(history) = self.nav_history.get_mut(&id) {
-            history.engine_reset();
+            history.engine_reset(&url);
         }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave

@@ -15,6 +15,8 @@
 #           must retrace them (the host keeps the list, `nav_history`).
 #   crash   as history, but the engine host is killed instead of slept: the app
 #           restarts the tab and Back and Forward must still work.
+#   restart as history, but the app is quit and started again on the same
+#           profile (`tab-history.json`): Back and Forward must still work.
 #   dirty   /tall?dirty=1 has an input changed from its default: idle sleep
 #           must leave it awake, manual Sleep must still sleep it.
 # Opening a card starts the engine again and brings the tab back, under the
@@ -70,6 +72,17 @@ for engine in ${ENGINES:-webview2 cef}; do
     APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log" 2>&1 &
     inst=$!
     st() { cygpath -w "$out/$case-$engine-$1.json"; }
+    back_and_forward() {
+        echo GOBACK
+        echo "SLEEP 3"
+        echo "EXPORTSTATE $(st back1)"
+        echo GOBACK
+        echo "SLEEP 3"
+        echo "EXPORTSTATE $(st back2)"
+        echo GOFORWARD
+        echo "SLEEP 3"
+        echo "EXPORTSTATE $(st fwd)"
+    }
     {
         echo WAITTABS
         echo "SLEEP 4"
@@ -111,7 +124,7 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo WAITTABS
             echo "SLEEP 6"
             ;;
-        history | crash)
+        history | crash | restart)
             # Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
             echo GRAPHDOWN
             echo GRAPHOPEN
@@ -128,6 +141,9 @@ for engine in ${ENGINES:-webview2 cef}; do
                 for _ in $(seq 120); do [ -s "$out/$case-$engine-pre.json" ] && break; sleep 0.5; done
                 taskkill //F //IM "manifold-engine-$engine.exe" >/dev/null 2>&1
                 sleep 8
+            elif [ "$case" = restart ]; then
+                # Quit here; the second instance below restores the tab.
+                echo "SLEEP 2"
             else
                 echo ESCAPE
                 echo "SLEEP 2"
@@ -137,16 +153,10 @@ for engine in ${ENGINES:-webview2 cef}; do
                 echo WAITTABS
                 echo "SLEEP 5"
             fi
-            echo "EXPORTSTATE $(st woken)"
-            echo GOBACK
-            echo "SLEEP 3"
-            echo "EXPORTSTATE $(st back1)"
-            echo GOBACK
-            echo "SLEEP 3"
-            echo "EXPORTSTATE $(st back2)"
-            echo GOFORWARD
-            echo "SLEEP 3"
-            echo "EXPORTSTATE $(st fwd)"
+            if [ "$case" != restart ]; then
+                echo "EXPORTSTATE $(st woken)"
+                back_and_forward
+            fi
             ;;
         dirty)
             echo "IDLESWEEP 9999"
@@ -163,6 +173,24 @@ for engine in ${ENGINES:-webview2 cef}; do
     } >>"$cmd"
     wait "$inst" 2>/dev/null
     inst=""
+    if [ "$case" = restart ]; then
+        # A second instance on the same profile: the restored tab has a new engine.
+        : >"$cmd"
+        APPDATA="$(cygpath -w "$profile")" "$exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$profile/log2" 2>&1 &
+        inst=$!
+        {
+            echo WAITTABS
+            echo "SLEEP 3"
+            echo GRAPHDOWN
+            echo GRAPHOPEN
+            echo "SLEEP 6"
+            echo "EXPORTSTATE $(st woken)"
+            back_and_forward
+            echo QUIT
+        } >>"$cmd"
+        wait "$inst" 2>/dev/null
+        inst=""
+    fi
     kill "$srv" 2>/dev/null
     srv=""
 
@@ -185,7 +213,7 @@ for engine in ${ENGINES:-webview2 cef}; do
         fi
         what="scroll kept across sleep ($got)"
         ;;
-    history | crash)
+    history | crash | restart)
         url_of() {
             python -P -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["focused_url"].rsplit("/", 1)[-1] or "/")' "$(cygpath -w "$out/$case-$engine-$1.json")" </dev/null
         }
