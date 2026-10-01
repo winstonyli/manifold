@@ -17,7 +17,7 @@
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
-# Opt-in (not in the default set): hover-graph hover-json hover-tabview hover-find hover-settings,
+# Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph tab-tabview tab-settings, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
@@ -205,7 +205,7 @@ for v in tab:Tab group:Group note:Note; do
     fi
 done
 if has hover-graph; then hover_scan graph; fi
-if has tab-graph; then tab_scan graph 9; fi
+if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
 if has hover-menu-tab; then
     read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
     HOVER_X0="${MENU_X0:-640}" HOVER_BAND=190 hover_column menu-tab "${MENU_X:-700}" "${MENU_Y0:-424}" "${MENU_Y1:-646}"; reset
@@ -226,10 +226,12 @@ if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filte
 if has graph-group; then
     read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
 fi
-if has json-level || has json-menu || has json-tooltip || has hover-json; then
+if has json-level || has json-menu || has json-tooltip || has hover-json || has hover-json-sel; then
     read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"
     has json-level && shot json-level
     has hover-json && hover_scan json
+    # With a card selected, the bar's Copy buttons are enabled.
+    if has hover-json-sel; then send "CLICK 280 380" "SLEEP 1"; hover_scan json-sel; fi
     if has json-tooltip; then send "MOUSEMOVE $JSON_TIP_X 16" "SLEEP 2"; shot json-tooltip; send "MOUSEMOVE 5 790"; fi
     # Right-click the first card the level lays out (data.json at 1280x800).
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
