@@ -3,7 +3,7 @@
 #
 # Checks what a real page sees when the host sends it keys (`KEYPAGE`): for
 # each engine, one headless instance on a fresh isolated APPDATA loads a
-# local page (scripts/key_probe_server.py) that reports each keydown's
+# local page (scripts/probe_server.py) that reports each keydown's
 # code/key/keyCode, and this script compares them with what
 # `ipc_protocol::KeyCode` (`key_codes!`) says each engine should send.
 # Guards the shared key table against an edit that changes one engine's
@@ -62,7 +62,7 @@ for engine in ${ENGINES:-webview2 cef}; do
     mkdir -p "$profile/manifold"
     log="$out/keys-$engine.log"
     : >"$log"
-    python -P "$repo_root/scripts/key_probe_server.py" "$(cygpath -w "$out/port-$engine")" "$(cygpath -w "$log")" 300 </dev/null >/dev/null 2>&1 &
+    python -P "$repo_root/scripts/probe_server.py" "$(cygpath -w "$out/port-$engine")" "$(cygpath -w "$log")" 300 </dev/null >/dev/null 2>&1 &
     srv=$!
     for _ in $(seq 50); do [ -s "$out/port-$engine" ] && break; sleep 0.1; done
     port="$(cat "$out/port-$engine")"
