@@ -15,8 +15,8 @@
 #   graph-filter graph-group json-level
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch
-# Not covered: the Recently Closed popup. The app has no light theme, so there is one set of images.
+#   shortcuts quickswitch graph-closed
+# The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,7 +28,9 @@ require_fresh_exe "$exe" || exit 1
 OUT="${OUT:-$repo_root/target/shots}"
 SIZE="${SIZE:-1280 800}"
 CROP_PX="${CROP_PX:-110}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch"
+# The "Recently Closed (n)" toolbar button, which appears once a card is closed.
+CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -159,18 +161,27 @@ if has tabview || has tabview-dropdown || has tabview-find || has tabview-action
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
 fi
+if has shortcuts; then send TOGGLESHORTCUTSHELP "SLEEP 1"; shot shortcuts; send TOGGLESHORTCUTSHELP "SLEEP 1"; fi
+if has quickswitch; then send QUICKSWITCHOPEN "SLEEP 1"; shot quickswitch; send QUICKSWITCHESCAPE "SLEEP 1"; fi
+# Closes the note (middle-click), so it must come before the settings block
+# and after every view that shows the note.
+if has graph-closed; then
+    read -r x y < <(center Note); send "CLICK $x $y middle" "SLEEP 1"; settle
+    send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
+fi
+# Last: the download it adds would show in the other views.
 if has settings || has popup-bookmarks || has popup-history || has popup-downloads; then
-    send TOGGLESETTINGSPAGE "SLEEP 2"
+    # Taller, so a popup opening below the Lists buttons is not pushed up over them.
+    send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
+    has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
     has settings && shot settings
     # The Lists buttons on the settings page (fixed layout at the default size).
     for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
         set -- $v
         if has "$1"; then send "CLICK $2 677" "SLEEP 1"; shot "$1"; send "CLICK 1100 300" "SLEEP 1"; fi
     done
-    send TOGGLESETTINGSPAGE "SLEEP 1"
+    send TOGGLESETTINGSPAGE "RESIZE $SIZE" "SLEEP 1"
 fi
-if has shortcuts; then send TOGGLESHORTCUTSHELP "SLEEP 1"; shot shortcuts; send TOGGLESHORTCUTSHELP "SLEEP 1"; fi
-if has quickswitch; then send QUICKSWITCHOPEN "SLEEP 1"; shot quickswitch; send QUICKSWITCHESCAPE "SLEEP 1"; fi
 send QUIT
 wait "$inst" 2>/dev/null
 inst=""
