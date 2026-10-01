@@ -14,8 +14,9 @@
 #   graph graph-hover graph-menu-tab graph-menu-group graph-menu-note
 #   graph-filter graph-group json-level
 #   tabview tabview-dropdown tabview-find tabview-actions
-#   settings shortcuts quickswitch
-# The app has no light theme, so there is one set of images.
+#   tabview-split settings popup-bookmarks popup-history popup-downloads
+#   shortcuts quickswitch
+# Not covered: the Recently Closed popup. The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +28,7 @@ require_fresh_exe "$exe" || exit 1
 OUT="${OUT:-$repo_root/target/shots}"
 SIZE="${SIZE:-1280 800}"
 CROP_PX="${CROP_PX:-110}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level tabview tabview-dropdown tabview-find tabview-actions settings shortcuts quickswitch"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -146,15 +147,25 @@ fi
 if has json-level; then
     read -r x y < <(center Json); send "DOUBLECLICK $x $y" "SLEEP 3"; shot json-level; reset
 fi
-if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions; then
+if has tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     if has tabview-dropdown; then send "ADDRESSBAR exam" "SLEEP 2"; shot tabview-dropdown; send ESCAPE "SLEEP 1"; fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
+    if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
 fi
-if has settings; then send TOGGLESETTINGSPAGE "SLEEP 2"; shot settings; send TOGGLESETTINGSPAGE "SLEEP 1"; fi
+if has settings || has popup-bookmarks || has popup-history || has popup-downloads; then
+    send TOGGLESETTINGSPAGE "SLEEP 2"
+    has settings && shot settings
+    # The Lists buttons on the settings page (fixed layout at the default size).
+    for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
+        set -- $v
+        if has "$1"; then send "CLICK $2 677" "SLEEP 1"; shot "$1"; send "CLICK $2 677" "SLEEP 1"; fi
+    done
+    send TOGGLESETTINGSPAGE "SLEEP 1"
+fi
 if has shortcuts; then send TOGGLESHORTCUTSHELP "SLEEP 1"; shot shortcuts; send TOGGLESHORTCUTSHELP "SLEEP 1"; fi
 if has quickswitch; then send QUICKSWITCHOPEN "SLEEP 1"; shot quickswitch; send QUICKSWITCHESCAPE "SLEEP 1"; fi
 send QUIT
