@@ -139,7 +139,7 @@ pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected:
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 engine_dot(ui, kind, 10.0);
-                ui.label(egui::RichText::new(engine_label(kind)).strong());
+                ui.label(egui::RichText::new(engine_label(kind)).color(TEXT_PRIMARY));
                 if is_selected {
                     ui.label(egui_phosphor::light::CHECK_CIRCLE);
                 }

@@ -15,7 +15,8 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed
+#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
+#   settings-engine settings-combo toast
 # The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
@@ -30,7 +31,7 @@ SIZE="${SIZE:-1280 800}"
 CROP_PX="${CROP_PX:-110}"
 # The "Recently Closed (n)" toolbar button, which appears once a card is closed.
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view settings-engine settings-combo toast"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -145,6 +146,17 @@ for v in tab:Tab group:Group note:Note; do
         read -r x y < <(center "${v##*:}"); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"; shot "$name"; reset
     fi
 done
+# Right-click on empty canvas: the New Tab/Note/Group card.
+if has graph-newnode-menu; then
+    send "MOUSEMOVE 700 150" "MOUSEDOWN 700 150 right" "MOUSEUP 700 150 right" "SLEEP 1"; shot graph-newnode-menu; reset
+fi
+# A toolbar tooltip (the shortcuts help button).
+if has graph-tooltip; then
+    send "MOUSEMOVE 467 16" "SLEEP 2"; shot graph-tooltip; send "MOUSEMOVE 5 790"
+fi
+if has image-view; then
+    read -r x y < <(center Image); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
+fi
 if has graph-filter; then send "GRAPHFILTERTEXT res" "SLEEP 1"; shot graph-filter; send "GRAPHFILTERTEXT "; fi
 if has graph-group; then
     read -r x y < <(center Group); send "DOUBLECLICK $x $y" "SLEEP 3"; shot graph-group; reset
@@ -174,11 +186,15 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has popup-bookmarks || has popup-history || has popup-downloads; then
+if has settings || has settings-engine || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
+    send "SESSIONNAMETEXT demo" "SAVESESSIONAS demo" "SLEEP 1"
     has settings && shot settings
+    # Engine picker (Default starting engine) and the search-engine combo.
+    if has settings-engine; then send "CLICK 63 180" "SLEEP 1"; shot settings-engine; send "CLICK 1100 300" "SLEEP 1"; fi
+    if has settings-combo; then send "CLICK 80 87" "SLEEP 1"; shot settings-combo; send "CLICK 1100 300" "SLEEP 1"; fi
     # The Lists buttons on the settings page (fixed layout at the default size).
     for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
         set -- $v
@@ -186,6 +202,8 @@ if has settings || has popup-bookmarks || has popup-history || has popup-downloa
     done
     send TOGGLESETTINGSPAGE "RESIZE $SIZE" "SLEEP 1"
 fi
+# A toast, from opening a session that doesn't exist (which also leaves the settings page).
+if has toast; then send "OPENSESSION nosuch" "SLEEP 1"; shot toast; fi
 send QUIT
 wait "$inst" 2>/dev/null
 inst=""
