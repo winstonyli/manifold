@@ -441,8 +441,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
-    ("SLEEPNODE id", "Sleep the tab `id` (or every tab of the group `id`), same as its \"Sleep\" context-menu action"),
-    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds sleep (the clock updates on every sweep)"),
+    ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
+    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
