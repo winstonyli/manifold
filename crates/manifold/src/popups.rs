@@ -920,6 +920,9 @@ impl App {
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut switcher.query)
                                     .desired_width(f32::INFINITY)
+                                    // Tab would otherwise walk focus out to the toolbar behind
+                                    // the switcher; arrows and Enter pick a row.
+                                    .lock_focus(true)
                                     .hint_text("Search open tabs..."),
                             );
                             if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {

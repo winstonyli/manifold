@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph tab-tabview tab-settings, which
+# and Tab-key scans tab-graph tab-tabview tab-settings tab-find tab-quickswitch tab-popup, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -237,7 +237,7 @@ if has json-level || has json-menu || has json-tooltip || has hover-json || has 
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown; then
+if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     has tab-tabview && tab_scan tabview 12
@@ -251,10 +251,16 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
     if has hover-find; then
         send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_Y=${FIND_Y:-60} HOVER_BAND=${FIND_BAND:-90} hover_scan find; send CLOSEFINDBAR
     fi
+    if has tab-find; then
+        send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_BAND=${FIND_BAND:-90} tab_scan find 6; send CLOSEFINDBAR
+    fi
     # The Split button opens the engine picker.
     if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
+fi
+if has tab-quickswitch; then
+    send QUICKSWITCHOPEN "SLEEP 1"; HOVER_BAND=400 tab_scan quickswitch 4; send QUICKSWITCHESCAPE "SLEEP 1"
 fi
 if has hover-quickswitch; then
     send QUICKSWITCHOPEN "SLEEP 1"; HOVER_X0=440 HOVER_BAND=400 hover_column quickswitch 640 90 230; send QUICKSWITCHESCAPE "SLEEP 1"
@@ -268,7 +274,7 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has hover-settings || has tab-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads; then
+if has settings || has hover-settings || has tab-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads || has tab-popup; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
@@ -285,6 +291,9 @@ if has settings || has hover-settings || has tab-settings || has settings-engine
         set -- $v
         if has "$1"; then send "CLICK $2 677" "SLEEP 1"; shot "$1"; send "CLICK 1100 300" "SLEEP 1"; fi
     done
+    if has tab-popup; then
+        send "CLICK 75 677" "SLEEP 1"; HOVER_BAND=1000 tab_scan popup 6; send "CLICK 1100 300" "SLEEP 1"
+    fi
     send TOGGLESETTINGSPAGE "RESIZE $SIZE" "SLEEP 1"
 fi
 # A toast, from opening a session that doesn't exist (which also leaves the settings page).
