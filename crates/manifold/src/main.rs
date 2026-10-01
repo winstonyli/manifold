@@ -1059,6 +1059,14 @@ struct App {
     /// loop then ticks at `MINIMIZED_TICK` instead of redrawing, and on the
     /// way back resumes redrawing.
     was_minimized: bool,
+    /// The last input, engine message burst or egui repaint request: after
+    /// `IDLE_AFTER` without one the loop slows to `IDLE_FRAME` (see
+    /// `about_to_wait`).
+    last_activity: std::time::Instant,
+    /// Engine frames seen in the current second (a burst is activity).
+    frame_burst: (std::time::Instant, u32),
+    /// When an idle loop next draws.
+    next_idle_frame: std::time::Instant,
     /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
     /// on restore (`hide_tabs_for_minimize`).
     hidden_for_minimize: Vec<String>,
@@ -1350,6 +1358,9 @@ impl Default for App {
             graph_settled_key: None,
             headless: false,
             was_minimized: false,
+            last_activity: std::time::Instant::now(),
+            frame_burst: (std::time::Instant::now(), 0),
+            next_idle_frame: std::time::Instant::now(),
             hidden_for_minimize: Vec::new(),
             debug_input_events: Vec::new(),
             debug_address_bar_typing: None,
