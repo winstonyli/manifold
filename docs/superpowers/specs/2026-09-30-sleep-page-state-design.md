@@ -1,7 +1,10 @@
 # Sleep with page state: dirty-form skip and scroll restore
 
-Status: design, awaiting review. Builds on manual Sleep and idle sleep
-(`2026-09-27-lazy-tabs-design.md`, "Sleep" and "Idle sleep").
+Status: implemented 2026-09-30 (plan
+`docs/superpowers/plans/2026-09-30-sleep-page-state.md`); see
+"Deviations" at the end for where the code differs from this text. Builds
+on manual Sleep and idle sleep (`2026-09-27-lazy-tabs-design.md`, "Sleep"
+and "Idle sleep").
 
 ## Problem
 
@@ -114,3 +117,21 @@ spec's Deferred list (remove the dirty-form and scroll items), and
   not promised; the README says "forms".
 - The two-phase flow adds a state machine to a path that was a single
   call; the pending map and its timeout are the only new state.
+
+## Deviations
+
+Decided while planning (plan, "Global Constraints"):
+
+1. `PAGE_STATE_SCRIPT` returns plain text `"<x> <y> <1|0>"`, not JSON,
+   because `ipc-protocol` has no JSON dependency.
+2. The saved scroll lives in `App::saved_scroll` (keyed by tab id, held
+   until the first load after a wake), not in a new
+   `UnloadedTabPayload::scroll` field: that struct is built in about ten
+   places, and scroll is kept in memory either way.
+
+Also as built: `sleep_tab` became `request_sleep(id, why)` (first phase),
+`finish_sleep(id, state)` (second) and the private `sleep_now` (the old
+immediate sleep). The probe's dirty case fills the input from the page's
+own script (`/tall?dirty=1`) rather than by typing. The probe ran on
+WebView2 and CEF (all four cases pass, 2026-09-30); Servo and WebKit
+compile with real handlers but have not been run.

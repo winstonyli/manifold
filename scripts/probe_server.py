@@ -1,11 +1,14 @@
-"""Local pages for the probe scripts (key-probe.sh, page-kind-probe.sh).
+"""Local pages for the probe scripts (key-probe.sh, page-kind-probe.sh, sleep-probe.sh).
 
 Usage: python -P scripts/probe_server.py <port-file> <log-file> <seconds> < /dev/null
 
 GET / is a page that reports every keydown it sees: its handler requests
 /k?code=..&key=..&kc=.., and this server appends `code=<..> key=<..> kc=<..>`
 to <log-file>. GET /data.json is a JSON response and GET /pixel.png a small
-valid PNG, each with its real content type, for the page-kind probe. Writes
+valid PNG, each with its real content type, for the page-kind probe. GET
+/tall is a 6000 px page that requests /s?e=load|scroll&y=.. on load and after
+each scroll settles (logged as `<e> y=<y>`); /tall?dirty also fills its
+input, for the sleep probe. Writes
 the port to <port-file> and exits after <seconds> on its own.
 """
 
@@ -40,6 +43,20 @@ addEventListener('keydown', e => {
   new Image().src = '/k?' + q;
 });
 </script>"""
+# A page taller than any window, for the sleep probe's scroll and dirty-form
+# cases: it reports its scroll position on load and after each scroll
+# settles, and `?dirty` makes its input differ from the default.
+TALL = b"""<!doctype html><title>tall</title><input id=i>
+<div style="height:6000px;background:linear-gradient(#fff,#9cf)"></div>
+<script>
+if (location.search.includes('dirty')) document.getElementById('i').value = 'draft';
+fetch('/s?e=load&y=' + Math.round(scrollY));
+let t;
+addEventListener('scroll', () => {
+  clearTimeout(t);
+  t = setTimeout(() => fetch('/s?e=scroll&y=' + Math.round(scrollY)), 300);
+});
+</script>"""
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -52,9 +69,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
-        ctype, body = {"/data.json": ("application/json", JSON), "/pixel.png": ("image/png", PNG)}.get(
-            url.path, ("text/html", PAGE)
-        )
+        if url.path == "/s":
+            q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+            with open(log_file, "a", newline="\n") as f:
+                f.write("%s y=%s\n" % (q["e"][0], q["y"][0]))
+            self.send_response(204)
+            self.end_headers()
+            return
+        routes = {"/data.json": ("application/json", JSON), "/pixel.png": ("image/png", PNG), "/tall": ("text/html", TALL)}
+        ctype, body = routes.get(url.path, ("text/html", PAGE))
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))

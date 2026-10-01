@@ -284,31 +284,40 @@ the Recently Closed list names a tab by it rather than by its url.
 ## Sleep (manual, 2026-09-30)
 
 A live tab's "Sleep" (tab context menu; "Sleep Tabs" on a group; headless
-`SLEEPNODE id`) is `App::sleep_tab`: it swaps the tab's payload for an
+`SLEEPNODE id`) is two-phase since 2026-09-30
+(`2026-09-30-sleep-page-state-design.md`): `App::request_sleep` asks the
+engine for the page's state (`QueryPageState`: scroll position, and whether
+a form field differs from its default), and `finish_sleep` sleeps on the
+answer through `sleep_now`. A query unanswered after 5 s is dropped and the
+tab stays awake. `sleep_now` swaps the tab's payload for an
 `UnloadedTabPayload` in `Sleeping` state, which drops the `EngineTab` and so
 shuts the engine host down, and frees the tab's GPU textures. The card keeps
 its id, place, url, title, pin, mute and zoom, and saves as the same tab.
 Opening it is the ordinary wake: the engine starts again and reloads the
-url, so the page's own state (scroll, form input, a playing video) is lost.
-Refused for the tab Tab view is showing and for the split pane's tab. A
-group's "Sleep Tabs" sleeps each of its live tabs except those two.
-`scripts/sleep-probe.sh` checks tab, asleep, woken on WebView2 and CEF.
+url. The scroll position is kept in memory (`App::saved_scroll`, lost on
+app restart) and restored once, after the first load completes, unless the
+user scrolls first; other page state (form input, a playing video) is lost.
+Manual Sleep ignores a changed form; idle sleep skips it (see "Idle
+sleep"). Refused for the tab Tab view is showing and for the split pane's
+tab. A group's "Sleep Tabs" requests each of its live tabs except those
+two. `scripts/sleep-probe.sh` checks tab, asleep, woken, scroll kept and
+the dirty-form skip on WebView2 and CEF.
 
 ## Idle sleep (2026-09-30)
 
-`Settings::idle_sleep_minutes` (`None` = never, the default; the settings page offers 10, 30 or 60). `idle_sleep::IdleClock` keeps each live tab's last moment on screen; `App::drain_tab_events` calls `sweep_idle_tabs` every 10 s, which updates the clocks (setting on or off, so turning it on counts earlier idle time) and runs `sleep_tab` on tabs out of sight for the limit. On screen means the Tab-view tab or the split pane's tab; a tab playing audio, pinned (the graph pin) or still loading counts as seen. The find bar needs no check: it exists only on the focused tab in Tab view and closes when focus moves. Headless `IDLESWEEP secs` runs one sweep with a limit in seconds; `scripts/sleep-probe.sh` covers it.
+`Settings::idle_sleep_minutes` (`None` = never, the default; the settings page offers 10, 30 or 60). `idle_sleep::IdleClock` keeps each live tab's last moment on screen; `App::drain_tab_events` calls `sweep_idle_tabs` every 10 s, which updates the clocks (setting on or off, so turning it on counts earlier idle time) and runs `request_sleep` on tabs out of sight for the limit. A tab whose page answers with a form field changed from its default (inputs, textareas, selects, `contenteditable`; not state a page keeps elsewhere) stays awake and its idle clock restarts. On screen means the Tab-view tab or the split pane's tab; a tab playing audio, pinned (the graph pin) or still loading counts as seen. The find bar needs no check: it exists only on the focused tab in Tab view and closes when focus moves. Headless `IDLESWEEP secs` runs one sweep with a limit in seconds; `scripts/sleep-probe.sh` covers it.
 
 ## Deferred
 
 - **Cached thumbnails.** Save each tab's last picture as a small image
   in the profile and show it, dimmed, on its sleeping card. Needs a
   cache with cleanup, and stores images of visited pages on disk.
-- **Smarter idle sleep.** The plain timer is done (see "Idle sleep"
-  below). Not done: skipping a tab with a download in flight (no per-tab
+- **Smarter idle sleep.** The plain timer and the dirty-form skip are
+  done (see "Idle sleep" above). Not done: skipping a tab with a download in flight (no per-tab
   flag on the host yet), and choosing victims by memory pressure instead
   of a fixed time: sleep only when engine memory passes a budget, ranked
   by idle time x engine-process memory with graph distance from the
-  focused node as the tie-break, plus a page-side dirty-form check.
+  focused node as the tie-break.
   Per-tab memory is readable on Windows (spike 2026-09-30, one live
   tab per engine, debug build, a local page): each engine host owns its
   own process subtree, WebView2's browser tree included (a null user-data
