@@ -862,6 +862,10 @@ impl App {
             DebugCommand::ArrowUp => {
                 self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
             }
+            DebugCommand::TabKey(shift) => {
+                let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+                self.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
+            }
             DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
             DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
             DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),

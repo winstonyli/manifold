@@ -64,9 +64,14 @@ pub(crate) fn render_zoom_chip(
             action = Some(ZoomChipAction::Out);
         }
         let readout = ui
-            .add(egui::Button::new(format!("{}%", pct.round() as i32)).frame(false).min_size(egui::vec2(44.0, 0.0)))
+            .add(
+                egui::Button::new(egui::RichText::new(format!("{}%", pct.round() as i32)).color(TEXT_PRIMARY))
+                    .frame(false)
+                    .min_size(egui::vec2(44.0, 0.0)),
+            )
             .on_hover_text("Reset zoom to 100%")
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+        focus_ring(ui, &readout);
         if readout.clicked() {
             action = Some(ZoomChipAction::Reset100);
         }

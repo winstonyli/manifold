@@ -153,13 +153,25 @@ hover_scan() {
 hover_column() {
     local d="$OUT/hover/$1" y
     rm -rf "$d"; mkdir -p "$d"
-    send "MOUSEMOVE 1270 990" "SLEEP 1"; settle
+    send "MOUSEMOVE 1275 795" "SLEEP 1"; settle
     send "SCREENSHOT $(w "$d/rest.png")"; wait_file "$d/rest.png"
     for y in $(seq "${3:-44}" "${HOVER_STEP:-14}" "${4:-960}"); do
         send "MOUSEMOVE $2 $y" "SLEEP 0.3"
         send "SCREENSHOT $(w "$d/y$(printf %04d "$y").png")"; wait_file "$d/y$(printf %04d "$y").png"
     done
-    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-520}" y </dev/null
+    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-520}" y "${HOVER_X0:-0}" </dev/null
+}
+# tab_scan NAME N: rest, then N Tab key presses (egui keyboard focus moving on), a shot after each.
+tab_scan() {
+    local d="$OUT/hover/$1" i
+    rm -rf "$d"; mkdir -p "$d"
+    send "MOUSEMOVE 1275 795" "SLEEP 1"; settle
+    send "SCREENSHOT $(w "$d/rest.png")"; wait_file "$d/rest.png"
+    for i in $(seq "$2"); do
+        send TABKEY "SLEEP 0.5"
+        send "SCREENSHOT $(w "$d/x$(printf %04d "$i").png")"; wait_file "$d/x$(printf %04d "$i").png"
+    done
+    python -P "$repo_root/scripts/hover_diff.py" "$d" "${HOVER_BAND:-34}" </dev/null
 }
 # focus_scan NAME X Y...: rest, then a click at each X Y (focusing whatever is
 # there), into $OUT/hover/NAME/ as x<N>.png; Escape between. Same report as hover_scan.
@@ -192,6 +204,11 @@ for v in tab:Tab group:Group note:Note; do
     fi
 done
 if has hover-graph; then hover_scan graph; fi
+if has tab-graph; then tab_scan graph 9; fi
+if has hover-menu-tab; then
+    read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
+    HOVER_X0="${MENU_X0:-640}" HOVER_BAND=190 hover_column menu-tab "${MENU_X:-700}" "${MENU_Y0:-424}" "${MENU_Y1:-646}"; reset
+fi
 if has focus-graph; then focus_scan graph 385 16 235 16; fi
 # Right-click on empty canvas: the New Tab/Note/Group card.
 if has graph-newnode-menu; then
@@ -217,11 +234,14 @@ if has json-level || has json-menu || has json-tooltip || has hover-json; then
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has hover-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find; then
+if has tabview || has hover-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     has hover-tabview && hover_scan tabview
     if has tabview-dropdown; then send "ADDRESSBAR exam" "SLEEP 2"; shot tabview-dropdown; send ESCAPE "SLEEP 1"; fi
+    if has hover-dropdown; then
+        send "ADDRESSBAR exam" "SLEEP 2"; HOVER_X0=210 HOVER_BAND=820 hover_column dropdown 400 40 250; send ESCAPE "SLEEP 1"
+    fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
     if has hover-find; then
@@ -231,6 +251,9 @@ if has tabview || has hover-tabview || has tabview-dropdown || has tabview-find 
     if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
+fi
+if has hover-quickswitch; then
+    send QUICKSWITCHOPEN "SLEEP 1"; HOVER_X0=440 HOVER_BAND=400 hover_column quickswitch 640 90 230; send QUICKSWITCHESCAPE "SLEEP 1"
 fi
 if has shortcuts; then send TOGGLESHORTCUTSHELP "SLEEP 1"; shot shortcuts; send TOGGLESHORTCUTSHELP "SLEEP 1"; fi
 if has quickswitch; then send QUICKSWITCHOPEN "SLEEP 1"; shot quickswitch; send QUICKSWITCHESCAPE "SLEEP 1"; fi

@@ -35,6 +35,15 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
         .inner_margin(egui::Margin::same(4))
 }
 
+/// An outline on a keyboard-focused widget. egui shows focus only as the widget's
+/// "active" look, which is invisible on a button whose fill is overridden or that
+/// has no frame; this paints inside the widget's rect, so it moves nothing.
+pub(crate) fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(response.rect, 2.0, egui::Stroke::new(1.5, TEXT_PRIMARY), egui::StrokeKind::Inside);
+    }
+}
+
 /// Adds `button` with no border in any state, at the same size in every state.
 /// Not `Button::stroke(NONE)`: egui sizes a button's padding for the stroke its
 /// *state's visuals* have (padding minus the stroke width) and only then applies
@@ -51,6 +60,7 @@ pub(crate) fn add_borderless(ui: &mut egui::Ui, enabled: bool, button: egui::But
         state.bg_stroke = none;
     }
     let response = ui.add_enabled(enabled, button);
+    focus_ring(ui, &response);
     let w = &mut ui.visuals_mut().widgets;
     for (state, stroke) in
         [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open].into_iter().zip(saved)

@@ -544,7 +544,8 @@ impl App {
         let outline = egui_phosphor::light::LIST_BULLETS;
         // On is a raised fill, not the gold selection color: gold is the primary action's.
         let on = if self.json_outline_visible { SURFACE_HOVER } else { egui::Color32::TRANSPARENT };
-        let toggle = add_borderless(ui, true, egui::Button::new(outline).fill(on));
+        let toggle =
+            add_borderless(ui, true, egui::Button::new(egui::RichText::new(outline).color(TEXT_PRIMARY)).fill(on));
         if toggle.on_hover_text("Outline").clicked() {
             self.json_outline_visible = !self.json_outline_visible;
         }
@@ -728,7 +729,12 @@ impl App {
                     if json_view::is_card(value) && !searching {
                         let caret =
                             if open { egui_phosphor::light::CARET_DOWN } else { egui_phosphor::light::CARET_RIGHT };
-                        if ui.add_sized(CARET_SIZE, egui::Button::new(caret).frame(false)).clicked() {
+                        let caret_button = ui.add_sized(
+                            CARET_SIZE,
+                            egui::Button::new(egui::RichText::new(caret).color(TEXT_PRIMARY)).frame(false),
+                        );
+                        focus_ring(ui, &caret_button);
+                        if caret_button.clicked() {
                             flip = Some(row.pointer.clone());
                         }
                     } else {

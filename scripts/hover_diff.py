@@ -1,11 +1,11 @@
-"""Usage: hover_diff.py DIR BAND [y]
+"""Usage: hover_diff.py DIR BAND [y [X0]]
 
 DIR holds rest.png and x<NNNN>.png (the mouse at that x on the top bar, from
 scripts/chrome-shots.sh hover_scan). Compares the top BAND rows of each against
 rest and prints, per hover, the span of changed columns and how many separate
 runs they form. A hover should repaint one widget (one run, the same span for
 every x inside it). With `y`, the hovers went down a column instead (files
-are y<NNNN>.png), BAND is the width of the left strip compared, and runs are
+are y<NNNN>.png), BAND is the width of the strip compared, starting at column X0 (default 0), and runs are
 of changed rows. Several runs, or a span that differs between two x inside
 one widget, means a hover moved or resized something: layout instability.
 """
@@ -17,13 +17,14 @@ from PIL import Image, ImageChops
 
 d, band = sys.argv[1], int(sys.argv[2])
 column = len(sys.argv) > 3 and sys.argv[3] == "y"
+x0 = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 rest = Image.open(os.path.join(d, "rest.png")).convert("RGB")
 
 
 def region(im):
     # Rows of a top band, or (column mode) a left strip transposed so the same run logic applies.
     if column:
-        return im.crop((0, 0, band, im.height)).transpose(Image.TRANSPOSE)
+        return im.crop((x0, 0, x0 + band, im.height)).transpose(Image.TRANSPOSE)
     return im.crop((0, 0, im.width, band))
 
 

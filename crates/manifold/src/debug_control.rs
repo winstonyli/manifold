@@ -81,6 +81,9 @@ pub enum DebugCommand {
     /// whichever row ends up highlighted.
     ArrowDown,
     ArrowUp,
+    /// An egui Tab key press (Shift+Tab with `true`): moves egui's keyboard focus
+    /// between widgets, for checking how focus looks and that it moves nothing.
+    TabKey(bool),
     /// Graph-view keyboard navigation equivalents -- see
     /// `App::move_graph_focus`/`open_focused_graph_node`. Separate from
     /// `ArrowDown`/`ArrowUp` above (those are address-bar-dropdown-specific)
@@ -365,6 +368,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
     ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
     ("ARROWUP", "Move the address-bar suggestion highlight up"),
+    ("TABKEY [shift]", "Tab (or Shift+Tab) -- move egui keyboard focus to the next (previous) widget"),
     ("GRAPHLEFT", "Graph view: move focus left"),
     ("GRAPHRIGHT", "Graph view: move focus right"),
     ("GRAPHUP", "Graph view: move focus up"),
@@ -546,6 +550,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ESCAPE" => Some(DebugCommand::Escape),
         "ARROWDOWN" => Some(DebugCommand::ArrowDown),
         "ARROWUP" => Some(DebugCommand::ArrowUp),
+        "TABKEY" => Some(DebugCommand::TabKey(rest.trim() == "shift")),
         "GRAPHLEFT" => Some(DebugCommand::GraphFocusLeft),
         "GRAPHRIGHT" => Some(DebugCommand::GraphFocusRight),
         "GRAPHUP" => Some(DebugCommand::GraphFocusUp),
