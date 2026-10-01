@@ -304,7 +304,7 @@ pub enum DebugCommand {
     CloseGroup(String),
     /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
-    /// See `App::sleep_tab`.
+    /// See `App::request_sleep`.
     SleepNode(String),
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.

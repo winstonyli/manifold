@@ -1,6 +1,7 @@
 //! The node context menu: its actions, config and the App methods that build and apply it.
 
 use super::*;
+use crate::sleep_state::SleepWhy;
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -19,7 +20,7 @@ pub(crate) enum NodeAction {
     OpenAsTab,
     TogglePin,
     Duplicate,
-    /// A live tab goes to sleep (`App::sleep_tab`).
+    /// A live tab goes to sleep (`App::request_sleep`).
     Sleep,
     /// A group's live tabs all do (`App::sleep_group`).
     SleepGroup,
@@ -439,7 +440,7 @@ impl App {
             }
             NodeAction::Duplicate => self.duplicate_tab(id),
             NodeAction::Sleep => {
-                self.sleep_tab(id);
+                self.request_sleep(id, SleepWhy::Manual);
             }
             NodeAction::SleepGroup => {
                 self.sleep_group(id);

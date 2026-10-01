@@ -3,6 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
+use crate::sleep_state::SleepWhy;
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -986,7 +987,7 @@ impl App {
                 if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
                     self.sleep_group(&id);
                 } else {
-                    self.sleep_tab(&id);
+                    self.request_sleep(&id, SleepWhy::Manual);
                 }
             }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
@@ -1283,8 +1284,7 @@ impl App {
     pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
         match msg {
             EngineToHost::FrameReady { .. } => {}
-            // Handled in a later task (sleep with page state); ignored until then.
-            EngineToHost::PageState(_) => {}
+            EngineToHost::PageState(state) => self.finish_sleep(tab_id, state),
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {
@@ -1331,6 +1331,14 @@ impl App {
                 node.can_go_back = can_go_back;
                 node.can_go_forward = can_go_forward;
                 node.loading = loading;
+                let restore = self.saved_scroll.get_mut(tab_id).is_some_and(|s| s.on_loading(loading));
+                if restore {
+                    if let Some(s) = self.saved_scroll.remove(tab_id) {
+                        if let Some(tab) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+                            tab.tab.send(&HostToEngine::RestoreScroll { x: s.x, y: s.y });
+                        }
+                    }
+                }
                 return url_changed;
             }
             EngineToHost::Crashed { reason } => {

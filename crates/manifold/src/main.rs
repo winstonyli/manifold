@@ -850,10 +850,8 @@ struct App {
     /// When each live tab was last on screen, for idle auto-sleep.
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
-    #[allow(dead_code)] // used by Task 5 wiring
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
-    #[allow(dead_code)] // used by Task 5 wiring
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *

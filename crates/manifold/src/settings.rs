@@ -117,7 +117,7 @@ pub struct Settings {
     #[serde(default = "default_already_shown")]
     pub has_shown_first_launch_demo: bool,
     /// Minutes a background tab may sit out of sight before it goes back to
-    /// sleep (`App::sleep_tab`); `None` (the default) never does. Applies to
+    /// sleep (`App::request_sleep`); `None` (the default) never does. Applies to
     /// tabs already open, unlike the new-tab defaults above. See
     /// `idle_sleep`.
     #[serde(default)]

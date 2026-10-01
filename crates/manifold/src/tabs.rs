@@ -1,6 +1,8 @@
 //! Tab lifecycle on App: spawn, respawn, focus, hide, split, leave to graph, destroy and remove.
 
 use super::*;
+use ipc_protocol::PageState;
+use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 impl App {
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -483,13 +485,14 @@ impl App {
         self.save_session();
     }
 
-    /// "Sleep": shuts a live tab's engine down and keeps its card, as the
-    /// unloaded tab a restore makes (`UnloadedState::Sleeping`): same id,
-    /// place, url, pin, mute and zoom, and it saves as the same tab. Opening
-    /// it starts the engine again (`wake_tab`) and reloads the url, so the
-    /// page's own state is lost. The tab Tab view shows and the split
-    /// pane's tab stay live. Returns whether it slept.
-    pub(crate) fn sleep_tab(&mut self, id: &str) -> bool {
+    /// Second half of "Sleep": shuts a live tab's engine down and keeps its
+    /// card, as the unloaded tab a restore makes (`UnloadedState::Sleeping`):
+    /// same id, place, url, pin, mute and zoom, and it saves as the same tab.
+    /// Opening it starts the engine again (`wake_tab`) and reloads the url;
+    /// `scroll`, when not the origin, is put back once that load finishes. The
+    /// tab Tab view shows and the split pane's tab stay live. Returns whether
+    /// it slept. Callers go through `request_sleep`.
+    fn sleep_now(&mut self, id: &str, scroll: Option<(f64, f64)>) -> bool {
         let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
         if open || self.split_tab.as_deref() == Some(id) {
             return false;
@@ -512,14 +515,49 @@ impl App {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
         }
+        if let Some((x, y)) = scroll {
+            if x != 0.0 || y != 0.0 {
+                self.saved_scroll.insert(id.to_string(), SavedScroll::new(x, y));
+            }
+        }
         self.save_session();
         true
     }
 
+    /// First phase of every sleep: validates as `sleep_now` does, asks the
+    /// engine for its page state, and notes the request. `finish_sleep`
+    /// completes it when `EngineToHost::PageState` arrives; `sweep_idle_tabs`
+    /// drops requests nobody answered. Returns whether a query was sent.
+    pub(crate) fn request_sleep(&mut self, id: &str, why: SleepWhy) -> bool {
+        let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
+        if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
+            return false;
+        }
+        let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
+        tab.tab.send(&HostToEngine::QueryPageState);
+        self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
+        true
+    }
+
+    /// Second phase: the engine's answer. Idle sleep stays awake for a dirty
+    /// form (and restarts that tab's idle clock); otherwise the tab sleeps,
+    /// keeping its scroll position for the wake.
+    pub(crate) fn finish_sleep(&mut self, id: &str, state: PageState) {
+        let Some(pending) = self.pending_sleeps.remove(id) else { return };
+        match sleep_state::verdict(pending.why, &state) {
+            Verdict::Stay => self.idle_clock.restart(id, std::time::Instant::now()),
+            Verdict::Sleep => {
+                self.sleep_now(id, Some((state.scroll_x, state.scroll_y)));
+            }
+        }
+    }
+
     /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
-    /// sleeps those out of sight for `limit`. `limit` is the setting's
+    /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit` is the setting's
     /// `idle_sleep_minutes`, or the headless `IDLESWEEP`'s seconds.
     pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
+        let now = std::time::Instant::now();
+        self.pending_sleeps.retain(|_, p| !sleep_state::expired(p, now));
         let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
         let views = self.nodes.iter().filter_map(|(id, n)| {
             let t = n.as_tab()?;
@@ -531,18 +569,18 @@ impl App {
                 loading: t.loading,
             })
         });
-        let idle = self.idle_clock.sweep(std::time::Instant::now(), limit, views);
+        let idle = self.idle_clock.sweep(now, limit, views);
         for id in idle {
-            self.sleep_tab(&id);
+            self.request_sleep(&id, SleepWhy::Idle);
         }
     }
 
-    /// "Sleep Tabs" on a group: `sleep_tab` for each of its live tabs.
-    /// Returns how many slept.
+    /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.
+    /// Returns how many were requested.
     pub(crate) fn sleep_group(&mut self, id: &str) -> usize {
         let members: Vec<String> =
             self.nodes.iter().filter(|(_, n)| n.group.as_deref() == Some(id)).map(|(m, _)| m.clone()).collect();
-        members.iter().filter(|m| self.sleep_tab(m)).count()
+        members.iter().filter(|m| self.request_sleep(m, SleepWhy::Manual)).count()
     }
 
     /// `destroy_tab` without the save: a tab another replica deleted
@@ -562,6 +600,8 @@ impl App {
         self.nodes.remove(id);
         self.node_order.retain(|t| t != id);
         self.skip_convert.remove(id);
+        self.pending_sleeps.remove(id);
+        self.saved_scroll.remove(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
@@ -663,5 +703,24 @@ impl App {
         };
         let id = tab_ids[next].clone();
         self.focus_tab(&id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finish_sleep_without_a_request_does_nothing() {
+        let mut app = App::default();
+        app.finish_sleep("t1", PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: false });
+        assert!(app.pending_sleeps.is_empty() && app.saved_scroll.is_empty());
+    }
+
+    #[test]
+    fn request_sleep_needs_a_live_tab() {
+        let mut app = App::default();
+        assert!(!app.request_sleep("missing", SleepWhy::Manual));
+        assert!(app.pending_sleeps.is_empty());
     }
 }

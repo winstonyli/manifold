@@ -1,5 +1,5 @@
 //! Idle auto-sleep: which live tabs have been out of sight long enough to put
-//! back to sleep (`App::sleep_tab`). The clock is `IdleClock::seen`: each
+//! back to sleep (`App::request_sleep`). The clock is `IdleClock::seen`: each
 //! tab's last moment on screen (or first sight, for a tab that never was),
 //! kept up to date by `IdleClock::sweep` on every call, whether or not the
 //! setting is on, so turning it on never sleeps a tab for time spent before.
@@ -61,7 +61,6 @@ impl IdleClock {
 
     /// Restarts `id`'s clock at `now` (a tab that was kept awake, so it is
     /// not asked again every sweep).
-    #[allow(dead_code)] // used by Task 5 wiring
     pub(crate) fn restart(&mut self, id: &str, now: Instant) {
         self.seen.insert(id.to_string(), now);
     }

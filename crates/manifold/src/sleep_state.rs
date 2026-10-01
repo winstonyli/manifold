@@ -1,9 +1,6 @@
 //! Pure parts of two-phase sleep (`App::request_sleep` / `finish_sleep`) and
 //! of scroll restore after a wake (`App::saved_scroll`).
 
-// Nothing here is called until Task 5 wires it into `App`.
-#![allow(dead_code)] // used by Task 5 wiring
-
 use ipc_protocol::PageState;
 use std::time::{Duration, Instant};
 
