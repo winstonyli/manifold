@@ -17,8 +17,9 @@ Sleeping a tab closes its page; waking reloads the url. Two losses follow:
 
 - Idle sleep skips a tab whose page has a dirty form.
 - Any sleep (idle or manual) saves the scroll position; a wake restores it.
-- Live-tested on WebView2 and CEF. Servo and WebKit get the same handlers
-  but are not live-tested (as for `PAGE_KIND_SCRIPT`).
+- Live-tested on WebView2, CEF and Servo. WebKit gets the same handlers but
+  is not live-tested (as for `PAGE_KIND_SCRIPT`); it waits for a native
+  Linux build.
 
 Out of scope, decided 2026-09-30: detecting live connections (websockets,
 calls). It needs a `WebSocket` patch injected at document start, which
@@ -133,5 +134,8 @@ Also as built: `sleep_tab` became `request_sleep(id, why)` (first phase),
 `finish_sleep(id, state)` (second) and the private `sleep_now` (the old
 immediate sleep). The probe's dirty case fills the input from the page's
 own script (`/tall?dirty=1`) rather than by typing. The probe ran on
-WebView2 and CEF (all four cases pass, 2026-09-30); Servo and WebKit
-compile with real handlers but have not been run.
+WebView2, CEF and Servo (all four cases pass, 2026-09-30). WebKit compiles
+with a real handler but has not been run: its host lives in WSL2, which
+cannot reach the probe server on Windows loopback. Decision 2026-09-30: no
+WSL workaround; test it on a native Linux build (the probe server must be
+reachable from the engine host there, which loopback is).
