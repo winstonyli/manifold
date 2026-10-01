@@ -23,6 +23,8 @@ mod window;
 
 use capture::Capture;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -33,6 +35,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::{
     CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    ExecuteScriptCompletedHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING};
 use windows::Win32::Foundation::RECT;
@@ -210,6 +213,7 @@ fn main() {
     let nav_state = new_shared_nav_state(initial_url.clone());
     let pending_json_body = nav_state::new_shared_json_body();
     let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
+    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
     nav_state::register_handlers(
         &webview,
         nav_state.clone(),
@@ -301,7 +305,24 @@ fn main() {
                     let url = nav_state.borrow().url.clone();
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
                 }
-                HostToEngine::QueryPageState | HostToEngine::RestoreScroll { .. } => {}
+                HostToEngine::QueryPageState => {
+                    let pending = pending_page_state.clone();
+                    let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
+                        // `ExecuteScript` returns the string JSON-encoded (quoted).
+                        if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
+                            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                                *pending.borrow_mut() = Some(state);
+                            }
+                        }
+                        Ok(())
+                    }));
+                    let _ = unsafe { webview.ExecuteScript(&HSTRING::from(ipc_protocol::PAGE_STATE_SCRIPT), &handler) };
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
+                    let script = ipc_protocol::restore_scroll_script(x, y);
+                    let _ = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) };
+                }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(find) = &find_state {
                         find.start(&text, match_case);
@@ -360,6 +381,10 @@ fn main() {
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
             let _ = control.send(&EngineToHost::JsonBody { body });
+        }
+
+        if let Some(state) = pending_page_state.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
