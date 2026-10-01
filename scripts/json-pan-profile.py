@@ -15,9 +15,10 @@
 """
 
 import json
+import os
 import sys
 
-BRANCH = 12
+BRANCH = int(os.environ.get("JSON_BRANCH", "12"))  # 27 gives ~20k containers
 
 
 def leaf(n):
