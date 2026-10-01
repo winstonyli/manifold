@@ -123,10 +123,10 @@ impl WebViewDelegate for Delegate {
             let redirect_content_type = self.redirect_content_type.clone();
             webview.evaluate_javascript(ipc_protocol::PAGE_KIND_SCRIPT, move |result| {
                 if let Ok(JSValue::String(text)) = result {
-                    if let Some(body) = text.strip_prefix("json\n") {
-                        *json_body.borrow_mut() = Some(body.to_string());
-                    } else if let Some(content_type) = text.strip_prefix("type\n") {
-                        *redirect_content_type.borrow_mut() = Some(content_type.to_string());
+                    match ipc_protocol::PageKindReply::parse(&text) {
+                        Some(ipc_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
+                        Some(ipc_protocol::PageKindReply::Other(t)) => *redirect_content_type.borrow_mut() = Some(t),
+                        None => {}
                     }
                 }
             });

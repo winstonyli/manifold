@@ -227,10 +227,10 @@ pub fn register_handlers(
             let redirect_content_type = redirect_content_type.clone();
             let exec_handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
                 if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&result.to_string()) {
-                    if let Some(body) = text.strip_prefix("json\n") {
-                        *json_body.borrow_mut() = Some(body.to_string());
-                    } else if let Some(content_type) = text.strip_prefix("type\n") {
-                        *redirect_content_type.borrow_mut() = Some(content_type.to_string());
+                    match ipc_protocol::PageKindReply::parse(&text) {
+                        Some(ipc_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
+                        Some(ipc_protocol::PageKindReply::Other(t)) => *redirect_content_type.borrow_mut() = Some(t),
+                        None => {}
                     }
                 }
                 Ok(())

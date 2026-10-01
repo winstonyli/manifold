@@ -403,11 +403,14 @@ fn main() {
                     if let Ok(js_result) = result {
                         if let Some(value) = js_result.js_value() {
                             if value.is_string() {
-                                let text = value.to_str().to_string();
-                                if let Some(body) = text.strip_prefix("json\n") {
-                                    *pending_json.borrow_mut() = Some(body.to_string());
-                                } else if let Some(content_type) = text.strip_prefix("type\n") {
-                                    *pending_redirect.borrow_mut() = Some(content_type.to_string());
+                                match ipc_protocol::PageKindReply::parse(&value.to_str()) {
+                                    Some(ipc_protocol::PageKindReply::Json(body)) => {
+                                        *pending_json.borrow_mut() = Some(body)
+                                    }
+                                    Some(ipc_protocol::PageKindReply::Other(t)) => {
+                                        *pending_redirect.borrow_mut() = Some(t)
+                                    }
+                                    None => {}
                                 }
                             }
                         }

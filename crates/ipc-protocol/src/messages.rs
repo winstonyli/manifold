@@ -278,6 +278,26 @@ pub enum HostToEngine {
 /// JSON response, `"type\n<content type>"` for any other, and null when the page has none.
 pub const PAGE_KIND_SCRIPT: &str = "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();";
 
+/// What `PAGE_KIND_SCRIPT` returned, split by its prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageKindReply {
+    /// A JSON response: its `document.body.innerText`.
+    Json(String),
+    /// Any other response: its content type.
+    Other(String),
+}
+
+impl PageKindReply {
+    /// Parses the script's string result; `None` for any other text.
+    pub fn parse(text: &str) -> Option<PageKindReply> {
+        if let Some(body) = text.strip_prefix("json\n") {
+            Some(PageKindReply::Json(body.to_string()))
+        } else {
+            text.strip_prefix("type\n").map(|t| PageKindReply::Other(t.to_string()))
+        }
+    }
+}
+
 /// Messages sent from an engine-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
@@ -470,5 +490,18 @@ mod key_code_tests {
         assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
         assert_eq!(KeyCode::Space.dom_key(), " ");
         assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
+}
+
+#[cfg(test)]
+mod page_kind_tests {
+    use super::*;
+
+    #[test]
+    fn page_kind_reply_splits_on_the_scripts_prefixes() {
+        assert_eq!(PageKindReply::parse("json\n{\"a\":1}"), Some(PageKindReply::Json("{\"a\":1}".into())));
+        assert_eq!(PageKindReply::parse("type\nimage/png"), Some(PageKindReply::Other("image/png".into())));
+        assert_eq!(PageKindReply::parse("text/html"), None);
+        assert_eq!(PageKindReply::parse(""), None);
     }
 }
