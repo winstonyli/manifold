@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads, which
+# and Tab-key scans tab-graph tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -277,7 +277,7 @@ if has graph-closed; then
     send "CLICK $CLOSED_BUTTON_X 16" "SLEEP 1"; shot graph-closed; reset
 fi
 # Last: the download it adds would show in the other views.
-if has settings || has hover-settings || has tab-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads || has tab-popup || has tab-popup-history || has tab-popup-downloads; then
+if has settings || has hover-settings || has tab-settings || has settings-engine || has settings-engine-tab || has settings-combo || has popup-bookmarks || has popup-history || has popup-downloads || has tab-popup || has tab-popup-history || has tab-popup-downloads || has tab-combo || has tab-engine; then
     # Taller, so a popup opening below the Lists buttons is not pushed up over them.
     send "RESIZE ${SIZE% *} 1000" TOGGLESETTINGSPAGE "SLEEP 2"
     has popup-downloads && send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEP 1"
@@ -289,6 +289,8 @@ if has settings || has hover-settings || has tab-settings || has settings-engine
     if has settings-engine; then send "CLICK 63 180" "SLEEP 1"; shot settings-engine; send "CLICK 1100 300" "SLEEP 1"; fi
     if has settings-engine-tab; then send "CLICK 119 513" "SLEEP 1"; shot settings-engine-tab; send "CLICK 1100 300" "SLEEP 1"; fi
     if has settings-combo; then send "CLICK 80 87" "SLEEP 1"; shot settings-combo; send "CLICK 1100 300" "SLEEP 1"; fi
+    if has tab-engine; then send "CLICK 63 180" "SLEEP 1"; HOVER_BAND=1000 tab_scan engine 5; send "CLICK 1100 300" "SLEEP 1"; fi
+    if has tab-combo; then send "CLICK 80 87" "SLEEP 1"; HOVER_BAND=1000 tab_scan combo 5; send "CLICK 1100 300" "SLEEP 1"; fi
     # The Lists buttons on the settings page (fixed layout at the default size).
     for v in "popup-bookmarks 75" "popup-history 190" "popup-downloads 310"; do
         set -- $v
