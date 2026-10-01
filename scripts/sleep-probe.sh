@@ -13,6 +13,8 @@
 #           position it had (|before - after| <= 2 px, before > 0).
 #   history two more pages, then sleep and wake; Back twice and Forward once
 #           must retrace them (the host keeps the list, `nav_history`).
+#   crash   as history, but the engine host is killed instead of slept: the app
+#           restarts the tab and Back and Forward must still work.
 #   dirty   /tall?dirty=1 has an input changed from its default: idle sleep
 #           must leave it awake, manual Sleep must still sleep it.
 # Opening a card starts the engine again and brings the tab back, under the
@@ -109,8 +111,8 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo WAITTABS
             echo "SLEEP 6"
             ;;
-        history)
-            # Two more pages in Tab view, then sleep, wake and go Back twice.
+        history | crash)
+            # Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
             echo GRAPHDOWN
             echo GRAPHOPEN
             echo "SLEEP 6"
@@ -121,13 +123,20 @@ for engine in ${ENGINES:-webview2 cef}; do
                 echo "SLEEP 3"
             done
             echo "EXPORTSTATE $(st pre)"
-            echo ESCAPE
-            echo "SLEEP 2"
-            echo "SLEEPNODE $id"
-            echo "SLEEP 2"
-            echo GRAPHOPEN
-            echo WAITTABS
-            echo "SLEEP 5"
+            if [ "$case" = crash ]; then
+                # Kill the engine host from outside, between command batches; the app restarts the tab at its URL.
+                for _ in $(seq 120); do [ -s "$out/$case-$engine-pre.json" ] && break; sleep 0.5; done
+                taskkill //F //IM "manifold-engine-$engine.exe" >/dev/null 2>&1
+                sleep 8
+            else
+                echo ESCAPE
+                echo "SLEEP 2"
+                echo "SLEEPNODE $id"
+                echo "SLEEP 2"
+                echo GRAPHOPEN
+                echo WAITTABS
+                echo "SLEEP 5"
+            fi
             echo "EXPORTSTATE $(st woken)"
             echo GOBACK
             echo "SLEEP 3"
@@ -176,7 +185,7 @@ for engine in ${ENGINES:-webview2 cef}; do
         fi
         what="scroll kept across sleep ($got)"
         ;;
-    history)
+    history | crash)
         url_of() {
             python -P -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["focused_url"].rsplit("/", 1)[-1] or "/")' "$(cygpath -w "$out/$case-$engine-$1.json")" </dev/null
         }
