@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: [SECONDS_PANNING=20] scripts/json-pan-profile.sh
+# Usage: [SECONDS_PANNING=20] [MODE=pan|zoom] scripts/json-pan-profile.sh
 #
 # Profiles panning a big JSON level (a few thousand cards) with samply, via
 # the elevated `Samply` task (~/.claude/SAMPLY.md). The app runs headless on
@@ -10,6 +10,11 @@
 # Output: target/json-profile/profile.json.gz (open with `samply load`, or
 # resolve frames with llvm-symbolizer, see SAMPLY.md). Check the machine is
 # quiet first (CPU under ~20%) and say so with any numbers.
+# Keep SECONDS_PANNING small (10 works): samply's kernel trace wrote 7 GB in
+# 15 minutes for a 20 s run that takes 46 s untraced, and never finished.
+# Without samply, time the same command file (`manifold.exe --headless
+# --profile-dir D --script commands.txt`): setup takes ~6 s, then ~33 ms per
+# command for both pan and zoom (2026-10-01, ~2k cards, machine quiet).
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 out="$repo/target/json-profile"
@@ -19,7 +24,7 @@ rm -rf "$out"
 mkdir -p "$out/appdata"
 echo '{"has_shown_first_launch_demo": true}' >"$out/appdata/settings.json"
 python -P "$repo/scripts/json-pan-profile.py" fixture "$out/fixture.json" </dev/null
-python -P "$repo/scripts/json-pan-profile.py" script "$(cygpath -w "$out/fixture.json")" "$out/commands.txt" "${SECONDS_PANNING:-20}" </dev/null
+python -P "$repo/scripts/json-pan-profile.py" script "$(cygpath -w "$out/fixture.json")" "$out/commands.txt" "${SECONDS_PANNING:-20}" "${MODE:-pan}" </dev/null
 cp "$exe" "$out/manifold.exe"
 powershell -NoProfile -File "$(cygpath -w "$HOME/.claude/samply/profile.ps1")" \
     -Exe "$(cygpath -w "$out/manifold.exe")" -Out "$(cygpath -w "$out/profile.json.gz")" \

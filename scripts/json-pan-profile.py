@@ -5,10 +5,13 @@
       containers, each with a few scalar rows), deterministic. The level's
       default expansion stops at 150 cards, so the script reveals the
       12 x 12 depth-2 cards to bring a few thousand cards into play.
-  script <fixture.json> <out.txt> <seconds>
+  script <fixture.json> <out.txt> <seconds> [pan|zoom]
       The headless command file: opens the fixture, enters its level,
-      selects into every depth-2 card (which reveals it), then pans back and forth for about
-      <seconds> (one SCROLL per frame, headless renders a frame per command).
+      selects into every depth-2 card (which reveals it), then for about
+      <seconds> (one command per frame, headless renders a frame per command)
+      either pans (drag on the background, back and forth; default) or zooms
+      (graph view maps plain wheel scroll to zoom, so SCROLL with dy zooms in
+      and out around the cursor; dx alone does nothing).
 """
 
 import json
@@ -35,6 +38,7 @@ def cmd_fixture(args):
 
 def cmd_script(args):
     fixture, out, seconds = args[0], args[1], float(args[2])
+    mode = args[3] if len(args) > 3 else "pan"
     lines = ["RESIZE 1400 900", f"ADDFILE {fixture} 500 350", "SLEEP 1", "DOUBLECLICK 500 350", "SLEEP 2"]
     for i in range(BRANCH):
         for j in range(BRANCH):
@@ -43,9 +47,17 @@ def cmd_script(args):
     # ~60 frames/s is not guaranteed; the loop is a fixed count, the
     # profile's own timestamps give the real rate.
     frames = int(seconds * 60)
-    for n in range(frames):
-        dx = 40 if (n // 60) % 2 == 0 else -40
-        lines.append(f"SCROLL 600 400 {dx} 0")
+    if mode == "zoom":
+        for n in range(frames):
+            dy = 12 if (n // 60) % 2 == 0 else -12
+            lines.append(f"SCROLL 600 400 0 {dy}")
+    else:
+        lines.append("MOUSEDOWN 1300 850")
+        for n in range(frames):
+            step = n % 120
+            x = 1300 - 6 * (step if (n // 120) % 2 == 0 else 120 - step)
+            lines.append(f"MOUSEMOVE {x} 850")
+        lines.append("MOUSEUP 700 850")
     lines.append("QUIT")
     with open(out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
