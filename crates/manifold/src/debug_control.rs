@@ -302,6 +302,10 @@ pub enum DebugCommand {
     /// can't rely on focus. No-ops if `id` isn't actually a group. See
     /// `App::close_group`.
     CloseGroup(String),
+    /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
+    /// action, targeting an explicit id for the same reason as `CloseGroup`.
+    /// See `App::sleep_tab`.
+    SleepNode(String),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -434,6 +438,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
+    ("SLEEPNODE id", "Sleep the tab `id` (or every tab of the group `id`), same as its \"Sleep\" context-menu action"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -614,6 +619,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),

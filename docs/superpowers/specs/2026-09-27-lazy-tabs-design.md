@@ -281,16 +281,30 @@ personal state too, so `closed_entry` records them beside zoom
 (`doc.local["title"]`): a reopened sleeping card shows its title, and
 the Recently Closed list names a tab by it rather than by its url.
 
+## Sleep (manual, 2026-09-30)
+
+A live tab's "Sleep" (tab context menu; "Sleep Tabs" on a group; headless
+`SLEEPNODE id`) is `App::sleep_tab`: it swaps the tab's payload for an
+`UnloadedTabPayload` in `Sleeping` state, which drops the `EngineTab` and so
+shuts the engine host down, and frees the tab's GPU textures. The card keeps
+its id, place, url, title, pin, mute and zoom, and saves as the same tab.
+Opening it is the ordinary wake: the engine starts again and reloads the
+url, so the page's own state (scroll, form input, a playing video) is lost.
+Refused for the tab Tab view is showing and for the split pane's tab. A
+group's "Sleep Tabs" sleeps each of its live tabs except those two.
+`scripts/sleep-probe.sh` checks tab, asleep, woken on WebView2 and CEF.
+
 ## Deferred
 
 - **Cached thumbnails.** Save each tab's last picture as a small image
   in the profile and show it, dimmed, on its sleeping card. Needs a
   cache with cleanup, and stores images of visited pages on disk.
-- **Sleeping again.** A manual "Sleep" action (tab and group menus), and
-  sleeping after idle (skipping tabs playing audio). Until then, waking
-  is one-way: `Ctrl+Tab` (`cycle_focused_tab`) wakes every sleeping tab
-  it passes through on its way to the one the user stops on, and each
-  stays loaded rather than sleeping again; opening a failed card retries
+- **Sleeping after idle** (skipping tabs playing audio, downloading,
+  or with the find bar open), off by default with a setting for the idle
+  time. The manual "Sleep" is done (see "Sleep" below); `Ctrl+Tab`
+  (`cycle_focused_tab`) still wakes every sleeping tab it passes through
+  on its way to the one the user stops on, and each stays loaded until
+  slept by hand. Opening a failed card retries
   it (`retry_missing_file`'s tab branch), and a second failure returns it
   to Graph view with a toast rather than leaving Tab view on a dead
   placeholder.

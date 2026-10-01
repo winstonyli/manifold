@@ -981,6 +981,13 @@ impl App {
                     self.close_node(&id);
                 }
             }
+            DebugCommand::SleepNode(id) => {
+                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                    self.sleep_group(&id);
+                } else {
+                    self.sleep_tab(&id);
+                }
+            }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),

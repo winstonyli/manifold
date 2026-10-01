@@ -19,6 +19,10 @@ pub(crate) enum NodeAction {
     OpenAsTab,
     TogglePin,
     Duplicate,
+    /// A live tab goes to sleep (`App::sleep_tab`).
+    Sleep,
+    /// A group's live tabs all do (`App::sleep_group`).
+    SleepGroup,
     CopyUrl,
     FitSubtree,
     /// Swaps the group menu's items for a name field (see
@@ -241,6 +245,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             let mut items = vec![
                 Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin),
                 Button("Duplicate", A::Duplicate),
+                Button("Sleep", A::Sleep),
                 Button("Copy URL", A::CopyUrl),
             ];
             items.push(Button("Fit Subtree", A::FitSubtree));
@@ -261,7 +266,12 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if !headless {
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
-            finish("group_context_menu", 150.0, vec![Button("Rename", A::Rename)], delete_items)
+            finish(
+                "group_context_menu",
+                150.0,
+                vec![Button("Rename", A::Rename), Button("Sleep Tabs", A::SleepGroup)],
+                delete_items,
+            )
         }
     }
 }
@@ -428,6 +438,12 @@ impl App {
                 }
             }
             NodeAction::Duplicate => self.duplicate_tab(id),
+            NodeAction::Sleep => {
+                self.sleep_tab(id);
+            }
+            NodeAction::SleepGroup => {
+                self.sleep_group(id);
+            }
             NodeAction::CopyUrl => {
                 if let Some((url, _)) = self.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
                     ctx.copy_text(url.to_string());
@@ -558,19 +574,19 @@ mod tests {
                 (
                     "tab_context_menu",
                     150.0,
-                    format!("Pin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
+                    format!("Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
                 )
             );
             assert_eq!(
                 menu(ItemNodeKind::Tab, true).2,
-                format!("Unpin | Duplicate | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
+                format!("Unpin | Duplicate | Sleep | Copy URL | Fit Subtree | <colors>{g} | --- | Close")
             );
             assert_eq!(
                 menu(ItemNodeKind::Group, false),
                 (
                     "group_context_menu",
                     150.0,
-                    format!("Rename | <colors>{g} | --- | Dissolve | Close Group | Export Group...")
+                    format!("Rename | Sleep Tabs | <colors>{g} | --- | Dissolve | Close Group | Export Group...")
                 )
             );
             assert_eq!(
@@ -587,7 +603,10 @@ mod tests {
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
         // Export Group's file dialog can't run headless.
-        assert_eq!(menu(ItemNodeKind::Group, false, false, true).2, "Rename | <colors> | --- | Dissolve | Close Group");
+        assert_eq!(
+            menu(ItemNodeKind::Group, false, false, true).2,
+            "Rename | Sleep Tabs | <colors> | --- | Dissolve | Close Group"
+        );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
         let with_url = |kind| NodeMenuView { kind, has_url: true, ..view_of(kind) };

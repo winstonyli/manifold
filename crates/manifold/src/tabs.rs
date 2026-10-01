@@ -483,6 +483,47 @@ impl App {
         self.save_session();
     }
 
+    /// "Sleep": shuts a live tab's engine down and keeps its card, as the
+    /// unloaded tab a restore makes (`UnloadedState::Sleeping`): same id,
+    /// place, url, pin, mute and zoom, and it saves as the same tab. Opening
+    /// it starts the engine again (`wake_tab`) and reloads the url, so the
+    /// page's own state is lost. The tab Tab view shows and the split
+    /// pane's tab stay live. Returns whether it slept.
+    pub(crate) fn sleep_tab(&mut self, id: &str) -> bool {
+        let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
+        if open || self.split_tab.as_deref() == Some(id) {
+            return false;
+        }
+        let Some(node) = self.nodes.get_mut(id) else { return false };
+        let NodePayload::Tab(tab) = &node.payload else { return false };
+        let asleep = UnloadedTabPayload {
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+            kind: tab.tab.kind,
+            pinned: tab.pinned,
+            muted: tab.muted,
+            zoom_factor: tab.zoom_factor,
+            state: UnloadedState::Sleeping,
+        };
+        // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
+        // the engine host down (see `teardown_running_session`).
+        node.payload = NodePayload::Unloaded(asleep);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_thumbnail(id);
+            gpu.free_tab_texture(id);
+        }
+        self.save_session();
+        true
+    }
+
+    /// "Sleep Tabs" on a group: `sleep_tab` for each of its live tabs.
+    /// Returns how many slept.
+    pub(crate) fn sleep_group(&mut self, id: &str) -> usize {
+        let members: Vec<String> =
+            self.nodes.iter().filter(|(_, n)| n.group.as_deref() == Some(id)).map(|(m, _)| m.clone()).collect();
+        members.iter().filter(|m| self.sleep_tab(m)).count()
+    }
+
     /// `destroy_tab` without the save: a tab another replica deleted
     /// (`remove_remotely_deleted`), whose removal is not a local edit, or
     /// a tab converting into a node (`redirect_tab_to_content`), which
