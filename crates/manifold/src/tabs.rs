@@ -494,10 +494,6 @@ impl App {
     /// it slept. Callers go through `request_sleep`.
     fn sleep_now(&mut self, id: &str, scroll: Option<(f64, f64)>) -> bool {
         let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
-        // A request nobody answered must not block a new one.
-        if self.pending_sleeps.get(id).is_some_and(|p| sleep_state::expired(p, std::time::Instant::now())) {
-            self.pending_sleeps.remove(id);
-        }
         if open || self.split_tab.as_deref() == Some(id) {
             return false;
         }
