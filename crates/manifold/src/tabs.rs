@@ -494,6 +494,10 @@ impl App {
     /// it slept. Callers go through `request_sleep`.
     fn sleep_now(&mut self, id: &str, scroll: Option<(f64, f64)>) -> bool {
         let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
+        // A request nobody answered must not block a new one.
+        if self.pending_sleeps.get(id).is_some_and(|p| sleep_state::expired(p, std::time::Instant::now())) {
+            self.pending_sleeps.remove(id);
+        }
         if open || self.split_tab.as_deref() == Some(id) {
             return false;
         }
@@ -515,6 +519,8 @@ impl App {
             gpu.free_tab_thumbnail(id);
             gpu.free_tab_texture(id);
         }
+        // A scroll left from an earlier wake that never finished loading is stale.
+        self.saved_scroll.remove(id);
         if let Some((x, y)) = scroll {
             if x != 0.0 || y != 0.0 {
                 self.saved_scroll.insert(id.to_string(), SavedScroll::new(x, y));
@@ -530,6 +536,10 @@ impl App {
     /// drops requests nobody answered. Returns whether a query was sent.
     pub(crate) fn request_sleep(&mut self, id: &str, why: SleepWhy) -> bool {
         let open = self.showing_tab_view() && self.focused.as_deref() == Some(id);
+        // A request nobody answered must not block a new one.
+        if self.pending_sleeps.get(id).is_some_and(|p| sleep_state::expired(p, std::time::Instant::now())) {
+            self.pending_sleeps.remove(id);
+        }
         if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
             return false;
         }
@@ -553,8 +563,9 @@ impl App {
     }
 
     /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
-    /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit` is the setting's
-    /// `idle_sleep_minutes`, or the headless `IDLESWEEP`'s seconds.
+    /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
+    /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
+    /// seconds.
     pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
         let now = std::time::Instant::now();
         self.pending_sleeps.retain(|_, p| !sleep_state::expired(p, now));
