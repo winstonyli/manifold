@@ -140,7 +140,9 @@ pub(crate) fn build_node_context_menu(
                         }
                     }
                     NodeMenuItem::Separator => {
+                        ui.add_space(3.0);
                         ui.separator();
+                        ui.add_space(3.0);
                     }
                 }
             }
@@ -155,19 +157,27 @@ pub(crate) fn build_node_context_menu(
 /// choice (`Some(None)` for no color).
 pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<Option<egui::Color32>> {
     let mut picked = None;
-    ui.add_space(4.0);
-    ui.label("Color");
+    // Lined up with the menu rows' text, which `menu_item_style` pads 10 px.
+    let indent = ui.spacing().button_padding.x;
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
+        ui.add_space(indent);
+        ui.label(egui::RichText::new("Color").small().weak());
+    });
+    ui.add_space(3.0);
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        ui.spacing_mut().item_spacing.x = 4.0;
         for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
             let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
             match choice {
                 Some(swatch) => {
-                    ui.painter().circle_filled(rect.center(), 8.0, swatch);
+                    ui.painter().circle_filled(rect.center(), 7.0, swatch);
                     if current == Some(swatch) {
                         ui.painter().circle_stroke(
                             rect.center(),
-                            8.0,
+                            7.0,
                             egui::Stroke::new(2.0, ui.visuals().text_color()),
                         );
                     }
@@ -175,7 +185,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
                 None => {
                     ui.painter().circle_stroke(
                         rect.center(),
-                        8.0,
+                        7.0,
                         egui::Stroke::new(1.5, ui.visuals().weak_text_color()),
                     );
                 }
@@ -184,7 +194,9 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
                 picked = Some(choice);
             }
         }
+        ui.add_space(indent - 4.0);
     });
+    ui.add_space(6.0);
     picked
 }
 
