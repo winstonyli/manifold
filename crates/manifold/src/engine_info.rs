@@ -137,6 +137,8 @@ pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected:
         .corner_radius(2u8)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
+            // The popup's full width, not just as wide as the card's text.
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 engine_dot(ui, kind, 10.0);
                 ui.label(egui::RichText::new(engine_label(kind)).color(TEXT_PRIMARY));

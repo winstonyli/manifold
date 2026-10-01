@@ -93,6 +93,7 @@ impl App {
         egui::ComboBox::from_id_salt("settings_search_engine")
             .selected_text(self.settings.default_search_engine.label())
             .show_ui(ui, |ui| {
+                menu_item_style(ui);
                 for engine in SearchEngine::ALL {
                     let selected = self.settings.default_search_engine == engine;
                     if ui.selectable_label(selected, engine.label()).clicked() && !selected {
