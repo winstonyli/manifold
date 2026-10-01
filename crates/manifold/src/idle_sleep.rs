@@ -58,6 +58,13 @@ impl IdleClock {
         self.seen.retain(|id, _| live.contains(id));
         idle
     }
+
+    /// Restarts `id`'s clock at `now` (a tab that was kept awake, so it is
+    /// not asked again every sweep).
+    #[allow(dead_code)] // used by Task 5 wiring
+    pub(crate) fn restart(&mut self, id: &str, now: Instant) {
+        self.seen.insert(id.to_string(), now);
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +84,16 @@ mod tests {
         assert!(clock.sweep(t0, LIMIT, [tab("a")]).is_empty());
         assert!(clock.sweep(t0 + Duration::from_secs(59), LIMIT, [tab("a")]).is_empty());
         assert_eq!(clock.sweep(t0 + Duration::from_secs(60), LIMIT, [tab("a")]), vec!["a"]);
+    }
+
+    #[test]
+    fn restart_resets_the_clock() {
+        let t0 = Instant::now();
+        let mut clock = IdleClock::default();
+        clock.sweep(t0, LIMIT, [tab("a")]);
+        clock.restart("a", t0 + Duration::from_secs(50));
+        assert!(clock.sweep(t0 + Duration::from_secs(100), LIMIT, [tab("a")]).is_empty());
+        assert_eq!(clock.sweep(t0 + Duration::from_secs(110), LIMIT, [tab("a")]), vec!["a"]);
     }
 
     #[test]

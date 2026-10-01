@@ -36,6 +36,7 @@ mod session_sync;
 mod settings;
 mod settings_page;
 mod shortcuts;
+mod sleep_state;
 mod store;
 mod suggestions;
 mod tab_view;
@@ -848,6 +849,12 @@ struct App {
     split_tab: Option<String>,
     /// When each live tab was last on screen, for idle auto-sleep.
     idle_clock: idle_sleep::IdleClock,
+    /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
+    #[allow(dead_code)] // used by Task 5 wiring
+    pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
+    /// Scroll positions of woken tabs, restored once their first load finishes.
+    #[allow(dead_code)] // used by Task 5 wiring
+    saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -1289,6 +1296,8 @@ impl Default for App {
             image_view: ImageViewState::default(),
             split_tab: None,
             idle_clock: idle_sleep::IdleClock::default(),
+            pending_sleeps: HashMap::new(),
+            saved_scroll: HashMap::new(),
             drop_batch: 0,
             view_mode: ViewMode::Item,
             journal: None,
