@@ -50,7 +50,7 @@ impl App {
     pub(crate) fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut req = SettingsRequests::default();
 
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.engine_picker_open() {
             self.close_settings_page();
         }
 

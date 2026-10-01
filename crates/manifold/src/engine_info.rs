@@ -128,10 +128,10 @@ pub(crate) const ENGINE_PICKER_ORDER: [EngineKind; 4] =
 
 /// One engine's own card inside `build_engine_picker_popup` -- name, color
 /// dot, tier badge, then its pros/cons side by side. Returns whether this
-/// card was clicked this frame (the whole card is the hit target, not just
-/// a button within it, so picking an engine doesn't require precision-
-/// clicking a small label).
-pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected: bool) -> bool {
+/// card's response (the whole card is the hit target, not just a button
+/// within it, so picking an engine doesn't require precision-clicking a
+/// small label). Keyboard focus, arrows and Enter are the popup's job.
+pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected: bool) -> egui::Response {
     let frame_response = egui::Frame::default()
         .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
         .corner_radius(2u8)
@@ -163,10 +163,8 @@ pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected:
     // live: clicking squarely on a card's own visible pros/cons text did
     // nothing, since only a sliver at the very top was ever actually
     // clickable.
-    let response = ui
-        .interact(frame_response.response.rect, ui.id().with(("engine_card", kind as u8)), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.clicked()
+    ui.interact(frame_response.response.rect, ui.id().with(("engine_card", kind as u8)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The shared engine-picker popup -- see `draw_engine_card`'s own doc
@@ -188,6 +186,11 @@ pub(crate) fn build_engine_picker_popup(
     interactable: bool,
 ) -> (egui::Rect, Option<EngineKind>) {
     let mut picked = None;
+    // Keyboard: the selected card is focused when the popup opens, Up/Down move between
+    // cards, Enter picks (a focused click widget clicks on Enter), and Tab stays inside.
+    let was_open_id = egui::Id::new((id, "was_open"));
+    let just_opened = interactable && !ctx.data(|d| d.get_temp::<bool>(was_open_id).unwrap_or(false));
+    ctx.data_mut(|d| d.insert_temp(was_open_id, interactable));
     let area_rect = egui::Area::new(egui::Id::new(id))
         .fixed_pos(anchor_rect.left_bottom())
         .order(egui::Order::Foreground)
@@ -203,15 +206,44 @@ pub(crate) fn build_engine_picker_popup(
                 // one (WebKit, usually) silently unreachable past the
                 // window's bottom edge (confirmed live).
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    let mut cards = Vec::new();
                     for (i, kind) in ENGINE_PICKER_ORDER.into_iter().enumerate() {
                         if i > 0 {
                             ui.add_space(6.0);
                         }
-                        if draw_engine_card(ui, kind, selected == Some(kind)) {
+                        let card = draw_engine_card(ui, kind, selected == Some(kind));
+                        if just_opened && selected.unwrap_or(ENGINE_PICKER_ORDER[0]) == kind {
+                            card.request_focus();
+                        }
+                        if card.has_focus() {
+                            focus_ring(ui, &card);
+                            card.scroll_to_me(None);
+                            ui.memory_mut(|m| {
+                                m.set_focus_lock_filter(
+                                    card.id,
+                                    egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
+                                )
+                            });
+                        }
+                        if card.clicked() {
                             picked = Some(kind);
                         }
+                        cards.push(card.id);
                         if i > 0 {
                             ui.add_space(2.0);
+                        }
+                    }
+                    if let Some(at) = cards.iter().position(|id| ui.memory(|m| m.has_focus(*id))) {
+                        let (down, up) = ui.input_mut(|i| {
+                            (
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                            )
+                        });
+                        // Down is +1, Up is -1 (as len - 1, mod len).
+                        let step = usize::from(down) + (cards.len() - 1) * usize::from(up);
+                        if step != 0 {
+                            ui.memory_mut(|m| m.request_focus(cards[(at + step) % cards.len()]));
                         }
                     }
                 });

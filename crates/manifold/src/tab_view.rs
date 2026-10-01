@@ -519,7 +519,9 @@ impl App {
         // and `key_pressed` is a non-consuming peek -- without this, the
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
-        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none();
+        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && self.quick_switcher.is_none()
+            && !self.engine_picker_open();
         if back_to_graph || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed) {
             self.leave_to_graph();
             return;

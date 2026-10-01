@@ -189,10 +189,22 @@ impl App {
         let open = self.open_popup == Some(which);
         let (area_rect, picked) =
             build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, fade, open);
-        if picked.is_some() || clicked_outside_popup(ui, area_rect, Some(rect)) {
+        if picked.is_some()
+            || clicked_outside_popup(ui, area_rect, Some(rect))
+            || (open && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+        {
             close_popup(&mut self.open_popup, which);
         }
         picked
+    }
+
+    /// Whether an engine picker is open: it takes Escape for itself, so the
+    /// settings page and Tab view must not also act on the same press.
+    pub(crate) fn engine_picker_open(&self) -> bool {
+        matches!(
+            self.open_popup,
+            Some(AnchoredPopup::DefaultEngine | AnchoredPopup::CurrentEngine | AnchoredPopup::SplitEngine)
+        )
     }
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
