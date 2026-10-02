@@ -331,7 +331,10 @@ fi
 if has json-zoom; then
     click() { send "MOUSEMOVE $1 $2" "MOUSEDOWN $1 $2 left" "MOUSEUP $1 $2 left" "SLEEP 1"; }
     click 219 19; click 219 19; send "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-out
-    for _ in 1 2; do click 295 19; done; send "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-in
+    # In to ~280%, then drag the empty canvas up so the Json card (below the tab) is on screen.
+    for _ in 1 2 3 4 5 6; do click 295 19; done
+    send "MOUSEMOVE 900 760" "MOUSEDOWN 900 760 left" "MOUSEMOVE 900 660 left" "MOUSEMOVE 900 560 left" "MOUSEUP 900 560 left" "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-in
+    click 327 19; send "MOUSEMOVE 5 790" "SLEEP 1"
     send "MOUSEMOVE 5 790"
 fi
 if has image-view; then
