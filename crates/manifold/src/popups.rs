@@ -1122,7 +1122,7 @@ impl App {
                                         ui.label(egui::RichText::new(*desc).strong().color(ACCENT));
                                         ui.label("");
                                     } else {
-                                        ui.monospace(*keys);
+                                        ui.horizontal(|ui| kbd_keys(ui, keys));
                                         ui.label(*desc);
                                     }
                                     ui.end_row();

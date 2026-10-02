@@ -707,8 +707,45 @@ impl App {
         {
             self.build_recently_closed_popup(ui, rect, fade);
         }
+        self.build_card_hint(ui);
         self.build_node_menu(ui);
         self.build_json_menu(ui);
+    }
+
+    /// While a graph card has keyboard focus, a strip of keycaps under it (above, near the bottom
+    /// edge) lists the keys that act on it. Not while its menu is open.
+    fn build_card_hint(&self, ui: &egui::Ui) {
+        let Some((kind, rect)) = self.card_hint.filter(|_| self.node_menu.is_none()) else { return };
+        let screen = ui.ctx().content_rect();
+        let extra: &[(&str, &str)] = match kind {
+            ItemNodeKind::Tab | ItemNodeKind::Unloaded => &[("Enter", "open"), ("Space", "select")],
+            ItemNodeKind::Group | ItemNodeKind::Json => &[("Enter", "enter")],
+            _ => &[],
+        };
+        let hints = [("Tab", "next")].iter().chain(extra).chain(&[("Del", "close"), ("Shift+F10", "menu")]);
+        let below = rect.bottom() + 40.0 < screen.bottom();
+        let (anchor_y, pivot) = if below {
+            (rect.bottom() + 8.0, egui::Align2::CENTER_TOP)
+        } else {
+            (rect.top() - 8.0, egui::Align2::CENTER_BOTTOM)
+        };
+        let x = rect.center().x.clamp(screen.left() + 190.0, (screen.right() - 190.0).max(screen.left() + 190.0));
+        egui::Area::new(egui::Id::new("card_key_hint"))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .pivot(pivot)
+            .fixed_pos(egui::pos2(x, anchor_y))
+            .show(ui.ctx(), |ui| {
+                popup_frame(ui).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (keys, what) in hints.copied() {
+                            kbd_keys(ui, keys);
+                            ui.label(egui::RichText::new(what).small().weak());
+                            ui.add_space(4.0);
+                        }
+                    });
+                });
+            });
     }
 
     /// The Graph view's toolbar row: the group breadcrumb, "+ New Tab",
@@ -1497,6 +1534,7 @@ impl App {
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
         let tab_order = self.card_tab_order();
+        self.card_hint = None;
         self.handle_card_tab(ui, &tab_order);
         let mut pass = CardPass {
             deferred_overlays,

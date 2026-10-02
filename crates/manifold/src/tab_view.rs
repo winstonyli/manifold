@@ -246,7 +246,7 @@ impl App {
             // other icon migrated once the icon font was already
             // wired in.
             let reload = chip_icon_button(ui, egui::Id::new("icon_btn_reload"), egui_phosphor::light::ARROW_CLOCKWISE)
-                .on_hover_text("Reload");
+                .on_hover_text("Reload (Ctrl+R)");
             grow(reload.rect);
             if reload.clicked() {
                 actions.reload_requested = true;

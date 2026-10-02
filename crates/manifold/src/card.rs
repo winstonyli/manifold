@@ -715,6 +715,8 @@ impl App {
         pass.any_focused |= response.has_focus();
         if response.has_focus() {
             card_focus_ring(ui, rect, inv_zoom);
+            let to_screen = ui.ctx().layer_transform_to_global(ui.layer_id());
+            self.card_hint = Some((view.kind, to_screen.map_or(rect, |t| t * rect)));
         }
         if response.gained_focus() {
             self.pan_to_card(rect);

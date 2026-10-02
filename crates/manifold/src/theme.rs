@@ -35,6 +35,32 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
         .inner_margin(egui::Margin::same(4))
 }
 
+/// One key as a keycap: `text` in a small bordered box. egui has no such widget, only
+/// `Button::shortcut_text` (plain weak text at a button's right edge, used for menu rows).
+pub(crate) fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
+        .corner_radius(3u8)
+        .inner_margin(egui::Margin::symmetric(4, 1))
+        .show(ui, |ui| ui.label(egui::RichText::new(text).monospace().small()))
+        .response
+}
+
+/// A key combination as keycaps in the current row: "Ctrl+Shift+C" is three, and "A / B"
+/// is two combinations around a weak slash.
+pub(crate) fn kbd_keys(ui: &mut egui::Ui, keys: &str) {
+    ui.spacing_mut().item_spacing.x = 3.0;
+    for (i, alternative) in keys.split(" / ").enumerate() {
+        if i > 0 {
+            ui.label(egui::RichText::new("/").weak());
+        }
+        for key in alternative.split('+').filter(|k| !k.is_empty()) {
+            kbd(ui, key);
+        }
+    }
+}
+
 /// An outline on a keyboard-focused widget. egui shows focus only as the widget's
 /// "active" look, which is invisible on a button whose fill is overridden or that
 /// has no frame; this paints inside the widget's rect, so it moves nothing.

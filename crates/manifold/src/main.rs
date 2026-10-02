@@ -1232,6 +1232,9 @@ struct App {
     /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
     /// show their Tab-order numbers (`CardPass::show_order`).
     card_nav_active: bool,
+    /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
+    /// (`build_card_hint`).
+    card_hint: Option<(ItemNodeKind, egui::Rect)>,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -1406,6 +1409,7 @@ impl Default for App {
             history_filter: String::new(),
             open_popup: None,
             card_nav_active: false,
+            card_hint: None,
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,

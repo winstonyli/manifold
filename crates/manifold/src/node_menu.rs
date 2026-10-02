@@ -55,6 +55,14 @@ pub(crate) enum NodeAction {
 }
 
 impl NodeAction {
+    /// The key that does this to a keyboard-focused card, shown at the row's right edge.
+    pub(crate) fn key_hint(&self) -> Option<&'static str> {
+        match self {
+            NodeAction::Delete => Some("Del"),
+            _ => None,
+        }
+    }
+
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
         match self {
             NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
@@ -135,7 +143,7 @@ pub(crate) fn build_node_context_menu(
             for item in &config.items {
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = menu_button(ui, label, &mut first_item);
+                        let mut response = menu_button(ui, label, item_action.key_hint(), &mut first_item);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
@@ -145,7 +153,7 @@ pub(crate) fn build_node_context_menu(
                     }
                     NodeMenuItem::MoveTo(targets) => {
                         for (group, name) in targets {
-                            if menu_button(ui, &format!("Move to {name}"), &mut first_item).clicked() {
+                            if menu_button(ui, &format!("Move to {name}"), None, &mut first_item).clicked() {
                                 action = Some(NodeAction::MoveToGroup(group.clone()));
                             }
                         }
@@ -169,8 +177,12 @@ pub(crate) fn build_node_context_menu(
 }
 
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
-fn menu_button(ui: &mut egui::Ui, label: &str, first_item: &mut bool) -> egui::Response {
-    let response = ui.button(label);
+fn menu_button(ui: &mut egui::Ui, label: &str, key: Option<&str>, first_item: &mut bool) -> egui::Response {
+    let mut button = egui::Button::new(label);
+    if let Some(key) = key {
+        button = button.shortcut_text(key);
+    }
+    let response = ui.add(button);
     if std::mem::take(first_item) {
         response.request_focus();
     }
