@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
+#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -230,7 +230,8 @@ fi
 # Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus
 # returned to the card). The note's Tab stop is found by trying each stop. Prints PASS/FAIL lines.
 if has note-key; then
-    noteediting() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    noteediting() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '
+'; }
     found=0
     for stop in $(seq 20); do
         reset
@@ -250,7 +251,8 @@ fi
 # Enter the JSON level by keyboard in a small window (so some cards are off screen) and Tab through every
 # card after the root: each Tab must select a new card, off-screen ones included (zoomed in so they are). Prints PASS/FAIL lines.
 if has json-tab-offscreen; then
-    sel() { state; python -P -c 'import json,sys; j=json.load(open(sys.argv[1], encoding="utf-8"))["json_level"]; print("%s|%d" % (j["selected"], len(j["cards"])))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    sel() { state; python -P -c 'import json,sys; j=json.load(open(sys.argv[1], encoding="utf-8"))["json_level"]; print("%s|%d" % (j["selected"], len(j["cards"])))' "$(w "$work/state.json")" </dev/null | tr -d '
+'; }
     for _ in $(seq "${JSON_ENTRY_STOP:-16}"); do send TABKEY "SLEEP 0.3"; done; send ENTER "SLEEP 3"
     # Zoomed in, the cards other than the root fall off screen.
     send ZOOMIN ZOOMIN ZOOMIN "MOUSEMOVE 700 650" "MOUSEDOWN 700 650" "MOUSEMOVE 400 650" "MOUSEMOVE 100 650" "MOUSEUP 100 650" "MOUSEMOVE 100 650" "MOUSEMOVE 5 790" "SLEEP 2"; settle; shot json-tab-offscreen-before
@@ -269,7 +271,8 @@ fi
 # Digits jump to the card with that Tab-order number (the Note is 3 of the 5 seeded cards):
 # 3 focuses it, so Enter starts editing. Prints PASS/FAIL lines.
 if has digit-jump; then
-    ned() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    ned() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '
+'; }
     reset
     send "DIGITKEY 3" "SLEEP 1"; shot digit-jump
     send ENTER "SLEEP 1"
@@ -319,6 +322,10 @@ fi
 if has graph-tooltip; then
     send "MOUSEMOVE 467 16" "SLEEP 2"; shot graph-tooltip; send "MOUSEMOVE 5 790"
 fi
+# A download card and a sleeping tab beside the live cards (header F on cards with no seeded kind of their own).
+if has cards-f; then
+    send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEPNODE t1" "SLEEP 6" "MOUSEMOVE 327 19" "MOUSEDOWN 327 19 left" "MOUSEUP 327 19 left" "SLEEP 2"; shot cards-f
+fi
 if has image-view; then
     read -r x y < <(center Image); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
 fi
@@ -360,8 +367,10 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
     # Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card, its Close Tab row removes one.
     if has tabview-actions-click; then
-        npinned() { state; python -P -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["pinned"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
-        ncards() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+        npinned() { state; python -P -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["pinned"]))' "$(w "$work/state.json")" </dev/null | tr -d '
+'; }
+        ncards() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '
+'; }
         pins0=$(npinned); cards0=$(ncards)
         send "CLICK $((${SIZE% *} - 95)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 95)) 49" "SLEEP 1"
         echo "$([ "$(npinned)" = "$((pins0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Pin pins the tab"

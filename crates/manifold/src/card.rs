@@ -87,10 +87,9 @@ pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
     thumb
 }
 
-/// Smaller than `GRAPH_NODE_SIZE` — a download node has no live thumbnail,
-/// just a filename, so it doesn't need the same footprint a tab's preview
-/// does.
-pub(crate) const DOWNLOAD_NODE_SIZE: egui::Vec2 = egui::vec2(130.0, 60.0);
+/// A download node has no live thumbnail, but its header (see `CardHeader`) and body need the
+/// same footprint a tab card has: a 60-high card had no room for the 40-point header.
+pub(crate) const DOWNLOAD_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
 /// A group card's footprint — same idea as `DOWNLOAD_NODE_SIZE` (no live
 /// thumbnail, just a name/member-count), sized a bit larger since it's a
