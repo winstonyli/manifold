@@ -149,9 +149,7 @@ pub(crate) fn dim_if_filtered_out(
 }
 
 /// The per-kind background, colors and filter-dim rounding a graph
-/// card's shared frame (`App::draw_graph_card`) paints with. Note is the
-/// one kind on a light (yellow) card, so its border and ✕ are dark
-/// instead of the theme's text colors.
+/// card's shared frame (`App::draw_graph_card`) paints with.
 pub(crate) struct CardStyle {
     /// The card's background, under its body (bodies paint content only).
     pub(crate) fill: egui::Color32,
@@ -174,16 +172,7 @@ pub(crate) fn card_style(kind: ItemNodeKind, visuals: &egui::Visuals) -> CardSty
         dim_rounding: 4.0,
     };
     match kind {
-        ItemNodeKind::Note => CardStyle {
-            fill: NOTE_CARD_COLOR,
-            border_hover: egui::Color32::from_black_alpha(200),
-            border_idle: egui::Color32::from_black_alpha(120),
-            close_fill: NOTE_CARD_COLOR,
-            close_border: egui::Color32::from_black_alpha(160),
-            close_icon: egui::Color32::from_black_alpha(200),
-            dim_rounding: 6.0,
-        },
-        ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::Unloaded => {
+        ItemNodeKind::Note | ItemNodeKind::Download | ItemNodeKind::Tab | ItemNodeKind::Unloaded => {
             CardStyle { dim_rounding: 6.0, ..themed }
         }
         // ACCENT at rest, as group cards have always been.
@@ -546,8 +535,7 @@ pub(crate) fn paint_card_control(
 }
 
 /// The ✕ and eject buttons' look: a small square in the card's close
-/// colors (`card_style`, so it matches a Note's dark-on-yellow palette),
-/// filled `hover_fill` while hovered.
+/// colors (`card_style`), filled `hover_fill` while hovered.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_control_square(
     ui: &egui::Ui,
@@ -964,7 +952,7 @@ impl App {
     ) -> CardBody {
         match view.kind {
             ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
-            ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom),
+            ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
@@ -1153,29 +1141,38 @@ impl App {
         id: &str,
         rect: egui::Rect,
         inv_zoom: f32,
+        zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let header_h = 20.0 * inv_zoom;
-        let header_rect = egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.min.y + header_h));
-        let text_rect = egui::Rect::from_min_max(egui::Pos2::new(rect.min.x, rect.min.y + header_h), rect.max)
-            .shrink(6.0 * inv_zoom);
+        let tall = tab_has_header(rect, inv_zoom);
+        let paper = tab_thumb_rect(rect, inv_zoom);
+        let text_rect = paper.shrink(6.0 * inv_zoom);
+        // While editing, only the header is the drag handle (a short card has the strip instead).
+        let handle = if tall {
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, paper.min.y))
+        } else {
+            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 18.0 * inv_zoom), rect.max)
+        };
         let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
+        ui.painter().rect_filled(paper, 4.0 * inv_zoom, NOTE_CARD_COLOR);
         if !self.graph_lod_simplified {
-            let note_icon_pos = header_rect.left_center();
-            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                overlay_painter.text(
-                    project(note_icon_pos) + egui::vec2(8.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    egui_phosphor::light::NOTE_PENCIL,
-                    egui::FontId::proportional(12.0),
-                    egui::Color32::from_black_alpha(160),
-                );
-            }));
+            let words = self.nodes.get(id).and_then(|n| n.as_note()).map_or(0, |n| n.text.split_whitespace().count());
+            let header = CardHeader {
+                glyph: egui_phosphor::light::NOTE_PENCIL,
+                glyph_color: None,
+                icon_image: None,
+                name: "Note".to_owned(),
+                source: format!("{words} word{}", if words == 1 { "" } else { "s" }),
+                source_is_path: false,
+                scrim: false,
+                right_margin: 0.0,
+            };
+            self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
         }
 
         if is_editing {
-            body.interact_rect = header_rect;
+            body.interact_rect = handle;
             let mut lost_focus = false;
             if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
                 lost_focus = ui
