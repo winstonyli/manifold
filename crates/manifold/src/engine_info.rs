@@ -2,9 +2,95 @@
 //! picker popup.
 
 use super::*;
+use crate::engine_install::EngineState;
 
 pub(crate) fn engine_label(kind: EngineKind) -> &'static str {
     kind.desc().label
+}
+
+/// How an engine state's label is colored: weak text, or `DANGER_COLOR` for a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Weak,
+    Danger,
+}
+
+impl Tone {
+    pub(crate) fn color(self) -> egui::Color32 {
+        match self {
+            Tone::Weak => TEXT_WEAK,
+            Tone::Danger => DANGER_COLOR,
+        }
+    }
+}
+
+/// `bytes` in decimal megabytes ("172 MB"), the unit the CEF CDN lists its builds in.
+pub(crate) fn megabytes(bytes: u64) -> String {
+    format!("{} MB", (bytes as f64 / 1e6).round())
+}
+
+/// The one-line state every engine list shows, and its tone. `Installed` says so here; the pickers and
+/// cards leave it out (an installed engine has no marker beyond its name), Settings shows it.
+pub(crate) fn engine_state_label(state: &EngineState) -> (String, Tone) {
+    match state {
+        EngineState::Installed => ("Installed".into(), Tone::Weak),
+        EngineState::NotInstalled { size } => (format!("Not installed \u{b7} {}", megabytes(*size)), Tone::Weak),
+        EngineState::Installing { received, total } if *total > 0 => {
+            let percent = (*received as f64 / *total as f64 * 100.0).floor().clamp(0.0, 100.0);
+            (format!("Installing {percent}%"), Tone::Weak)
+        }
+        EngineState::Installing { .. } => ("Installing".into(), Tone::Weak),
+        EngineState::UpdateNeeded { size } => (format!("Update needed \u{b7} {}", megabytes(*size)), Tone::Weak),
+        EngineState::Failed(reason) => (format!("Failed: {reason}"), Tone::Danger),
+        EngineState::Custom(path) => (format!("Custom: {}", path.display()), Tone::Weak),
+    }
+}
+
+/// What choosing an engine in a picker does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickOutcome {
+    /// Use it.
+    Switch(EngineKind),
+    /// Not usable yet: ask to install it (the confirm names the size). Never a silent switch.
+    AskInstall(EngineKind),
+    /// Its install is already running; nothing to switch to yet.
+    AlreadyInstalling(EngineKind),
+}
+
+pub(crate) fn pick_outcome(kind: EngineKind, state: &EngineState) -> PickOutcome {
+    match state {
+        EngineState::Installed | EngineState::Custom(_) => PickOutcome::Switch(kind),
+        EngineState::Installing { .. } => PickOutcome::AlreadyInstalling(kind),
+        EngineState::NotInstalled { .. } | EngineState::UpdateNeeded { .. } | EngineState::Failed(_) => {
+            PickOutcome::AskInstall(kind)
+        }
+    }
+}
+
+/// A pending confirm before a large or destructive engine action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EngineConfirm {
+    Download(EngineKind),
+    Remove(EngineKind),
+}
+
+/// The state line of an engine card or Settings row: its label, plus a progress bar while installing.
+pub(crate) fn engine_state_line(ui: &mut egui::Ui, state: &EngineState) {
+    let (text, tone) = engine_state_label(state);
+    ui.label(egui::RichText::new(text).small().color(tone.color()));
+    if let EngineState::Installing { received, total } = state {
+        install_progress_bar(ui, *received, *total);
+    }
+}
+
+/// The download card's progress look (`build_downloads_popup`): a bar with bytes received over total.
+pub(crate) fn install_progress_bar(ui: &mut egui::Ui, received: u64, total: u64) {
+    let fraction = if total > 0 { (received as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+    ui.add(
+        egui::ProgressBar::new(fraction)
+            .text(format!("{} / {}", megabytes(received), megabytes(total)))
+            .desired_width(f32::INFINITY),
+    );
 }
 
 /// A distinct color per engine (loosely nodding to each project's own
@@ -131,7 +217,12 @@ pub(crate) const ENGINE_PICKER_ORDER: [EngineKind; 4] =
 /// card's response (the whole card is the hit target, not just a button
 /// within it, so picking an engine doesn't require precision-clicking a
 /// small label). Keyboard focus, arrows and Enter are the popup's job.
-pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected: bool) -> egui::Response {
+pub(crate) fn draw_engine_card(
+    ui: &mut egui::Ui,
+    kind: EngineKind,
+    is_selected: bool,
+    state: &EngineState,
+) -> egui::Response {
     let frame_response = egui::Frame::default()
         .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
         .corner_radius(2u8)
@@ -148,6 +239,9 @@ pub(crate) fn draw_engine_card(ui: &mut egui::Ui, kind: EngineKind, is_selected:
                 let tier = engine_tier(kind);
                 ui.label(egui::RichText::new(tier.label()).small().color(tier.color()));
             });
+            if *state != EngineState::Installed {
+                engine_state_line(ui, state);
+            }
             ui.add_space(4.0);
             for pro in engine_pros(kind) {
                 ui.label(egui::RichText::new(format!("+ {pro}")).small());
@@ -182,6 +276,7 @@ pub(crate) fn build_engine_picker_popup(
     id: &str,
     anchor_rect: egui::Rect,
     selected: Option<EngineKind>,
+    state_of: &dyn Fn(EngineKind) -> EngineState,
     fade: f32,
     interactable: bool,
 ) -> (egui::Rect, Option<EngineKind>) {
@@ -212,7 +307,7 @@ pub(crate) fn build_engine_picker_popup(
                         if i > 0 {
                             ui.add_space(6.0);
                         }
-                        let card = draw_engine_card(ui, kind, selected == Some(kind));
+                        let card = draw_engine_card(ui, kind, selected == Some(kind), &state_of(kind));
                         if just_opened && selected.unwrap_or(ENGINE_PICKER_ORDER[0]) == kind {
                             card.request_focus();
                         }
@@ -279,10 +374,62 @@ mod tests {
         let mut picked = None;
         let mut output = ctx.run_ui(input, |ui| {
             let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-            picked = build_engine_picker_popup(ui.ctx(), "test_picker", anchor, Some(selected), 1.0, true).1;
+            picked = build_engine_picker_popup(
+                ui.ctx(),
+                "test_picker",
+                anchor,
+                Some(selected),
+                &|_| EngineState::Installed,
+                1.0,
+                true,
+            )
+            .1;
         });
         output.textures_delta.clear(); // nothing uploads the font atlas here
         picked
+    }
+
+    #[test]
+    fn state_labels_cover_all_six_states() {
+        let label = |s| engine_state_label(&s);
+        assert_eq!(label(EngineState::Installed), ("Installed".to_string(), Tone::Weak));
+        assert_eq!(
+            label(EngineState::NotInstalled { size: 171_619_649 }),
+            ("Not installed \u{b7} 172 MB".to_string(), Tone::Weak)
+        );
+        assert_eq!(
+            label(EngineState::Installing { received: 34, total: 100 }),
+            ("Installing 34%".to_string(), Tone::Weak)
+        );
+        assert_eq!(label(EngineState::Installing { received: 0, total: 0 }).0, "Installing");
+        assert_eq!(
+            label(EngineState::UpdateNeeded { size: 171_619_649 }),
+            ("Update needed \u{b7} 172 MB".to_string(), Tone::Weak)
+        );
+        assert_eq!(
+            label(EngineState::Failed("download failed: x".into())),
+            ("Failed: download failed: x".to_string(), Tone::Danger)
+        );
+        assert_eq!(
+            label(EngineState::Custom(std::path::PathBuf::from("D:/cef"))),
+            ("Custom: D:/cef".to_string(), Tone::Weak)
+        );
+    }
+
+    /// An engine that isn't usable asks to install; it never switches silently.
+    #[test]
+    fn picking_an_unavailable_engine_asks_to_install() {
+        let kind = EngineKind::Cef;
+        let ask = PickOutcome::AskInstall(kind);
+        assert_eq!(pick_outcome(kind, &EngineState::Installed), PickOutcome::Switch(kind));
+        assert_eq!(pick_outcome(kind, &EngineState::Custom("D:/cef".into())), PickOutcome::Switch(kind));
+        assert_eq!(pick_outcome(kind, &EngineState::NotInstalled { size: 1 }), ask);
+        assert_eq!(pick_outcome(kind, &EngineState::UpdateNeeded { size: 1 }), ask);
+        assert_eq!(pick_outcome(kind, &EngineState::Failed("x".into())), ask);
+        assert_eq!(
+            pick_outcome(kind, &EngineState::Installing { received: 1, total: 2 }),
+            PickOutcome::AlreadyInstalling(kind)
+        );
     }
 
     /// The picker opens focused on the selected card; Down moves to the next one and Enter picks it.

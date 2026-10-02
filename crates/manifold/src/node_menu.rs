@@ -319,8 +319,13 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
         ItemNodeKind::Unloaded => {
-            let mut items =
-                if view.failed { vec![Button("Retry", A::RetryMissingFile)] } else { vec![Button("Open", A::Open)] };
+            // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
+            let first = match (view.failed, view.engine_missing) {
+                (true, true) => Button("Download Engine", A::RetryMissingFile),
+                (true, false) => Button("Retry", A::RetryMissingFile),
+                (false, _) => Button("Open", A::Open),
+            };
+            let mut items = vec![first];
             if view.failed && view.other_default_engine {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
@@ -366,6 +371,8 @@ pub(crate) struct NodeMenuView {
     other_default_engine: bool,
     /// Unloaded only: its engine failed, so the menu offers a retry.
     failed: bool,
+    /// Unloaded only: it failed because its engine isn't installed, so the menu offers the download.
+    engine_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
     move_targets: Vec<(String, String)>,
     /// Group only: the rename draft, while this group is being renamed.
@@ -481,6 +488,10 @@ impl App {
                 .as_unloaded()
                 .is_some_and(|t| t.kind != self.settings.default_starting_engine),
             failed: node.payload.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
+            engine_missing: node.payload.as_unloaded().is_some_and(|t| {
+                matches!(t.state, UnloadedState::Failed(_))
+                    && !matches!(pick_outcome(t.kind, &self.engine_state(t.kind)), PickOutcome::Switch(_))
+            }),
             move_targets: self
                 .node_order
                 .iter()
@@ -624,6 +635,7 @@ mod tests {
                 pinned: false,
                 other_default_engine: false,
                 failed: false,
+                engine_missing: false,
                 move_targets: Vec::new(),
                 renaming: None,
             }
@@ -716,6 +728,8 @@ mod tests {
             menu_of(&failed, false).2,
             "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
         );
+        let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(ItemNodeKind::Unloaded) };
+        assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, true).2,

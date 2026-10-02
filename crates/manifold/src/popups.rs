@@ -249,13 +249,93 @@ impl App {
     ) -> Option<EngineKind> {
         let (rect, fade) = self.anchored_popup_fade(ui.ctx(), which, anchor)?;
         let open = self.open_popup == Some(which);
+        let states: Vec<(EngineKind, crate::engine_install::EngineState)> =
+            ENGINE_PICKER_ORDER.into_iter().map(|kind| (kind, self.engine_state(kind))).collect();
+        let state_of = |kind: EngineKind| {
+            states
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map(|(_, s)| s.clone())
+                .unwrap_or(crate::engine_install::EngineState::Installed)
+        };
         let (area_rect, picked) =
-            build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, fade, open);
+            build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, &state_of, fade, open);
         let escape = open && ui.input(|i| i.key_pressed(egui::Key::Escape));
         if picked.is_some() || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
             close_popup(&mut self.open_popup, which);
         }
-        picked
+        // An engine that isn't installed stays selectable, but choosing it asks to install it: no
+        // silent switch, and no silent fallback to another engine.
+        match pick_outcome(picked?, &state_of(picked?)) {
+            PickOutcome::Switch(kind) => Some(kind),
+            PickOutcome::AskInstall(kind) => {
+                self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                None
+            }
+            PickOutcome::AlreadyInstalling(kind) => {
+                self.queue_toast(format!("{} is already installing", engine_label(kind)));
+                None
+            }
+        }
+    }
+
+    /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
+    /// asked first, since it is a big network action) or removing the downloaded runtime.
+    pub(crate) fn build_engine_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = self.pending_engine_confirm else { return };
+        let (title, detail, button) = match confirm {
+            EngineConfirm::Download(kind) => {
+                let size = crate::engine_info::megabytes(crate::cef_pin::CEF_PIN.size);
+                let verb = if matches!(self.engine_state(kind), crate::engine_install::EngineState::UpdateNeeded { .. })
+                {
+                    "Update"
+                } else {
+                    "Download"
+                };
+                (
+                    format!("{verb} {}, {size}?", engine_label(kind)),
+                    "Downloaded once, checked against a pinned hash, then kept in your profile.",
+                    verb,
+                )
+            }
+            EngineConfirm::Remove(kind) => (
+                format!("Remove {}?", engine_label(kind)),
+                "Deletes the downloaded runtime. You can download it again later.",
+                "Remove",
+            ),
+        };
+        let (mut yes, mut no) = (false, false);
+        egui::Area::new(egui::Id::new("engine_confirm_popup"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                dialog_frame(ui).show(ui, |ui| {
+                    control_font(ui);
+                    ui.set_min_width(240.0);
+                    ui.label(heading_text(title));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(egui::RichText::new(detail).small().weak()).wrap());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        yes = ui.button(button).clicked();
+                        no = ui.button("Cancel").clicked();
+                    });
+                });
+            });
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            no = true;
+        }
+        if yes {
+            self.pending_engine_confirm = None;
+            match confirm {
+                EngineConfirm::Download(kind) => {
+                    self.start_engine_install(kind);
+                }
+                EngineConfirm::Remove(kind) => self.remove_engine(kind),
+            }
+        } else if no {
+            self.pending_engine_confirm = None;
+        }
     }
 
     pub(crate) fn popup_opener_key(which: AnchoredPopup) -> egui::Id {

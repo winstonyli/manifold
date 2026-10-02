@@ -995,7 +995,15 @@ impl App {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
+        let kind = tab.kind;
+        // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
+        let missing_engine = matches!(state, UnloadedState::Failed(_))
+            && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
         body.tooltip = Some(match &state {
+            UnloadedState::Failed(_) if missing_engine => {
+                let size = crate::engine_info::megabytes(crate::cef_pin::CEF_PIN.size);
+                format!("{} is not installed\nClick to download it ({size}).", engine_label(kind))
+            }
             UnloadedState::Failed(error) => {
                 format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
             }
@@ -1031,6 +1039,18 @@ impl App {
         // moon of a sleeping tab.
         let middle = card_body_rect(rect, tall, inv_zoom).center();
         match &state {
+            UnloadedState::Failed(_) if missing_engine => {
+                let up = egui::vec2(0.0, 8.0 * inv_zoom);
+                push_centered_text(
+                    deferred_overlays,
+                    middle - up,
+                    egui_phosphor::light::WARNING_CIRCLE,
+                    24.0,
+                    DANGER_COLOR,
+                );
+                let text = format!("{} not installed (click to download)", engine_label(kind));
+                push_centered_text(deferred_overlays, middle + up * 2.5, text, 11.0, DANGER_COLOR);
+            }
             UnloadedState::Failed(_) => {
                 push_centered_text(deferred_overlays, middle, egui_phosphor::light::WARNING_CIRCLE, 24.0, DANGER_COLOR);
             }

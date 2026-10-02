@@ -175,7 +175,15 @@ impl App {
     /// spinner).
     pub(crate) fn retry_missing_file(&mut self, id: &str) {
         if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
-            self.wake_tab(id, kind);
+            // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
+            // install the engine instead (the card's Download).
+            match pick_outcome(kind, &self.engine_state(kind)) {
+                PickOutcome::AskInstall(kind) => self.pending_engine_confirm = Some(EngineConfirm::Download(kind)),
+                PickOutcome::AlreadyInstalling(kind) => {
+                    self.queue_toast(format!("{} is already installing", engine_label(kind)))
+                }
+                PickOutcome::Switch(kind) => self.wake_tab(id, kind),
+            }
             return;
         }
         if self.nodes.get(id).is_some_and(|n| n.source_url().is_some()) {

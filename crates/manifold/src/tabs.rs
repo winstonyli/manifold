@@ -249,7 +249,12 @@ impl App {
                 // session or group, a retry) keeps its place as a failed
                 // card rather than disappearing; see `UnloadedTabPayload`.
                 if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake) {
-                    self.queue_toast(format!("Couldn't start {} for {url}: {err}", engine_label(kind)));
+                    // "Couldn't start Blink (CEF): Blink (CEF) is not installed" says it twice.
+                    let toast = match err {
+                        process_manager::SpawnError::EngineMissing(_) => format!("Couldn't open {url}: {err}"),
+                        _ => format!("Couldn't start {} for {url}: {err}", engine_label(kind)),
+                    };
+                    self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
                     let payload = NodePayload::Unloaded(failed);

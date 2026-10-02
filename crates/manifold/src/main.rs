@@ -1188,6 +1188,8 @@ struct App {
     engine_installs: HashMap<EngineKind, engine_install::InstallJob>,
     /// The last install's failure message per engine, until the next attempt starts.
     engine_failures: HashMap<EngineKind, String>,
+    /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
+    pending_engine_confirm: Option<EngineConfirm>,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1413,6 +1415,7 @@ impl Default for App {
             find: FindState::default(),
             engine_installs: HashMap::new(),
             engine_failures: HashMap::new(),
+            pending_engine_confirm: None,
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
@@ -2466,6 +2469,7 @@ impl App {
         }
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
+        self.build_engine_confirm_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.

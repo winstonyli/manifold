@@ -372,9 +372,32 @@ fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// Delete the downloaded runtime (`data_dir/cef-runtime`) and nothing else. Refused, with the reason, while
+/// an engine process is using it (`running`) or an install is writing next to it (`installing`).
+pub(crate) fn remove_runtime(data_dir: &Path, running: bool, installing: bool) -> Result<(), String> {
+    if running {
+        return Err("Close the tabs using it first".into());
+    }
+    if installing {
+        return Err("It is installing; cancel that first".into());
+    }
+    remove_dir(&data_dir.join("cef-runtime")).map_err(|e| e.to_string())
+}
+
+/// Total size in bytes of the files under `dir` (0 when it is missing).
+pub(crate) fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 /// A running (or just cancelled) install of one engine's runtime, on its own thread.
-// The engine list UI (Task 7) starts and cancels jobs.
-#[allow(dead_code)]
 pub(crate) struct InstallJob {
     /// Bytes in the `.part` so far, written by the thread.
     progress: Arc<AtomicU64>,
@@ -388,8 +411,6 @@ pub(crate) struct InstallJob {
     handle: JoinHandle<Result<PathBuf, InstallError>>,
 }
 
-// The engine list UI (Task 7) calls these.
-#[allow(dead_code)]
 impl crate::App {
     /// How `kind` is available now: the disk, then this app's running install (a cancelled one doesn't
     /// count) and its last failure.
@@ -456,6 +477,18 @@ impl crate::App {
         true
     }
 
+    /// Delete `kind`'s downloaded runtime (Settings' Remove, after its confirm), toasting the outcome.
+    pub(crate) fn remove_engine(&mut self, kind: EngineKind) {
+        let label = crate::engine_info::engine_label(kind);
+        let Some(dir) = crate::process_manager::engine_hosts_dir() else { return };
+        let running = self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
+        let installing = self.engine_installs.contains_key(&kind);
+        match remove_runtime(&dir, running, installing) {
+            Ok(()) => self.queue_toast(format!("{label} removed")),
+            Err(why) => self.queue_toast(format!("Couldn't remove {label}: {why}")),
+        }
+    }
+
     /// Stop showing `kind`'s install at once and tell its thread to stop at its next read. The `.part`
     /// stays for resuming and no failure is recorded.
     pub(crate) fn cancel_engine_install(&mut self, kind: EngineKind) {
@@ -507,6 +540,22 @@ mod tests {
     use std::net::TcpListener;
 
     const PIN: Pin = Pin { version: "1.0", url: "http://x/a", size: 10, sha1: "aa", sha256: "bb" };
+
+    #[test]
+    fn remove_deletes_only_the_runtime_and_only_when_idle() {
+        let dir = temp_dir("remove_runtime");
+        std::fs::create_dir_all(dir.join("cef-runtime")).unwrap();
+        std::fs::write(dir.join("cef-runtime").join("libcef.dll"), vec![0u8; 5]).unwrap();
+        std::fs::write(dir.join("cef-runtime.part"), b"keep").unwrap();
+        assert_eq!(dir_size(&dir.join("cef-runtime")), 5);
+        assert!(remove_runtime(&dir, true, false).is_err());
+        assert!(remove_runtime(&dir, false, true).is_err());
+        assert!(dir.join("cef-runtime").exists());
+        remove_runtime(&dir, false, false).unwrap();
+        assert!(!dir.join("cef-runtime").exists());
+        assert!(dir.join("cef-runtime.part").exists());
+        remove_runtime(&dir, false, false).unwrap(); // already gone is fine
+    }
 
     #[test]
     fn a_missing_directory_is_missing() {

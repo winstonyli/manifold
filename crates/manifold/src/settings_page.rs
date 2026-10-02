@@ -77,6 +77,7 @@ impl App {
 
                 self.settings_general_section(ui, &mut req);
                 self.settings_current_tab_section(ui, &mut req);
+                self.settings_engines_section(ui);
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
@@ -224,6 +225,59 @@ impl App {
             None => {
                 ui.add(egui::Label::new(egui::RichText::new("No tab focused").small().weak()).wrap());
             }
+        }
+    }
+
+    /// Settings, "Engines": each engine's state, and the actions that state allows -- Download/Update
+    /// (both ask first, naming the size), Cancel while installing, Retry after a failure, and Remove
+    /// (asks first) with the installed size for a downloaded runtime.
+    pub(crate) fn settings_engines_section(&mut self, ui: &mut egui::Ui) {
+        use crate::engine_install::EngineState;
+        ui.add_space(10.0);
+        ui.separator();
+        ui.label(heading_text("Engines"));
+        for kind in ENGINE_PICKER_ORDER {
+            let state = self.engine_state(kind);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                engine_dot(ui, kind, 10.0);
+                ui.label(egui::RichText::new(engine_label(kind)).color(TEXT_PRIMARY));
+            });
+            let runtime = crate::process_manager::engine_runtime_dir(kind).filter(|dir| dir.exists());
+            match &state {
+                EngineState::Installed | EngineState::UpdateNeeded { .. } if runtime.is_some() => {
+                    let size = runtime.as_deref().map(|dir| cached_dir_size(ui.ctx(), dir)).unwrap_or(0);
+                    let (label, tone) = engine_state_label(&state);
+                    ui.label(
+                        egui::RichText::new(format!("{label} \u{b7} {} on disk", megabytes(size)))
+                            .small()
+                            .color(tone.color()),
+                    );
+                }
+                _ => engine_state_line(ui, &state),
+            }
+            let removable = runtime.is_some() && !matches!(state, EngineState::Installing { .. });
+            if matches!(state, EngineState::Installed | EngineState::Custom(_)) && !removable {
+                continue;
+            }
+            ui.horizontal(|ui| {
+                match &state {
+                    EngineState::NotInstalled { .. } if ui.button("Download").clicked() => {
+                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                    }
+                    EngineState::UpdateNeeded { .. } if ui.button("Update").clicked() => {
+                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                    }
+                    EngineState::Failed(_) if ui.button("Retry").clicked() => {
+                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                    }
+                    EngineState::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_engine_install(kind),
+                    _ => {}
+                }
+                if removable && ui.button("Remove").on_hover_text("Delete the downloaded runtime").clicked() {
+                    self.pending_engine_confirm = Some(EngineConfirm::Remove(kind));
+                }
+            });
         }
     }
 
@@ -487,4 +541,19 @@ impl App {
             self.open_settings_page();
         }
     }
+}
+
+/// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
+/// runtime's files on every frame.
+fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
+    let key = egui::Id::new(("engine_dir_size", dir));
+    let now = std::time::Instant::now();
+    if let Some((at, size)) = ctx.data(|d| d.get_temp::<(std::time::Instant, u64)>(key)) {
+        if now.duration_since(at) < std::time::Duration::from_secs(3) {
+            return size;
+        }
+    }
+    let size = crate::engine_install::dir_size(dir);
+    ctx.data_mut(|d| d.insert_temp(key, (now, size)));
+    size
 }
