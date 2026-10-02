@@ -1066,7 +1066,29 @@ impl App {
                 scrim: false,
                 right_margin: 0.0,
             };
-            self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+            let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+            // The size (or how much has arrived) in the middle of the body below the header.
+            if tall {
+                let size = match (completed, total_bytes) {
+                    (true, total) => crate::human_bytes(total.unwrap_or(bytes_received)),
+                    (false, Some(total)) => {
+                        format!("{} of {}", crate::human_bytes(bytes_received), crate::human_bytes(total))
+                    }
+                    (false, None) => crate::human_bytes(bytes_received),
+                };
+                let body_top = rect.top() + TAB_HEADER_POINTS * inv_zoom;
+                let middle = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
+                let color = ui.visuals().weak_text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(middle),
+                        egui::Align2::CENTER_CENTER,
+                        size,
+                        egui::FontId::proportional(13.0),
+                        color,
+                    );
+                }));
+            }
         }
         // Live progress bar, only while not yet complete
         // and only when the server reported a real total
