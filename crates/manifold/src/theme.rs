@@ -47,6 +47,37 @@ pub(crate) fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
         .response
 }
 
+/// A 30x17 on/off switch (the mockup's `.tog`): the knob eases between the ends. Click or Space toggles it;
+/// the caller reads `clicked()` and flips its own state. `label` is the screen-reader name.
+pub(crate) fn toggle(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 17.0), egui::Sense::click());
+    let t = ui.ctx().animate_bool_responsive(response.id, on);
+    let off_fill = TOOLBAR_FILL.gamma_multiply(1.6);
+    let fill = lerp_color32(off_fill, ACCENT, t);
+    let knob = lerp_color32(ui.visuals().weak_text_color(), BG, t);
+    let radius = rect.height() / 2.0;
+    ui.painter().rect_filled(rect, radius, fill);
+    let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
+    ui.painter().circle_filled(egui::pos2(knob_x, rect.center().y), 6.5, knob);
+    focus_ring(ui, &response);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
+    response
+}
+
+/// A settings row: `label` (and a weak `hint` under it) on the left, `control` at the right edge.
+pub(crate) fn setting_row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_max_width((ui.available_width() - 60.0).max(120.0));
+            ui.label(label);
+            if let Some(hint) = hint {
+                ui.add(egui::Label::new(egui::RichText::new(hint).small().weak()).wrap());
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+    });
+}
+
 /// A tooltip that also names the widget for a screen reader: icon buttons otherwise announce their glyph.
 pub(crate) trait NamedTip {
     fn named_tip(self, text: impl Into<String>) -> Self;
@@ -720,6 +751,35 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A click on a `toggle` reports `clicked()`; the toggle is 30x17 and draws no text.
+    #[test]
+    fn toggle_reports_clicks() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0));
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut hit = (false, egui::Vec2::ZERO);
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = toggle(ui, false, "Test");
+                hit = (r.clicked(), r.rect.size());
+            });
+            out.textures_delta.clear();
+            hit
+        };
+        let at = egui::pos2(15.0, 8.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let (_, size) = frame(vec![egui::Event::PointerMoved(at)]);
+        assert_eq!(size, egui::vec2(30.0, 17.0));
+        frame(vec![button(true)]);
+        let (clicked, _) = frame(vec![button(false)]);
+        assert!(clicked);
+    }
 
     /// An icon button given `named_tip` is announced by its name, not its glyph.
     #[test]
