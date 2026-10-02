@@ -112,7 +112,7 @@ fn assign_to_engine_job(child: &Child) {
 #[cfg(not(target_os = "windows"))]
 fn assign_to_engine_job(_child: &Child) {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineKind {
     Servo,
     Cef,
@@ -421,7 +421,7 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
     fallback
 }
 
-fn engine_hosts_dir() -> Option<PathBuf> {
+pub(crate) fn engine_hosts_dir() -> Option<PathBuf> {
     crate::profile::engine_data_dir().map(|mut dir| {
         dir.push("engine-hosts");
         dir
@@ -451,7 +451,7 @@ pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
 /// What CEF's runtime looks like on disk right now: a bundled sibling
 /// `cef-runtime/` (dev builds) is Ready; otherwise the data-dir runtime is
 /// judged by its marker.
-fn cef_on_disk() -> RuntimeOnDisk {
+pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
     if cef_sibling_exe().exists() {
         return RuntimeOnDisk::Ready;
     }

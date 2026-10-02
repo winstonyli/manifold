@@ -3,8 +3,12 @@
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
+
+use crate::process_manager::EngineKind;
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -368,13 +372,139 @@ fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// A running (or just cancelled) install of one engine's runtime, on its own thread.
+// The engine list UI (Task 7) starts and cancels jobs.
+#[allow(dead_code)]
+pub(crate) struct InstallJob {
+    /// Bytes in the `.part` so far, written by the thread.
+    progress: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    /// The pin's size, for `(received, total)`.
+    total: u64,
+    /// Set by Cancel: the UI no longer shows the job, but the thread may linger until its next read, and
+    /// its result is discarded. The job stays in the map until the thread has finished, so a new install
+    /// never races its `.part`.
+    cancelled: bool,
+    handle: JoinHandle<Result<PathBuf, InstallError>>,
+}
+
+// The engine list UI (Task 7) calls these.
+#[allow(dead_code)]
+impl crate::App {
+    /// How `kind` is available now: the disk, then this app's running install (a cancelled one doesn't
+    /// count) and its last failure.
+    pub(crate) fn engine_state(&self, kind: EngineKind) -> EngineState {
+        self.engine_state_at(kind, crate::process_manager::cef_on_disk())
+    }
+
+    /// `engine_state` with the runtime's on-disk state given (tests use a temporary directory).
+    pub(crate) fn engine_state_at(&self, kind: EngineKind, cef_on_disk: RuntimeOnDisk) -> EngineState {
+        let installing = self
+            .engine_installs
+            .get(&kind)
+            .filter(|job| !job.cancelled)
+            .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
+        let failed = self.engine_failures.get(&kind).map(String::as_str);
+        crate::process_manager::engine_availability(kind, cef_on_disk, installing, failed, None)
+    }
+
+    /// Download and install `kind`'s runtime into the data directory. See `start_engine_install_at`.
+    pub(crate) fn start_engine_install(&mut self, kind: EngineKind) -> bool {
+        let Some(data_dir) = crate::process_manager::engine_hosts_dir() else {
+            self.queue_toast("No data directory to install into".into());
+            return false;
+        };
+        self.start_engine_install_at(kind, &data_dir, &crate::cef_pin::CEF_PIN)
+    }
+
+    /// Start installing `kind` (only CEF downloads anything) under `data_dir`. Refused, with a toast
+    /// saying why, while that engine's install is running or its cancelled thread has not yet stopped
+    /// (it would share the `.part`), or while a CEF engine process is alive (it holds the runtime's
+    /// DLLs, so the swap would fail). Returns whether a job started.
+    pub(crate) fn start_engine_install_at(&mut self, kind: EngineKind, data_dir: &Path, pin: &Pin) -> bool {
+        if kind != EngineKind::Cef {
+            return false;
+        }
+        let label = crate::engine_info::engine_label(kind);
+        if let Some(job) = self.engine_installs.get(&kind) {
+            if !job.cancelled {
+                self.queue_toast(format!("{label} is already installing"));
+            } else if !job.handle.is_finished() {
+                self.queue_toast(format!("The cancelled {label} download is still stopping; try again in a moment"));
+            } else {
+                // Finished: collect it first (its result is discarded), then start afresh.
+                self.poll_engine_installs();
+                return self.start_engine_install_at(kind, data_dir, pin);
+            }
+            return false;
+        }
+        if self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind)) {
+            self.queue_toast(format!("Close {label} tabs before installing it"));
+            return false;
+        }
+        self.engine_failures.remove(&kind);
+        let progress = Arc::new(AtomicU64::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (thread_progress, thread_cancel) = (progress.clone(), cancel.clone());
+        let (data_dir, pin) = (data_dir.to_path_buf(), pin.clone());
+        let total = pin.size;
+        let handle = std::thread::spawn(move || {
+            install(&pin, &data_dir, &mut |n| thread_progress.store(n, Ordering::Relaxed), &thread_cancel)
+        });
+        self.engine_installs.insert(kind, InstallJob { progress, cancel, total, cancelled: false, handle });
+        self.egui_ctx.request_repaint();
+        true
+    }
+
+    /// Stop showing `kind`'s install at once and tell its thread to stop at its next read. The `.part`
+    /// stays for resuming and no failure is recorded.
+    pub(crate) fn cancel_engine_install(&mut self, kind: EngineKind) {
+        if let Some(job) = self.engine_installs.get_mut(&kind) {
+            job.cancel.store(true, Ordering::Relaxed);
+            job.cancelled = true;
+        }
+        self.egui_ctx.request_repaint();
+    }
+
+    /// Collect finished jobs (once per frame): toast and record a failure, toast a success, drop a
+    /// cancelled job's result. Keeps repainting while any job is running.
+    pub(crate) fn poll_engine_installs(&mut self) {
+        if self.engine_installs.is_empty() {
+            return;
+        }
+        let finished: Vec<EngineKind> =
+            self.engine_installs.iter().filter(|(_, job)| job.handle.is_finished()).map(|(kind, _)| *kind).collect();
+        for kind in finished {
+            let Some(job) = self.engine_installs.remove(&kind) else { continue };
+            let result =
+                job.handle.join().unwrap_or_else(|_| Err(InstallError::Io("the install thread panicked".into())));
+            let label = crate::engine_info::engine_label(kind);
+            match result {
+                _ if job.cancelled => {}
+                Err(InstallError::Cancelled) => {}
+                Ok(_) => {
+                    self.engine_failures.remove(&kind);
+                    self.queue_toast(format!("{label} installed"));
+                }
+                Err(e) => {
+                    self.queue_toast(format!("{label} install failed: {e}"));
+                    self.engine_failures.insert(kind, e.to_string());
+                }
+            }
+            self.egui_ctx.request_repaint();
+        }
+        if !self.engine_installs.is_empty() {
+            self.egui_ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::testutil::temp_dir;
     use std::io::BufRead;
     use std::net::TcpListener;
-    use std::sync::Arc;
 
     const PIN: Pin = Pin { version: "1.0", url: "http://x/a", size: 10, sha1: "aa", sha256: "bb" };
 
@@ -820,5 +950,133 @@ Connection: close
         assert!(matches!(err, InstallError::Network(_)), "{err:?}");
         assert_eq!(std::fs::metadata(data.join("cef-runtime.part")).unwrap().len(), 50);
         assert!(data.join("cef-runtime").join("old").exists());
+    }
+
+    // ---- the install job on the App ----
+
+    use crate::App;
+
+    /// The state the engine list would show for CEF with `data` as the data directory.
+    fn cef_state(app: &App, data: &Path, pin: &Pin) -> EngineState {
+        app.engine_state_at(EngineKind::Cef, runtime_state(&data.join("cef-runtime"), pin))
+    }
+
+    /// Poll until no job is left (the thread has finished and been collected).
+    fn settle(app: &mut App) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !app.engine_installs.is_empty() {
+            app.poll_engine_installs();
+            assert!(std::time::Instant::now() < deadline, "the job never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn toasts(app: &App) -> Vec<String> {
+        app.save_toast_queue.iter().cloned().collect()
+    }
+
+    #[test]
+    fn a_job_installs_and_toasts() {
+        let dir = temp_dir("ei30");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        let mut app = App::default();
+        assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        assert!(matches!(cef_state(&app, &data, &pin), EngineState::Installing { total, .. } if total == pin.size));
+        settle(&mut app);
+        assert_eq!(cef_state(&app, &data, &pin), EngineState::Installed);
+        assert_eq!(toasts(&app), ["Blink (CEF) installed"]);
+        assert!(app.engine_failures.is_empty());
+    }
+
+    #[test]
+    fn a_failed_job_records_the_reason_and_a_retry_clears_it() {
+        let dir = temp_dir("ei31");
+        let a = archive(&dir, &GOOD);
+        let good = pin_for(&a, serve_file(&a));
+        let bad = Pin { sha256: "0000", ..good.clone() };
+        let data = dir.join("data");
+        let mut app = App::default();
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &bad));
+        settle(&mut app);
+        let EngineState::Failed(message) = cef_state(&app, &data, &bad) else { panic!("not failed") };
+        assert!(message.contains("checksum"), "{message}");
+        assert_eq!(toasts(&app), [format!("Blink (CEF) install failed: {message}")]);
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &good));
+        assert!(matches!(cef_state(&app, &data, &good), EngineState::Installing { .. }), "failure cleared");
+        settle(&mut app);
+        assert_eq!(cef_state(&app, &data, &good), EngineState::Installed);
+    }
+
+    /// A server that sends half of `body`, then holds the connection until `release` is sent.
+    fn serve_held(body: Arc<Vec<u8>>) -> (String, std::sync::mpsc::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f", listener.local_addr().unwrap());
+        let (release, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = stream.write_all(&body[..body.len() / 2]);
+            let _ = stream.flush();
+            let _ = wait.recv();
+        });
+        (url, release)
+    }
+
+    #[test]
+    fn cancel_is_immediate_keeps_the_part_and_records_no_failure() {
+        let dir = temp_dir("ei32");
+        let a = archive(&dir, &GOOD);
+        let b = Arc::new(std::fs::read(&a).unwrap());
+        let (url, release) = serve_held(b.clone());
+        let pin = pin_for(&a, url);
+        let data = dir.join("data");
+        let mut app = App::default();
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !matches!(cef_state(&app, &data, &pin), EngineState::Installing { received, .. } if received > 0) {
+            assert!(std::time::Instant::now() < deadline, "no progress");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.cancel_engine_install(EngineKind::Cef);
+        assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }), "at once");
+        // The thread is still blocked on its read, so a new install must wait for it.
+        assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        assert_eq!(toasts(&app).len(), 1, "the refusal says why");
+        app.save_toast_queue.clear();
+        release.send(()).unwrap();
+        settle(&mut app);
+        assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
+        assert!(app.engine_failures.is_empty() && toasts(&app).is_empty(), "a cancel is not a failure");
+        assert!(std::fs::metadata(data.join("cef-runtime.part")).unwrap().len() > 0, "the part is kept");
+        // Once the thread is gone a new install starts (and resumes the part).
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &Pin { url: pin.url, ..pin.clone() }));
+        app.cancel_engine_install(EngineKind::Cef);
+    }
+
+    #[test]
+    fn one_install_per_engine_and_only_cef_downloads() {
+        let dir = temp_dir("ei33");
+        let a = archive(&dir, &GOOD);
+        let (url, release) = serve_held(Arc::new(std::fs::read(&a).unwrap()));
+        let pin = pin_for(&a, url);
+        let data = dir.join("data");
+        let mut app = App::default();
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin), "already installing");
+        assert_eq!(app.engine_installs.len(), 1);
+        app.cancel_engine_install(EngineKind::Cef);
+        release.send(()).unwrap();
+        settle(&mut app);
+        assert!(!app.start_engine_install_at(EngineKind::Webkit, &data, &pin), "only CEF downloads anything");
     }
 }

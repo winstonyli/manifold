@@ -1184,6 +1184,11 @@ struct App {
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
 
+    /// Engine runtime installs, at most one per engine (see `engine_install::InstallJob`).
+    engine_installs: HashMap<EngineKind, engine_install::InstallJob>,
+    /// The last install's failure message per engine, until the next attempt starts.
+    engine_failures: HashMap<EngineKind, String>,
+
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
     /// named pipe). Without this, a failed spawn left `tabs` empty and the
@@ -1406,6 +1411,8 @@ impl Default for App {
             store_recovered: false,
             settings_fingerprint,
             find: FindState::default(),
+            engine_installs: HashMap::new(),
+            engine_failures: HashMap::new(),
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,

@@ -414,6 +414,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested if self.is_minimized() => {}
             WindowEvent::RedrawRequested => {
                 self.poll_store();
+                self.poll_engine_installs();
                 let focused_tab = self
                     .focused
                     .as_deref()
@@ -518,6 +519,7 @@ impl App {
     /// What a frame does before building its UI, minus the UI itself.
     fn minimized_tick(&mut self) {
         self.poll_store();
+        self.poll_engine_installs();
         self.drain_tab_events();
         self.finish_transition_if_done();
     }
