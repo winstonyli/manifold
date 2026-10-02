@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file json-zoom
+#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file download-real json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file download-real json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -447,6 +447,29 @@ if has missing-file; then
     send "ADDFILE $(w "$work/gone.png") 100 300" "ADDFILE $(w "$work/gone.json") 400 300" "SLEEP 2" "EXPORTSESSION $(w "$work/missing.mnf")" "SLEEP 1"; state
     rm -f "$work/gone.png" "$work/gone.json"
     send "IMPORTSESSION $(w "$work/missing.mnf")" "SLEEP 1" CONFIRMIMPORT "SLEEP 4" "MOUSEMOVE 5 790" "SLEEP 1"; shot missing-file
+fi
+# A real download: a local HTTP server answers /real.zip as an attachment and the live tab navigates to it, so the
+# engine starts the download (the card keeps the URL as its source line). Before json-zoom, which must run last.
+if has download-real; then
+    cat >"$work/serve.py" <<'PY'
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="real.zip"')
+        self.send_header("Content-Length", "4")
+        self.end_headers()
+        self.wfile.write(b"data")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 8765), H).serve_forever()
+PY
+    python -P "$work/serve.py" </dev/null >/dev/null 2>&1 &
+    srv=$!
+    read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
+    send "ADDRESSBAR http://127.0.0.1:8765/real.zip" "SLEEP 1" ENTER "SLEEP 6"; shot download-real-tab
+    send TOGGLEVIEW "SLEEP 2" "MOUSEMOVE 5 790" "SLEEP 1"; shot download-real
+    kill $srv 2>/dev/null
 fi
 # Last, because it leaves the graph zoomed (the toolbar's fit button does not restore it). The Json card preview's header stays 40 points while its rows get more or less of the card: the toolbar's
 # zoom-out button twice (fewer rows fit under the header), then back in (the graph zoom, not the page zoom `ZOOMIN` sets).
