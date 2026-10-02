@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f json-zoom
+#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -440,6 +440,14 @@ if has settings || has hover-settings || has tab-settings || has settings-engine
 fi
 # A toast, from opening a session that doesn't exist (which also leaves the settings page).
 if has toast; then send "OPENSESSION nosuch" "SLEEP 1"; shot toast; fi
+# Restored cards whose files are gone (an image and a JSON file): save a session with them, delete the files,
+# open it again. Before json-zoom, which must run last.
+if has missing-file; then
+    cp "$work/pic.png" "$work/gone.png"; printf x >> "$work/gone.png"; cp "$work/data.json" "$work/gone.json"; printf " " >> "$work/gone.json"
+    send "ADDFILE $(w "$work/gone.png") 100 300" "ADDFILE $(w "$work/gone.json") 400 300" "SLEEP 2" "EXPORTSESSION $(w "$work/missing.mnf")" "SLEEP 1"; state
+    rm -f "$work/gone.png" "$work/gone.json"
+    send "IMPORTSESSION $(w "$work/missing.mnf")" "SLEEP 1" CONFIRMIMPORT "SLEEP 4" "MOUSEMOVE 5 790" "SLEEP 1"; shot missing-file
+fi
 # Last, because it leaves the graph zoomed (the toolbar's fit button does not restore it). The Json card preview's header stays 40 points while its rows get more or less of the card: the toolbar's
 # zoom-out button twice (fewer rows fit under the header), then back in (the graph zoom, not the page zoom `ZOOMIN` sets).
 if has json-zoom; then
