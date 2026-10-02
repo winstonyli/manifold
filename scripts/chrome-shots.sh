@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key tabview-actions-click tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # mouse-regress is asserted instead of shot: it prints PASS/FAIL for drag, swatch click and middle-click close.
@@ -226,6 +226,43 @@ if has graph-select-key; then
     for _ in $(seq "${SELECT_STOP:-12}"); do send TABKEY "SLEEP 0.5"; done
     send SPACEKEY "SLEEP 1"; shot graph-select-key-on
     send SPACEKEY "SLEEP 1"; shot graph-select-key-off; reset
+fi
+# Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus
+# returned to the card). The note's Tab stop is found by trying each stop. Prints PASS/FAIL lines.
+if has note-key; then
+    noteediting() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    found=0
+    for stop in $(seq 20); do
+        reset
+        for _ in $(seq "$stop"); do send TABKEY "SLEEP 0.2"; done
+        send ENTER "SLEEP 1"
+        if [ "$(noteediting)" = True ]; then found=$stop; break; fi
+    done
+    if [ "$found" = 0 ]; then echo "FAIL: Enter on a focused Note card starts editing (no Tab stop did)"; else
+        echo "PASS: Enter on the Note card (Tab stop $found) starts editing"; shot note-key-editing
+        send ESCAPE "SLEEP 1"
+        [ "$(noteediting)" = False ] && echo "PASS: Escape ends editing" || echo "FAIL: Escape ends editing"
+        send ENTER "SLEEP 1"
+        [ "$(noteediting)" = True ] && echo "PASS: Enter edits again, so focus returned to the card" || echo "FAIL: focus did not return to the card"
+    fi
+    reset
+fi
+# Enter the JSON level by keyboard in a small window (so some cards are off screen) and Tab through every
+# card after the root: each Tab must select a new card, off-screen ones included (SIZE="400 260" hides some). Prints PASS/FAIL lines.
+if has json-tab-offscreen; then
+    sel() { state; python -P -c 'import json,sys; j=json.load(open(sys.argv[1], encoding="utf-8"))["json_level"]; print("%s|%d" % (j["selected"], len(j["cards"])))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    for _ in $(seq "${JSON_ENTRY_STOP:-16}"); do send TABKEY "SLEEP 0.3"; done; send ENTER "SLEEP 3"
+    total=$(sel); total=${total#*|}
+    seen=""
+    for _ in $(seq $((total - 1))); do
+        send TABKEY "SLEEP 1.5"; settle
+        cur=$(sel); seen="$seen [${cur%|*}]"
+    done
+    echo "selected after each Tab:$seen (cards: $total)"
+    distinct=$(printf '%s
+' $seen | sort -u | wc -l)
+    [ "$distinct" -ge $((total - 1)) ] && echo "PASS: Tab reached every JSON card after the root" || echo "FAIL: Tab reached $distinct of $((total - 1)) cards after the root"
+    shot json-tab-offscreen; reset
 fi
 # Mouse behaviour that the Tab-focus model must not disturb, asserted rather than shot: dragging a
 # card moves it, clicking its swatch tags it, middle-click closes it. Prints PASS/FAIL lines.

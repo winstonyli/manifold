@@ -1039,6 +1039,7 @@ impl App {
                             "parent": node.parent,
                             "color": node.color.is_some(),
                             "pinned": node.payload.pinned(),
+                            "editing": node.as_note().is_some_and(|n| n.editing),
                             "screen": [screen.center().x, screen.center().y],
                             "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
                         }))

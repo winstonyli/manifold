@@ -1181,6 +1181,7 @@ impl App {
                     .put(
                         text_rect,
                         egui::TextEdit::multiline(&mut note.text)
+                            .id(egui::Id::new(("note_edit", id)))
                             .frame(egui::Frame::NONE)
                             .font(egui::FontId::proportional(13.0))
                             .text_color(egui::Color32::from_black_alpha(220))
@@ -1197,6 +1198,11 @@ impl App {
             if lost_focus {
                 if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
                     note.editing = false;
+                }
+                // Escape ends the edit; focus goes back to the card so keyboard users keep their place
+                // (a click elsewhere keeps the focus it took).
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id))));
                 }
                 self.save_session();
             }

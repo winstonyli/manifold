@@ -414,9 +414,39 @@ impl App {
         let text_color = ui.visuals().text_color();
         let hits = level.search.result.as_ref().map(|r| &r.hits);
         let mut moves = Vec::new();
+        let card_id = |i: usize| egui::Id::new(("json_card", &level.node_id, &level.cards[i].pointer));
+        // Tab / Shift+Tab walk the cards in order, including ones culled off screen (egui's own
+        // Tab order only knows the cards drawn). The target is drawn this frame whatever the camera
+        // shows, takes focus, and its `gained_focus` selects it, which pans to it.
+        let tab_target_key = egui::Id::new("json_tab_target");
+        let mut tab_target: Option<usize> = ui.data(|d| d.get_temp(tab_target_key));
+        if let Some(at) = (0..level.cards.len()).find(|&i| ui.memory(|m| m.has_focus(card_id(i)))) {
+            tab_target = None;
+            let shift = ui.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift)
+                })
+            });
+            let next = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < level.cards.len()) };
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(card_id(at), egui::EventFilter { tab: next.is_some(), ..Default::default() })
+            });
+            if let (true, Some(next)) = (ui.input(|i| i.key_pressed(egui::Key::Tab)), next) {
+                ui.memory_mut(|m| m.request_focus(card_id(next)));
+                tab_target = Some(next);
+            }
+        }
+        ui.data_mut(|d| match tab_target {
+            Some(t) => {
+                d.insert_temp(tab_target_key, t);
+            }
+            None => {
+                d.remove_temp::<usize>(tab_target_key);
+            }
+        });
         for (i, card) in level.cards.iter().enumerate() {
             let rect = level.rects[i];
-            if !rect.intersects(self.camera.rect) {
+            if !rect.intersects(self.camera.rect) && tab_target != Some(i) {
                 continue;
             }
             let Some(value) = level.value.pointer(&card.pointer) else { continue };

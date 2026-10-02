@@ -716,11 +716,15 @@ impl App {
     /// While a graph card has keyboard focus, a strip of keycaps under it (above, near the bottom
     /// edge) lists the keys that act on it. Not while its menu is open.
     fn build_card_hint(&self, ui: &egui::Ui) {
-        let Some((kind, rect)) = self.card_hint.filter(|_| self.node_menu.is_none()) else { return };
+        let Some((kind, rect)) = self.card_hint.filter(|_| self.node_menu.is_none() && self.json_level.is_none())
+        else {
+            return;
+        };
         let screen = ui.ctx().content_rect();
         let extra: &[(&str, &str)] = match kind {
             ItemNodeKind::Tab | ItemNodeKind::Unloaded => &[("Enter", "open"), ("Space", "select")],
             ItemNodeKind::Group | ItemNodeKind::Json => &[("Enter", "enter")],
+            ItemNodeKind::Note => &[("Enter", "edit")],
             _ => &[],
         };
         let hints = [("Tab", "next")].iter().chain(extra).chain(&[("Del", "close"), ("Shift+F10", "menu")]);
@@ -1597,6 +1601,8 @@ impl App {
                         if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
                             note.editing = true;
                         }
+                        // The editor appears next frame; focus it so typing can start at once.
+                        ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
                     }
                     // Maximizes the image into Item view, the same
                     // gesture a Tab card uses.
