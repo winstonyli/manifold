@@ -253,3 +253,63 @@ pub(crate) fn build_engine_picker_popup(
         .rect;
     (area_rect, picked)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Runs one frame of the picker (open, `selected` highlighted) with `events`, returning its pick.
+    fn frame(ctx: &egui::Context, selected: EngineKind, events: Vec<egui::Event>) -> Option<EngineKind> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut picked = None;
+        let mut output = ctx.run_ui(input, |ui| {
+            let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
+            picked = build_engine_picker_popup(ui.ctx(), "test_picker", anchor, Some(selected), 1.0, true).1;
+        });
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+        picked
+    }
+
+    /// The picker opens focused on the selected card; Down moves to the next one and Enter picks it.
+    #[test]
+    fn arrows_and_enter_pick_an_engine_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        let selected = ENGINE_PICKER_ORDER[1];
+        let next = ENGINE_PICKER_ORDER[2];
+        for _ in 0..3 {
+            assert_eq!(frame(&ctx, selected, vec![]), None);
+        }
+        assert_eq!(frame(&ctx, selected, vec![key(egui::Key::ArrowDown)]), None);
+        assert_eq!(frame(&ctx, selected, vec![]), None);
+        assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(next));
+    }
+
+    /// Tab must not leave the popup: Enter after it still picks the focused card.
+    #[test]
+    fn tab_keeps_focus_on_the_card() {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        let selected = ENGINE_PICKER_ORDER[1];
+        for _ in 0..3 {
+            frame(&ctx, selected, vec![]);
+        }
+        frame(&ctx, selected, vec![key(egui::Key::Tab)]);
+        frame(&ctx, selected, vec![]);
+        assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(selected));
+    }
+}
