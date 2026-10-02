@@ -702,7 +702,7 @@ impl App {
                 ui.set_opacity(fade);
                 popup_frame(ui).show(ui, |ui| {
                     menu_item_style(ui);
-                    ui.set_min_width(140.0);
+                    ui.set_min_width(200.0);
                     let rows: [TabActionRow; 5] = [
                         (if focused_pinned { "Unpin" } else { "Pin" }, "Ctrl+P", App::pin_focused_tab_shortcut),
                         ("Duplicate", "Ctrl+D", App::duplicate_focused_tab_shortcut),
@@ -711,7 +711,14 @@ impl App {
                         ("Close Tab", "Ctrl+W", App::close_focused_tab_shortcut),
                     ];
                     for (label, keys, action) in rows {
-                        if ui.add(egui::Button::new(label).shortcut_text(keys)).clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(label)
+                                    .shortcut_text(keys)
+                                    .min_size(egui::vec2(ui.min_rect().width(), 0.0)),
+                            )
+                            .clicked()
+                        {
                             tab_action = Some(action);
                             close = true;
                         }

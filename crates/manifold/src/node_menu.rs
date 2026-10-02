@@ -178,7 +178,8 @@ pub(crate) fn build_node_context_menu(
 
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
 fn menu_button(ui: &mut egui::Ui, label: &str, key: Option<&str>, first_item: &mut bool) -> egui::Response {
-    let mut button = egui::Button::new(label);
+    // As wide as the menu so far, so a key hint lands at the row's right edge.
+    let mut button = egui::Button::new(label).min_size(egui::vec2(ui.min_rect().width(), 0.0));
     if let Some(key) = key {
         button = button.shortcut_text(key);
     }
