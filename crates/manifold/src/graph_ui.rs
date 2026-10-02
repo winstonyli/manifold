@@ -708,6 +708,7 @@ impl App {
             self.build_recently_closed_popup(ui, rect, fade);
         }
         self.build_card_hint(ui);
+        self.build_ctrl_hint(ui);
         self.build_json_hint(ui);
         self.build_node_menu(ui);
         self.build_json_menu(ui);
@@ -737,6 +738,25 @@ impl App {
         let x = rect.center().x.clamp(screen.left() + 190.0, (screen.right() - 190.0).max(screen.left() + 190.0));
         let area = egui::Area::new(egui::Id::new("card_key_hint")).pivot(pivot).fixed_pos(egui::pos2(x, anchor_y));
         key_hint_strip(ui.ctx(), area, hints.copied());
+    }
+
+    /// While Ctrl is held on its own (`ctrl_reveal_step`), a strip of the Ctrl chords at the bottom of
+    /// the Graph view; the cards show their number badges too.
+    fn build_ctrl_hint(&self, ui: &egui::Ui) {
+        if !self.hints_revealed || self.json_level.is_some() || self.node_menu.is_some() {
+            return;
+        }
+        let area = egui::Area::new(egui::Id::new("ctrl_key_hint")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]);
+        let hints = [
+            ("Ctrl+T", "new tab"),
+            ("Ctrl+Shift+T", "reopen"),
+            ("Ctrl+K", "switch"),
+            ("Ctrl+G", "view"),
+            ("Ctrl+L", "address"),
+            ("Ctrl+W", "close"),
+            ("0 - 9", "jump to card"),
+        ];
+        key_hint_strip(ui.ctx(), area, hints.into_iter());
     }
 
     /// In a JSON level with a row or card selected, a strip of keycaps at the bottom of the window
@@ -1540,13 +1560,29 @@ impl App {
         self.card_hint = None;
         self.handle_card_tab(ui, &tab_order);
         self.handle_card_digits(ui, &tab_order);
+        self.hints_revealed = {
+            let (held, other_key) = ui.input(|i| {
+                (
+                    i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift,
+                    i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })),
+                )
+            });
+            let now = ui.input(|i| i.time);
+            let state: CtrlReveal = ui.data(|d| d.get_temp(egui::Id::new("ctrl_reveal"))).unwrap_or_default();
+            let (state, shown) = ctrl_reveal_step(state, held, other_key, now);
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("ctrl_reveal"), state));
+            if state.since.is_some() && !shown {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CTRL_REVEAL_AFTER));
+            }
+            shown
+        };
         let mut pass = CardPass {
             deferred_overlays,
             actions,
             inv_zoom,
             zoom_scale,
             drop_preview: &drop_preview,
-            show_order: self.card_nav_active,
+            show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
         };
@@ -1883,6 +1919,28 @@ impl App {
     }
 }
 
+/// Ctrl held alone this long reveals the key hints.
+const CTRL_REVEAL_AFTER: f64 = 0.35;
+
+/// The hold-Ctrl-to-reveal state: when a solo Ctrl hold began, and whether another key was pressed
+/// during it (Ctrl+C and the like), which cancels the reveal until Ctrl is released.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct CtrlReveal {
+    since: Option<f64>,
+    cancelled: bool,
+}
+
+/// One frame of the reveal: `held` is Ctrl alone down, `other_key` a key press this frame. Returns the
+/// new state and whether the hints show.
+fn ctrl_reveal_step(mut state: CtrlReveal, held: bool, other_key: bool, now: f64) -> (CtrlReveal, bool) {
+    if !held {
+        return (CtrlReveal::default(), false);
+    }
+    let since = *state.since.get_or_insert(now);
+    state.cancelled |= other_key;
+    (state, !state.cancelled && now - since >= CTRL_REVEAL_AFTER)
+}
+
 /// How long a digit waits for a second one before the number is taken as typed.
 const DIGIT_WINDOW: f64 = 0.6;
 
@@ -1917,6 +1975,21 @@ fn digits_ready(digits: &str, count: usize, idle: f64) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ctrl_reveals_hints_only_after_a_solo_hold() {
+        use super::{ctrl_reveal_step as step, CtrlReveal};
+        let (s, shown) = step(CtrlReveal::default(), true, false, 10.0);
+        assert!(!shown, "just pressed");
+        let (s, shown) = step(s, true, false, 10.4);
+        assert!(shown, "held past the delay");
+        let (s, shown) = step(s, true, true, 10.5);
+        assert!(!shown, "a chord key cancels it");
+        let (s, shown) = step(s, true, false, 12.0);
+        assert!(!shown, "stays cancelled while Ctrl is held");
+        let (s, _) = step(s, false, false, 12.1);
+        assert_eq!(s, CtrlReveal::default(), "release resets");
+    }
+
     #[test]
     fn digits_wait_only_while_a_longer_number_could_still_name_a_card() {
         use super::digits_ready;

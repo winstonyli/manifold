@@ -727,15 +727,12 @@ impl App {
                 // Kept on screen: a card at the edge would clip its badge.
                 let center = project(corner);
                 let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
-                painter.circle_filled(center, 9.0, BG);
-                painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, TEXT_PRIMARY));
-                painter.text(
-                    center,
-                    egui::Align2::CENTER_CENTER,
-                    number.to_string(),
-                    egui::FontId::proportional(11.0),
-                    TEXT_PRIMARY,
-                );
+                // A keycap: the number is the key that jumps to this card.
+                let galley = painter.layout_no_wrap(number.to_string(), egui::FontId::monospace(11.0), TEXT_PRIMARY);
+                let cap = egui::Rect::from_center_size(center, galley.size() + egui::vec2(8.0, 4.0));
+                painter.rect_filled(cap, 3.0, BG);
+                painter.rect_stroke(cap, 3.0, egui::Stroke::new(1.0, TEXT_PRIMARY), egui::StrokeKind::Inside);
+                painter.galley(cap.center() - galley.size() / 2.0, galley, TEXT_PRIMARY);
             }));
         }
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());

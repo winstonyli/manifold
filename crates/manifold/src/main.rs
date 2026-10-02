@@ -1235,6 +1235,8 @@ struct App {
     /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
     /// show their Tab-order numbers (`CardPass::show_order`).
     card_nav_active: bool,
+    /// Ctrl has been held on its own long enough to reveal key hints (`ctrl_reveal_step`).
+    hints_revealed: bool,
     /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
     /// (`build_card_hint`).
     card_hint: Option<(ItemNodeKind, egui::Rect)>,
@@ -1413,6 +1415,7 @@ impl Default for App {
             history_filter: String::new(),
             open_popup: None,
             card_nav_active: false,
+            hints_revealed: false,
             card_hint: None,
             transition: None,
             event_proxy: None,
