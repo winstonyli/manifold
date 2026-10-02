@@ -386,6 +386,11 @@ pub(crate) fn paint_json_content(
     push_card_text(deferred_overlays, text);
 }
 
+/// Set when a JSON level is entered by keyboard: the root card takes focus on its first draw.
+pub(crate) fn json_focus_root_key() -> egui::Id {
+    egui::Id::new("json_focus_root")
+}
+
 impl App {
     /// The JSON level's cards, inside `build_graph_ui`'s Scene: painted,
     /// culled to the viewport, and their clicks and drags turned into
@@ -451,6 +456,9 @@ impl App {
                 egui::Id::new(("json_card", &level.node_id, &card.pointer)),
                 egui::Sense::click_and_drag(),
             );
+            if i == 0 && ui.data_mut(|d| d.remove_temp::<bool>(json_focus_root_key())).unwrap_or(false) {
+                response.request_focus();
+            }
             // Keyboard focus (Tab) selects the card; Enter then toggles it (`handle_json_keys`).
             if response.has_focus() {
                 card_focus_ring(ui, rect, inv_zoom);

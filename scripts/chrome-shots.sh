@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-menu-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -209,6 +209,10 @@ if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
 # A click focuses the group card without entering it; Enter then does what a double-click does.
 if has graph-enter-group; then
     for _ in $(seq "${GROUP_STOP:-12}"); do send TABKEY "SLEEP 0.5"; done; send "SLEEP 1"; shot graph-enter-group-click; send ENTER "SLEEP 0.4"; shot graph-enter-group-early; send "SLEEP 3"; shot graph-enter-group; reset
+fi
+# Tab to the JSON card and Enter: the level opens with its root card focused.
+if has graph-enter-json; then
+    for _ in $(seq "${JSON_ENTRY_STOP:-16}"); do send TABKEY "SLEEP 0.5"; done; send ENTER "SLEEP 3"; shot graph-enter-json; reset
 fi
 if has graph-menu-key; then
     for _ in $(seq "${MENU_STOP:-13}"); do send TABKEY "SLEEP 0.2"; done

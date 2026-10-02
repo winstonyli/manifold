@@ -1572,6 +1572,11 @@ impl App {
                     ItemNodeKind::Json
                         if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                     {
+                        // Entered from the keyboard: the level's root card takes focus
+                        // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
+                        if !card.response.double_clicked() {
+                            ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                        }
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))
                     }
                     // Drills into the group's own subgraph.
