@@ -592,6 +592,13 @@ impl App {
         let now = std::time::Instant::now();
         self.expire_pending_sleeps(now);
         let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
+        // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
+        let downloading: std::collections::HashSet<&str> = self
+            .nodes
+            .values()
+            .filter(|n| n.as_download().is_some_and(|d| !d.completed))
+            .filter_map(|n| n.parent.as_deref())
+            .collect();
         let views = self.nodes.iter().filter_map(|(id, n)| {
             let t = n.as_tab()?;
             Some(crate::idle_sleep::TabIdleView {
@@ -600,6 +607,7 @@ impl App {
                 audio_playing: t.audio_playing,
                 pinned: t.pinned,
                 loading: t.loading,
+                downloading: downloading.contains(id.as_str()),
             })
         });
         let idle = self.idle_clock.sweep(now, limit, views);

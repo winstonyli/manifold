@@ -18,6 +18,8 @@ pub(crate) struct TabIdleView<'a> {
     pub(crate) audio_playing: bool,
     pub(crate) pinned: bool,
     pub(crate) loading: bool,
+    /// A download this tab started has not finished (its card is still filling).
+    pub(crate) downloading: bool,
 }
 
 #[derive(Default)]
@@ -34,7 +36,7 @@ impl IdleClock {
 
     /// Updates every tab's clock and returns the ids idle for at least
     /// `limit` (none when `limit` is `None`). A tab on screen, playing
-    /// audio, pinned or still loading counts as seen now, so it never
+    /// audio, pinned, still loading or downloading counts as seen now, so it never
     /// qualifies; tabs no longer in `tabs` are forgotten.
     pub(crate) fn sweep<'a>(
         &mut self,
@@ -47,7 +49,7 @@ impl IdleClock {
         let mut idle = Vec::new();
         for tab in tabs {
             live.insert(tab.id.to_string());
-            let busy = tab.on_screen || tab.audio_playing || tab.pinned || tab.loading;
+            let busy = tab.on_screen || tab.audio_playing || tab.pinned || tab.loading || tab.downloading;
             let seen = self.seen.entry(tab.id.to_string()).or_insert(now);
             if busy {
                 *seen = now;
@@ -71,7 +73,7 @@ mod tests {
     use super::*;
 
     fn tab(id: &str) -> TabIdleView<'_> {
-        TabIdleView { id, on_screen: false, audio_playing: false, pinned: false, loading: false }
+        TabIdleView { id, on_screen: false, audio_playing: false, pinned: false, loading: false, downloading: false }
     }
 
     const LIMIT: Option<Duration> = Some(Duration::from_secs(60));
@@ -99,13 +101,14 @@ mod tests {
     fn busy_tabs_restart_their_clock() {
         let t0 = Instant::now();
         let mut clock = IdleClock::default();
-        clock.sweep(t0, LIMIT, [tab("on"), tab("audio"), tab("pin"), tab("load")]);
+        clock.sweep(t0, LIMIT, [tab("on"), tab("audio"), tab("pin"), tab("load"), tab("dl")]);
         let later = t0 + Duration::from_secs(90);
         let views = [
             TabIdleView { on_screen: true, ..tab("on") },
             TabIdleView { audio_playing: true, ..tab("audio") },
             TabIdleView { pinned: true, ..tab("pin") },
             TabIdleView { loading: true, ..tab("load") },
+            TabIdleView { downloading: true, ..tab("dl") },
         ];
         assert!(clock.sweep(later, LIMIT, views).is_empty());
         // The clock restarted at `later`, not at `t0`.

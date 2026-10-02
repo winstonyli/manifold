@@ -316,8 +316,7 @@ the dirty-form skip on WebView2 and CEF.
   in the profile and show it, dimmed, on its sleeping card. Needs a
   cache with cleanup, and stores images of visited pages on disk.
 - **Smarter idle sleep.** The plain timer and the dirty-form skip are
-  done (see "Idle sleep" above). Not done: skipping a tab with a download in flight (no per-tab
-  flag on the host yet), and choosing victims by memory pressure instead
+  done (see "Idle sleep" above). Done 2026-10-02: a tab with a download in flight counts as seen (a download card whose parent is the tab and is not `completed`; no engine message needed). Limit: the protocol has no failed/cancelled message, so a cancelled download keeps its tab awake until the card is closed. Not done: choosing victims by memory pressure instead
   of a fixed time: sleep only when engine memory passes a budget, ranked
   by idle time x engine-process memory with graph distance from the
   focused node as the tie-break.
