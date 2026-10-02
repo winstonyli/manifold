@@ -363,14 +363,14 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         npinned() { state; python -P -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["pinned"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
         ncards() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
         pins0=$(npinned); cards0=$(ncards)
-        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 49" "SLEEP 1"
+        send "CLICK $((${SIZE% *} - 95)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 95)) 49" "SLEEP 1"
         echo "$([ "$(npinned)" = "$((pins0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Pin pins the tab"
-        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 76" "SLEEP 2"
+        send "CLICK $((${SIZE% *} - 95)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 95)) 76" "SLEEP 2"
         echo "$([ "$(ncards)" = "$((cards0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Duplicate adds a card"
-        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 140" "SLEEP 2"
+        send "CLICK $((${SIZE% *} - 95)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 95)) 140" "SLEEP 2"
         echo "$([ "$(ncards)" = "$cards0" ] && echo PASS || echo "FAIL ($(ncards) vs $cards0)"): Tab actions > Close Tab removes the tab"
     fi
-    if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
+    if has tabview-actions; then send "CLICK $((${SIZE% *} - 95)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
     if has hover-find; then
         send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_Y=${FIND_Y:-60} HOVER_BAND=${FIND_BAND:-90} hover_scan find; send CLOSEFINDBAR
     fi
@@ -378,11 +378,11 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_BAND=${FIND_BAND:-90} tab_scan find 6; send CLOSEFINDBAR
     fi
     # The Split button opens the engine picker.
-    if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
+    if has tabview-engine; then send "CLICK $((${SIZE% *} - 126)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
     # Keyboard-only pick from the Split engine picker: it opens on the selected card,
     # Down moves, Enter picks and opens the Split pane.
     if has tabview-split-key; then
-        send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-split-key-open
+        send "CLICK $((${SIZE% *} - 126)) 16" "SLEEP 1"; shot tabview-split-key-open
         send ARROWDOWN "SLEEP 1"; shot tabview-split-key-down
         send ENTER "SLEEP 3"; shot tabview-split-key; send CLOSESPLIT "SLEEP 1"
     fi

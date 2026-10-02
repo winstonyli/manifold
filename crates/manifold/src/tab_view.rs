@@ -78,7 +78,9 @@ impl AddressBar {
 /// it, which is an acceptable, honest reading of the approved mockup
 /// rather than a literal pixel reproduction of it.
 pub(crate) fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
-    ui.button("Graph").on_hover_text("Back to Graph (Esc, Ctrl+G)").clicked()
+    icon_button_eased(ui, egui::Id::new("icon_btn_graph"), egui_phosphor::light::GRAPH)
+        .on_hover_text("Back to Graph (Esc, Ctrl+G)")
+        .clicked()
 }
 
 /// Everything the Tab toolbar's own content (see `render_tab_toolbar_
@@ -313,7 +315,9 @@ impl App {
         // exceeding it). Added in reverse of their final visual
         // order since a right-to-left `Ui` places each new
         // widget immediately to the *left* of the previous one.
-        let tab_actions_response = trailing_ui.button("Tab actions");
+        let tab_actions_response =
+            icon_button_eased(trailing_ui, egui::Id::new("icon_btn_tab_actions"), egui_phosphor::light::DOTS_THREE)
+                .on_hover_text("Tab actions");
         self.popup_opener_clicked(trailing_ui, AnchoredPopup::TabActions, &tab_actions_response);
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
@@ -329,7 +333,13 @@ impl App {
         // secondary pane is view-only in this first cut, so its
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
-        let split_engine_response = trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
+        let split_engine_response =
+            icon_button_eased(trailing_ui, egui::Id::new("icon_btn_split"), egui_phosphor::light::COLUMNS)
+                .on_hover_text(if self.split_tab.is_some() {
+                    "Split view: change engine"
+                } else {
+                    "Split view: compare engines"
+                });
         self.popup_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
         actions.split_engine_button_rect = Some(split_engine_response.rect);
         let is_bookmarked = self
