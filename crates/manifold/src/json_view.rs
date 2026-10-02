@@ -11,7 +11,7 @@ use serde_json::Value;
 
 /// A card's width in world units (100% zoom).
 pub(crate) const CARD_WIDTH: f32 = 220.0;
-pub(crate) const HEADER_HEIGHT: f32 = 40.0;
+pub(crate) const HEADER_HEIGHT: f32 = 26.0;
 pub(crate) const ROW_HEIGHT: f32 = 22.0;
 /// Between depth columns.
 pub(crate) const COLUMN_GAP: f32 = 60.0;
