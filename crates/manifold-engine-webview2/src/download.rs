@@ -33,7 +33,7 @@ use windows::core::PWSTR;
 /// module) so `main.rs` does the actual translation, same separation the
 /// rest of this crate's `pending_*` types already keep.
 pub enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64> },
+    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
 }
@@ -73,7 +73,10 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                 .then_some(total_bytes_raw)
                 .filter(|n| *n >= 0)
                 .map(|n| n as u64);
-            pending_for_handler.borrow_mut().push(DownloadEvent::Started { path: path.clone(), total_bytes });
+            let mut uri_raw = PWSTR::null();
+            let url =
+                unsafe { operation.Uri(&mut uri_raw) }.is_ok().then(|| take_pwstr(uri_raw)).filter(|u| !u.is_empty());
+            pending_for_handler.borrow_mut().push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
 
             let pending_for_bytes = pending_for_handler.clone();
             let path_for_bytes = path.clone();

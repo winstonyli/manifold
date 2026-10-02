@@ -469,7 +469,8 @@ pub enum EngineToHost {
     /// never needs to re-derive it. WebView2, CEF, and WebKit all have a
     /// real native download-progress API; Servo's embedding surface has no
     /// download hook of any kind, so it never sends any `Download*` message.
-    DownloadStarted { path: String, total_bytes: Option<u64> },
+    /// `url` is what the engine is fetching, when it can say (shown as the card's source line).
+    DownloadStarted { path: String, total_bytes: Option<u64>, url: Option<String> },
     /// Bytes received so far for an in-progress download, keyed by the same
     /// `path` its own `DownloadStarted` reported.
     DownloadProgress { path: String, bytes_received: u64 },

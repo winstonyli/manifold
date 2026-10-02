@@ -1173,7 +1173,7 @@ impl App {
             }
             DebugCommand::AddDownload(path) => {
                 if let Some(tab_id) = self.focused.clone() {
-                    self.insert_download_node(tab_id, path, None);
+                    self.insert_download_node(tab_id, path, None, None);
                 }
             }
             DebugCommand::Split(kind) => self.start_split(kind),
@@ -1662,8 +1662,8 @@ impl App {
                         Some(ContextMenuState { x: x as f32 / ppp, y: y as f32 / ppp + CHROME_HEIGHT_POINTS, href });
                 }
             }
-            EngineToHost::DownloadStarted { path, total_bytes } => {
-                self.insert_download_node(tab_id.to_string(), path, total_bytes);
+            EngineToHost::DownloadStarted { path, total_bytes, url } => {
+                self.insert_download_node(tab_id.to_string(), path, total_bytes, url);
             }
             EngineToHost::DownloadProgress { path, bytes_received } => {
                 if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {

@@ -255,6 +255,7 @@ mod tests {
             &mut app,
             NodePayload::Download(DownloadPayload {
                 path: "f.bin".into(),
+                url: None,
                 bytes_received: 1,
                 total_bytes: Some(1),
                 completed: true,

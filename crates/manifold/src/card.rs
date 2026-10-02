@@ -1079,11 +1079,11 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((download_path, completed, total_bytes, bytes_received)) = self
+        let Some((download_path, download_url, completed, total_bytes, bytes_received)) = self
             .nodes
             .get(id)
             .and_then(|n| n.as_download())
-            .map(|d| (d.path.clone(), d.completed, d.total_bytes, d.bytes_received))
+            .map(|d| (d.path.clone(), d.url.clone(), d.completed, d.total_bytes, d.bytes_received))
         else {
             return body;
         };
@@ -1095,8 +1095,8 @@ impl App {
                 glyph_color: None,
                 icon_image: None,
                 name: filename.to_owned(),
-                source: download_path.clone(),
-                source_is_path: true,
+                source_is_path: download_url.is_none(),
+                source: download_url.unwrap_or_else(|| download_path.clone()),
                 scrim: false,
                 right_margin: 0.0,
             };
@@ -2044,6 +2044,7 @@ mod tests {
     fn node_card_size_matches_each_kinds_card() {
         let download = NodePayload::Download(DownloadPayload {
             path: "f.bin".into(),
+            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: false,
@@ -2112,6 +2113,7 @@ mod tests {
     fn card_filter_text_matches_each_kinds_filter_input() {
         let download = NodePayload::Download(DownloadPayload {
             path: "C:/dl/f.bin".into(),
+            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: true,

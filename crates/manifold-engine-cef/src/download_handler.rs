@@ -11,7 +11,7 @@ use cef::{rc::Rc as CefRc, *};
 /// module) so `main.rs` does the actual translation, same separation
 /// `manifold-engine-webview2`'s own `download::DownloadEvent` uses.
 pub enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64> },
+    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
 }
@@ -111,7 +111,8 @@ wrap_download_handler! {
                 if results.started.insert(id) {
                     let total = item.total_bytes();
                     let total_bytes = (total > 0).then_some(total as u64);
-                    results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes });
+                    let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
+                    results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
                 }
                 if item.is_complete() != 0 {
                     if results.reported.insert(id) {

@@ -43,7 +43,7 @@ pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
         Kind::Note => &[POS, COLOR, URL, TEXT],
         Kind::Image | Kind::Pdf => &[POS, COLOR, URL, PATH],
         Kind::Json => &[POS, COLOR, URL, PATH, VIEW],
-        Kind::Download => &[POS, COLOR, PATH],
+        Kind::Download => &[POS, COLOR, URL, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Unknown(_) => &[],
     }
@@ -312,6 +312,7 @@ impl App {
                 }
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
+                    fields.insert(field::URL, str(dl.url.as_deref().unwrap_or("")));
                     Kind::Download
                 }
                 NodePayload::Download(_) => continue,
@@ -623,8 +624,13 @@ impl App {
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
                 let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-                let payload =
-                    DownloadPayload { path, bytes_received: bytes, total_bytes: Some(bytes), completed: true };
+                let payload = DownloadPayload {
+                    path,
+                    url: url_of(fields),
+                    bytes_received: bytes,
+                    total_bytes: Some(bytes),
+                    completed: true,
+                };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
             }
             Kind::Unknown(_) => return,
@@ -2186,6 +2192,27 @@ pub(crate) mod tests {
         let mut restored = app_on(&path, 2);
         assert!(restored.restore_session());
         assert_eq!(restored.nodes[&id].source_url(), Some("https://x.test/a.txt"));
+    }
+
+    /// A finished download keeps the address its engine fetched it from across a restart.
+    #[test]
+    fn a_completed_download_keeps_its_url() {
+        let path = crate::store::testutil::temp_dir("download-url").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let id = app.alloc_node_id();
+        let payload = DownloadPayload {
+            path: "f.bin".into(),
+            url: Some("https://x.test/f.bin".into()),
+            bytes_received: 0,
+            total_bytes: None,
+            completed: true,
+        };
+        app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Download(payload));
+        assert!(app.save_session());
+        app.close_store();
+        let mut restored = app_on(&path, 2);
+        assert!(restored.restore_session());
+        assert_eq!(restored.nodes[&id].as_download().and_then(|d| d.url.as_deref()), Some("https://x.test/f.bin"));
     }
 
     #[test]

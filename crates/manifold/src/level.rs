@@ -135,6 +135,7 @@ mod tests {
     fn download(path: &str) -> NodePayload {
         NodePayload::Download(DownloadPayload {
             path: path.to_string(),
+            url: None,
             bytes_received: 0,
             total_bytes: None,
             completed: true,

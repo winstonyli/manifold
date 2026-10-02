@@ -453,6 +453,8 @@ pub(crate) struct TabPayload {
 /// holds for every kind.
 pub(crate) struct DownloadPayload {
     pub(crate) path: String,
+    /// What the engine fetched, if it said (not a refetch source: a download has no Refresh).
+    pub(crate) url: Option<String>,
     /// Bytes received so far -- created (node included) at
     /// `EngineToHost::DownloadStarted`, not only once finished, so a
     /// download is visible with live progress for its whole lifetime
@@ -656,6 +658,7 @@ mod tests {
         assert_eq!(
             item_node_kind(&NodePayload::Download(DownloadPayload {
                 path: "file.bin".into(),
+                url: None,
                 bytes_received: 0,
                 total_bytes: Some(1024),
                 completed: false

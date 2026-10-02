@@ -414,8 +414,8 @@ fn main() {
         if let Some(pending) = &pending_download {
             for event in pending.borrow_mut().drain(..) {
                 let msg = match event {
-                    download::DownloadEvent::Started { path, total_bytes } => {
-                        EngineToHost::DownloadStarted { path, total_bytes }
+                    download::DownloadEvent::Started { path, total_bytes, url } => {
+                        EngineToHost::DownloadStarted { path, total_bytes, url }
                     }
                     download::DownloadEvent::Progress { path, bytes_received } => {
                         EngineToHost::DownloadProgress { path, bytes_received }

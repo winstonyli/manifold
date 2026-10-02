@@ -434,8 +434,8 @@ fn main() {
 
         for event in download_path.borrow_mut().queue.drain(..) {
             let msg = match event {
-                download_handler::DownloadEvent::Started { path, total_bytes } => {
-                    EngineToHost::DownloadStarted { path, total_bytes }
+                download_handler::DownloadEvent::Started { path, total_bytes, url } => {
+                    EngineToHost::DownloadStarted { path, total_bytes, url }
                 }
                 download_handler::DownloadEvent::Progress { path, bytes_received } => {
                     EngineToHost::DownloadProgress { path, bytes_received }

@@ -22,7 +22,7 @@ const DEFAULT_HEIGHT: i32 = 768;
 /// DownloadEvent`/`manifold-engine-cef`'s own `download_handler::DownloadEvent`
 /// use.
 enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64> },
+    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
 }
@@ -122,7 +122,8 @@ fn main() {
                 download.set_destination(&format!("file://{}", dest.display()));
                 let path = dest.to_string_lossy().to_string();
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
-                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes });
+                let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
+                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes, url });
                 true
             });
 
@@ -476,7 +477,9 @@ fn main() {
 
         for event in pending_download.borrow_mut().drain(..) {
             let msg = match event {
-                DownloadEvent::Started { path, total_bytes } => EngineToHost::DownloadStarted { path, total_bytes },
+                DownloadEvent::Started { path, total_bytes, url } => {
+                    EngineToHost::DownloadStarted { path, total_bytes, url }
+                }
                 DownloadEvent::Progress { path, bytes_received } => {
                     EngineToHost::DownloadProgress { path, bytes_received }
                 }

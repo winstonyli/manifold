@@ -79,13 +79,20 @@ impl App {
     /// engine download, so headless runs had no way to get one). A no-op
     /// if `tab_id` is gone. The store keeps only completed downloads
     /// (`DownloadCompleted` saves), so no save.
-    pub(crate) fn insert_download_node(&mut self, tab_id: String, path: String, total_bytes: Option<u64>) {
+    pub(crate) fn insert_download_node(
+        &mut self,
+        tab_id: String,
+        path: String,
+        total_bytes: Option<u64>,
+        url: Option<String>,
+    ) {
         let Some((node_pos, node_group)) = self.nodes.get(&tab_id).map(|n| (n.pos, n.group.clone())) else {
             return;
         };
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
-        let payload = NodePayload::Download(DownloadPayload { path, bytes_received: 0, total_bytes, completed: false });
+        let payload =
+            NodePayload::Download(DownloadPayload { path, url, bytes_received: 0, total_bytes, completed: false });
         self.place_node(Some(id.clone()), payload, Placement { group: node_group, pos });
         if let Some(node) = self.nodes.get_mut(&id) {
             node.parent = Some(tab_id); // the edge from the tab it came from
@@ -392,6 +399,7 @@ impl App {
                         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
                         let payload = DownloadPayload {
                             path: path_str,
+                            url: None,
                             bytes_received: bytes,
                             total_bytes: Some(bytes),
                             completed: true,
