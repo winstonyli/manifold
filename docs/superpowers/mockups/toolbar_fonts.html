@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Toolbar fonts</title>
+<style>
+:root{
+  --page:#0e0d0a; --bg:#1d1a14; --chip:#2e2a20; --field:rgba(255,255,255,.06);
+  --line:rgba(255,255,255,.14); --accent:#d7a24a; --on-accent:#2b1c05;
+  --text:#e8e2d4; --dim:#9b9585; --hover:rgba(255,255,255,.09);
+  --serif:Georgia,'Source Serif 4','Times New Roman',serif;
+  --sans:system-ui,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 24px 48px;background:var(--page);color:var(--text);font:14px/1.45 var(--sans)}
+h1{font:600 18px var(--sans);margin:0 0 4px}
+p.lede{margin:0 0 24px;color:var(--dim);max-width:70ch}
+h2{font:600 12px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:28px 0 8px}
+.note{color:var(--dim);font-size:13px;margin:8px 0 0;max-width:78ch}
+.note b{color:var(--text);font-weight:600}
+
+/* The bar: 38px, 8px side padding, 6px between items. */
+.bar{height:38px;display:flex;align-items:center;gap:6px;padding:0 8px;background:var(--bg);border-radius:8px;
+  font-family:var(--serif);font-size:14px;white-space:nowrap;margin-bottom:8px}
+.bar.sans{font-family:var(--sans);font-size:13px}
+.bar svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* One button anatomy: 28px tall, 6px radius, ghost until hovered. */
+.btn{height:28px;min-width:28px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  border-radius:6px;color:var(--dim);background:transparent;border:0;font:inherit;cursor:default}
+.btn:hover{background:var(--hover);color:var(--text)}
+.btn.text{color:var(--text)}
+.btn[disabled]{opacity:.35}
+.btn.primary{background:var(--accent);color:var(--on-accent);font-weight:600;padding:0 11px}
+.btn.primary:hover{background:#e2b058}
+.chip{display:inline-flex;align-items:center;gap:2px;padding:2px;background:var(--chip);border-radius:8px}
+.chip .btn{height:26px}
+.readout{min-width:46px;text-align:center;color:var(--text);font-variant-numeric:tabular-nums}
+.div{width:1px;height:18px;background:var(--line);margin:0 2px}
+.spacer{flex:1}
+
+/* Fields: inset, 28px tall, hairline border, accent ring on focus. */
+.field{height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:6px;background:var(--field);
+  border:1px solid var(--line);color:var(--dim);min-width:0}
+.field.focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(215,162,74,.22);color:var(--text)}
+.field .ph{overflow:hidden;text-overflow:ellipsis}
+.field .hint{margin-left:auto;display:flex;gap:3px}
+kbd{font:11px/1 ui-monospace,Consolas,monospace;color:var(--dim);border:1px solid var(--line);border-radius:3px;padding:2px 4px;background:rgba(0,0,0,.25)}
+.favicon{width:14px;height:14px;border-radius:3px;background:var(--accent);opacity:.85;flex:none}
+.filter{width:150px}
+.address{flex:1}
+
+.grid{display:grid;gap:14px}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 24px;margin-top:20px;font-size:13px;color:var(--dim)}
+.legend div b{display:block;color:var(--text);font-weight:600;margin-bottom:2px}
+</style>
+<style>
+@font-face{font-family:"Literata Bundled";src:url("../../../crates/manifold/assets/fonts/Literata-Regular.ttf")}
+@font-face{font-family:"Newsreader Bundled";src:url("../../../crates/manifold/assets/fonts/Newsreader-Bold.ttf");font-weight:700}
+.row{margin:0 0 18px;min-width:820px}body{overflow-x:auto}
+.row .name{display:flex;align-items:baseline;gap:10px;margin:0 0 5px;font:600 13px var(--sans)}
+.row .name span{font-weight:400;color:var(--dim)}
+.row .bar{margin-bottom:5px}
+.miss{opacity:.45}
+</style>
+</head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="collapse" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></symbol>
+    <symbol id="zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/></symbol>
+    <symbol id="zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6M11 8v6"/></symbol>
+    <symbol id="fit" viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></symbol>
+    <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="graph" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.2 7l7.6.7M7.2 8.2l1 7.3M16.6 10.1l-5.9 6.2"/></symbol>
+    <symbol id="back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="fwd" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="reload" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></symbol>
+    <symbol id="home" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="bookmark" viewBox="0 0 24 24"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1z"/></symbol>
+    <symbol id="split" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M12 5v14"/></symbol>
+    <symbol id="more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.6"/></symbol>
+  </defs>
+</svg>
+<h1>Toolbar typeface survey</h1>
+<p class="lede">The same two bars in 14 faces. Serif rows are 14 px, sans rows 13 px (sans sets larger at the same size). "Reset View", "Split" and "Tab actions" are kept as words here so the labels are the thing being compared. Rows are system fonts available on this Windows machine, plus the two the app bundles; an app face has to be bundled (OFL, a few hundred KB each) to look the same everywhere, so a system favourite means picking a lookalike such as Inter or Source Sans 3 for Segoe, or keeping Literata.</p>
+<div class="row" style="--f:'Literata Bundled'">
+<div class="name">Literata (current)<span>serif, bundled; what the app uses today</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:'Newsreader Bundled'">
+<div class="name">Newsreader (Bold only is bundled)<span>serif, bundled; the app's heading face</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Georgia">
+<div class="name">Georgia<span>serif, system</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:'Sitka Text'">
+<div class="name">Sitka Text<span>serif, system, Windows</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Cambria">
+<div class="name">Cambria<span>serif, system, Windows</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Constantia">
+<div class="name">Constantia<span>serif, system, Windows</span></div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:14px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:'Segoe UI Variable Text'">
+<div class="name">Segoe UI Variable Text<span>sans, system, Windows 11 UI face</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:'Segoe UI'">
+<div class="name">Segoe UI<span>sans, system, Windows</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Bahnschrift">
+<div class="name">Bahnschrift<span>sans, system, Windows; DIN-like, narrower</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Calibri">
+<div class="name">Calibri<span>sans, system, Windows</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Candara">
+<div class="name">Candara<span>sans, system, Windows; humanist, softer</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:'Trebuchet MS'">
+<div class="name">Trebuchet MS<span>sans, system</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Verdana">
+<div class="name">Verdana<span>sans, system; wide, very legible small</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div><div class="row" style="--f:Tahoma">
+<div class="name">Tahoma<span>sans, system; compact</span></div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <button class="btn primary"><svg><use href="#plus"/></svg>New Tab</button>
+  <span class="chip"><button class="btn"><svg><use href="#folder"/></svg></button><button class="btn"><svg><use href="#collapse"/></svg></button></span>
+  <span class="chip"><button class="btn"><svg><use href="#zoom-out"/></svg></button><button class="btn readout">145%</button><button class="btn"><svg><use href="#zoom-in"/></svg></button><button class="btn"><svg><use href="#fit"/></svg></button></span>
+  <div class="div"></div>
+  <div class="field filter"><svg><use href="#search"/></svg><span class="ph">Filter…</span></div>
+  <span class="spacer"></span>
+  <button class="btn text">Reset View</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+<div class="bar" style="font-family:var(--f);font-size:13px">
+  <span class="chip"><button class="btn"><svg><use href="#graph"/></svg></button><button class="btn"><svg><use href="#back"/></svg></button><button class="btn" disabled><svg><use href="#fwd"/></svg></button><button class="btn"><svg><use href="#reload"/></svg></button></span>
+  <div class="field address"><span class="favicon"></span><span class="ph">example.com/docs/getting-started</span><span class="hint"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+  <button class="btn text">Split</button><button class="btn text">Tab actions</button>
+  <span class="chip"><button class="btn"><svg><use href="#help"/></svg></button><button class="btn"><svg><use href="#gear"/></svg></button></span>
+</div>
+</div>
+</body></html>

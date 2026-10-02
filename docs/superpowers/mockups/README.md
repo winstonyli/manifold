@@ -8,3 +8,4 @@ HTML sketches from the design sessions, recovered from the session transcripts (
 
 Compare with the running app using `scripts/chrome-shots.sh`.
 - `toolbar_v2.html` (2026-10-01): self-contained (inline SVG icons, no CDN or host CSS variables, which is why the older sketches above render unstyled and iconless outside their original chat widget). Both bars built from the app's real controls: one button and field anatomy, 38 px bar, chips per cluster, icon-first, an inset field with hairline border and accent focus ring. A proposal, not yet implemented; the app currently differs in bar height (32 px), the text "Graph"/"Split"/"Tab actions" buttons and the borderless address field.
+- `toolbar_fonts.html` (2026-10-01): the toolbar_v2 bars in 14 faces (Literata and Newsreader from `crates/manifold/assets/fonts`, the rest Windows system fonts), generated from `toolbar_v2.html`. Needs about 820 px of width; narrower panes scroll sideways.
