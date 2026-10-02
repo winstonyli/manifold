@@ -1,11 +1,13 @@
 mod bookmarks;
 mod card;
+mod cef_pin;
 mod cli;
 mod closed;
 mod content;
 mod crash_report;
 mod debug_control;
 mod engine_info;
+mod engine_install;
 mod event_loop;
 mod favicon_fetch;
 mod fetched;
