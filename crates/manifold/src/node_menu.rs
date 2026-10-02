@@ -252,8 +252,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     use NodeAction as A;
     use NodeMenuItem::{Button, Colors, MoveTo, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
-    // Refresh (Image/Pdf/Json only) and Open as Tab (any kind with a url),
-    // first in the menu.
+    // Refresh (Image/Pdf/Json only), Open as Tab (any kind with a url) and
+    // Copy URL (also a Download's), first in the menu.
     let url_items = |refresh: bool| {
         let mut items = Vec::new();
         if view.has_url && refresh {
@@ -261,6 +261,9 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         if view.has_url {
             items.push(Button("Open as Tab", A::OpenAsTab));
+        }
+        if view.has_copy_url {
+            items.push(Button("Copy URL", A::CopyUrl));
         }
         items
     };
@@ -280,7 +283,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     };
     let delete = |label| vec![Button(label, A::Delete)];
     match view.kind {
-        ItemNodeKind::Download => finish("download_context_menu", 170.0, file_items(), delete("Remove from List")),
+        ItemNodeKind::Download => {
+            let mut items = url_items(false);
+            items.extend(file_items());
+            finish("download_context_menu", 170.0, items, delete("Remove from List"))
+        }
         ItemNodeKind::Note => {
             let mut items = url_items(false);
             items.push(Button("Copy Text", A::CopyText));
@@ -350,6 +357,8 @@ pub(crate) struct NodeMenuView {
     /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
     /// (Image/Pdf/Json) and Open as Tab (any of the four).
     has_url: bool,
+    /// Image/Pdf/Json/Note/Download: `node.copyable_url().is_some()`, which offers Copy URL.
+    has_copy_url: bool,
     /// Tab only.
     pinned: bool,
     /// Unloaded only: the default engine isn't the one that failed, so
@@ -465,6 +474,7 @@ impl App {
             has_group: node.group.is_some(),
             color: node.color,
             has_url: node.source_url().is_some(),
+            has_copy_url: node.copyable_url().is_some(),
             pinned: node.payload.pinned(),
             other_default_engine: node
                 .payload
@@ -521,7 +531,10 @@ impl App {
                 self.sleep_group(id);
             }
             NodeAction::CopyUrl => {
-                if let Some((url, _)) = self.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
+                let node = self.nodes.get(id);
+                if let Some(url) = node.and_then(|n| n.copyable_url().map(str::to_owned)) {
+                    ctx.copy_text(url);
+                } else if let Some((url, _)) = node.and_then(|n| n.payload.saved_tab()) {
                     ctx.copy_text(url.to_string());
                 }
             }
@@ -607,6 +620,7 @@ mod tests {
                 has_group: false,
                 color: None,
                 has_url: false,
+                has_copy_url: false,
                 pinned: false,
                 other_default_engine: false,
                 failed: false,
@@ -709,18 +723,24 @@ mod tests {
         );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
-        let with_url = |kind| NodeMenuView { kind, has_url: true, ..view_of(kind) };
+        let with_url = |kind| NodeMenuView { kind, has_url: true, has_copy_url: true, ..view_of(kind) };
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Image), false).2,
-            "Refresh | Open as Tab | Open Containing Folder | Copy Path | <colors> | --- | Delete"
+            "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
         );
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Json), false).2,
-            "Refresh | Open as Tab | Open Containing Folder | Copy Path | <colors> | --- | Delete"
+            "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Delete"
+        );
+        // A download has no Open as Tab (it would download again), but can copy where it came from.
+        let download = NodeMenuView { has_copy_url: true, ..view_of(ItemNodeKind::Download) };
+        assert_eq!(
+            menu_of(&download, false).2,
+            "Copy URL | Open Containing Folder | Copy Path | <colors> | --- | Remove from List"
         );
         assert_eq!(
             menu_of(&with_url(ItemNodeKind::Note), false).2,
-            "Open as Tab | Copy Text | <colors> | --- | Delete"
+            "Open as Tab | Copy URL | Copy Text | <colors> | --- | Delete"
         );
     }
 }

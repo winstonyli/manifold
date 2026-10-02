@@ -591,6 +591,11 @@ impl GraphNode {
         }
     }
 
+    /// The URL a card's "Copy URL" puts on the clipboard: its `source_url`, or the address a download came from.
+    pub(crate) fn copyable_url(&self) -> Option<&str> {
+        self.source_url().or_else(|| self.as_download().and_then(|d| d.url.as_deref()))
+    }
+
     pub(crate) fn source_url_mut(&mut self) -> Option<&mut Option<String>> {
         match &mut self.payload {
             NodePayload::Image(p) => Some(&mut p.url),
