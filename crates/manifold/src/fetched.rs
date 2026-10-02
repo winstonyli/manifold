@@ -91,8 +91,14 @@ impl App {
         };
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
-        let payload =
-            NodePayload::Download(DownloadPayload { path, url, bytes_received: 0, total_bytes, completed: false });
+        let payload = NodePayload::Download(DownloadPayload {
+            path,
+            url,
+            bytes_received: 0,
+            total_bytes,
+            completed: false,
+            failed: false,
+        });
         self.place_node(Some(id.clone()), payload, Placement { group: node_group, pos });
         if let Some(node) = self.nodes.get_mut(&id) {
             node.parent = Some(tab_id); // the edge from the tab it came from
@@ -403,6 +409,7 @@ impl App {
                             bytes_received: bytes,
                             total_bytes: Some(bytes),
                             completed: true,
+                            failed: false,
                         };
                         self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
                         if let Some(node) = self.nodes.get_mut(&id) {

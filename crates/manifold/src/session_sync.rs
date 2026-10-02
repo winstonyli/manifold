@@ -630,6 +630,7 @@ impl App {
                     bytes_received: bytes,
                     total_bytes: Some(bytes),
                     completed: true,
+                    failed: false,
                 };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
             }
@@ -2206,6 +2207,7 @@ pub(crate) mod tests {
             bytes_received: 0,
             total_bytes: None,
             completed: true,
+            failed: false,
         };
         app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Download(payload));
         assert!(app.save_session());
@@ -2222,8 +2224,14 @@ pub(crate) mod tests {
         let path = crate::store::testutil::temp_dir("download-no-url").join("session.mnf");
         let mut app = app_on(&path, 1);
         let id = app.alloc_node_id();
-        let payload =
-            DownloadPayload { path: "f.bin".into(), url: None, bytes_received: 0, total_bytes: None, completed: true };
+        let payload = DownloadPayload {
+            path: "f.bin".into(),
+            url: None,
+            bytes_received: 0,
+            total_bytes: None,
+            completed: true,
+            failed: false,
+        };
         app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Download(payload));
         assert!(app.save_session());
         app.close_store();

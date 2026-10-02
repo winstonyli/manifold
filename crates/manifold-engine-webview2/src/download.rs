@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+    ICoreWebView2, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
 };
 use webview2_com::{
     take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler,
@@ -36,6 +36,7 @@ pub enum DownloadEvent {
     Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
+    Failed { path: String },
 }
 
 /// A queue, not a single slot -- two downloads progressing within the same
@@ -102,8 +103,12 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
             let state_handler = StateChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let Some(sender) = &sender {
                     let mut state = Default::default();
-                    if unsafe { sender.State(&mut state) }.is_ok() && state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
-                        pending_for_state.borrow_mut().push(DownloadEvent::Completed { path: path.clone() });
+                    if unsafe { sender.State(&mut state) }.is_ok() {
+                        if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                            pending_for_state.borrow_mut().push(DownloadEvent::Completed { path: path.clone() });
+                        } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+                            pending_for_state.borrow_mut().push(DownloadEvent::Failed { path: path.clone() });
+                        }
                     }
                 }
                 Ok(())

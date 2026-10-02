@@ -471,6 +471,9 @@ pub(crate) struct DownloadPayload {
     /// needing a separate enum -- nothing about a completed download's
     /// other fields becomes invalid or needs clearing.
     pub(crate) completed: bool,
+    /// Set by `DownloadFailed` (cancelled or interrupted). Never both this and `completed`. Not stored: the store
+    /// keeps only completed downloads, so a failed one is gone after a restart.
+    pub(crate) failed: bool,
 }
 
 /// `App::nodes`'s own map type -- `std::collections::HashMap` (same type,
@@ -666,7 +669,8 @@ mod tests {
                 url: None,
                 bytes_received: 0,
                 total_bytes: Some(1024),
-                completed: false
+                completed: false,
+                failed: false
             })),
             ItemNodeKind::Download
         );

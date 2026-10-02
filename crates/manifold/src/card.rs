@@ -1066,11 +1066,11 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         let body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((download_path, download_url, completed, total_bytes, bytes_received)) = self
+        let Some((download_path, download_url, completed, failed, total_bytes, bytes_received)) = self
             .nodes
             .get(id)
             .and_then(|n| n.as_download())
-            .map(|d| (d.path.clone(), d.url.clone(), d.completed, d.total_bytes, d.bytes_received))
+            .map(|d| (d.path.clone(), d.url.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
         else {
             return body;
         };
@@ -1091,6 +1091,7 @@ impl App {
             // The size (or how much has arrived) in the middle of the body below the header.
             if tall {
                 let size = match (completed, total_bytes) {
+                    _ if failed => "Download failed".to_owned(),
                     (true, total) => crate::human_bytes(total.unwrap_or(bytes_received)),
                     (false, Some(total)) => {
                         format!("{} of {}", crate::human_bytes(bytes_received), crate::human_bytes(total))
@@ -1098,7 +1099,8 @@ impl App {
                     (false, None) => crate::human_bytes(bytes_received),
                 };
                 let middle = card_body_rect(rect, true, inv_zoom).center();
-                push_centered_text(deferred_overlays, middle, size, 13.0, ui.visuals().weak_text_color());
+                let color = if failed { DANGER_COLOR } else { ui.visuals().weak_text_color() };
+                push_centered_text(deferred_overlays, middle, size, 13.0, color);
             }
         }
         // Live progress bar, only while not yet complete
@@ -1116,7 +1118,7 @@ impl App {
         // MARGIN` isn't: this is card-layout geometry
         // already inside the zoom-scaled Scene transform,
         // not chrome that needs a constant on-screen size.
-        if !completed {
+        if !completed && !failed {
             if let Some(total) = total_bytes.filter(|t| *t > 0) {
                 let fraction = (bytes_received as f32 / total as f32).clamp(0.0, 1.0);
                 let track_rect = egui::Rect::from_min_max(
@@ -2143,6 +2145,7 @@ mod tests {
             bytes_received: 0,
             total_bytes: None,
             completed: false,
+            failed: false,
         });
         assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
         assert_eq!(
@@ -2212,6 +2215,7 @@ mod tests {
             bytes_received: 0,
             total_bytes: None,
             completed: true,
+            failed: false,
         });
         // Download filters on its full path; the file kinds on the filename only.
         assert_eq!(card_filter_text(&download), ["C:/dl/f.bin"]);

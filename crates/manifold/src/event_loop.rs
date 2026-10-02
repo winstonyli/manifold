@@ -1670,6 +1670,12 @@ impl App {
                     dl.bytes_received = bytes_received;
                 }
             }
+            EngineToHost::DownloadFailed { path } => {
+                self.queue_toast(format!("Download failed: {path}"));
+                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
+                    dl.failed = true;
+                }
+            }
             EngineToHost::DownloadCompleted { path } => {
                 self.queue_toast(format!("Saved {path}"));
                 if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
@@ -1685,6 +1691,20 @@ impl App {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_failed_download_is_marked_and_no_longer_in_flight() {
+        let mut app = App::default();
+        app.insert_note_at("n".into(), None);
+        app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
+        let in_flight =
+            |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
+        assert!(in_flight(&app));
+        app.handle_engine_message("n", EngineToHost::DownloadFailed { path: "f.zip".into() });
+        let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
+        assert!(download.failed && !download.completed);
+        assert!(!in_flight(&app));
+    }
 
     #[test]
     fn a_quiet_second_is_idle_and_a_burst_of_engine_frames_is_not() {

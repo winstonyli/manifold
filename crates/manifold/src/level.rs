@@ -139,6 +139,7 @@ mod tests {
             bytes_received: 0,
             total_bytes: None,
             completed: true,
+            failed: false,
         })
     }
 

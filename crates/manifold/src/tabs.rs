@@ -596,7 +596,7 @@ impl App {
         let downloading: std::collections::HashSet<&str> = self
             .nodes
             .values()
-            .filter(|n| n.as_download().is_some_and(|d| !d.completed))
+            .filter(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed))
             .filter_map(|n| n.parent.as_deref())
             .collect();
         let views = self.nodes.iter().filter_map(|(id, n)| {

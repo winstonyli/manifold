@@ -259,6 +259,7 @@ mod tests {
                 bytes_received: 1,
                 total_bytes: Some(1),
                 completed: true,
+                failed: false,
             }),
         );
         put_in(&mut app, &dl0, &inner);

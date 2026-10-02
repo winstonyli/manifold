@@ -479,6 +479,9 @@ pub enum EngineToHost {
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
+    /// A download ended without finishing (cancelled, interrupted, network error) -- `path` is the one its
+    /// `DownloadStarted` reported. `manifold` marks the card failed and stops treating it as in flight.
+    DownloadFailed { path: String },
     /// The page that just finished loading is a raw JSON response --
     /// `body` is its full text, so `manifold` can parse and show a real
     /// tree view instead of whatever a given engine's own default

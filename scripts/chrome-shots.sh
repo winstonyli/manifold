@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress json-zoom
+#   shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -456,10 +456,10 @@ if has missing-file; then
     rm -f "$work/gone.png" "$work/gone.json"
     send "IMPORTSESSION $(w "$work/missing.mnf")" "SLEEP 1" CONFIRMIMPORT "SLEEP 4" "MOUSEMOVE 5 790" "SLEEP 1"; shot missing-file
 fi
-# Real downloads: a local HTTP server answers /real.zip as a small attachment and /slow as a 1 MB one it stalls after
+# Real downloads (`download-failed` kills the server mid-transfer): a local HTTP server answers /real.zip as a small attachment and /slow as a 1 MB one it stalls after
 # 300 KB, and the live tab navigates to it, so the engine starts the download (the card keeps the URL as its source
 # line). Before json-zoom, which must run last.
-if has download-real || has download-progress; then
+if has download-real || has download-progress || has download-failed; then
     cat >"$work/serve.py" <<'PY'
 import http.server, time
 class H(http.server.BaseHTTPRequestHandler):
@@ -482,10 +482,15 @@ PY
     python -P "$work/serve.py" </dev/null >/dev/null 2>&1 &
     srv=$!
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
-    if has download-progress; then
+    if has download-progress || has download-failed; then
         # Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
         send "ADDRESSBAR http://127.0.0.1:8765/slow" "SLEEP 1" ENTER "SLEEP 6"
-        send TOGGLEVIEW "SLEEP 2" "CLICK 327 19" "SLEEP 2" "MOUSEMOVE 5 790" "SLEEP 1"; shot download-progress
+        send TOGGLEVIEW "SLEEP 2" "CLICK 327 19" "SLEEP 2" "MOUSEMOVE 5 790" "SLEEP 1"; has download-progress && shot download-progress
+        if has download-failed; then
+            # The server dies mid-transfer: the engine reports the download interrupted.
+            kill $srv 2>/dev/null; sleep 5
+            send "MOUSEMOVE 5 780" "SLEEP 1"; shot download-failed
+        fi
         send "DOUBLECLICK $x $y" "SLEEP 2"
     fi
     if has download-real; then

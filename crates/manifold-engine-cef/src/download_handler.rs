@@ -14,6 +14,7 @@ pub enum DownloadEvent {
     Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
+    Failed { path: String },
 }
 
 /// Download events, queued rather than a single slot -- two downloads
@@ -21,7 +22,7 @@ pub enum DownloadEvent {
 /// other. `on_download_updated` fires repeatedly for the same item over its
 /// whole lifetime (not just once at completion) -- `started` dedupes it
 /// down to exactly one `Started` per item id, `reported` the same for
-/// `Completed`; every other call in between is a `Progress`.
+/// `Completed` or `Failed`; every other call in between is a `Progress`.
 pub struct DownloadResults {
     pub queue: Vec<DownloadEvent>,
     started: HashSet<u32>,
@@ -117,6 +118,10 @@ wrap_download_handler! {
                 if item.is_complete() != 0 {
                     if results.reported.insert(id) {
                         results.queue.push(DownloadEvent::Completed { path });
+                    }
+                } else if item.is_canceled() != 0 || item.is_interrupted() != 0 {
+                    if results.reported.insert(id) {
+                        results.queue.push(DownloadEvent::Failed { path });
                     }
                 } else {
                     let received = item.received_bytes();

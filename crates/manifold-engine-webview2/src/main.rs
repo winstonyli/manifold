@@ -421,6 +421,7 @@ fn main() {
                         EngineToHost::DownloadProgress { path, bytes_received }
                     }
                     download::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+                    download::DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
                 };
                 let _ = control.send(&msg);
             }

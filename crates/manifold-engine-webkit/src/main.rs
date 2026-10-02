@@ -25,6 +25,7 @@ enum DownloadEvent {
     Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
+    Failed { path: String },
 }
 
 fn main() {
@@ -136,8 +137,23 @@ fn main() {
                 }
             });
 
+            // `failed` fires before `finished` (which follows either outcome), so it marks the download for it.
+            let failed = Rc::new(std::cell::Cell::new(false));
+            let pending_for_failed = pending_for_started.clone();
+            let failed_for_handler = failed.clone();
+            download.connect_failed(move |download, _error| {
+                failed_for_handler.set(true);
+                if let Some(uri) = download.destination() {
+                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                    pending_for_failed.borrow_mut().push(DownloadEvent::Failed { path });
+                }
+            });
+
             let pending_for_finished = pending_for_started.clone();
             download.connect_finished(move |download| {
+                if failed.get() {
+                    return;
+                }
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
                     pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
@@ -484,6 +500,7 @@ fn main() {
                     EngineToHost::DownloadProgress { path, bytes_received }
                 }
                 DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+                DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
             };
             let _ = to_host.send(&msg);
         }
