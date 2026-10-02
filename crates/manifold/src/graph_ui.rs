@@ -1539,6 +1539,7 @@ impl App {
         let tab_order = self.card_tab_order();
         self.card_hint = None;
         self.handle_card_tab(ui, &tab_order);
+        self.handle_card_digits(ui, &tab_order);
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1663,6 +1664,46 @@ impl App {
         if let (true, Some(target)) = (tab, target) {
             ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
             if let Some(node) = self.nodes.get(&order[target]) {
+                self.pan_to_card(node_card_rect(node));
+            }
+        }
+    }
+
+    /// Plain digit keys jump to the card with that Tab-order number (the badge's number): focus and
+    /// pan, never open. Two digits within `DIGIT_WINDOW` make a longer number; a lone digit that no
+    /// longer number could extend jumps at once. Ignored while a text field, popup, menu or JSON
+    /// level has the keyboard.
+    fn handle_card_digits(&mut self, ui: &egui::Ui, order: &[String]) {
+        let key = egui::Id::new("card_digits");
+        let now = ui.input(|i| i.time);
+        let (mut buf, at): (String, f64) = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+        let free = self.json_level.is_none()
+            && self.node_menu.is_none()
+            && !self.popup_open()
+            && !self.showing_tab_view()
+            && !ui.ctx().egui_wants_keyboard_input();
+        let digit = free.then(|| ui.input(pressed_digit)).flatten();
+        if let Some(d) = digit {
+            if now - at > DIGIT_WINDOW {
+                buf.clear();
+            }
+            buf.push(d);
+            ui.data_mut(|d| d.insert_temp(key, (buf.clone(), now)));
+        }
+        if !free && !buf.is_empty() {
+            ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
+            return;
+        }
+        let Some(number) = digits_ready(&buf, order.len(), now - at) else {
+            if !buf.is_empty() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(DIGIT_WINDOW));
+            }
+            return;
+        };
+        ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
+        if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
+            ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
+            if let Some(node) = self.nodes.get(id) {
                 self.pan_to_card(node_card_rect(node));
             }
         }
@@ -1842,8 +1883,50 @@ impl App {
     }
 }
 
+/// How long a digit waits for a second one before the number is taken as typed.
+const DIGIT_WINDOW: f64 = 0.6;
+
+/// The plain digit key (no modifiers) pressed this frame.
+fn pressed_digit(i: &egui::InputState) -> Option<char> {
+    use egui::Key::*;
+    [
+        (Num0, '0'),
+        (Num1, '1'),
+        (Num2, '2'),
+        (Num3, '3'),
+        (Num4, '4'),
+        (Num5, '5'),
+        (Num6, '6'),
+        (Num7, '7'),
+        (Num8, '8'),
+        (Num9, '9'),
+    ]
+    .into_iter()
+    .find(|(k, _)| i.key_pressed(*k) && !i.modifiers.any())
+    .map(|(_, c)| c)
+}
+
+/// The card number to jump to once the typed `digits` are final: after two digits, once `idle`
+/// passes `DIGIT_WINDOW`, or when no longer number (appending a digit) could name one of `count`
+/// cards. A leading 0 names nothing and is dropped.
+fn digits_ready(digits: &str, count: usize, idle: f64) -> Option<usize> {
+    let n: usize = digits.parse().ok()?;
+    let final_ = digits.len() >= 2 || idle > DIGIT_WINDOW || n * 10 > count;
+    final_.then_some(n)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn digits_wait_only_while_a_longer_number_could_still_name_a_card() {
+        use super::digits_ready;
+        assert_eq!(digits_ready("3", 5, 0.0), Some(3), "no card 30..39 exists");
+        assert_eq!(digits_ready("1", 15, 0.0), None, "10..15 exist: wait for a second digit");
+        assert_eq!(digits_ready("1", 15, 1.0), Some(1), "window elapsed");
+        assert_eq!(digits_ready("12", 15, 0.0), Some(12));
+        assert_eq!(digits_ready("0", 15, 1.0), Some(0), "0 names no card; the caller finds none");
+    }
+
     use super::*;
 
     #[test]

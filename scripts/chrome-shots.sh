@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # mouse-regress is asserted instead of shot: it prints PASS/FAIL for drag, swatch click and middle-click close.
@@ -265,6 +265,16 @@ if has json-tab-offscreen; then
 ' $seen | sort -u | wc -l)
     [ "$distinct" -ge $((total - 1)) ] && echo "PASS: Tab reached every JSON card after the root" || echo "FAIL: Tab reached $distinct of $((total - 1)) cards after the root"
     shot json-tab-offscreen; reset
+fi
+# Digits jump to the card with that Tab-order number (the Note is 3 of the 5 seeded cards):
+# 3 focuses it, so Enter starts editing. Prints PASS/FAIL lines.
+if has digit-jump; then
+    ned() { state; python -P -c 'import json,sys; print(any(c.get("editing") for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+    reset
+    send "DIGITKEY 3" "SLEEP 1"; shot digit-jump
+    send ENTER "SLEEP 1"
+    echo "$([ "$(ned)" = True ] && echo PASS || echo FAIL): digit 3 focuses card 3 (the note), Enter edits it"
+    reset
 fi
 # Mouse behaviour that the Tab-focus model must not disturb, asserted rather than shot: dragging a
 # card moves it, clicking its swatch tags it, middle-click closes it. Prints PASS/FAIL lines.

@@ -889,6 +889,21 @@ impl App {
             DebugCommand::ArrowRight => {
                 self.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
             }
+            DebugCommand::DigitKey(d) => {
+                let key = [
+                    egui::Key::Num0,
+                    egui::Key::Num1,
+                    egui::Key::Num2,
+                    egui::Key::Num3,
+                    egui::Key::Num4,
+                    egui::Key::Num5,
+                    egui::Key::Num6,
+                    egui::Key::Num7,
+                    egui::Key::Num8,
+                    egui::Key::Num9,
+                ][d as usize];
+                self.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
+            }
             DebugCommand::SpaceKey => {
                 self.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
             }

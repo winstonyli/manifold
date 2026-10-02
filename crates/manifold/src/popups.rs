@@ -1125,6 +1125,7 @@ impl App {
             ("F12", "Open devtools"),
             ("F1", "Toggle this shortcut reference"),
             ("#", "Graph canvas"),
+            ("1 - 9", "Focus the card with that number (two digits for 10 and up); Enter then opens it"),
             ("Arrows", "Move focus to the nearest node"),
             ("Enter", "Open the focused node"),
             ("Escape", "Clear the selection, close a menu, dismiss a preview"),
