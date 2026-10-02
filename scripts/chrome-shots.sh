@@ -18,10 +18,10 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key mouse-regress json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
-# and mouse-regress (asserted, prints PASS/FAIL: drag, swatch click, middle-click close),
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
+# mouse-regress is asserted instead of shot: it prints PASS/FAIL for drag, swatch click and middle-click close.
 # The app has no light theme, so there is one set of images.
 # Build first: cargo build -p manifold -p manifold-engine-webview2.
 set -u
