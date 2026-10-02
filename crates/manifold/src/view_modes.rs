@@ -33,7 +33,7 @@ pub(crate) enum TransitionKind {
 /// view's node layout as the backdrop (for *either* direction — it's the
 /// one screen both endpoints have a coherent position in) with `node_id`'s
 /// live content quad drawn on top at an interpolated rect, rather than
-/// switching `view_mode` instantly. See `App::transition_content_rect_points`
+/// switching `view_mode` instantly. See `App::transition_content_rects_points`
 /// (Tab) and `App::image_transition_frame` (Image).
 pub(crate) struct Transition {
     pub(crate) node_id: String,
@@ -193,30 +193,40 @@ impl App {
         self.save_session();
     }
 
-    /// The rect (in egui points, screen space) a `Transition` should draw
-    /// its tab's live content quad at *this frame* — eased interpolation
-    /// between Tab view's full content area and the tab's graph-node
-    /// thumbnail spot, direction depending on `transition.kind`.
-    pub(crate) fn transition_content_rect_points(&self, transition: &Transition) -> egui::Rect {
+    /// Where a `Transition` draws its tab's live content *this frame* (egui points, screen space),
+    /// as `(viewport, clip)`: the page is stretched over `viewport` and only `clip` shows. It eases
+    /// between Tab view's full content area and the tab's graph-card thumbnail, direction per
+    /// `transition.kind`. At the card end the page is scaled to cover the thumbnail area
+    /// (`cover_uv`, as `paint_tab_body` crops it), so the quad lands on what the card shows.
+    pub(crate) fn transition_content_rects_points(&self, transition: &Transition) -> (egui::Rect, egui::Rect) {
         let screen = self.screen_size_points();
         let full_content_rect = egui::Rect::from_min_size(
             egui::pos2(0.0, CHROME_HEIGHT_POINTS),
             egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
         );
-        let node_rect = self
-            .nodes
-            .get(&transition.node_id)
-            .map(|node| {
-                // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
-                let world = egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE);
-                let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
-                self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom))
-            })
-            .unwrap_or(full_content_rect);
-        transition_eased_rect(transition, full_content_rect, node_rect)
+        let Some(node) = self.nodes.get(&transition.node_id) else {
+            let rect = transition_eased_rect(transition, full_content_rect, full_content_rect);
+            return (rect, rect);
+        };
+        // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
+        let world = egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE);
+        let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
+        let clip_end = self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom));
+        let viewport_end = match self.gpu.as_ref().and_then(|g| g.thumbnail_size(&transition.node_id)) {
+            Some(size) => {
+                let uv = cover_uv(size, clip_end.size());
+                let size = egui::vec2(clip_end.width() / uv.width(), clip_end.height() / uv.height());
+                egui::Rect::from_min_size(clip_end.min - uv.min.to_vec2() * size, size)
+            }
+            None => clip_end,
+        };
+        (
+            transition_eased_rect(transition, full_content_rect, viewport_end),
+            transition_eased_rect(transition, full_content_rect, clip_end),
+        )
     }
 
-    /// Image counterpart of `transition_content_rect_points`: the image's
+    /// Image counterpart of `transition_content_rects_points`: the image's
     /// texture and where to paint it this frame, between its graph card
     /// and its current Image-view rect (Fit on entry; whatever zoom/pan
     /// the user left on exit), so the aspect ratio is right throughout.

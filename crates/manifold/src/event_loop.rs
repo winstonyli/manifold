@@ -595,12 +595,13 @@ impl App {
     /// the normal Tab-view rule, which is two entries (primary +
     /// secondary, side by side) while a split is open, one
     /// otherwise, none in Graph view.
-    pub(crate) fn content_panes_points(&self, ppp: f32) -> Vec<(egui::Rect, String)> {
+    pub(crate) fn content_panes_points(&self, ppp: f32) -> Vec<(egui::Rect, egui::Rect, String)> {
         if let Some(transition) = &self.transition {
             // Only a Tab has a GPU pane; an Image's transition is
             // painted through egui instead (see `build_ui`).
             if self.nodes.get(&transition.node_id).is_some_and(|n| n.as_tab().is_some()) {
-                vec![(self.transition_content_rect_points(transition), transition.node_id.clone())]
+                let (viewport, clip) = self.transition_content_rects_points(transition);
+                vec![(viewport, clip, transition.node_id.clone())]
             } else {
                 vec![]
             }
@@ -617,9 +618,9 @@ impl App {
                     let mid_x = full_rect.center().x;
                     let left = egui::Rect::from_min_max(full_rect.min, egui::pos2(mid_x, full_rect.max.y));
                     let right = egui::Rect::from_min_max(egui::pos2(mid_x, full_rect.min.y), full_rect.max);
-                    vec![(left, focused_id.clone()), (right, split_id.clone())]
+                    vec![(left, left, focused_id.clone()), (right, right, split_id.clone())]
                 }
-                (Some(focused_id), None) => vec![(full_rect, focused_id.clone())],
+                (Some(focused_id), None) => vec![(full_rect, full_rect, focused_id.clone())],
                 (None, _) => vec![],
             }
         } else {
@@ -638,11 +639,10 @@ impl App {
         self.drop_batch = 0;
         let ppp = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
         let content_panes_pts = self.content_panes_points(ppp);
-        let content_panes_px: Vec<(gpu::PxRect, &str)> = content_panes_pts
+        let px = |rect: &egui::Rect| (rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp);
+        let content_panes_px: Vec<(gpu::PanePx, &str)> = content_panes_pts
             .iter()
-            .map(|(rect, id)| {
-                ((rect.min.x * ppp, rect.min.y * ppp, rect.width() * ppp, rect.height() * ppp), id.as_str())
-            })
+            .map(|(viewport, clip, id)| (gpu::PanePx { viewport: px(viewport), clip: px(clip) }, id.as_str()))
             .collect();
 
         let content_on_top = self.transition.is_some();

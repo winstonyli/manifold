@@ -11,6 +11,22 @@ use winit::window::Window;
 /// A pane's rectangle in physical pixels: x, y, width, height.
 pub type PxRect = (f32, f32, f32, f32);
 
+/// One content quad: the whole texture is stretched over `viewport` (which may extend past the
+/// window), and only `clip` of it shows. They are equal except in a Tab-view transition, where
+/// `clip` is the card's thumbnail area and `viewport` is the page scaled to cover it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanePx {
+    pub viewport: PxRect,
+    pub clip: PxRect,
+}
+
+impl PanePx {
+    /// A pane with nothing cropped.
+    pub fn whole(rect: PxRect) -> Self {
+        Self { viewport: rect, clip: rect }
+    }
+}
+
 pub struct RenderOutcome {
     pub surface_ok: bool,
     /// `Some` only when a screenshot was requested AND `surface_ok` --
@@ -836,16 +852,25 @@ impl GpuState {
     fn record_content_layers(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        panes: &[(PxRect, Option<&TabTexture>)],
+        panes: &[(PanePx, Option<&TabTexture>)],
+        target: (u32, u32),
         pipeline: &wgpu::RenderPipeline,
         clear: bool,
     ) {
         if panes.is_empty() {
-            Self::record_content_pass(encoder, view, (0.0, 0.0, 0.0, 0.0), None, pipeline, clear);
+            Self::record_content_pass(
+                encoder,
+                view,
+                PanePx::whole((0.0, 0.0, 0.0, 0.0)),
+                target,
+                None,
+                pipeline,
+                clear,
+            );
             return;
         }
-        for (i, (rect, showing)) in panes.iter().enumerate() {
-            Self::record_content_pass(encoder, view, *rect, *showing, pipeline, clear && i == 0);
+        for (i, (pane, showing)) in panes.iter().enumerate() {
+            Self::record_content_pass(encoder, view, *pane, target, *showing, pipeline, clear && i == 0);
         }
     }
 
@@ -865,7 +890,8 @@ impl GpuState {
     fn record_content_pass(
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        viewport: PxRect,
+        pane: PanePx,
+        target: (u32, u32),
         showing: Option<&TabTexture>,
         pipeline: &wgpu::RenderPipeline,
         clear: bool,
@@ -887,12 +913,22 @@ impl GpuState {
             multiview_mask: None,
         });
         if let Some(tab_texture) = showing {
-            let (x, y, w, h) = viewport;
+            let (x, y, w, h) = pane.viewport;
             // `.max(1.0)`: wgpu validation rejects a zero/negative-size
             // viewport — a transition's interpolated rect should never
             // actually collapse to zero, but a mid-animation window resize
             // is cheap insurance against a transient degenerate frame.
             pass.set_viewport(x, y, w.max(1.0), h.max(1.0), 0.0, 1.0);
+            // The scissor must lie inside the target; a clip wholly outside it draws nothing.
+            let (cx, cy, cw, ch) = pane.clip;
+            let (left, top) = (cx.max(0.0).min(target.0 as f32), cy.max(0.0).min(target.1 as f32));
+            let (right, bottom) = ((cx + cw).max(0.0).min(target.0 as f32), (cy + ch).max(0.0).min(target.1 as f32));
+            pass.set_scissor_rect(
+                left as u32,
+                top as u32,
+                (right - left).max(0.0) as u32,
+                (bottom - top).max(0.0) as u32,
+            );
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &tab_texture.bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -968,7 +1004,7 @@ impl GpuState {
     /// frames are exactly as expensive as before this existed.
     pub fn render(
         &mut self,
-        panes: &[(PxRect, &str)],
+        panes: &[(PanePx, &str)],
         content_on_top: bool,
         egui_output: Option<(&egui::Context, egui::FullOutput)>,
         screenshot_path: Option<&str>,
@@ -1020,8 +1056,8 @@ impl GpuState {
         // its first frame yet, or whose texture was already freed, simply
         // draws nothing for this frame, same tolerance a single-pane render
         // already had).
-        let panes: Vec<(PxRect, Option<&TabTexture>)> =
-            panes.iter().map(|(rect, id)| (*rect, self.tab_textures.get(*id))).collect();
+        let panes: Vec<(PanePx, Option<&TabTexture>)> =
+            panes.iter().map(|(pane, id)| (*pane, self.tab_textures.get(*id))).collect();
 
         // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
         // and reused for both the on-screen pass and, if requested, the
@@ -1061,12 +1097,12 @@ impl GpuState {
                     screen_descriptor,
                     true,
                 );
-                Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, false);
+                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, false);
             } else {
-                Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, true);
+                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
             }
         } else {
-            Self::record_content_layers(&mut encoder, &view, &panes, &self.pipeline, true);
+            Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
             if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
                 Self::record_egui_pass(
                     &mut encoder,
@@ -1101,12 +1137,33 @@ impl GpuState {
                         screen_descriptor,
                         true,
                     );
-                    Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, false);
+                    Self::record_content_layers(
+                        &mut encoder,
+                        &readback_view,
+                        &panes,
+                        (width, height),
+                        &self.pipeline,
+                        false,
+                    );
                 } else {
-                    Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, true);
+                    Self::record_content_layers(
+                        &mut encoder,
+                        &readback_view,
+                        &panes,
+                        (width, height),
+                        &self.pipeline,
+                        true,
+                    );
                 }
             } else {
-                Self::record_content_layers(&mut encoder, &readback_view, &panes, &self.pipeline, true);
+                Self::record_content_layers(
+                    &mut encoder,
+                    &readback_view,
+                    &panes,
+                    (width, height),
+                    &self.pipeline,
+                    true,
+                );
                 if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
                     Self::record_egui_pass(
                         &mut encoder,

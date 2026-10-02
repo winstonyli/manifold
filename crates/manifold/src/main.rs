@@ -2417,7 +2417,7 @@ impl App {
         // shrinking-away Tab view and an expanding-toward Tab view have a
         // coherent shared position in (the target/source node). The actual
         // animated content quad itself is drawn separately, in
-        // `render_frame` — see `transition_content_rect_points`.
+        // `render_frame` — see `transition_content_rects_points`.
         if self.transition.is_some() {
             self.build_graph_ui(ui);
             // A Tab's transition quad is a GPU pane (`content_panes_pts`);
