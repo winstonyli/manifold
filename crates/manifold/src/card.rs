@@ -1925,7 +1925,7 @@ mod tests {
     fn every_card_body_draws_a_header() {
         let src = include_str!("card.rs");
         let production = &src[..src.find("mod tests {").unwrap()];
-        let markers = ["paint_card_header(", "paint_missing_file_card(", "tab_has_header(", "look.preview", "preview"];
+        let markers = ["paint_card_header(", "paint_missing_file_card(", "tab_has_header("];
         for name in ["unloaded_tab", "download", "note", "image", "pdf", "json", "group", "tab"] {
             let start = production.find(&format!("fn paint_{name}_body(")).unwrap_or_else(|| panic!("no {name} body"));
             let rest = &production[start + 1..];
@@ -1935,7 +1935,9 @@ mod tests {
     pub(crate) fn ",
                 )
                 .unwrap_or(rest.len())];
-            assert!(markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
+            // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which `CardLook::preview` switches to F.
+            let json_preview = name == "json" && body.contains("TAB_HEADER_POINTS");
+            assert!(json_preview || markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
         }
     }
     use crate::json_view::JsonView;
