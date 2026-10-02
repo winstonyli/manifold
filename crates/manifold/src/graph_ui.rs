@@ -1598,7 +1598,13 @@ impl App {
     fn handle_card_tab(&mut self, ui: &egui::Ui, order: &[String]) {
         let card_id = |id: &String| egui::Id::new(("graph_card", id.as_str()));
         let Some(at) = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id)))) else { return };
-        let (tab, shift) = ui.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+        // The shift state comes from the key event itself, which is also how the debug `TABKEY shift` sends it.
+        let (tab, shift) = ui.input(|i| {
+            let shifted = i.events.iter().any(
+                |e| matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if modifiers.shift),
+            );
+            (i.key_pressed(egui::Key::Tab), shifted)
+        });
         let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
@@ -1823,5 +1829,59 @@ mod tests {
         let filled = camera.rect;
         camera.fill(outer);
         assert_eq!(camera.rect, filled, "already filling: unchanged");
+    }
+
+    /// Tab and Shift+Tab on a focused card step through the level in creation order and stop
+    /// handling at either end (egui then moves on to widgets outside the cards).
+    #[test]
+    fn tab_steps_through_cards_in_creation_order() {
+        let mut app = App::default();
+        for _ in 0..3 {
+            app.new_note_shortcut();
+        }
+        let order = app.card_tab_order();
+        assert_eq!(order.len(), 3);
+        let card = |i: usize| egui::Id::new(("graph_card", order[i].as_str()));
+        let ctx = egui::Context::default();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                // Cards the pass would register; egui drops focus from an id nothing registers.
+                for (i, id) in order.iter().enumerate() {
+                    let rect =
+                        egui::Rect::from_min_size(egui::pos2(10.0 + 60.0 * i as f32, 10.0), egui::vec2(50.0, 50.0));
+                    ui.interact(rect, egui::Id::new(("graph_card", id.as_str())), egui::Sense::click());
+                }
+                app.handle_card_tab(ui, &order)
+            });
+            output.textures_delta.clear();
+        };
+        let tab = |modifiers| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: Some(egui::Key::Tab),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        ctx.memory_mut(|m| m.request_focus(card(0)));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        assert!(ctx.memory(|m| m.has_focus(card(1))), "Tab: first -> second");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        assert!(ctx.memory(|m| m.has_focus(card(2))), "Tab: second -> third");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![tab(egui::Modifiers::SHIFT)]);
+        assert!(ctx.memory(|m| m.has_focus(card(1))), "Shift+Tab: third -> second");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        frame(&mut app, vec![]);
+        // At the last card the handler does nothing (target is `None`), so focus is not moved back.
+        frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
+        assert!(!ctx.memory(|m| m.has_focus(card(0)) || m.has_focus(card(1))), "no wrap past the end");
     }
 }
