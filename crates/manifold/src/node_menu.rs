@@ -99,6 +99,11 @@ pub(crate) fn build_node_context_menu(
     rename: Option<(&mut String, bool)>,
 ) -> (Option<NodeAction>, bool) {
     let mut action = None;
+    // The first item takes focus when the menu opens, so it can be driven from the keyboard.
+    let open_key = egui::Id::new((config.area_id, "was_open"));
+    let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
+    ui.data_mut(|d| d.insert_temp(open_key, interactable));
+    let mut first_item = just_opened;
     let anchor = egui::Rect::from_min_size(pos, egui::Vec2::ZERO);
     let area_rect = build_list_popup_frame(
         ui.ctx(),
@@ -127,6 +132,12 @@ pub(crate) fn build_node_context_menu(
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
                         let mut response = ui.button(*label);
+                        if std::mem::take(&mut first_item) {
+                            response.request_focus();
+                        }
+                        if response.has_focus() {
+                            focus_ring(ui, &response);
+                        }
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
@@ -171,6 +182,9 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
         for choice in TAG_COLOR_PALETTE.iter().copied().map(Some).chain([None]) {
             let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
             let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.has_focus() {
+                focus_ring(ui, &response);
+            }
             match choice {
                 Some(swatch) => {
                     ui.painter().circle_filled(rect.center(), 7.0, swatch);
@@ -402,6 +416,10 @@ impl App {
         }
         if close {
             self.node_menu = None;
+            // Closed from the keyboard: focus goes back to the card the menu belongs to.
+            if !ui.input(|i| i.pointer.any_click()) {
+                ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
+            }
         }
     }
 

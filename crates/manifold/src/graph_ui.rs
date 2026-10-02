@@ -1088,14 +1088,16 @@ impl App {
                     None
                 }
             });
-            if let Some(dir) = dir {
+            // An open node menu keeps the arrows and Enter for itself.
+            let menu_open = self.node_menu.is_some();
+            if let Some(dir) = dir.filter(|_| !menu_open) {
                 self.move_graph_focus(dir);
             }
             // Enter opens whatever arrow-key navigation landed on, the same
             // way clicking the node's card does. A Tab-focused card handles its own
             // Enter in the card pass, so this skips it (else it would open the
             // app-focused tab instead of the card).
-            if !self.card_nav_active && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if !self.card_nav_active && !menu_open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
             // Escape clears a rectangle-select selection, dismisses any
@@ -1111,7 +1113,9 @@ impl App {
             // no-op the rest of the time.
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.selected_tabs.clear();
-                self.node_menu = None;
+                if let Some((id, _)) = self.node_menu.take() {
+                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
+                }
                 self.pending_new_node = None;
                 self.dismiss_hover_peek();
             }

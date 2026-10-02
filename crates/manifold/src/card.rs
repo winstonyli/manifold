@@ -769,6 +769,12 @@ impl App {
         }
         // Registered after both interacts above, so they take the pointer.
         let delete = response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
+        // Shift+F10 on a focused card opens its menu, anchored at the card's bottom-left.
+        if response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)) {
+            let corner = rect.left_bottom();
+            let at = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(corner, |t| t * corner);
+            self.node_menu = Some((id.to_string(), at));
+        }
         let mut control =
             (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action(view.kind));
         let mut control_hovered = false;
