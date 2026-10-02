@@ -326,17 +326,6 @@ fi
 if has cards-f; then
     send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEPNODE t1" "SLEEP 6" "MOUSEMOVE 327 19" "MOUSEDOWN 327 19 left" "MOUSEUP 327 19 left" "SLEEP 2"; shot cards-f
 fi
-# The Json card preview's header stays 40 points while its rows get more or less of the card: the toolbar's
-# zoom-out button twice (fewer rows fit under the header), then back in (the graph zoom, not the page zoom `ZOOMIN` sets).
-if has json-zoom; then
-    click() { send "MOUSEMOVE $1 $2" "MOUSEDOWN $1 $2 left" "MOUSEUP $1 $2 left" "SLEEP 1"; }
-    click 219 19; click 219 19; send "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-out
-    # In to ~280%, then drag the empty canvas up so the Json card (below the tab) is on screen.
-    for _ in 1 2 3 4 5 6; do click 295 19; done
-    send "MOUSEMOVE 900 760" "MOUSEDOWN 900 760 left" "MOUSEMOVE 900 660 left" "MOUSEMOVE 900 560 left" "MOUSEUP 900 560 left" "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-in
-    click 327 19; send "MOUSEMOVE 5 790" "SLEEP 1"
-    send "MOUSEMOVE 5 790"
-fi
 if has image-view; then
     read -r x y < <(center Image); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
 fi
@@ -451,6 +440,15 @@ if has settings || has hover-settings || has tab-settings || has settings-engine
 fi
 # A toast, from opening a session that doesn't exist (which also leaves the settings page).
 if has toast; then send "OPENSESSION nosuch" "SLEEP 1"; shot toast; fi
+# Last, because it leaves the graph zoomed (the toolbar's fit button does not restore it). The Json card preview's header stays 40 points while its rows get more or less of the card: the toolbar's
+# zoom-out button twice (fewer rows fit under the header), then back in (the graph zoom, not the page zoom `ZOOMIN` sets).
+if has json-zoom; then
+    click() { send "MOUSEMOVE $1 $2" "MOUSEDOWN $1 $2 left" "MOUSEUP $1 $2 left" "SLEEP 1"; }
+    click 219 19; click 219 19; send "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-out
+    # In to ~280%, then drag the empty canvas up so the Json card (below the tab) is on screen.
+    for _ in 1 2 3 4 5 6; do click 295 19; done
+    send "MOUSEMOVE 900 760" "MOUSEDOWN 900 760 left" "MOUSEMOVE 900 660 left" "MOUSEMOVE 900 560 left" "MOUSEUP 900 560 left" "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-in
+fi
 send QUIT
 wait "$inst" 2>/dev/null
 inst=""
