@@ -4996,6 +4996,7 @@ dependencies = [
 name = "manifold"
 version = "0.1.0"
 dependencies = [
+ "bzip2",
  "egui",
  "egui-phosphor",
  "egui-wgpu",
@@ -5015,6 +5016,7 @@ dependencies = [
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
+ "tar",
  "ureq",
  "wgpu",
  "windows 0.62.2",

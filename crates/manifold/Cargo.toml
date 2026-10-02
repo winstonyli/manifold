@@ -70,11 +70,13 @@ foldhash = "0.2"
 # OS randomness for the session store's per-launch actor ids, document
 # ids and file generations (`store::model`, `store::journal`).
 getrandom = "0.3"
+bzip2 = "0.6.1"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10.7"
 sha2 = "0.10.9"
+tar = "0.4.46"
 ureq = "3"
 wgpu = "30.0.1"
 winit = "0.30.13"
