@@ -5,6 +5,39 @@ use super::*;
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
+/// What a file card's overlay header says (`App::paint_file_header`).
+pub(crate) struct FileHeader {
+    pub(crate) glyph: &'static str,
+    pub(crate) name: String,
+    /// The web address if the card has one, else the local path (elided at the start).
+    pub(crate) source: String,
+    /// Screen points the fallback strip leaves free at its right.
+    pub(crate) right_margin: f32,
+}
+
+/// The file name and the source line of an Image or PDF card: `url` if it has one, else `path`.
+pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String) {
+    let name = crate::content::file_name(path).unwrap_or_else(|| path.to_owned());
+    (name, url.unwrap_or(path).to_owned())
+}
+
+/// `text` cut to `max_width` screen points at the start ("…\\Trips\\a.jpg"), so a path's file name
+/// stays visible. Cut as `truncate_to_width` cuts the reversed text, which shares its cache.
+fn truncate_start_to_width(
+    cache: &mut HashMap<TruncateCacheKey, String>,
+    ctx: &egui::Context,
+    text: &str,
+    font_id: &egui::FontId,
+    max_width: f32,
+) -> String {
+    let reversed: String = text.chars().rev().collect();
+    let cut = truncate_to_width(cache, ctx, &reversed, font_id, max_width);
+    match cut.strip_suffix('\u{2026}') {
+        Some(kept) if kept.len() < reversed.len() => format!("\u{2026}{}", kept.chars().rev().collect::<String>()),
+        _ => cut.chars().rev().collect(),
+    }
+}
+
 /// Height of a Tab card's header (favicon, title, source line), in screen points.
 const TAB_HEADER_POINTS: f32 = 40.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
@@ -934,7 +967,7 @@ impl App {
         match view.kind {
             ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, zoom_scale),
             ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom),
-            ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect),
+            ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
             ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
@@ -1287,6 +1320,8 @@ impl App {
         deferred_overlays: &mut DeferredOverlays,
         id: &str,
         rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
     ) -> CardBody {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
@@ -1312,6 +1347,12 @@ impl App {
                         egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
+                    if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
+                        let (name, source) = file_header_text(&image.path, image.url.as_deref());
+                        let glyph = egui_phosphor::light::IMAGE;
+                        let header = FileHeader { glyph, name, source, right_margin: 0.0 };
+                        self.paint_file_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                    }
                 }
                 // Only reachable if the node somehow outlived its
                 // own texture (freed but not removed) -- a broken-
@@ -1386,6 +1427,13 @@ impl App {
                         egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
+                    if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
+                        let (name, source) = file_header_text(&pdf.path, pdf.url.as_deref());
+                        let glyph = egui_phosphor::light::FILE_PDF;
+                        // The page count sits at the bottom right, so the fallback strip stops short of it.
+                        let header = FileHeader { glyph, name, source, right_margin: 60.0 };
+                        self.paint_file_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                    }
                     // Shown even for a one-page PDF -- a glanceable
                     // "this is a PDF, not a plain image" cue on top
                     // of the file-type distinction the icon in the
@@ -1664,6 +1712,85 @@ impl App {
         body
     }
 
+    /// The header of an Image or PDF card, over the picture: a scrim over the top 40 screen points
+    /// with the glyph, name and source line. A card under `TAB_HEADER_MIN_CARD_POINTS` tall gets
+    /// the name on a strip along the bottom instead.
+    pub(crate) fn paint_file_header(
+        &mut self,
+        ui: &egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+        header: FileHeader,
+    ) {
+        if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
+            return;
+        }
+        let FileHeader { glyph, name, source, right_margin } = header;
+        let tall = tab_has_header(rect, inv_zoom);
+        let band_height = if tall { TAB_HEADER_POINTS } else { 18.0 } * inv_zoom;
+        let band = if tall {
+            egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
+        } else {
+            egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - band_height), rect.right_bottom())
+        };
+        let radius = (6.0 * inv_zoom).min(255.0) as u8;
+        let corners = if tall {
+            egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }
+        } else {
+            egui::CornerRadius { nw: 0, ne: 0, sw: radius, se: radius }
+        };
+        ui.painter().rect_filled(band, corners, egui::Color32::from_black_alpha(if tall { 190 } else { 160 }));
+        let (title_color, source_color) = (egui::Color32::from_gray(240), egui::Color32::from_gray(190));
+        let title_font = egui::FontId::proportional(13.0);
+        let source_font = egui::FontId::proportional(11.0);
+        let (icon_size, text_left) = if tall { (14.0, 28.0) } else { (0.0, 8.0) };
+        let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
+        let title = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width);
+        let source = if tall {
+            truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width)
+        } else {
+            String::new()
+        };
+        let origin = band.left_top();
+        let band_screen_height = band_height * zoom_scale;
+        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+            let base = project(origin);
+            if tall {
+                overlay_painter.text(
+                    base + egui::vec2(10.0, 12.0),
+                    egui::Align2::LEFT_CENTER,
+                    glyph,
+                    egui::FontId::proportional(icon_size),
+                    source_color,
+                );
+                overlay_painter.text(
+                    base + egui::vec2(text_left, 12.0),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    title_font,
+                    title_color,
+                );
+                overlay_painter.text(
+                    base + egui::vec2(text_left, 28.0),
+                    egui::Align2::LEFT_CENTER,
+                    source,
+                    source_font,
+                    source_color,
+                );
+            } else {
+                overlay_painter.text(
+                    base + egui::vec2(text_left, band_screen_height / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    egui::FontId::proportional(12.0),
+                    title_color,
+                );
+            }
+        }));
+    }
+
     /// A live thumbnail (or a spinner until the first frame) under a header of favicon, title and
     /// source URL; a card too short for the header (`tab_has_header`) gets the old title strip
     /// over the thumbnail, with the engine's color dot and the favicon.
@@ -1856,6 +1983,14 @@ mod tests {
         let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
         assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
         assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
+    }
+
+    #[test]
+    fn file_header_text_prefers_the_url_over_the_path() {
+        let path = r"C:\pics\a.jpg";
+        assert_eq!(file_header_text(path, None), ("a.jpg".to_owned(), path.to_owned()));
+        let url = "https://x.test/a.jpg";
+        assert_eq!(file_header_text(path, Some(url)), ("a.jpg".to_owned(), url.to_owned()));
     }
 
     #[test]
