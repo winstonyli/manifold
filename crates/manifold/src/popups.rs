@@ -824,6 +824,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    control_font(ui);
                     ui.horizontal(|ui| {
                         let response = ui
                             .add(
@@ -1027,6 +1028,7 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(fade);
                 dialog_frame(ui).show(ui, |ui| {
+                    control_font(ui);
                     ui.set_width(360.0);
                     if is_live {
                         if let Some(switcher) = &mut self.quick_switcher {
@@ -1162,6 +1164,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 dialog_frame(ui).show(ui, |ui| {
+                    control_font(ui);
                     ui.set_width(360.0);
                     ui.label(heading_text("Keyboard Shortcuts"));
                     ui.separator();
@@ -1213,6 +1216,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 dialog_frame(ui).show(ui, |ui| {
+                    control_font(ui);
                     ui.set_min_width(240.0);
                     ui.label(heading_text("Import Session"));
                     ui.add_space(6.0);

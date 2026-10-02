@@ -2372,6 +2372,7 @@ impl App {
                 // cards, is needed here specifically.
                 let glow_slots = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
                 let response = popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    control_font(ui);
                     ui.label(message);
                 });
                 let shapes = card_glow_shapes(response.response.rect, 3.0, ACCENT, 1.0, 1.0);

@@ -198,6 +198,7 @@ pub(crate) fn build_engine_picker_popup(
         .show(ctx, |ui| {
             ui.set_opacity(fade);
             popup_frame(ui).show(ui, |ui| {
+                control_font(ui);
                 ui.set_width(340.0);
                 // Same "cap height, let it scroll" shape the other
                 // toolbar list popups (Bookmarks/History/Downloads)

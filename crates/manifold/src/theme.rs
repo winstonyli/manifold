@@ -69,6 +69,7 @@ pub(crate) fn key_hint_strip<'a>(
 ) {
     area.order(egui::Order::Foreground).interactable(false).show(ctx, |ui| {
         popup_frame(ui).show(ui, |ui| {
+            control_font(ui);
             ui.horizontal(|ui| {
                 for (keys, what) in hints {
                     kbd_keys(ui, keys);
@@ -419,7 +420,9 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
             include_bytes!("../assets/fonts/FamiljenGrotesk-SemiBold.ttf").as_slice(),
         ),
     ] {
-        fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
+        // Familjen's line box sits its caps ~0.075 em below centre; lift the glyphs so labels look centred.
+        let tweak = egui::FontTweak { y_offset_factor: -0.06, ..Default::default() };
+        fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(bytes).tweak(tweak)));
         let mut chain = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
         chain.insert(0, name.to_owned());
         fonts.families.insert(family, chain);
@@ -513,7 +516,7 @@ pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::
 pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(CHROME_HEIGHT_POINTS)
-        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 3)))
+        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 7)))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
