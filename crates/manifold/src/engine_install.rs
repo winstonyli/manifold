@@ -87,10 +87,17 @@ impl fmt::Display for InstallError {
 
 const CHUNK: usize = 64 * 1024;
 
-/// Fetch `url` into `part`, resuming from its current length with a `Range` request. A server that
-/// answers 200 instead of 206 sends the whole file, so `part` restarts from zero. `progress` gets the
-/// total bytes in `part` so far (resumed bytes included); `cancel` is checked between chunks. On any
-/// failure `part` keeps what arrived, so the next call resumes.
+/// Fetch `url` into `part`, resuming from its current length with a `Range` request. `progress` gets
+/// the total bytes in `part` so far (resumed bytes included). On failure `part` keeps what arrived, so
+/// the next call resumes. A resume is restarted from zero, once, when the server answers 416 or a 206
+/// whose `Content-Range` does not start at the resume point; a 200 means it sent the whole file, which
+/// replaces `part`. A body that ends before `total` bytes is a `Network` error, never Ok.
+///
+/// An existing `part` already `total` bytes long returns Ok at once, so the caller (`install`) MUST
+/// delete `part` when `verify` reports `BadHash`, or the next try would accept the same bad file.
+///
+/// There is no idle timeout on the body: a connection that stalls mid-body blocks the read until the OS
+/// gives up, and `cancel` is only checked between reads. Run it on a worker thread.
 // Later install tasks call it.
 #[allow(dead_code)]
 pub(crate) fn download(
@@ -100,7 +107,9 @@ pub(crate) fn download(
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<(), InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
+    if cancel.load(Ordering::Relaxed) {
+        return Err(InstallError::Cancelled);
+    }
     let mut have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
     if have > total {
         have = 0;
@@ -109,6 +118,37 @@ pub(crate) fn download(
         progress(have);
         return Ok(());
     }
+    if fetch(url, part, total, have, progress, cancel)? == Fetched::Done {
+        return Ok(());
+    }
+    match std::fs::remove_file(part) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(InstallError::Io(e.to_string())),
+    }
+    match fetch(url, part, total, 0, progress, cancel)? {
+        Fetched::Done => Ok(()),
+        Fetched::Restart => Err(InstallError::Network("the server rejected the request".into())),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Fetched {
+    Done,
+    /// The server could not resume from `have`; try again from zero.
+    Restart,
+}
+
+/// One request, appending to `part` from byte `have`.
+fn fetch(
+    url: &str,
+    part: &Path,
+    total: u64,
+    mut have: u64,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<Fetched, InstallError> {
+    let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let mut request = ureq::get(url)
         .config()
         .timeout_connect(Some(Duration::from_secs(15)))
@@ -117,14 +157,28 @@ pub(crate) fn download(
     if have > 0 {
         request = request.header("Range", format!("bytes={have}-"));
     }
-    let response = request.call().map_err(|e| InstallError::Network(e.to_string()))?;
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(part).map_err(io)?;
+    let response = match request.call() {
+        Ok(r) => r,
+        Err(ureq::Error::StatusCode(416)) if have > 0 => return Ok(Fetched::Restart),
+        Err(e) => return Err(InstallError::Network(e.to_string())),
+    };
     if response.status().as_u16() == 206 {
-        file.seek(SeekFrom::Start(have)).map_err(io)?;
+        let start = response
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("bytes "))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        if start != Some(have) {
+            return Ok(Fetched::Restart);
+        }
     } else {
         have = 0;
     }
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(part).map_err(io)?;
     file.set_len(have).map_err(io)?;
+    file.seek(SeekFrom::Start(have)).map_err(io)?;
     let mut body = response.into_body().into_reader();
     let mut buf = vec![0u8; CHUNK];
     loop {
@@ -133,12 +187,16 @@ pub(crate) fn download(
         }
         let n = body.read(&mut buf).map_err(|e| InstallError::Network(e.to_string()))?;
         if n == 0 {
-            return Ok(());
+            break;
         }
         file.write_all(&buf[..n]).map_err(io)?;
         have += n as u64;
         progress(have);
     }
+    if have != total {
+        return Err(InstallError::Network(format!("the download ended at {have} of {total} bytes")));
+    }
+    Ok(Fetched::Done)
 }
 
 /// Stream `path` through SHA-256 and SHA-1 and require both to match the pin (hex, any case).
@@ -200,10 +258,22 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Missing);
     }
 
-    /// Serve `body` on a local port. `honour_range` answers `Range: bytes=N-` with a 206; otherwise
-    /// every request gets a 200 and the whole body. `cut_first` closes the first connection after that
-    /// many body bytes (the headers still promise the full length).
-    fn serve(body: Arc<Vec<u8>>, honour_range: bool, cut_first: Option<usize>) -> String {
+    /// How the test server answers a request that carries `Range: bytes=N-`.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        /// 206 with a correct Content-Range.
+        Honour,
+        /// 200 with the whole body.
+        Ignore,
+        /// 206 whose Content-Range starts at 0 instead of N.
+        WrongStart,
+        /// 416.
+        Refuse,
+    }
+
+    /// Serve `body` on a local port, answering ranged requests per `mode`. `cut_first` closes the first
+    /// connection after that many body bytes (the headers still promise the full length).
+    fn serve(body: Arc<Vec<u8>>, mode: Mode, cut_first: Option<usize>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/f", listener.local_addr().unwrap());
         std::thread::spawn(move || {
@@ -218,20 +288,47 @@ mod tests {
                         break;
                     }
                     if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
-                        if honour_range {
-                            start = v.trim().trim_end_matches('-').parse().unwrap();
-                        }
+                        start = v.trim().trim_end_matches('-').parse().unwrap_or(0);
                     }
                 }
                 let len = body.len();
-                let head = if start > 0 {
+                let ranged = start > 0;
+                if ranged && mode == Mode::Refuse {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 416 Range Not Satisfiable
+Content-Length: 0
+Connection: close
+
+",
+                    );
+                    continue;
+                }
+                // The first byte the Content-Range claims; a wrong-start server then sends the whole body
+                // from byte 0 under it.
+                let claimed = start;
+                if ranged && matches!(mode, Mode::Ignore | Mode::WrongStart) {
+                    start = 0;
+                }
+                let head = if ranged && mode != Mode::Ignore {
+                    let shown = if mode == Mode::WrongStart { 0 } else { claimed };
                     format!(
-                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/{len}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 206 Partial Content
+Content-Range: bytes {shown}-{}/{len}
+Content-Length: {}
+Connection: close
+
+",
                         len - 1,
                         len - start
                     )
                 } else {
-                    format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n")
+                    format!(
+                        "HTTP/1.1 200 OK
+Content-Length: {len}
+Connection: close
+
+"
+                    )
                 };
                 let mut payload = &body[start..];
                 if let Some(n) = cut.take() {
@@ -251,7 +348,7 @@ mod tests {
     #[test]
     fn download_fetches_everything() {
         let b = body(300_000);
-        let url = serve(b.clone(), true, None);
+        let url = serve(b.clone(), Mode::Honour, None);
         let part = temp_dir("ei4").join("f.part");
         let mut last = 0;
         download(&url, &part, b.len() as u64, &mut |n| last = n, &AtomicBool::new(false)).unwrap();
@@ -262,7 +359,7 @@ mod tests {
     #[test]
     fn download_resumes_after_a_cut_connection() {
         let b = body(300_000);
-        let url = serve(b.clone(), true, Some(100_000));
+        let url = serve(b.clone(), Mode::Honour, Some(100_000));
         let part = temp_dir("ei5").join("f.part");
         let cancel = AtomicBool::new(false);
         let err = download(&url, &part, b.len() as u64, &mut |_| {}, &cancel).unwrap_err();
@@ -289,7 +386,7 @@ mod tests {
     #[test]
     fn download_restarts_when_the_server_ignores_range() {
         let b = body(200_000);
-        let url = serve(b.clone(), false, None);
+        let url = serve(b.clone(), Mode::Ignore, None);
         let part = temp_dir("ei6").join("f.part");
         std::fs::write(&part, &b[..50_000]).unwrap();
         download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap();
@@ -299,7 +396,7 @@ mod tests {
     #[test]
     fn download_stops_when_cancelled() {
         let b = body(300_000);
-        let url = serve(b.clone(), true, None);
+        let url = serve(b.clone(), Mode::Honour, None);
         let part = temp_dir("ei7").join("f.part");
         let cancel = AtomicBool::new(false);
         let err =
@@ -307,6 +404,79 @@ mod tests {
         assert_eq!(err, InstallError::Cancelled);
         let kept = std::fs::metadata(&part).unwrap().len();
         assert!(kept > 0 && kept < b.len() as u64, "kept {kept}");
+    }
+
+    #[test]
+    fn download_fails_on_a_short_body_without_content_length() {
+        let b = body(100_000);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f", listener.local_addr().unwrap());
+        let half = b[..40_000].to_vec();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK
+Connection: close
+
+",
+            );
+            let _ = stream.write_all(&half);
+        });
+        let part = temp_dir("ei9").join("f.part");
+        let err = download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(err, InstallError::Network(_)), "{err:?}");
+        assert_eq!(std::fs::metadata(&part).unwrap().len(), 40_000);
+    }
+
+    #[test]
+    fn download_restarts_when_content_range_starts_elsewhere() {
+        let b = body(200_000);
+        let url = serve(b.clone(), Mode::WrongStart, None);
+        let part = temp_dir("ei10").join("f.part");
+        std::fs::write(&part, &b[..50_000]).unwrap();
+        download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), *b);
+    }
+
+    #[test]
+    fn download_retries_from_zero_after_416_and_fails_if_that_fails_too() {
+        let b = body(200_000);
+        let url = serve(b.clone(), Mode::Refuse, None);
+        let part = temp_dir("ei11").join("f.part");
+        std::fs::write(&part, &b[..50_000]).unwrap();
+        download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), *b);
+        // A server that answers every request 416 fails the retry too.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 416 Range Not Satisfiable
+Content-Length: 0
+Connection: close
+
+",
+                );
+            }
+        });
+        let part = temp_dir("ei12").join("f.part");
+        std::fs::write(&part, &b[..50_000]).unwrap();
+        let err = download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(err, InstallError::Network(_)), "{err:?}");
+    }
+
+    #[test]
+    fn download_cancelled_beforehand_opens_nothing() {
+        let part = temp_dir("ei13").join("f.part");
+        let err = download("http://127.0.0.1:1/f", &part, 10, &mut |_| {}, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(err, InstallError::Cancelled);
+        assert!(!part.exists());
     }
 
     #[test]
