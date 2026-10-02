@@ -1486,7 +1486,8 @@ impl App {
             rows,
             more: len - rows,
         };
-        let header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
+        let mut header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
+        header.source = file_header_text(&json.path, None).1.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
         let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);
         let look = crate::json_level_ui::CardLook {
             palette: &pal,

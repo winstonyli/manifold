@@ -12,6 +12,9 @@ use crate::json_view::{self, Card};
 
 /// Text height in world units (plan ruling 11).
 const TEXT_SIZE: f32 = 12.0;
+/// A header's title and second line, in screen points as card header F sets them (scaled by `inv_zoom` where used).
+const TITLE_SIZE: f32 = 13.0;
+const SECOND_LINE_SIZE: f32 = 11.0;
 /// Inset of a card's text from its edges.
 const PAD: f32 = 8.0;
 /// An object row's key column.
@@ -151,6 +154,8 @@ pub(crate) struct HeaderParts {
     /// `{n}` / `[n]`, or a scalar root's value.
     pub(crate) count: String,
     pub(crate) count_kind: ValueKind,
+    /// A dim second line under the title (a file's folder), shown when the card has no collapsed label.
+    pub(crate) source: Option<String>,
 }
 
 pub(crate) fn header_parts(root: &Value, card: &Card, root_name: &str) -> HeaderParts {
@@ -165,6 +170,7 @@ pub(crate) fn header_parts(root: &Value, card: &Card, root_name: &str) -> Header
         label: if card.collapsed { json_view::label(value) } else { None },
         count: json_view::display_text(value),
         count_kind: value_kind(value),
+        source: None,
     }
 }
 
@@ -176,6 +182,8 @@ struct TextItem {
     color: egui::Color32,
     /// Cut to this width with `…`.
     max_width: f32,
+    /// Font size in world units.
+    size: f32,
 }
 
 /// Snaps a zoom scale to one of `STEPS_PER_OCTAVE` geometric steps per
@@ -199,9 +207,9 @@ fn push_card_text(deferred_overlays: &mut DeferredOverlays, items: Vec<TextItem>
     }
     deferred_overlays.push(Box::new(move |painter, project| {
         let scale = quantize_scale(project(egui::pos2(1.0, 0.0)).x - project(egui::Pos2::ZERO).x);
-        let font = egui::FontId::proportional(TEXT_SIZE * scale);
         for item in items {
-            let mut job = egui::text::LayoutJob::simple_singleline(item.text, font.clone(), item.color);
+            let font = egui::FontId::proportional(item.size * scale);
+            let mut job = egui::text::LayoutJob::simple_singleline(item.text, font, item.color);
             job.wrap = egui::text::TextWrapping::truncate_at_width(item.max_width * scale);
             let galley = painter.layout_job(job);
             let min = item.align.anchor_size(project(item.pos), galley.size()).min;
@@ -285,30 +293,37 @@ pub(crate) fn paint_json_content(
     let left = rect.left() + PAD;
     let right = rect.right() - PAD;
     if look.text {
-        let y = rect.top() + HEADER_HEIGHT / 2.0;
+        // Header F's layout, in world units: the glyph centred on the header, the title over a dim
+        // second line (the collapsed label, else the source), or centred alone.
+        let mid = rect.top() + HEADER_HEIGHT / 2.0;
+        let (y, z) = (mid, look.inv_zoom);
+        let second = header.label.as_ref().or(header.source.as_ref());
+        let title_y = if second.is_some() { mid - 8.0 * z } else { mid };
         let count_color = if header.count_kind == ValueKind::Container { pal.muted } else { pal.of(header.count_kind) };
         text.push(TextItem {
-            pos: egui::pos2(left, y),
+            pos: egui::pos2(left, mid),
             align: egui::Align2::LEFT_CENTER,
             text: header.icon.into(),
             color: pal.container,
             max_width: 16.0,
+            size: 14.0 * z,
         });
-        let title_width = if header.label.is_some() { 88.0 } else { inner - 18.0 - COUNT_WIDTH };
         text.push(TextItem {
-            pos: egui::pos2(left + 18.0, y),
+            pos: egui::pos2(left + 22.0, title_y),
             align: egui::Align2::LEFT_CENTER,
             text: header.title.clone(),
             color: look.text_color,
-            max_width: title_width,
+            max_width: inner - 22.0 - COUNT_WIDTH,
+            size: TITLE_SIZE * z,
         });
-        if let Some(label) = &header.label {
+        if let Some(second) = second {
             text.push(TextItem {
-                pos: egui::pos2(left + 110.0, y),
+                pos: egui::pos2(left + 22.0, mid + 8.0 * z),
                 align: egui::Align2::LEFT_CENTER,
-                text: label.clone(),
+                text: second.clone(),
                 color: pal.muted,
-                max_width: inner - 110.0 - COUNT_WIDTH,
+                max_width: inner - 22.0 - COUNT_WIDTH,
+                size: SECOND_LINE_SIZE * z,
             });
         }
         text.push(TextItem {
@@ -317,6 +332,7 @@ pub(crate) fn paint_json_content(
             text: header.count.clone(),
             color: count_color,
             max_width: COUNT_WIDTH,
+            size: TITLE_SIZE * z,
         });
     }
     for (row, (key, child)) in json_view::entries(value).take(rows).enumerate() {
@@ -338,6 +354,7 @@ pub(crate) fn paint_json_content(
                 text: key,
                 color: pal.key,
                 max_width: KEY_WIDTH,
+                size: TEXT_SIZE,
             });
             used = KEY_WIDTH + 6.0;
         }
@@ -348,6 +365,7 @@ pub(crate) fn paint_json_content(
                 text: index,
                 color: pal.muted,
                 max_width: INDEX_WIDTH,
+                size: TEXT_SIZE,
             });
             used = INDEX_WIDTH + 6.0;
         }
@@ -359,6 +377,7 @@ pub(crate) fn paint_json_content(
                 text: label,
                 color: pal.muted,
                 max_width: inner - used - COUNT_WIDTH - 6.0,
+                size: TEXT_SIZE,
             });
         }
         text.push(TextItem {
@@ -367,6 +386,7 @@ pub(crate) fn paint_json_content(
             text: parts.value,
             color: pal.of(parts.kind),
             max_width: value_width,
+            size: TEXT_SIZE,
         });
     }
     if more > 0 {
@@ -378,6 +398,7 @@ pub(crate) fn paint_json_content(
                 text: format!("+ {more} more"),
                 color: pal.muted,
                 max_width: inner,
+                size: TEXT_SIZE,
             });
         } else {
             painter.rect_filled(r.shrink2(egui::vec2(PAD, 7.0)), 2.0, pal.muted.gamma_multiply(0.2));
