@@ -45,6 +45,8 @@ pub(crate) enum NodeAction {
     /// A failed tab's card: tries again on the default engine.
     OpenInDefaultEngine,
     RemoveFromGroup,
+    /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`).
+    MoveToGroup(String),
     Dissolve,
     ExportGroup,
     /// Delete for a file card, "Remove from List" for a download, Close
@@ -67,6 +69,8 @@ pub(crate) enum NodeMenuItem {
     /// The "Color" label and tag-color swatch row, ending in a "no color"
     /// ring.
     Colors,
+    /// One "Move to <name>" button per `(group id, name)`: the sibling groups a card can join.
+    MoveTo(Vec<(String, String)>),
     Separator,
 }
 
@@ -131,18 +135,19 @@ pub(crate) fn build_node_context_menu(
             for item in &config.items {
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = ui.button(*label);
-                        if std::mem::take(&mut first_item) {
-                            response.request_focus();
-                        }
-                        if response.has_focus() {
-                            focus_ring(ui, &response);
-                        }
+                        let mut response = menu_button(ui, label, &mut first_item);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
                         if response.clicked() {
                             action = Some(item_action.clone());
+                        }
+                    }
+                    NodeMenuItem::MoveTo(targets) => {
+                        for (group, name) in targets {
+                            if menu_button(ui, &format!("Move to {name}"), &mut first_item).clicked() {
+                                action = Some(NodeAction::MoveToGroup(group.clone()));
+                            }
                         }
                     }
                     NodeMenuItem::Colors => {
@@ -161,6 +166,18 @@ pub(crate) fn build_node_context_menu(
     );
     let clicked_outside = clicked_outside_popup(ui, area_rect, None);
     (action, clicked_outside)
+}
+
+/// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
+fn menu_button(ui: &mut egui::Ui, label: &str, first_item: &mut bool) -> egui::Response {
+    let response = ui.button(label);
+    if std::mem::take(first_item) {
+        response.request_focus();
+    }
+    if response.has_focus() {
+        focus_ring(ui, &response);
+    }
+    response
 }
 
 /// The "Color" label and one swatch per `TAG_COLOR_PALETTE` entry, then a
@@ -220,7 +237,7 @@ pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>
 /// saves directly instead).
 pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuConfig {
     use NodeAction as A;
-    use NodeMenuItem::{Button, Colors, Separator};
+    use NodeMenuItem::{Button, Colors, MoveTo, Separator};
     let file_items = || vec![Button("Open Containing Folder", A::Reveal), Button("Copy Path", A::CopyPath)];
     // Refresh (Image/Pdf/Json only) and Open as Tab (any kind with a url),
     // first in the menu.
@@ -238,6 +255,9 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     // is grouped), then the kind's delete items.
     let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>| {
         items.push(Colors);
+        if !view.move_targets.is_empty() {
+            items.extend([Separator, MoveTo(view.move_targets.clone())]);
+        }
         if view.has_group {
             items.extend([Separator, Button("Remove from Group", A::RemoveFromGroup)]);
         }
@@ -324,6 +344,8 @@ pub(crate) struct NodeMenuView {
     other_default_engine: bool,
     /// Unloaded only: its engine failed, so the menu offers a retry.
     failed: bool,
+    /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
+    move_targets: Vec<(String, String)>,
     /// Group only: the rename draft, while this group is being renamed.
     renaming: Option<String>,
 }
@@ -436,6 +458,15 @@ impl App {
                 .as_unloaded()
                 .is_some_and(|t| t.kind != self.settings.default_starting_engine),
             failed: node.payload.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
+            move_targets: self
+                .node_order
+                .iter()
+                .filter(|other| other.as_str() != id)
+                .filter_map(|other| {
+                    let sibling = self.nodes.get(other).filter(|n| n.group == node.group)?;
+                    Some((other.clone(), sibling.as_group()?.name.clone()))
+                })
+                .collect(),
             renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
         })
     }
@@ -511,6 +542,7 @@ impl App {
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultEngine => self.wake_tab(id, self.settings.default_starting_engine),
             NodeAction::RemoveFromGroup => self.eject(id),
+            NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
@@ -533,6 +565,27 @@ mod tests {
     // One row per kind, pinned to the exact menus each kind showed before
     // the per-kind builders were merged (see the node-menu spec), and
     // before the tab and group menus joined them.
+    /// "Move to <group>" offers only sibling groups, and joins the node to the chosen one.
+    #[test]
+    fn move_to_group_offers_sibling_groups_and_joins() {
+        let mut app = App::default();
+        let (g1, g2, note) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g1.clone(), None);
+        app.insert_group_at(g2.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        // A group nested in g1 is not a sibling of the top-level note.
+        let inner = app.alloc_node_id();
+        app.insert_group_at(inner.clone(), None);
+        app.nodes.get_mut(&inner).unwrap().group = Some(g1.clone());
+        let ids = |app: &App, id: &str| -> Vec<String> {
+            app.node_menu_view(id).unwrap().move_targets.into_iter().map(|(gid, _)| gid).collect()
+        };
+        assert_eq!(ids(&app, &note), vec![g1.clone(), g2.clone()]);
+        assert_eq!(ids(&app, &g1), vec![g2.clone()], "a group isn't offered itself");
+        app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
+        assert_eq!(app.nodes[&note].group, Some(g2));
+    }
+
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
         fn view_of(kind: ItemNodeKind) -> NodeMenuView {
@@ -544,6 +597,7 @@ mod tests {
                 pinned: false,
                 other_default_engine: false,
                 failed: false,
+                move_targets: Vec::new(),
                 renaming: None,
             }
         }
@@ -555,6 +609,7 @@ mod tests {
                 .map(|item| match item {
                     NodeMenuItem::Button(label, _) => *label,
                     NodeMenuItem::Colors => "<colors>",
+                    NodeMenuItem::MoveTo(_) => "<move>",
                     NodeMenuItem::Separator => "---",
                 })
                 .collect();
