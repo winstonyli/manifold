@@ -248,10 +248,12 @@ if has note-key; then
     reset
 fi
 # Enter the JSON level by keyboard in a small window (so some cards are off screen) and Tab through every
-# card after the root: each Tab must select a new card, off-screen ones included (SIZE="400 260" hides some). Prints PASS/FAIL lines.
+# card after the root: each Tab must select a new card, off-screen ones included (zoomed in so they are). Prints PASS/FAIL lines.
 if has json-tab-offscreen; then
     sel() { state; python -P -c 'import json,sys; j=json.load(open(sys.argv[1], encoding="utf-8"))["json_level"]; print("%s|%d" % (j["selected"], len(j["cards"])))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
     for _ in $(seq "${JSON_ENTRY_STOP:-16}"); do send TABKEY "SLEEP 0.3"; done; send ENTER "SLEEP 3"
+    # Zoomed in, the cards other than the root fall off screen.
+    send ZOOMIN ZOOMIN ZOOMIN "MOUSEMOVE 700 650" "MOUSEDOWN 700 650" "MOUSEMOVE 400 650" "MOUSEMOVE 100 650" "MOUSEUP 100 650" "MOUSEMOVE 100 650" "MOUSEMOVE 5 790" "SLEEP 2"; settle; shot json-tab-offscreen-before
     total=$(sel); total=${total#*|}
     seen=""
     for _ in $(seq $((total - 1))); do

@@ -417,7 +417,8 @@ impl App {
         let card_id = |i: usize| egui::Id::new(("json_card", &level.node_id, &level.cards[i].pointer));
         // Tab / Shift+Tab walk the cards in order, including ones culled off screen (egui's own
         // Tab order only knows the cards drawn). The target is drawn this frame whatever the camera
-        // shows, takes focus, and its `gained_focus` selects it, which pans to it.
+        // shows, takes focus, and its `gained_focus` selects it, which pans to it. A focused card is
+        // never culled either, or panning away would drop the focus.
         let tab_target_key = egui::Id::new("json_tab_target");
         let mut tab_target: Option<usize> = ui.data(|d| d.get_temp(tab_target_key));
         if let Some(at) = (0..level.cards.len()).find(|&i| ui.memory(|m| m.has_focus(card_id(i)))) {
@@ -446,7 +447,7 @@ impl App {
         });
         for (i, card) in level.cards.iter().enumerate() {
             let rect = level.rects[i];
-            if !rect.intersects(self.camera.rect) && tab_target != Some(i) {
+            if !rect.intersects(self.camera.rect) && tab_target != Some(i) && !ui.memory(|m| m.has_focus(card_id(i))) {
                 continue;
             }
             let Some(value) = level.value.pointer(&card.pointer) else { continue };
