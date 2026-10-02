@@ -1282,4 +1282,20 @@ Connection: close
         settle(&mut app);
         assert!(!app.start_engine_install_at(EngineKind::Webkit, &data, &pin), "only CEF downloads anything");
     }
+
+    // The cef crate version in Cargo.lock and the CEF build it wraps. A crate bump must update both
+    // of these and re-run scripts/cef-pin.sh (see scripts/cef_pin.py).
+    const CEF_CRATE_VERSION: &str = "152.1.0";
+    const CEF_BUILD_PREFIX: &str = "152.0.6";
+
+    #[test]
+    fn the_pin_matches_the_cef_crates_version() {
+        let lock = include_str!("../../../Cargo.lock");
+        let after = lock.split("name = \"cef\"").nth(1).expect("Cargo.lock has a cef package");
+        let line = after.lines().nth(1).expect("a version line follows the name");
+        let version = line.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')).expect("a version line");
+        assert_eq!(version.split('+').next(), Some(CEF_CRATE_VERSION), "the cef crate changed: update the mapping");
+        let pinned = crate::cef_pin::CEF_PIN.version;
+        assert_eq!(pinned.split('+').next(), Some(CEF_BUILD_PREFIX), "the pin is not the CEF build the crate wraps");
+    }
 }
