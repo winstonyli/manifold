@@ -368,6 +368,7 @@ impl App {
         let response = ui.add(
             egui::TextEdit::singleline(&mut self.address_bar.text)
                 .desired_width(text_width)
+                .hint_text("Search or enter address (Ctrl+L)")
                 // Match `style.spacing.button_padding` (set in
                 // `apply_style`) so the address bar renders the
                 // same height as the back/forward buttons next

@@ -802,11 +802,13 @@ impl App {
             .show(ui.ctx(), |ui| {
                 popup_frame(ui).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut self.find.text)
-                                .desired_width(160.0)
-                                .hint_text("Find in page"),
-                        );
+                        let response = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.find.text)
+                                    .desired_width(160.0)
+                                    .hint_text("Find in page"),
+                            )
+                            .on_hover_text("Enter: next match, Shift+Enter: previous, Esc: close");
                         if take_focus(&mut self.pending_focus, FocusTarget::FindBar) {
                             response.request_focus();
                         }
@@ -1030,6 +1032,13 @@ impl App {
                     if matches.is_empty() {
                         ui.label("No matching tabs");
                     }
+                    ui.horizontal(|ui| {
+                        for (keys, what) in [("Up / Down", "move"), ("Enter", "jump"), ("Esc", "close")] {
+                            kbd_keys(ui, keys);
+                            ui.label(egui::RichText::new(what).small().weak());
+                            ui.add_space(4.0);
+                        }
+                    });
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                         for (i, id) in matches.iter().enumerate() {
                             let Some(label) = self.quick_switcher_row_label(id) else { continue };
@@ -1111,6 +1120,12 @@ impl App {
             ("Ctrl+Shift+C", "Copy the selected path"),
             ("#", "Tab view and pages"),
             ("Escape", "Back to Graph (closes an open popup first)"),
+            ("#", "Address bar, find bar, quick switcher"),
+            ("Up / Down", "Address bar: move through the suggestions (wraps)"),
+            ("Enter", "Address bar: take the highlighted suggestion, else go to the typed text"),
+            ("Escape", "Address bar: dismiss the suggestions; again for Graph"),
+            ("Enter", "Find bar: next match; Shift+Enter previous"),
+            ("Escape", "Find bar / quick switcher: close"),
             ("#", "Lists and popups"),
             ("Up / Down", "Move the highlight (Recently Closed, Bookmarks, History, Downloads, quick switcher)"),
             ("Enter", "Pick the highlighted row"),
