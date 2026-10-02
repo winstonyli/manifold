@@ -5,6 +5,27 @@ use super::*;
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
+/// Height of a Tab card's header (favicon, title, source line), in screen points.
+const TAB_HEADER_POINTS: f32 = 40.0;
+/// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
+const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
+
+/// Whether a Tab card of `rect` (world units, `inv_zoom` world units per screen point) is tall
+/// enough on screen to show its header.
+pub(crate) fn tab_has_header(rect: egui::Rect, inv_zoom: f32) -> bool {
+    rect.height() / inv_zoom >= TAB_HEADER_MIN_CARD_POINTS
+}
+
+/// Where a Tab card's thumbnail lands: the card inset by `GRAPH_THUMB_MARGIN`, minus the header
+/// when `tab_has_header`. World units: the margin scales with the card, the header does not.
+pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
+    let mut thumb = rect.shrink(crate::GRAPH_THUMB_MARGIN);
+    if tab_has_header(rect, inv_zoom) {
+        thumb.min.y = rect.top() + TAB_HEADER_POINTS * inv_zoom;
+    }
+    thumb
+}
+
 /// Smaller than `GRAPH_NODE_SIZE` — a download node has no live thumbnail,
 /// just a filename, so it doesn't need the same footprint a tab's preview
 /// does.
@@ -1623,8 +1644,9 @@ impl App {
         body
     }
 
-    /// A live thumbnail (or a spinner until the first frame), a
-    /// title strip with the engine's color dot, and the favicon.
+    /// A live thumbnail (or a spinner until the first frame) under a header of favicon, title and
+    /// source URL; a card too short for the header (`tab_has_header`) gets the old title strip
+    /// over the thumbnail, with the engine's color dot and the favicon.
     pub(crate) fn paint_tab_body(
         &mut self,
         ui: &mut egui::Ui,
@@ -1649,7 +1671,8 @@ impl App {
         // and controls as the simplified card's whole
         // appearance.
         if !self.graph_lod_simplified {
-            let thumb_rect = rect.shrink(GRAPH_THUMB_MARGIN);
+            let header = tab_has_header(rect, inv_zoom);
+            let thumb_rect = tab_thumb_rect(rect, inv_zoom);
             let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));
             if let Some(tex_id) = thumb_id {
                 ui.painter().image(
@@ -1665,40 +1688,76 @@ impl App {
                 );
             }
 
-            {
-                let label = if title.is_empty() { url.as_str() } else { title.as_str() };
-                // A flat scrim behind the title strip so it stays
-                // legible over a busy/light thumbnail — most real
-                // pages are light-background, and plain text on top
-                // of one was unreadable without this.
+            let label = if title.is_empty() { url.as_str() } else { title.as_str() };
+            let favicon = self
+                .cached_favicon_origin(&url)
+                .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)));
+            let show_text = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+            if header {
+                // Favicon (or the engine dot), title and source line over the card's own fill.
+                let icon_center =
+                    egui::pos2(rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom, rect.top() + 12.0 * inv_zoom);
+                match favicon {
+                    Some(tex_id) => {
+                        ui.painter().image(
+                            tex_id,
+                            egui::Rect::from_center_size(icon_center, FAVICON_SIZE * inv_zoom),
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    None => {
+                        ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, engine_color(engine_kind));
+                    }
+                }
+                if show_text {
+                    // Screen-constant text: the header is 40 screen points tall at any zoom.
+                    let text_left = GRAPH_THUMB_MARGIN + 22.0;
+                    // Leave room for the audio indicator at the top-right corner.
+                    let max_width = (rect.width() * zoom_scale - text_left - 28.0).max(0.0);
+                    let title_font = egui::FontId::proportional(13.0);
+                    let source_font = egui::FontId::proportional(11.0);
+                    let title_text =
+                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &title_font, max_width);
+                    let source_text =
+                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &source_font, max_width);
+                    let (title_color, source_color) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
+                    let origin = rect.left_top();
+                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                        let base = project(origin) + egui::vec2(text_left, 0.0);
+                        overlay_painter.text(
+                            base + egui::vec2(0.0, 12.0),
+                            egui::Align2::LEFT_CENTER,
+                            title_text,
+                            title_font,
+                            title_color,
+                        );
+                        overlay_painter.text(
+                            base + egui::vec2(0.0, 28.0),
+                            egui::Align2::LEFT_CENTER,
+                            source_text,
+                            source_font,
+                            source_color,
+                        );
+                    }));
+                }
+            } else {
+                // A flat scrim behind the title strip so it stays legible over a light thumbnail.
                 let title_strip = egui::Rect::from_min_max(
                     egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
                 ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
-                // Engine identity as a small colored dot rather than
-                // repeating the "[Servo]"-style bracket text on every
-                // single node — the dot alone is enough once you've
-                // learned the color coding (also used in the tab
-                // strip and engine picker), and reads faster at this
-                // node's small size than another word would.
+                // Engine identity as a small colored dot; the strip is too small for more.
                 ui.painter().circle_filled(
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
                     4.0 * inv_zoom,
                     engine_color(engine_kind),
                 );
-                // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
-                // label entirely rather than truncating to a
-                // near-illegible sliver -- the engine-color dot
-                // above still conveys engine identity on its own.
-                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                // Below `MIN_LABEL_CARD_SCREEN_WIDTH` the label would be a sliver; the dot alone remains.
+                if show_text {
                     let label_font = egui::FontId::proportional(14.0);
-                    // Available on-screen width for the label -- the
-                    // strip's own screen width (zoom shrinks the card,
-                    // but not this fixed-size text, so at low zoom the
-                    // label can be wider than the card it's on) minus
-                    // the fixed 16px left offset and a little breathing
-                    // room on the right.
+                    // Screen width left for the label: the strip's, less the 16px left offset and some room on the right.
                     let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
                     let label =
                         truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
@@ -1713,21 +1772,18 @@ impl App {
                         );
                     }));
                 }
-            }
-            if let Some(tex_id) = self
-                .cached_favicon_origin(&url)
-                .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
-            {
-                let favicon_rect = egui::Rect::from_min_size(
-                    rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
-                    FAVICON_SIZE * inv_zoom,
-                );
-                ui.painter().image(
-                    tex_id,
-                    favicon_rect,
-                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                if let Some(tex_id) = favicon {
+                    let favicon_rect = egui::Rect::from_min_size(
+                        rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
+                        FAVICON_SIZE * inv_zoom,
+                    );
+                    ui.painter().image(
+                        tex_id,
+                        favicon_rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
             }
         }
         body
@@ -1778,6 +1834,18 @@ mod tests {
         let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
         assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
         assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
+    }
+
+    #[test]
+    fn tab_thumb_rect_leaves_room_for_the_header_only_on_tall_cards() {
+        let card = egui::Rect::from_center_size(egui::Pos2::ZERO, GRAPH_NODE_SIZE);
+        // Zoom 1: 110 points tall, so the header (40 points) takes the top.
+        let thumb = tab_thumb_rect(card, 1.0);
+        assert_eq!(thumb.top(), card.top() + TAB_HEADER_POINTS);
+        assert_eq!(thumb.bottom(), card.bottom() - crate::GRAPH_THUMB_MARGIN);
+        // Zoom 0.5: 55 points tall, so the plain inset thumbnail and the strip.
+        assert!(!tab_has_header(card, 2.0));
+        assert_eq!(tab_thumb_rect(card, 2.0), card.shrink(crate::GRAPH_THUMB_MARGIN));
     }
 
     #[test]

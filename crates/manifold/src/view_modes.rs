@@ -207,10 +207,10 @@ impl App {
             .nodes
             .get(&transition.node_id)
             .map(|node| {
-                self.graph_world_rect_to_screen(
-                    egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE)
-                        .shrink(GRAPH_THUMB_MARGIN),
-                )
+                // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
+                let world = egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE);
+                let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
+                self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom))
             })
             .unwrap_or(full_content_rect);
         transition_eased_rect(transition, full_content_rect, node_rect)
