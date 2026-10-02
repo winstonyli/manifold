@@ -331,6 +331,48 @@ impl App {
         self.apply_json_edit(JsonEdit::Select(pointer));
     }
 
+    /// Up/Down on a JSON level: selects the previous/next outline row (the first when nothing is
+    /// selected), clamped at the ends. Selecting reveals and pans, as a click does.
+    pub(crate) fn step_json_selection(&mut self, delta: isize) {
+        self.poll_json_search();
+        let Some(level) = self.json_level.as_ref() else { return };
+        let rows = &level.outline.rows;
+        let at = level.selected.as_ref().and_then(|s| rows.iter().position(|r| &r.pointer == s));
+        let next = match at {
+            Some(i) => i.saturating_add_signed(delta).min(rows.len().saturating_sub(1)),
+            None => 0,
+        };
+        if let Some(row) = rows.get(next) {
+            self.apply_json_edit(JsonEdit::Select(row.pointer.clone()));
+        }
+    }
+
+    /// Enter on a JSON level: expands or collapses the selected container's card.
+    pub(crate) fn toggle_json_selection(&mut self) {
+        let Some(level) = self.json_level.as_ref() else { return };
+        let Some(pointer) = level.selected.clone() else { return };
+        if level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0) {
+            self.apply_json_edit(JsonEdit::Toggle(pointer));
+        }
+    }
+
+    /// Right/Left on a JSON level: opens / closes the selected row in the outline; Left on a row
+    /// that is already closed selects its parent.
+    pub(crate) fn open_json_selection(&mut self, open: bool) {
+        let Some(level) = self.json_level.as_mut() else { return };
+        let Some(pointer) = level.selected.clone() else { return };
+        let is_container = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
+        if open {
+            if is_container && level.outline.open.insert(pointer) {
+                level.outline.dirty = true;
+            }
+        } else if level.outline.open.remove(&pointer) {
+            level.outline.dirty = true;
+        } else if let Some(parent) = json_view::parent_pointer(&pointer).map(str::to_string) {
+            self.apply_json_edit(JsonEdit::Select(parent));
+        }
+    }
+
     /// Selecting from anywhere (spec "Outline"): the entry's card is
     /// revealed on the canvas (saved, like a manual expand), the camera
     /// pans to it, and the outline opens down to it.
@@ -761,6 +803,44 @@ mod tests {
         let to = app.camera.tween.as_ref().expect("an off-screen entry pans").to;
         let target = app.json_level.as_ref().unwrap().entry_rect("/users/40/name").unwrap();
         assert!(to.contains_rect(target), "the camera heads to where the entry is in view");
+    }
+
+    #[test]
+    fn keys_walk_the_outline_and_expand_cards() {
+        let (mut app, j) = app_with_json("keys", r#"{"a": {"x": 1}, "b": 2}"#);
+        app.switch_group_level(Some(j));
+        let selected = |app: &App| app.json_level.as_ref().unwrap().selected.clone();
+        app.step_json_selection(1);
+        assert_eq!(selected(&app).as_deref(), Some(""), "nothing selected: the first row");
+        app.step_json_selection(1);
+        assert_eq!(selected(&app).as_deref(), Some("/a"));
+        // /a is closed in the outline, so Down skips its child; Right opens it.
+        app.open_json_selection(true);
+        app.step_json_selection(1);
+        assert_eq!(selected(&app).as_deref(), Some("/a/x"));
+        app.step_json_selection(1);
+        app.step_json_selection(1);
+        assert_eq!(selected(&app).as_deref(), Some("/b"), "clamped at the last row");
+        app.step_json_selection(-1);
+        app.step_json_selection(-1);
+        assert_eq!(selected(&app).as_deref(), Some("/a"));
+        // Left closes the open row, then selects the parent.
+        app.open_json_selection(false);
+        assert_eq!(selected(&app).as_deref(), Some("/a"));
+        app.open_json_selection(false);
+        assert_eq!(selected(&app).as_deref(), Some(""));
+        // Enter toggles the selected container's card.
+        let collapsed = |app: &App| {
+            json_view::is_collapsed(
+                &app.nodes[J].as_json().unwrap().view,
+                &app.json_level.as_ref().unwrap().expanded,
+                "/a",
+            )
+        };
+        let before = collapsed(&app);
+        app.apply_json_edit(JsonEdit::Select("/a".into()));
+        app.toggle_json_selection();
+        assert_ne!(collapsed(&app), before);
     }
 
     #[test]

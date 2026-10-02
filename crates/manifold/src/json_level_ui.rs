@@ -631,8 +631,10 @@ impl App {
     }
 
     /// Keys on a JSON level, in place of the graph's arrow-key focus
-    /// moves: copy (plan ruling 13) and Escape to clear the selection
-    /// (Ctrl+F is `focus_json_search`). Skipped while a text field has the
+    /// moves: Up/Down select the previous/next outline row, Enter expands or collapses the
+    /// selected card, Right/Left open/close its outline row (Left on a closed one selects the
+    /// parent), copy (plan ruling 13) and Escape to clear the selection (Ctrl+F is
+    /// `focus_json_search`). Skipped while a text field has the
     /// keyboard.
     pub(crate) fn handle_json_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().egui_wants_keyboard_input() {
@@ -642,6 +644,18 @@ impl App {
         if let Some(shift) = copy {
             let selected = self.json_level.as_ref().and_then(|l| l.selected.clone());
             self.copy_json(ui.ctx(), selected.as_deref(), if shift { CopyWhat::Path } else { CopyWhat::Value });
+        }
+        let key = |k| ui.input(|i| i.key_pressed(k));
+        if key(egui::Key::ArrowDown) {
+            self.step_json_selection(1);
+        } else if key(egui::Key::ArrowUp) {
+            self.step_json_selection(-1);
+        } else if key(egui::Key::Enter) {
+            self.toggle_json_selection();
+        } else if key(egui::Key::ArrowRight) {
+            self.open_json_selection(true);
+        } else if key(egui::Key::ArrowLeft) {
+            self.open_json_selection(false);
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             if let Some(level) = self.json_level.as_mut() {
