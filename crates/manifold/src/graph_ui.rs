@@ -1002,7 +1002,7 @@ impl App {
             if !self.headless {
                 let response =
                     chip_icon_button(ui, egui::Id::new("icon_btn_import_group"), egui_phosphor::light::UPLOAD_SIMPLE)
-                        .on_hover_text("Import Group...");
+                        .named_tip("Import Group...");
                 grow(response.rect);
                 if response.clicked() {
                     actions.push(GraphAction::ImportGroup);
@@ -1011,7 +1011,7 @@ impl App {
             if !groups_at_level.is_empty() {
                 let response =
                     chip_icon_button(ui, egui::Id::new("icon_btn_ungroup_all"), egui_phosphor::light::FOLDER_MINUS)
-                        .on_hover_text("Ungroup All");
+                        .named_tip("Ungroup All");
                 grow(response.rect);
                 if response.clicked() {
                     actions.push(GraphAction::UngroupAll);
@@ -1023,8 +1023,7 @@ impl App {
                 } else {
                     (egui_phosphor::light::CORNERS_IN, "Collapse Groups")
                 };
-                let response =
-                    chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon).on_hover_text(hover);
+                let response = chip_icon_button(ui, egui::Id::new("icon_btn_collapse_groups"), icon).named_tip(hover);
                 grow(response.rect);
                 if response.clicked() {
                     self.groups_collapsed = !self.groups_collapsed;

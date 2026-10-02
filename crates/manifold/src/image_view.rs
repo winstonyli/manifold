@@ -152,14 +152,14 @@ impl App {
                 |clicked, ui| {
                     let response =
                         chip_icon_button(ui, egui::Id::new("icon_btn_image_reveal"), egui_phosphor::light::FOLDER_OPEN)
-                            .on_hover_text("Open Containing Folder");
+                            .named_tip("Open Containing Folder");
                     clicked.0 = response.clicked();
                     response.rect
                 },
                 |clicked, ui| {
                     let response =
                         chip_icon_button(ui, egui::Id::new("icon_btn_image_copy_path"), egui_phosphor::light::COPY)
-                            .on_hover_text("Copy Path");
+                            .named_tip("Copy Path");
                     clicked.1 = response.clicked();
                     response.rect
                 },

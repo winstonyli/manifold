@@ -2464,7 +2464,7 @@ impl App {
     fn build_help_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let help_response =
             chip_icon_button(ui, egui::Id::new("icon_btn_shortcuts_help"), egui_phosphor::light::QUESTION)
-                .on_hover_text("Keyboard Shortcuts (F1)");
+                .named_tip("Keyboard Shortcuts (F1)");
         if help_response.clicked() {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
@@ -2474,7 +2474,7 @@ impl App {
     /// The Settings-gear half of `render_universal_chip`.
     fn build_settings_button(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let response = chip_icon_button(ui, egui::Id::new("icon_btn_settings_gear"), egui_phosphor::light::GEAR)
-            .on_hover_text("Settings");
+            .named_tip("Settings");
         if response.clicked() {
             self.toggle_settings_page();
         }

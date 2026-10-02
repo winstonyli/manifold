@@ -79,7 +79,7 @@ impl AddressBar {
 /// rather than a literal pixel reproduction of it.
 pub(crate) fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
     icon_button_eased(ui, egui::Id::new("icon_btn_graph"), egui_phosphor::light::GRAPH)
-        .on_hover_text("Back to Graph (Esc, Ctrl+G)")
+        .named_tip("Back to Graph (Esc, Ctrl+G)")
         .clicked()
 }
 
@@ -101,6 +101,8 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) enter_pressed: bool,
     pub(crate) toggle_bookmark_requested: bool,
     pub(crate) close_split_requested: bool,
+    /// The Graph button inside the Tab toolbar's nav chip was clicked.
+    pub(crate) back_to_graph: bool,
     pub(crate) tab_actions_button_rect: Option<egui::Rect>,
     pub(crate) split_engine_button_rect: Option<egui::Rect>,
     pub(crate) address_bar_rect: Option<egui::Rect>,
@@ -162,7 +164,11 @@ impl App {
             // than compensating for a specific pixel offset that could
             // silently drift if padding/fonts ever change.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                if render_return_to_graph(ui) {
+                // A Tab's Graph button lives in its nav chip (see
+                // `render_tab_toolbar_content`); other kinds keep it standalone.
+                let graph_in_chip =
+                    self.nodes.get(node_id).is_some_and(|n| item_node_kind(&n.payload) == ItemNodeKind::Tab);
+                if !graph_in_chip && render_return_to_graph(ui) {
                     back_to_graph = true;
                 }
                 let mut trailing_ui = ui.new_child(
@@ -173,6 +179,7 @@ impl App {
                 shortcuts_help_button_rect = Some(self.render_universal_chip(&mut trailing_ui));
                 actions = self.render_item_toolbar_content(node_id, ui, &mut trailing_ui);
                 ui.advance_cursor_after_rect(trailing_ui.min_rect());
+                back_to_graph |= actions.back_to_graph;
             });
         });
         ItemToolbarFrame { back_to_graph, shortcuts_help_button_rect, actions }
@@ -222,12 +229,19 @@ impl App {
             // `CARET_RIGHT` anyway once the icon font was already
             // in place, for the same visual consistency the other
             // icon migrations this session already have.
+            let graph = chip_icon_button(ui, egui::Id::new("icon_btn_graph"), egui_phosphor::light::GRAPH)
+                .named_tip("Back to Graph (Esc, Ctrl+G)");
+            grow(graph.rect);
+            if graph.clicked() {
+                actions.back_to_graph = true;
+            }
             let back = chip_icon_button_enabled(
                 ui,
                 egui::Id::new("icon_btn_back"),
                 egui_phosphor::light::CARET_LEFT,
                 can_go_back,
-            );
+            )
+            .named_tip("Back");
             grow(back.rect);
             if back.clicked() {
                 actions.go_back = true;
@@ -237,7 +251,8 @@ impl App {
                 egui::Id::new("icon_btn_forward"),
                 egui_phosphor::light::CARET_RIGHT,
                 can_go_forward,
-            );
+            )
+            .named_tip("Forward");
             grow(forward.rect);
             if forward.clicked() {
                 actions.go_forward = true;
@@ -248,52 +263,19 @@ impl App {
             // other icon migrated once the icon font was already
             // wired in.
             let reload = chip_icon_button(ui, egui::Id::new("icon_btn_reload"), egui_phosphor::light::ARROW_CLOCKWISE)
-                .on_hover_text("Reload (Ctrl+R)");
+                .named_tip("Reload (Ctrl+R)");
             grow(reload.rect);
             if reload.clicked() {
                 actions.reload_requested = true;
             }
             let home = chip_icon_button(ui, egui::Id::new("icon_btn_home"), egui_phosphor::light::HOUSE)
-                .on_hover_text("Go to home page");
+                .named_tip("Go to home page");
             grow(home.rect);
             if home.clicked() {
                 actions.home_requested = true;
             }
             bounds.unwrap_or(ui.cursor())
         });
-
-        // Tab identity (was a separate strip above the toolbar,
-        // merged into this single bar): a small loading spinner
-        // or the fetched favicon, right before the address bar --
-        // the same "site identity chip at the address bar's own
-        // left edge" spot Chrome/Firefox use. Explicitly centered
-        // in its own row-height slot -- this row is `Align::Min`
-        // (top-aligned, see the doc comment above on why), which
-        // a bare 16x16 image or 12pt spinner dropped in directly
-        // renders flush against the row's *top* edge instead of
-        // centered like its taller icon-button neighbors,
-        // visibly poking up and overlapping the address bar's
-        // own top border (confirmed live, reported as "favicon
-        // is unaligned").
-        let identity_slot_height = ui.available_height();
-        if node.loading {
-            ui.allocate_ui_with_layout(
-                egui::vec2(16.0, identity_slot_height),
-                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                |ui| ui.add(egui::Spinner::new().size(12.0)),
-            );
-        } else if let Some(tex_id) = {
-            let url = node.url.clone();
-            self.cached_favicon_origin(&url)
-        }
-        .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
-        {
-            ui.allocate_ui_with_layout(
-                egui::vec2(FAVICON_SIZE.x, identity_slot_height),
-                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                |ui| ui.add(egui::Image::new(egui::load::SizedTexture::new(tex_id, FAVICON_SIZE))),
-            );
-        }
 
         // Address bar moved up here (right after nav/identity,
         // before any per-tab action button) and given most of
@@ -317,12 +299,12 @@ impl App {
         // widget immediately to the *left* of the previous one.
         let tab_actions_response =
             icon_button_eased(trailing_ui, egui::Id::new("icon_btn_tab_actions"), egui_phosphor::light::DOTS_THREE)
-                .on_hover_text("Tab actions");
+                .named_tip("Tab actions");
         self.popup_opener_clicked(trailing_ui, AnchoredPopup::TabActions, &tab_actions_response);
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
             && icon_button_eased(trailing_ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::light::X)
-                .on_hover_text("Close Split")
+                .named_tip("Close Split")
                 .clicked()
         {
             actions.close_split_requested = true;
@@ -334,12 +316,9 @@ impl App {
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
         let split_engine_response =
-            icon_button_eased(trailing_ui, egui::Id::new("icon_btn_split"), egui_phosphor::light::COLUMNS)
-                .on_hover_text(if self.split_tab.is_some() {
-                    "Split view: change engine"
-                } else {
-                    "Split view: compare engines"
-                });
+            icon_button_eased(trailing_ui, egui::Id::new("icon_btn_split"), egui_phosphor::light::COLUMNS).named_tip(
+                if self.split_tab.is_some() { "Split view: change engine" } else { "Split view: compare engines" },
+            );
         self.popup_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
         actions.split_engine_button_rect = Some(split_engine_response.rect);
         let is_bookmarked = self
@@ -347,25 +326,21 @@ impl App {
             .get(focused_id)
             .and_then(|n| n.as_tab())
             .is_some_and(|n| self.bookmarks.iter().any(|b| b.url == n.url));
-        toolbar_chip(trailing_ui, |ui| {
-            let mut bounds: Option<egui::Rect> = None;
-            let mut grow = |r: egui::Rect| {
-                bounds = Some(bounds.map_or(r, |b| b.union(r)));
-            };
-            // `selectable_label`, same reasoning as elsewhere in
-            // this toolbar -- a pressed look for "already
-            // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than
-            // a star glyph's tofu risk. Sits right after the address
-            // bar, mirroring Chrome/Firefox's own star icon at the
-            // address bar's right edge.
-            let bookmark =
-                selectable_label(ui, is_bookmarked, egui_phosphor::light::BOOKMARK_SIMPLE).on_hover_text("Bookmark");
-            grow(bookmark.rect);
-            if bookmark.clicked() {
-                actions.toggle_bookmark_requested = true;
-            }
-            bounds.unwrap_or(ui.cursor())
-        });
+        // A standalone button, not a chip: pressed look for "already
+        // bookmarked", a real `BOOKMARK_SIMPLE` icon rather than a star
+        // glyph's tofu risk. Sits right after the address bar, mirroring
+        // Chrome/Firefox's own star icon at the address bar's right edge.
+        let bookmark = rest_borderless(trailing_ui, |ui| {
+            ui.add(
+                egui::Button::new(egui_phosphor::light::BOOKMARK_SIMPLE)
+                    .selected(is_bookmarked)
+                    .min_size(egui::vec2(32.0, 0.0)),
+            )
+        })
+        .named_tip("Bookmark");
+        if bookmark.clicked() {
+            actions.toggle_bookmark_requested = true;
+        }
         let trailing_width = trailing_ui.min_rect().width();
 
         // Now the address bar gets whatever's actually left,
@@ -374,13 +349,14 @@ impl App {
         // after the leading nav/identity cluster above),
         // sized to stop exactly where the trailing cluster's
         // real measured width begins.
-        let text_width = (ui.available_rect_before_wrap().width() - trailing_width).max(40.0);
+        let text_width =
+            (ui.available_rect_before_wrap().width() - trailing_width - ui.spacing().item_spacing.x).max(40.0);
         let response = toolbar_field(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.address_bar.text)
                     .desired_width(text_width)
                     .min_size(egui::vec2(0.0, 28.0))
-                    .hint_text("Search or enter address (Ctrl+L)")
+                    .hint_text("Search or enter address")
                     // Match `style.spacing.button_padding` (set in
                     // `apply_style`) so the address bar renders the
                     // same height as the back/forward buttons next
@@ -390,7 +366,8 @@ impl App {
                     // item (the text field) stood out with visibly
                     // more height than its neighbors instead of a
                     // level toolbar.
-                    .margin(egui::Margin::symmetric(8, 4)),
+                    // Room for the favicon at the left and the Ctrl L keycaps at the right.
+                    .margin(egui::Margin { left: 32, right: 56, top: 4, bottom: 4 }),
             )
         });
         if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
@@ -398,6 +375,23 @@ impl App {
         }
         self.address_bar.focused = response.has_focus();
         actions.address_bar_rect = Some(response.rect);
+        let identity = egui::Rect::from_center_size(
+            egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y),
+            FAVICON_SIZE,
+        );
+        let node = self.nodes[focused_id].as_tab().unwrap();
+        if node.loading {
+            egui::Spinner::new().size(12.0).paint_at(ui, identity);
+        } else if let Some(tex_id) = self
+            .cached_favicon_origin(&node.url.clone())
+            .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
+        {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex_id, identity, uv, egui::Color32::WHITE);
+        }
+        if !response.has_focus() {
+            paint_keycaps(ui, response.rect.right_center() - egui::vec2(8.0, 0.0), &["Ctrl", "L"]);
+        }
 
         if response.changed() {
             self.address_bar.open_tab_suggestions =
@@ -470,6 +464,8 @@ impl App {
                     enter_pressed,
                     toggle_bookmark_requested,
                     close_split_requested,
+                    // Folded into `back_to_graph` by `render_item_toolbar`.
+                    back_to_graph: _,
                     tab_actions_button_rect,
                     split_engine_button_rect,
                     address_bar_rect,

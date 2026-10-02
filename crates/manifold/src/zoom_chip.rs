@@ -59,7 +59,7 @@ pub(crate) fn render_zoom_chip(
             egui_phosphor::light::MAGNIFYING_GLASS_MINUS,
             can_zoom_out,
         )
-        .on_hover_text("Zoom out (Ctrl+-)");
+        .named_tip("Zoom out (Ctrl+-)");
         if out.clicked() {
             action = Some(ZoomChipAction::Out);
         }
@@ -69,7 +69,7 @@ pub(crate) fn render_zoom_chip(
                     .frame(false)
                     .min_size(egui::vec2(44.0, 0.0)),
             )
-            .on_hover_text("Reset zoom to 100% (Ctrl+0)")
+            .named_tip("Reset zoom to 100% (Ctrl+0)")
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         focus_ring(ui, &readout);
         if readout.clicked() {
@@ -81,12 +81,12 @@ pub(crate) fn render_zoom_chip(
             egui_phosphor::light::MAGNIFYING_GLASS_PLUS,
             can_zoom_in,
         )
-        .on_hover_text("Zoom in (Ctrl+=)");
+        .named_tip("Zoom in (Ctrl+=)");
         if zoom_in.clicked() {
             action = Some(ZoomChipAction::In);
         }
         let fit = chip_icon_button(ui, egui::Id::new("icon_btn_zoom_fit"), egui_phosphor::light::FRAME_CORNERS)
-            .on_hover_text(fit_hover);
+            .named_tip(fit_hover);
         if fit.clicked() {
             action = Some(ZoomChipAction::Fit);
         }

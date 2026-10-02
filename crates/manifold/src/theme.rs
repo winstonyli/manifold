@@ -47,6 +47,41 @@ pub(crate) fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
         .response
 }
 
+/// A tooltip that also names the widget for a screen reader: icon buttons otherwise announce their glyph.
+pub(crate) trait NamedTip {
+    fn named_tip(self, text: impl Into<String>) -> Self;
+}
+
+impl NamedTip for egui::Response {
+    fn named_tip(self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        let enabled = self.enabled();
+        self.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
+        self.on_hover_text(text)
+    }
+}
+
+/// Paints `keys` as keycaps right-aligned at `right_center`, with no layout: for a hint drawn over a field.
+pub(crate) fn paint_keycaps(ui: &egui::Ui, right_center: egui::Pos2, keys: &[&str]) {
+    let font = egui::FontId::new(11.0, bound_family(ui.ctx(), control_family()));
+    let weak = egui::Color32::from_rgb(150, 144, 130);
+    let mut right = right_center.x;
+    for key in keys.iter().rev() {
+        let galley = ui.painter().layout_no_wrap((*key).to_string(), font.clone(), weak);
+        let size = galley.size() + egui::vec2(8.0, 2.0);
+        let rect = egui::Rect::from_min_size(egui::pos2(right - size.x, right_center.y - size.y / 2.0 - 1.0), size);
+        ui.painter().rect(
+            rect,
+            3.0,
+            egui::Color32::from_rgb(48, 45, 38),
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 59, 52)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, weak);
+        right = rect.min.x - 3.0;
+    }
+}
+
 /// A key combination as keycaps in the current row: "Ctrl+Shift+C" is three, and "A / B"
 /// is two combinations around a weak slash.
 pub(crate) fn kbd_keys(ui: &mut egui::Ui, keys: &str) {
@@ -678,6 +713,23 @@ pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An icon button given `named_tip` is announced by its name, not its glyph.
+    #[test]
+    fn named_tip_labels_the_button_for_screen_readers() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.add(egui::Button::new(egui_phosphor::light::HOUSE)).named_tip("Go to home page");
+        });
+        out.textures_delta.clear();
+        let update = out.platform_output.accesskit_update.expect("accesskit enabled");
+        assert!(update.nodes.iter().any(|(_, n)| n.label() == Some("Go to home page")), "no node carries the name");
+    }
 
     /// A button in a `control_font` Ui is laid out in Familjen Grotesk, which is narrower than Literata
     /// at the same size; a plain Ui keeps Literata.
