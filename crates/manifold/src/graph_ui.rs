@@ -1492,6 +1492,8 @@ impl App {
         // also their stacking order: a later kind draws, and takes
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
+        let tab_order = self.card_tab_order();
+        self.handle_card_tab(ui, &tab_order);
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1499,7 +1501,7 @@ impl App {
             zoom_scale,
             drop_preview: &drop_preview,
             show_order: self.card_nav_active,
-            drawn: 0,
+            order: &tab_order,
             any_focused: false,
         };
         for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
@@ -1575,6 +1577,37 @@ impl App {
             }
         }
         self.card_nav_active = pass.any_focused;
+    }
+
+    /// The current level's cards in creation order: the Tab order.
+    fn card_tab_order(&self) -> Vec<String> {
+        self.node_order
+            .iter()
+            .filter(|id| self.nodes.get(*id).is_some_and(|n| n.group == self.current_group))
+            .cloned()
+            .collect()
+    }
+
+    /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order`
+    /// (and pans to it, since it may be culled). Past either end Tab is left to egui, which moves
+    /// on to the next widget outside the cards.
+    fn handle_card_tab(&mut self, ui: &egui::Ui, order: &[String]) {
+        let card_id = |id: &String| egui::Id::new(("graph_card", id.as_str()));
+        let Some(at) = order.iter().position(|id| ui.memory(|m| m.has_focus(card_id(id)))) else { return };
+        let (tab, shift) = ui.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+        let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                card_id(&order[at]),
+                egui::EventFilter { tab: target.is_some(), ..Default::default() },
+            )
+        });
+        if let (true, Some(target)) = (tab, target) {
+            ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
+            if let Some(node) = self.nodes.get(&order[target]) {
+                self.pan_to_card(node_card_rect(node));
+            }
+        }
     }
 
     /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it

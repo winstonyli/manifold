@@ -284,9 +284,9 @@ pub(crate) struct CardPass<'a> {
     /// Keyboard navigation is on (a card or control had focus last frame): each card shows its
     /// Tab-order number.
     pub(crate) show_order: bool,
-    /// Cards drawn so far this pass, which is the Tab order (egui walks widgets in the order they
-    /// are registered).
-    pub(crate) drawn: usize,
+    /// The level's card ids in Tab order (creation order, `App::card_tab_order`). Only the first is
+    /// a Tab stop from outside the graph; `App::handle_card_tab` moves between the rest.
+    pub(crate) order: &'a [String],
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
 }
@@ -320,11 +320,10 @@ pub(crate) fn paint_card_control(
 ) -> egui::Response {
     let rect = control.rect(card_rect, inv_zoom);
     let response = ui
-        .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::click())
+        // Not focusable: Tab moves between cards only, and the keyboard reaches these actions
+        // through Delete and the node menu.
+        .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.has_focus() {
-        card_focus_ring(ui, rect, inv_zoom);
-    }
     match control {
         CardControl::Swatch => {
             match view.color {
@@ -677,8 +676,16 @@ impl App {
         // the card. The hover-only one covers the whole card, so hovering
         // a Note's text while editing (where `response` is only the
         // header) still counts; being hover-only it takes no clicks.
-        let response =
-            ui.interact(body.interact_rect, egui::Id::new(("graph_card", id)), egui::Sense::click_and_drag());
+        // Focusable only as the Tab entry (first in `pass.order`) or while holding focus, so egui's
+        // own traversal can't walk the cards in draw order.
+        let card_id = egui::Id::new(("graph_card", id));
+        let slot = pass.order.iter().position(|o| o == id);
+        let sense = if slot == Some(0) || ui.memory(|m| m.has_focus(card_id)) {
+            egui::Sense::click_and_drag()
+        } else {
+            egui::Sense::CLICK | egui::Sense::DRAG
+        };
+        let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
         let response = match body.tooltip {
@@ -686,7 +693,6 @@ impl App {
             _ => response,
         };
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
-        pass.drawn += 1;
         pass.any_focused |= response.has_focus();
         if response.has_focus() {
             card_focus_ring(ui, rect, inv_zoom);
@@ -695,9 +701,11 @@ impl App {
             self.pan_to_card(rect);
         }
         if pass.show_order {
-            let (number, corner) = (pass.drawn, rect.left_top());
+            let (number, corner) = (slot.map_or(0, |s| s + 1), rect.left_top());
             deferred_overlays.push(Box::new(move |painter, project| {
+                // Kept on screen: a card at the edge would clip its badge.
                 let center = project(corner);
+                let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
                 painter.circle_filled(center, 9.0, BG);
                 painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, TEXT_PRIMARY));
                 painter.text(
@@ -760,8 +768,9 @@ impl App {
             );
         }
         // Registered after both interacts above, so they take the pointer.
+        let delete = response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
         let mut control =
-            response.clicked_by(egui::PointerButton::Middle).then(|| CardControl::Close.action(view.kind));
+            (response.clicked_by(egui::PointerButton::Middle) || delete).then(|| CardControl::Close.action(view.kind));
         let mut control_hovered = false;
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
@@ -779,7 +788,6 @@ impl App {
                 self.graph_lod_simplified,
             );
             control_hovered |= control_response.hovered();
-            pass.any_focused |= control_response.has_focus();
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action(view.kind));
             }

@@ -208,7 +208,7 @@ if has hover-graph; then hover_scan graph; fi
 if has tab-graph; then tab_scan graph "${TAB_STOPS:-10}"; fi
 # A click focuses the group card without entering it; Enter then does what a double-click does.
 if has graph-enter-group; then
-    for _ in $(seq "${GROUP_STOP:-21}"); do send TABKEY "SLEEP 0.2"; done; send "SLEEP 1"; shot graph-enter-group-click; send ENTER "SLEEP 0.4"; shot graph-enter-group-early; send "SLEEP 3"; shot graph-enter-group; reset
+    for _ in $(seq "${GROUP_STOP:-12}"); do send TABKEY "SLEEP 0.2"; done; send "SLEEP 1"; shot graph-enter-group-click; send ENTER "SLEEP 0.4"; shot graph-enter-group-early; send "SLEEP 3"; shot graph-enter-group; reset
 fi
 if has hover-menu-tab; then
     read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
