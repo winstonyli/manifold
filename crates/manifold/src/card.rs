@@ -5,20 +5,28 @@ use super::*;
 
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
-/// What a file card's overlay header says (`App::paint_file_header`).
-pub(crate) struct FileHeader {
+/// What a card's header says (`App::paint_card_header`).
+pub(crate) struct CardHeader {
     pub(crate) glyph: &'static str,
+    /// The glyph's color; the dim text color if `None`.
+    pub(crate) glyph_color: Option<egui::Color32>,
+    /// Drawn in the glyph's place, if the card has one (a favicon).
+    pub(crate) icon_image: Option<egui::TextureId>,
     pub(crate) name: String,
-    /// The web address if the card has one, else the local path (elided at the start).
     pub(crate) source: String,
+    /// `source` is a local path, so it is elided at the start (a web address, at the end).
+    pub(crate) source_is_path: bool,
+    /// Over a picture: a dark scrim behind light text. Otherwise the card's own fill.
+    pub(crate) scrim: bool,
     /// Screen points the fallback strip leaves free at its right.
     pub(crate) right_margin: f32,
 }
 
-/// The file name and the source line of an Image or PDF card: `url` if it has one, else `path`.
-pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String) {
+/// The file name and source line of a card that has a `path` and maybe a web `url`: the `url` if
+/// there is one, else the `path`. The flag is whether the source is the path.
+pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String, bool) {
     let name = crate::content::file_name(path).unwrap_or_else(|| path.to_owned());
-    (name, url.unwrap_or(path).to_owned())
+    (name, url.unwrap_or(path).to_owned(), url.is_none())
 }
 
 /// `text` cut to `max_width` screen points at the start ("…\\Trips\\a.jpg"), so a path's file name
@@ -674,13 +682,6 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
     }
 }
 
-/// What a sleeping card names its page by under the title: the url's
-/// `host[:port]`, or `None` when it has none (`about:`, `file:`), whose
-/// url the title line already shows.
-pub(crate) fn url_host(url: &str) -> Option<String> {
-    crate::favicon_fetch::url_origin(url).and_then(|origin| origin.split_once("://").map(|(_, host)| host.to_string()))
-}
-
 impl App {
     /// `id`'s `CardView`, or `None` when the node is gone.
     pub(crate) fn card_view(&self, id: &str) -> Option<CardView> {
@@ -965,7 +966,7 @@ impl App {
         zoom_scale: f32,
     ) -> CardBody {
         match view.kind {
-            ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, zoom_scale),
+            ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom),
             ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
@@ -1007,102 +1008,62 @@ impl App {
         if self.graph_lod_simplified {
             return body;
         }
+        // Favicons aren't kept across restarts and no engine loads a sleeping tab's url, so the
+        // card asks for its own. Only on-screen cards drawn in full detail get here (culled and
+        // LOD-simplified ones don't), so a big restored session fetches for what's in view, once
+        // per origin.
+        let mut favicon = None;
+        if let Some(origin) = self.cached_favicon_origin(&url) {
+            if !self.favicon_resolved.contains(&origin) {
+                self.favicon_fetcher.request(origin.clone());
+            }
+            favicon = self.gpu.as_ref().and_then(|g| g.favicon_id(&origin));
+        }
+        let failed = matches!(state, UnloadedState::Failed(_));
+        let header = CardHeader {
+            glyph: if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON },
+            glyph_color: failed.then_some(DANGER_COLOR),
+            icon_image: if failed { None } else { favicon },
+            name: if title.is_empty() { url.clone() } else { title },
+            source: url,
+            source_is_path: false,
+            scrim: false,
+            right_margin: 0.0,
+        };
+        let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+        // The middle of the body below the header: the failure icon, the waking spinner, or the
+        // moon of a sleeping tab.
+        let body_top = if tall { rect.top() + TAB_HEADER_POINTS * inv_zoom } else { rect.top() };
+        let middle = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
         match &state {
             UnloadedState::Failed(_) => {
-                let icon_pos = rect.center();
                 deferred_overlays.push(Box::new(move |overlay_painter, project| {
                     overlay_painter.text(
-                        project(icon_pos),
+                        project(middle),
                         egui::Align2::CENTER_CENTER,
                         egui_phosphor::light::WARNING_CIRCLE,
                         egui::FontId::proportional(24.0),
                         DANGER_COLOR,
                     );
                 }));
-                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                    let url_font = egui::FontId::proportional(13.0);
-                    let url_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                    let url = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &url_font, url_max_width);
-                    let url_pos = rect.center_bottom();
-                    let url_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(url_pos) + egui::vec2(0.0, -8.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            url,
-                            url_font,
-                            url_color,
-                        );
-                    }));
-                }
             }
-            UnloadedState::Sleeping | UnloadedState::Waking => {
-                if state == UnloadedState::Waking {
-                    ui.put(
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
-                        egui::Spinner::new().size(24.0 * inv_zoom),
+            UnloadedState::Waking => {
+                ui.put(
+                    egui::Rect::from_center_size(middle, egui::vec2(24.0, 24.0) * inv_zoom),
+                    egui::Spinner::new().size(24.0 * inv_zoom),
+                );
+            }
+            UnloadedState::Sleeping => {
+                let color = ui.visuals().weak_text_color();
+                deferred_overlays.push(Box::new(move |overlay_painter, project| {
+                    overlay_painter.text(
+                        project(middle),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::light::MOON,
+                        egui::FontId::proportional(24.0),
+                        color,
                     );
-                }
-                if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                    let dim_color = ui.visuals().weak_text_color();
-                    let title_font = egui::FontId::proportional(14.0);
-                    let title_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                    let title_text = if title.is_empty() { url.clone() } else { title };
-                    let title_text = truncate_to_width(
-                        &mut self.truncate_cache,
-                        ui.ctx(),
-                        &title_text,
-                        &title_font,
-                        title_max_width,
-                    );
-                    let title_pos = rect.center();
-                    let title_color = dim_color;
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(title_pos),
-                            egui::Align2::CENTER_CENTER,
-                            title_text,
-                            title_font,
-                            title_color,
-                        );
-                    }));
-
-                    if let Some(host) = url_host(&url) {
-                        let host_font = egui::FontId::proportional(13.0);
-                        let host_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                        let host =
-                            truncate_to_width(&mut self.truncate_cache, ui.ctx(), &host, &host_font, host_max_width);
-                        let host_pos = rect.center_bottom();
-                        let host_color = dim_color;
-                        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                            overlay_painter.text(
-                                project(host_pos) + egui::vec2(0.0, -8.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                host,
-                                host_font,
-                                host_color,
-                            );
-                        }));
-                    }
-                }
-                // Favicons aren't kept across restarts and no engine loads
-                // a sleeping tab's url, so the card asks for its own. Only
-                // on-screen cards drawn in full detail get here (culled and
-                // LOD-simplified ones don't), so a big restored session
-                // fetches for what's in view, once per origin.
-                if let Some(origin) = self.cached_favicon_origin(&url) {
-                    if !self.favicon_resolved.contains(&origin) {
-                        self.favicon_fetcher.request(origin.clone());
-                    }
-                    if let Some(tex_id) = self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)) {
-                        let favicon_rect = egui::Rect::from_min_size(
-                            rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
-                            FAVICON_SIZE * inv_zoom,
-                        );
-                        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                        ui.painter().image(tex_id, favicon_rect, uv, egui::Color32::WHITE.gamma_multiply(0.5));
-                    }
-                }
+                }));
             }
         }
         body
@@ -1117,6 +1078,7 @@ impl App {
         deferred_overlays: &mut DeferredOverlays,
         id: &str,
         rect: egui::Rect,
+        inv_zoom: f32,
         zoom_scale: f32,
     ) -> CardBody {
         let body = CardBody { interact_rect: rect, tooltip: None };
@@ -1129,48 +1091,19 @@ impl App {
             return body;
         };
         let filename = download_filename(&download_path);
-        // `egui_phosphor::DOWNLOAD_SIMPLE` -- was a raw
-        // Unicode arrow-to-bar glyph (`\u{2913}`) that
-        // happened to render, despite this comment's own
-        // claim of avoiding exactly that gamble; migrated
-        // to a real icon for consistency once the icon
-        // font was already in place for everything else.
-        // LOD: icon/filename text skipped once simplified
-        // -- see `paint_tab_body`'s own LOD comment.
+        // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
-            let download_icon_pos = rect.center_top();
-            let download_icon_color = ui.visuals().text_color();
-            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                overlay_painter.text(
-                    project(download_icon_pos) + egui::vec2(0.0, 10.0),
-                    egui::Align2::CENTER_TOP,
-                    egui_phosphor::light::DOWNLOAD_SIMPLE,
-                    egui::FontId::proportional(18.0),
-                    download_icon_color,
-                );
-            }));
-            // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip the
-            // filename entirely rather than truncating to a
-            // near-illegible sliver -- the download-icon glyph
-            // above still marks the node as a download on its
-            // own.
-            if rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
-                let filename_font = egui::FontId::proportional(14.0);
-                let filename_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                let filename =
-                    truncate_to_width(&mut self.truncate_cache, ui.ctx(), filename, &filename_font, filename_max_width);
-                let filename_pos = rect.center_bottom();
-                let filename_color = ui.visuals().text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(filename_pos) + egui::vec2(0.0, -8.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        filename,
-                        filename_font,
-                        filename_color,
-                    );
-                }));
-            }
+            let header = CardHeader {
+                glyph: egui_phosphor::light::DOWNLOAD_SIMPLE,
+                glyph_color: None,
+                icon_image: None,
+                name: filename.to_owned(),
+                source: download_path.clone(),
+                source_is_path: true,
+                scrim: false,
+                right_margin: 0.0,
+            };
+            self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
         }
         // Live progress bar, only while not yet complete
         // and only when the server reported a real total
@@ -1348,10 +1281,18 @@ impl App {
                         egui::Color32::WHITE,
                     );
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
-                        let (name, source) = file_header_text(&image.path, image.url.as_deref());
-                        let glyph = egui_phosphor::light::IMAGE;
-                        let header = FileHeader { glyph, name, source, right_margin: 0.0 };
-                        self.paint_file_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                        let (name, source, source_is_path) = file_header_text(&image.path, image.url.as_deref());
+                        let header = CardHeader {
+                            glyph: egui_phosphor::light::IMAGE,
+                            glyph_color: None,
+                            icon_image: None,
+                            name,
+                            source,
+                            source_is_path,
+                            scrim: true,
+                            right_margin: 0.0,
+                        };
+                        self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
                     }
                 }
                 // Only reachable if the node somehow outlived its
@@ -1428,11 +1369,19 @@ impl App {
                         egui::Color32::WHITE,
                     );
                     if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
-                        let (name, source) = file_header_text(&pdf.path, pdf.url.as_deref());
-                        let glyph = egui_phosphor::light::FILE_PDF;
+                        let (name, source, source_is_path) = file_header_text(&pdf.path, pdf.url.as_deref());
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
-                        let header = FileHeader { glyph, name, source, right_margin: 60.0 };
-                        self.paint_file_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                        let header = CardHeader {
+                            glyph: egui_phosphor::light::FILE_PDF,
+                            glyph_color: None,
+                            icon_image: None,
+                            name,
+                            source,
+                            source_is_path,
+                            scrim: true,
+                            right_margin: 60.0,
+                        };
+                        self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
                     }
                     // Shown even for a one-page PDF -- a glanceable
                     // "this is a PDF, not a plain image" cue on top
@@ -1712,59 +1661,80 @@ impl App {
         body
     }
 
-    /// The header of an Image or PDF card, over the picture: a scrim over the top 40 screen points
-    /// with the glyph, name and source line. A card under `TAB_HEADER_MIN_CARD_POINTS` tall gets
-    /// the name on a strip along the bottom instead.
-    pub(crate) fn paint_file_header(
+    /// A card's header, drawn over the top of its rect: glyph (or favicon), name, and the source
+    /// line, 40 screen points tall. A card under `TAB_HEADER_MIN_CARD_POINTS` tall gets the name on
+    /// a strip along the bottom instead. Returns whether the full header was drawn, so a caller
+    /// can place its own content below it.
+    pub(crate) fn paint_card_header(
         &mut self,
         ui: &egui::Ui,
         deferred_overlays: &mut DeferredOverlays,
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
-        header: FileHeader,
-    ) {
-        if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
-            return;
-        }
-        let FileHeader { glyph, name, source, right_margin } = header;
+        header: CardHeader,
+    ) -> bool {
         let tall = tab_has_header(rect, inv_zoom);
+        if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
+            return tall;
+        }
+        let CardHeader { glyph, glyph_color, icon_image, name, source, source_is_path, scrim, right_margin } = header;
         let band_height = if tall { TAB_HEADER_POINTS } else { 18.0 } * inv_zoom;
         let band = if tall {
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
         } else {
             egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - band_height), rect.right_bottom())
         };
-        let radius = (6.0 * inv_zoom).min(255.0) as u8;
-        let corners = if tall {
-            egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }
-        } else {
-            egui::CornerRadius { nw: 0, ne: 0, sw: radius, se: radius }
-        };
-        ui.painter().rect_filled(band, corners, egui::Color32::from_black_alpha(if tall { 190 } else { 160 }));
-        let (title_color, source_color) = (egui::Color32::from_gray(240), egui::Color32::from_gray(190));
+        if scrim || !tall {
+            let radius = (6.0 * inv_zoom).min(255.0) as u8;
+            let corners = if tall {
+                egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }
+            } else {
+                egui::CornerRadius { nw: 0, ne: 0, sw: radius, se: radius }
+            };
+            ui.painter().rect_filled(band, corners, egui::Color32::from_black_alpha(if tall { 190 } else { 160 }));
+        }
+        let light = scrim || !tall;
+        let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
+        let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
+        let glyph_color = glyph_color.unwrap_or(source_color);
         let title_font = egui::FontId::proportional(13.0);
         let source_font = egui::FontId::proportional(11.0);
-        let (icon_size, text_left) = if tall { (14.0, 28.0) } else { (0.0, 8.0) };
+        let text_left = if tall { 28.0 } else { 8.0 };
         let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
         let title = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width);
-        let source = if tall {
-            truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width)
-        } else {
-            String::new()
+        let source = match (tall, source_is_path) {
+            (false, _) => String::new(),
+            (true, true) => {
+                truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width)
+            }
+            (true, false) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width),
         };
+        if let (true, Some(tex_id)) = (tall, icon_image) {
+            let center = band.left_top() + egui::vec2(18.0, 12.0) * inv_zoom;
+            let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+            ui.painter().image(
+                tex_id,
+                egui::Rect::from_center_size(center, FAVICON_SIZE * inv_zoom),
+                uv,
+                egui::Color32::WHITE.gamma_multiply(0.6),
+            );
+        }
         let origin = band.left_top();
         let band_screen_height = band_height * zoom_scale;
+        let draw_glyph = tall && icon_image.is_none();
         deferred_overlays.push(Box::new(move |overlay_painter, project| {
             let base = project(origin);
             if tall {
-                overlay_painter.text(
-                    base + egui::vec2(10.0, 12.0),
-                    egui::Align2::LEFT_CENTER,
-                    glyph,
-                    egui::FontId::proportional(icon_size),
-                    source_color,
-                );
+                if draw_glyph {
+                    overlay_painter.text(
+                        base + egui::vec2(10.0, 12.0),
+                        egui::Align2::LEFT_CENTER,
+                        glyph,
+                        egui::FontId::proportional(14.0),
+                        glyph_color,
+                    );
+                }
                 overlay_painter.text(
                     base + egui::vec2(text_left, 12.0),
                     egui::Align2::LEFT_CENTER,
@@ -1789,6 +1759,7 @@ impl App {
                 );
             }
         }));
+        tall
     }
 
     /// A live thumbnail (or a spinner until the first frame) under a header of favicon, title and
@@ -1988,9 +1959,9 @@ mod tests {
     #[test]
     fn file_header_text_prefers_the_url_over_the_path() {
         let path = r"C:\pics\a.jpg";
-        assert_eq!(file_header_text(path, None), ("a.jpg".to_owned(), path.to_owned()));
+        assert_eq!(file_header_text(path, None), ("a.jpg".to_owned(), path.to_owned(), true));
         let url = "https://x.test/a.jpg";
-        assert_eq!(file_header_text(path, Some(url)), ("a.jpg".to_owned(), url.to_owned()));
+        assert_eq!(file_header_text(path, Some(url)), ("a.jpg".to_owned(), url.to_owned(), false));
     }
 
     #[test]
@@ -2279,12 +2250,5 @@ mod tests {
     fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Sleeping), "Sleeping — click to load");
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Waking), "Loading…");
-    }
-
-    #[test]
-    fn url_host_is_the_authority_or_the_whole_url() {
-        assert_eq!(url_host("https://example.org:8080/a?b#c").as_deref(), Some("example.org:8080"));
-        assert_eq!(url_host("about:blank"), None);
-        assert_eq!(url_host("file:///C:/notes.txt"), None);
     }
 }
