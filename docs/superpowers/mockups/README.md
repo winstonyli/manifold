@@ -7,3 +7,4 @@ HTML sketches from the design sessions, recovered from the session transcripts (
 - `heading-final-v2.html`, `editorial-options-visual.html` (2026-09-20): heading font and palette explorations behind the editorial retheme.
 
 Compare with the running app using `scripts/chrome-shots.sh`.
+- `toolbar_v2.html` (2026-10-01): self-contained (inline SVG icons, no CDN or host CSS variables, which is why the older sketches above render unstyled and iconless outside their original chat widget). Both bars built from the app's real controls: one button and field anatomy, 38 px bar, chips per cluster, icon-first, an inset field with hairline border and accent focus ring. A proposal, not yet implemented; the app currently differs in bar height (32 px), the text "Graph"/"Split"/"Tab actions" buttons and the borderless address field.
