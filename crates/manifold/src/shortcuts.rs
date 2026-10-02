@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// Whether `code` pressed with `modifiers` (the `ipc_protocol::modifiers` bits) is one of the chords
+/// `handle_global_shortcuts` consumes, so the page must not get it as well. Extra Shift is ignored,
+/// as it is by egui's matching; keep this in step with that list.
+pub(crate) fn claims_chord(code: WinitKeyCode, modifiers: u8) -> bool {
+    use WinitKeyCode::*;
+    if modifiers & ipc_protocol::modifiers::CONTROL != 0 {
+        matches!(
+            code,
+            KeyT | KeyW
+                | KeyL
+                | KeyF
+                | KeyD
+                | KeyP
+                | KeyK
+                | KeyG
+                | KeyR
+                | Tab
+                | Equal
+                | NumpadAdd
+                | Minus
+                | NumpadSubtract
+                | Digit0
+                | Numpad0
+        )
+    } else {
+        modifiers == 0 && matches!(code, F1 | F2 | F5 | F12)
+    }
+}
+
 impl App {
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
     /// polling (same mechanism `build_tab_view_ui`'s own `Escape` check uses),
@@ -354,5 +383,22 @@ impl App {
         if !self.find.text.is_empty() {
             self.send_find_start();
         }
+    }
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use ipc_protocol::modifiers::{CONTROL, SHIFT};
+
+    use super::*;
+
+    #[test]
+    fn shortcut_chords_are_claimed_and_page_chords_are_not() {
+        assert!(claims_chord(WinitKeyCode::KeyW, CONTROL));
+        assert!(claims_chord(WinitKeyCode::KeyT, CONTROL | SHIFT));
+        assert!(claims_chord(WinitKeyCode::F5, 0));
+        assert!(!claims_chord(WinitKeyCode::KeyC, CONTROL), "copy is the page's");
+        assert!(!claims_chord(WinitKeyCode::KeyW, 0), "a plain W is typing");
+        assert!(!claims_chord(WinitKeyCode::F5, SHIFT));
     }
 }

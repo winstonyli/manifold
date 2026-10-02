@@ -959,6 +959,9 @@ struct App {
     /// carries the modifier state at the time of that key, not just the
     /// currently-pressed key itself.
     key_modifiers: u8,
+    /// Physical keys of a shortcut chord pressed in Tab view, whose release (and typed text) must not
+    /// reach the page either (`shortcuts::claims_chord`).
+    swallowed_keys: std::collections::HashSet<WinitKeyCode>,
 
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
@@ -1354,6 +1357,7 @@ impl Default for App {
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
             key_modifiers: 0,
+            swallowed_keys: Default::default(),
             egui_ctx,
             egui_state: None,
             address_bar: AddressBar::new(settings.home_page.clone()),

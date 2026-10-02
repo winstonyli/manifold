@@ -372,7 +372,18 @@ impl ApplicationHandler<UserEvent> for App {
                 self.key_modifiers = winit_modifiers_to_bits(new_modifiers.state());
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if in_tab_view && !consumed_by_egui {
+                // A key we take as a shortcut isn't also the page's: its press, text and release stay here.
+                let swallowed = match (event.physical_key, event.state) {
+                    (PhysicalKey::Code(code), ElementState::Pressed)
+                        if crate::shortcuts::claims_chord(code, self.key_modifiers) =>
+                    {
+                        self.swallowed_keys.insert(code);
+                        true
+                    }
+                    (PhysicalKey::Code(code), ElementState::Released) => self.swallowed_keys.remove(&code),
+                    _ => false,
+                };
+                if in_tab_view && !consumed_by_egui && !swallowed {
                     if let Some(id) = self.focused.clone() {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             if let Some(key) = translate_key_code(event.physical_key) {
