@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file download-real json-zoom
+#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f missing-file download-real json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -326,6 +326,10 @@ fi
 if has cards-f; then
     send "ADDDOWNLOAD $(w "$work/data.json")" "SLEEPNODE t1" "SLEEP 6" "MOUSEMOVE 327 19" "MOUSEDOWN 327 19 left" "MOUSEUP 327 19 left" "SLEEP 2"; shot cards-f
 fi
+# A note being edited: a click on the rendered note enters the editor in place.
+if has note-edit; then
+    read -r x y < <(center Note); send "CLICK $x $y" "SLEEP 1" "MOUSEMOVE 5 790" "SLEEP 1"; shot note-edit; send ESCAPE "SLEEP 1"
+fi
 if has image-view; then
     read -r x y < <(center Image); send "DOUBLECLICK $x $y" "SLEEP 3"; shot image-view; reset
 fi
@@ -476,6 +480,9 @@ fi
 if has json-zoom; then
     click() { send "MOUSEMOVE $1 $2" "MOUSEDOWN $1 $2 left" "MOUSEUP $1 $2 left" "SLEEP 1"; }
     click 219 19; click 219 19; send "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-out
+    # Further out: the Note card under 80 points tall, so it falls back to the 18-point name strip.
+    for _ in 1 2 3; do click 219 19; done; send "MOUSEMOVE 5 790" "SLEEP 2"; shot note-short
+    for _ in 1 2 3; do click 295 19; done
     # In to ~280%, then drag the empty canvas up so the Json card (below the tab) is on screen.
     for _ in 1 2 3 4 5 6; do click 295 19; done
     send "MOUSEMOVE 900 760" "MOUSEDOWN 900 760 left" "MOUSEMOVE 900 660 left" "MOUSEMOVE 900 560 left" "MOUSEUP 900 560 left" "MOUSEMOVE 5 790" "SLEEP 2"; shot json-zoom-in
