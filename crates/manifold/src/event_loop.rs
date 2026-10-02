@@ -889,6 +889,9 @@ impl App {
             DebugCommand::ArrowRight => {
                 self.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
             }
+            DebugCommand::SpaceKey => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
+            }
             DebugCommand::ArrowLeft => {
                 self.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
             }

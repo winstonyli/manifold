@@ -689,6 +689,15 @@ impl App {
         } else {
             egui::Sense::CLICK | egui::Sense::DRAG
         };
+        // Space on a focused tab card toggles it in the selection, as the marquee would select it. Taken
+        // before the interact, which would otherwise read it as a click and open the tab.
+        if matches!(view.kind, ItemNodeKind::Tab | ItemNodeKind::Unloaded)
+            && ui.memory(|m| m.has_focus(card_id))
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+            && !self.selected_tabs.remove(id)
+        {
+            self.selected_tabs.insert(id.to_string());
+        }
         let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.

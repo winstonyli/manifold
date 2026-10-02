@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -219,6 +219,12 @@ if has graph-menu-key; then
     send SHIFTF10 "SLEEP 1"; shot graph-menu-key-open
     send TABKEY "SLEEP 0.5"; shot graph-menu-key-tab
     send ESCAPE "SLEEP 1"; shot graph-menu-key-closed; reset
+fi
+# Space on a Tab-focused tab card selects it (and Space again clears it).
+if has graph-select-key; then
+    for _ in $(seq "${SELECT_STOP:-12}"); do send TABKEY "SLEEP 0.5"; done
+    send SPACEKEY "SLEEP 1"; shot graph-select-key-on
+    send SPACEKEY "SLEEP 1"; shot graph-select-key-off; reset
 fi
 if has hover-menu-tab; then
     read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
