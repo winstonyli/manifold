@@ -78,6 +78,25 @@ svg.ic{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;str
 .vB .state{top:28px}
 .vB.sel .shell{background:#26211a}
 
+/* ---- F. header with a second host line ---- */
+.vF .shell{display:flex;flex-direction:column;background:#1d1a14}
+.vF .hd{height:40px;display:grid;grid-template-columns:auto 1fr auto;column-gap:8px;align-items:center;padding:0 9px;flex:none}
+.vF .hd .fav{grid-row:1/3}
+.vF .t1{font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:end}
+.vF .t2{color:var(--dim);font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:start}
+.vF .badges{grid-row:1/3;grid-column:3}
+.vF .thumb{position:relative;flex:1;inset:auto;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.vF .state{top:40px}
+.vF.sel .shell{background:#26211a}
+/* ---- G. header, host inline after the title ---- */
+.vG .shell{display:flex;flex-direction:column;background:#1d1a14}
+.vG .hd{height:28px;display:flex;align-items:center;gap:7px;padding:0 8px;flex:none}
+.vG .ttl{font-weight:500}
+.vG .ttl span{font-weight:400;margin-left:6px}
+.vG .thumb{position:relative;flex:1;inset:auto;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.vG .state{top:28px}
+.vG.sel .shell{background:#26211a}
+
 /* ---- C. floating footer pill over a full-bleed page ---- */
 .vC .shell{border-color:transparent}
 .vC .pill{position:absolute;left:8px;right:8px;bottom:8px;height:30px;display:flex;align-items:center;gap:7px;padding:0 9px;border-radius:8px;background:rgba(29,26,20,.86);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.1)}
@@ -107,7 +126,7 @@ code{font:12px ui-monospace,Consolas,monospace;color:var(--accent)}
 <h1>Tab card designs</h1>
 <p class="lede">Today's tab card (A) against four redesigns. Every card shows the same page, drawn as a thumbnail, in the states the app has: rest, hover, selected, tagged, loading, sleeping, audio, muted, pinned, error. Title text is Familjen Grotesk in B to E (a control-style label); A keeps the app's current Literata. The thumbnail is always the page itself.</p>
 <div class="ctl">Show:
- <button data-v="all" class="on">All</button><button data-v="A">A Current</button><button data-v="B">B Header</button><button data-v="C">C Pill</button><button data-v="D">D Quiet</button><button data-v="E">E Dense</button>
+ <button data-v="all" class="on">All</button><button data-v="A">A Current</button><button data-v="B">B Header</button><button data-v="F">F B+host</button><button data-v="G">G B+inline</button><button data-v="C">C Pill</button><button data-v="D">D Quiet</button><button data-v="E">E Dense</button>
  <span style="margin-left:12px">Title:</span><button data-t="short" class="on">Short</button><button data-t="long">Long</button>
 </div>
 <div id="root"></div>
@@ -148,24 +167,28 @@ function card(v,s,long){
   let inner='';
   if(v==='A') inner=`<div class="shell">${PAGE}${o}<div class="strip"><span class="dot"></span><span class="ttl">${t}</span>${b?'<span class="badges">'+b+'</span>':''}</div></div>`;
   if(v==='B') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="ttl">${t}</span><span class="badges">${b}</span></div>${PAGE}${o}</div>`;
+  if(v==='F') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="t1">${t}</span><span class="badges">${b}</span><span class="t2">${host()}</span></div>${PAGE}${o}</div>`;
+  if(v==='G') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="ttl">${t}<span>${host()}</span></span><span class="badges">${b}</span></div>${PAGE}${o}</div>`;
   if(v==='C') inner=`<div class="shell">${PAGE.replace('class="thumb"','class="thumb" style="inset:0"')}${o}<div class="pill"><span class="fav"></span><span class="ttl">${t}</span><span class="badges">${b}</span></div></div>`;
   if(v==='D') inner=`<div class="shell">${PAGE.replace('class="thumb"','class="thumb" style="inset:0"')}${o}<div class="tl"><span class="fav"></span><span class="ttl">${t}</span></div><div class="corner"><span class="badges">${b}</span><span class="dot"></span></div></div>`;
   if(v==='E') inner=`<div class="shell">${PAGE}${o}<div class="meta"><span class="fav"></span><span class="t1">${t}</span><span class="badges">${b}</span><span class="t2">${host()}</span></div></div>`;
   const dot='';
   return `<div class="${cls}">${inner}<div class="x">${I.x}</div><div class="conn"></div></div>`;
 }
-const NAMES={A:'A · Current (scrim strip, Literata)',B:'B · Header bar',C:'C · Floating pill',D:'D · Quiet frame (title on hover/select)',E:'E · Dense (favicon, title, host)'};
+const NAMES={A:'A · Current (scrim strip, Literata)',B:'B · Header bar',C:'C · Floating pill',D:'D · Quiet frame (title on hover/select)',E:'E · Dense (favicon, title, host)',F:'F · B with the host on a second header line',G:'G · B with the host inline after the title'};
 const BLURB={
  A:'Thumbnail with a 18 px black scrim strip: engine dot, title. Status shows only as a corner dot elsewhere.',
  B:'A 28 px header carries favicon, title and state icons, so the page is never covered. Reads like a window.',
  C:'The page fills the card; a blurred 30 px pill floats at the bottom with favicon, title, state icons.',
  D:'Nothing but the page until hover or selection, then a small title capsule. Calmest at graph scale; state shows as small icons in the top-right corner plus the ring.',
+ F:'B with a 40 px header: title on the first line, host dimmed on the second. The page loses 12 px of height.',
+ G:'B with a 28 px header: title then the host in dim text on the same line. The host is the first thing cut when the title is long.',
  E:'Page above, then favicon, a title line and the host beneath it. Most information per card.'
 };
 let VIEW='all',LONG=false;
 function render(){
   const root=document.getElementById('root');root.innerHTML='';
-  for(const v of ['A','B','C','D','E']){
+  for(const v of ['A','B','F','G','C','D','E']){
     if(VIEW!=='all'&&VIEW!==v)continue;
     const sec=document.createElement('section');
     sec.innerHTML=`<h2><b>${NAMES[v]}</b></h2><p class="note">${BLURB[v]}</p><div class="stage">${STATES.map(([n,s])=>`<div class="cell">${card(v,s,LONG)}<small>${n}</small></div>`).join('')}</div>
