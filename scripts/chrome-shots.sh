@@ -18,7 +18,7 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key tabview-actions-click tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # mouse-regress is asserted instead of shot: it prints PASS/FAIL for drag, swatch click and middle-click close.
@@ -296,7 +296,7 @@ if has json-level || has json-menu || has json-tooltip || has json-keys || has h
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find || has tab-dropdown || has tabview-split-key; then
+if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-actions-click || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find || has tab-dropdown || has tabview-split-key; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     has tab-tabview && tab_scan tabview 12
@@ -309,6 +309,16 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         send "ADDRESSBAR exam" "SLEEP 2"; HOVER_X0=210 HOVER_BAND=820 hover_column dropdown 400 40 250; send ESCAPE "SLEEP 1"
     fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
+    # Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card.
+    if has tabview-actions-click; then
+        npinned() { state; python -P -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["pinned"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+        ncards() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
+        pins0=$(npinned); cards0=$(ncards)
+        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 49" "SLEEP 1"
+        echo "$([ "$(npinned)" = "$((pins0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Pin pins the tab"
+        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 76" "SLEEP 2"
+        echo "$([ "$(ncards)" = "$((cards0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Duplicate adds a card"
+    fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
     if has hover-find; then
         send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; HOVER_Y=${FIND_Y:-60} HOVER_BAND=${FIND_BAND:-90} hover_scan find; send CLOSEFINDBAR
