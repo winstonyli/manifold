@@ -50,7 +50,7 @@ impl App {
     pub(crate) fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut req = SettingsRequests::default();
 
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.engine_picker_open() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.popup_open() {
             self.close_settings_page();
         }
 
@@ -231,19 +231,13 @@ impl App {
         ui.label(heading_text("Lists"));
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
-            if bookmarks_response.clicked() {
-                toggle_popup(&mut self.open_popup, AnchoredPopup::Bookmarks);
-                if self.open_popup == Some(AnchoredPopup::Bookmarks) {
-                    self.bookmarks_filter.clear();
-                }
+            if self.popup_opener_clicked(ui, AnchoredPopup::Bookmarks, &bookmarks_response) {
+                self.bookmarks_filter.clear();
             }
             req.bookmarks_button_rect = Some(bookmarks_response.rect);
             let history_response = ui.button(format!("History ({})", self.history.len()));
-            if history_response.clicked() {
-                toggle_popup(&mut self.open_popup, AnchoredPopup::History);
-                if self.open_popup == Some(AnchoredPopup::History) {
-                    self.history_filter.clear();
-                }
+            if self.popup_opener_clicked(ui, AnchoredPopup::History, &history_response) {
+                self.history_filter.clear();
             }
             req.history_button_rect = Some(history_response.rect);
             // Not `self.nodes.len()` (every graph node, not just
@@ -252,9 +246,7 @@ impl App {
             // "Lists" dropdown, carried forward here unchanged.
             let download_count = self.nodes.values().filter(|n| n.as_download().is_some()).count();
             let downloads_response = ui.button(format!("Downloads ({download_count})"));
-            if downloads_response.clicked() {
-                toggle_popup(&mut self.open_popup, AnchoredPopup::Downloads);
-            }
+            self.popup_opener_clicked(ui, AnchoredPopup::Downloads, &downloads_response);
             req.downloads_button_rect = Some(downloads_response.rect);
         });
     }

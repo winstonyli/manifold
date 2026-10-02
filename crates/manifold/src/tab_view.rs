@@ -314,9 +314,7 @@ impl App {
         // order since a right-to-left `Ui` places each new
         // widget immediately to the *left* of the previous one.
         let tab_actions_response = trailing_ui.button("Tab actions");
-        if tab_actions_response.clicked() {
-            toggle_popup(&mut self.open_popup, AnchoredPopup::TabActions);
-        }
+        self.popup_opener_clicked(trailing_ui, AnchoredPopup::TabActions, &tab_actions_response);
         actions.tab_actions_button_rect = Some(tab_actions_response.rect);
         if self.split_tab.is_some()
             && icon_button_eased(trailing_ui, egui::Id::new("icon_btn_close_split"), egui_phosphor::light::X)
@@ -332,7 +330,7 @@ impl App {
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
         let split_engine_response = trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
-        self.engine_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
+        self.popup_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
         actions.split_engine_button_rect = Some(split_engine_response.rect);
         let is_bookmarked = self
             .nodes
@@ -517,9 +515,8 @@ impl App {
         // and `key_pressed` is a non-consuming peek -- without this, the
         // same Escape press would also fire this chain (leaving to Graph,
         // or dismissing the address-bar dropdown) underneath it.
-        let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape))
-            && self.quick_switcher.is_none()
-            && !self.engine_picker_open();
+        let escape_pressed =
+            ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.quick_switcher.is_none() && !self.popup_open();
         if back_to_graph || (!has_suggestions && !self.find.open && self.context_menu.is_none() && escape_pressed) {
             self.leave_to_graph();
             return;

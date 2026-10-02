@@ -2358,7 +2358,25 @@ impl App {
             });
     }
 
+    /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
+    /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     fn build_ui(&mut self, ui: &mut egui::Ui) {
+        let open_at_start = self.open_popup;
+        let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        self.build_ui_inner(ui);
+        if escape && self.open_popup == open_at_start {
+            self.open_popup = None;
+        }
+        if let Some(which) = open_at_start.filter(|_| self.open_popup.is_none()) {
+            if !ui.input(|i| i.pointer.any_click()) {
+                if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(which))) {
+                    ui.memory_mut(|m| m.request_focus(button));
+                }
+            }
+        }
+    }
+
+    fn build_ui_inner(&mut self, ui: &mut egui::Ui) {
         self.handle_global_shortcuts(ui);
         // The address bar is built only in Tab view, so leaving it by any
         // path ends the edit, as Escape does. Otherwise the dropdown and

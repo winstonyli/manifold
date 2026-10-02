@@ -1015,9 +1015,7 @@ impl App {
         if !self.closed.is_empty() {
             let label = format!("Recently Closed ({})", self.closed.len());
             let response = ui.button(label);
-            if response.clicked() {
-                toggle_popup(&mut self.open_popup, AnchoredPopup::RecentlyClosed);
-            }
+            self.popup_opener_clicked(ui, AnchoredPopup::RecentlyClosed, &response);
             recently_closed_button_rect = Some(response.rect);
         }
         recently_closed_button_rect

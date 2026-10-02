@@ -58,10 +58,69 @@ pub(crate) fn build_list_popup_frame(
                     ui.set_max_width(max_width);
                 }
                 add_contents(ui);
+                list_row_nav(ui, interactable);
             });
         })
         .response
         .rect
+}
+
+fn list_rows_key(ui: &egui::Ui) -> egui::Id {
+    ui.layer_id().id.with("list_rows")
+}
+
+/// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
+/// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
+pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    // A focused widget gets the "active" text color, which is black in this theme.
+    let active_fg = ui.visuals().widgets.active.fg_stroke;
+    ui.visuals_mut().widgets.active.fg_stroke = egui::Stroke::new(active_fg.width, TEXT_PRIMARY);
+    let response = ui
+        .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    ui.visuals_mut().widgets.active.fg_stroke = active_fg;
+    if response.has_focus() {
+        focus_ring(ui, &response);
+        response.scroll_to_me(None);
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
+            )
+        });
+    }
+    let key = list_rows_key(ui);
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Id>>(key).push(response.id));
+    response
+}
+
+/// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
+/// focus between rows on Up/Down (wrapping).
+fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
+    let key = list_rows_key(ui);
+    let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
+    let open_key = key.with("was_open");
+    let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
+    ui.data_mut(|d| d.insert_temp(open_key, interactable));
+    if !interactable || rows.is_empty() {
+        return;
+    }
+    if just_opened {
+        ui.memory_mut(|m| m.request_focus(rows[0]));
+        return;
+    }
+    let Some(at) = rows.iter().position(|id| ui.memory(|m| m.has_focus(*id))) else { return };
+    let (down, up) = ui.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+        )
+    });
+    // Down is +1, Up is -1 (as len - 1, mod len).
+    let step = usize::from(down) + (rows.len() - 1) * usize::from(up);
+    if step != 0 {
+        ui.memory_mut(|m| m.request_focus(rows[(at + step) % rows.len()]));
+    }
 }
 
 /// Lets a popup driven by `Option<T>` app state (the right-click context
@@ -192,18 +251,12 @@ impl App {
         let escape = open && ui.input(|i| i.key_pressed(egui::Key::Escape));
         if picked.is_some() || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
             close_popup(&mut self.open_popup, which);
-            // Closed from the keyboard: focus goes back to the button that opened it.
-            if open && !ui.input(|i| i.pointer.any_click()) {
-                if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(Self::engine_opener_key(which))) {
-                    ui.memory_mut(|m| m.request_focus(button));
-                }
-            }
         }
         picked
     }
 
-    fn engine_opener_key(which: AnchoredPopup) -> egui::Id {
-        egui::Id::new(("engine_opener", which))
+    pub(crate) fn popup_opener_key(which: AnchoredPopup) -> egui::Id {
+        egui::Id::new(("popup_opener", which))
     }
 
     /// The settings page's button showing `kind`, opening engine picker `which`. Its label is
@@ -216,30 +269,34 @@ impl App {
         kind: EngineKind,
     ) -> egui::Response {
         let focused = ui
-            .data(|d| d.get_temp::<egui::Id>(Self::engine_opener_key(which)))
+            .data(|d| d.get_temp::<egui::Id>(Self::popup_opener_key(which)))
             .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
         let color = if focused { BG } else { engine_color(kind) };
         let response = ui.button(egui::RichText::new(engine_label(kind)).color(color));
-        self.engine_opener_clicked(ui, which, &response);
+        self.popup_opener_clicked(ui, which, &response);
         response
     }
 
-    /// The button that opens engine picker `which`: toggles it when clicked and
-    /// remembers itself, so the picker can hand focus back on a keyboard close.
-    pub(crate) fn engine_opener_clicked(&mut self, ui: &egui::Ui, which: AnchoredPopup, button: &egui::Response) {
+    /// The button that opens popup `which`: toggles it when clicked and remembers itself, so
+    /// `build_ui` can hand focus back to it when the popup closes from the keyboard. Returns
+    /// whether the popup was just opened.
+    pub(crate) fn popup_opener_clicked(
+        &mut self,
+        ui: &egui::Ui,
+        which: AnchoredPopup,
+        button: &egui::Response,
+    ) -> bool {
+        ui.data_mut(|d| d.insert_temp(Self::popup_opener_key(which), button.id));
         if button.clicked() {
             toggle_popup(&mut self.open_popup, which);
         }
-        ui.data_mut(|d| d.insert_temp(Self::engine_opener_key(which), button.id));
+        button.clicked() && self.open_popup == Some(which)
     }
 
-    /// Whether an engine picker is open: it takes Escape for itself, so the
-    /// settings page and Tab view must not also act on the same press.
-    pub(crate) fn engine_picker_open(&self) -> bool {
-        matches!(
-            self.open_popup,
-            Some(AnchoredPopup::DefaultEngine | AnchoredPopup::CurrentEngine | AnchoredPopup::SplitEngine)
-        )
+    /// Whether an anchored popup is open: Escape closes it (`build_ui`), so the settings page and
+    /// Tab view must not also act on the same press.
+    pub(crate) fn popup_open(&self) -> bool {
+        self.open_popup.is_some()
     }
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
@@ -296,11 +353,7 @@ impl App {
                         let root = &entry.doc.nodes[0];
                         let title = entry.local("title", &root.id).and_then(|v| v.as_str());
                         let label = Self::closed_entry_label(ui, root, title, entry.doc.nodes.len() - 1);
-                        if ui
-                            .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                        if list_row(ui, label).clicked() {
                             reopen_index = Some(index);
                         }
                     });
@@ -372,11 +425,7 @@ impl App {
                         for (index, bookmark) in rows {
                             let (index, bookmark) = (*index, *bookmark);
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add(egui::Label::new(&bookmark.title).truncate().sense(egui::Sense::click()))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
+                                if list_row(ui, &bookmark.title).clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
                                 if ui.small_button(egui_phosphor::light::X).clicked() {
@@ -491,11 +540,7 @@ impl App {
                         if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
                             continue;
                         }
-                        if ui
-                            .add(egui::Label::new(label).truncate().sense(egui::Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                        if list_row(ui, label).clicked() {
                             navigate_url = Some(entry.url.clone());
                         }
                     }
@@ -551,11 +596,7 @@ impl App {
                         let Some(node) = self.nodes.get(id).and_then(|n| n.as_download()) else { continue };
                         ui.horizontal(|ui| {
                             let filename = download_filename(&node.path);
-                            if ui
-                                .add(egui::Label::new(filename).truncate().sense(egui::Sense::click()))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if list_row(ui, filename).clicked() {
                                 reveal_id = Some(id.clone());
                             }
                             if ui.small_button(egui_phosphor::light::X).clicked() {
@@ -1218,6 +1259,55 @@ mod engine_picker_tests {
         output.textures_delta.clear(); // nothing uploads the font atlas here
     }
 
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// One frame of a three-row list popup; returns the row clicked.
+    fn list_frame(ctx: &egui::Context, events: Vec<egui::Event>) -> Option<usize> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut clicked = None;
+        let mut output = ctx.run_ui(input, |ui| {
+            let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
+            build_list_popup_frame(ui.ctx(), "test_list", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                for row in 0..3 {
+                    if list_row(ui, format!("row {row}")).clicked() {
+                        clicked = Some(row);
+                    }
+                }
+            });
+        });
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+        clicked
+    }
+
+    /// A list popup opens on its first row; Down and Up move (wrapping) and Enter clicks the focused row.
+    #[test]
+    fn list_rows_take_arrows_and_enter() {
+        let ctx = egui::Context::default();
+        theme::apply_style(&ctx);
+        for _ in 0..3 {
+            assert_eq!(list_frame(&ctx, vec![]), None);
+        }
+        assert_eq!(list_frame(&ctx, vec![key(egui::Key::Enter)]), Some(0), "opens on the first row");
+        list_frame(&ctx, vec![key(egui::Key::ArrowUp)]);
+        list_frame(&ctx, vec![]);
+        assert_eq!(list_frame(&ctx, vec![key(egui::Key::Enter)]), Some(2), "Up from the first row wraps to the last");
+        list_frame(&ctx, vec![key(egui::Key::ArrowDown)]);
+        list_frame(&ctx, vec![]);
+        assert_eq!(list_frame(&ctx, vec![key(egui::Key::Enter)]), Some(0), "Down from the last row wraps to the first");
+    }
+
     /// Escape closes an open engine picker and nothing else (the settings page stays), and focus goes back to
     /// the button that opened it; the next Escape leaves the page.
     #[test]
@@ -1237,7 +1327,7 @@ mod engine_picker_tests {
         frame(&mut app, &ctx, vec![escape()]);
         assert_eq!(app.open_popup, None, "Escape should close the picker");
         assert_eq!(app.view_mode, ViewMode::Settings, "the same Escape must not leave the settings page");
-        let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::engine_opener_key(AnchoredPopup::DefaultEngine)));
+        let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::popup_opener_key(AnchoredPopup::DefaultEngine)));
         frame(&mut app, &ctx, vec![]);
         assert!(opener.is_some_and(|id| ctx.memory(|m| m.has_focus(id))), "focus should return to the opening button");
         frame(&mut app, &ctx, vec![escape()]);
