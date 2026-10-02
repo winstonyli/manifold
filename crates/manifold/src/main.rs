@@ -660,7 +660,7 @@ struct TabSpawnOutcome {
     spawn: TabSpawn,
     /// `App::session_generation` when the spawn started -- see that field.
     generation: u64,
-    result: std::io::Result<EngineTab>,
+    result: Result<EngineTab, process_manager::SpawnError>,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to

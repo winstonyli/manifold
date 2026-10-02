@@ -2550,7 +2550,7 @@ pub(crate) mod tests {
     /// Fails every spawn parked in `test_spawns`, as a missing engine would.
     fn fail_spawns(app: &mut App) {
         for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
-            let result = Err(std::io::Error::other("no engine"));
+            let result = Err(std::io::Error::other("no engine").into());
             app.handle_tab_spawn_result(crate::TabSpawnOutcome { spawn, generation, result });
         }
     }

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::cef_pin::CEF_PIN;
+use crate::engine_install::{runtime_state, EngineState, RuntimeOnDisk};
 use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
 
@@ -390,21 +392,14 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// manual post-build step (see project memory), not automated — a real
 /// install/packaging step should do this, not a person running `cp`.
 ///
-/// Falls back to `profile::engine_data_dir()` when the sibling binary isn't there —
-/// for an engine fetched on demand after install rather than bundled next
-/// to `manifold.exe`. No download step writes there yet; the fallback
-/// just means adding one later won't require touching this lookup.
+/// Falls back to `engine_runtime_dir` (under `profile::engine_data_dir()`)
+/// when the sibling binary isn't there — for an engine fetched on demand
+/// after install rather than bundled next to `manifold.exe`.
 fn engine_binary_path(kind: EngineKind) -> PathBuf {
     let file_name = if cfg!(windows) { format!("{}.exe", kind.desc().binary) } else { kind.desc().binary.to_string() };
     let sibling = match kind {
         EngineKind::Servo => sibling_binary(kind.desc().binary),
-        EngineKind::Cef => {
-            let mut path = sibling_binary(kind.desc().binary);
-            path.pop();
-            path.push("cef-runtime");
-            path.push(&file_name);
-            path
-        }
+        EngineKind::Cef => cef_sibling_exe(),
         // WebView2Loader is a single small loader (statically linked by
         // the `webview2-com` crate, or a lone DLL at worst) — no ANGLE-style
         // filename collision with Servo/CEF's runtime files, so no isolation
@@ -415,16 +410,119 @@ fn engine_binary_path(kind: EngineKind) -> PathBuf {
     if sibling.exists() {
         return sibling;
     }
-    let Some(mut fallback) = crate::profile::engine_data_dir() else { return sibling };
-    fallback.push("engine-hosts");
+    let Some(mut fallback) = engine_hosts_dir() else { return sibling };
     // Same isolation as the sibling-dir case above: CEF's own ANGLE DLLs
     // would collide with Servo's if both engines' fallback files ever
     // landed flat in the same `engine-hosts/` directory.
-    if matches!(kind, EngineKind::Cef) {
-        fallback.push("cef-runtime");
+    if let Some(runtime) = engine_runtime_dir(kind) {
+        fallback = runtime;
     }
     fallback.push(file_name);
     fallback
+}
+
+fn engine_hosts_dir() -> Option<PathBuf> {
+    crate::profile::engine_data_dir().map(|mut dir| {
+        dir.push("engine-hosts");
+        dir
+    })
+}
+
+/// `cef-runtime/<exe>` next to `manifold.exe`: where `scripts/sync-runtime-deps.sh` puts it for dev builds.
+fn cef_sibling_exe() -> PathBuf {
+    let mut path = sibling_binary(EngineKind::Cef.desc().binary);
+    let file_name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
+    path.pop();
+    path.push("cef-runtime");
+    path.push(file_name);
+    path
+}
+
+/// The directory a downloaded runtime unpacks into (and whose `ready` marker
+/// `runtime_state` reads); `None` for engines that download nothing, or
+/// without a data directory.
+pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
+    match kind {
+        EngineKind::Cef => engine_hosts_dir().map(|dir| dir.join("cef-runtime")),
+        _ => None,
+    }
+}
+
+/// What CEF's runtime looks like on disk right now: a bundled sibling
+/// `cef-runtime/` (dev builds) is Ready; otherwise the data-dir runtime is
+/// judged by its marker.
+fn cef_on_disk() -> RuntimeOnDisk {
+    if cef_sibling_exe().exists() {
+        return RuntimeOnDisk::Ready;
+    }
+    match engine_runtime_dir(EngineKind::Cef) {
+        Some(dir) => runtime_state(&dir, &CEF_PIN),
+        None => RuntimeOnDisk::Missing,
+    }
+}
+
+/// How `kind` is available, in one place. Engines that ship with the app are
+/// always Installed; CEF follows the disk (`cef_on_disk`), then a custom
+/// path, a running install and a failed one override it.
+pub(crate) fn engine_availability(
+    kind: EngineKind,
+    cef_on_disk: RuntimeOnDisk,
+    installing: Option<(u64, u64)>,
+    failed: Option<&str>,
+    custom: Option<&Path>,
+) -> EngineState {
+    if kind != EngineKind::Cef {
+        return EngineState::Installed;
+    }
+    if let Some(path) = custom {
+        return EngineState::Custom(path.to_path_buf());
+    }
+    if let Some((received, total)) = installing {
+        return EngineState::Installing { received, total };
+    }
+    if let Some(message) = failed {
+        return EngineState::Failed(message.to_string());
+    }
+    match cef_on_disk {
+        RuntimeOnDisk::Ready => EngineState::Installed,
+        RuntimeOnDisk::Missing => EngineState::NotInstalled { size: CEF_PIN.size },
+        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: CEF_PIN.size },
+    }
+}
+
+/// Why `spawn_tab` failed.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// The engine's runtime isn't on disk (or is out of date); nothing was launched.
+    EngineMissing(EngineKind),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpawnError::EngineMissing(kind) => {
+                write!(f, "{} is not installed", crate::engine_info::engine_label(*kind))
+            }
+            SpawnError::Io(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for SpawnError {}
+
+impl From<std::io::Error> for SpawnError {
+    fn from(e: std::io::Error) -> Self {
+        SpawnError::Io(e)
+    }
+}
+
+/// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
+fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk) -> Result<(), SpawnError> {
+    match engine_availability(kind, cef_on_disk, None, None, None) {
+        EngineState::Installed | EngineState::Custom(_) => Ok(()),
+        _ => Err(SpawnError::EngineMissing(kind)),
+    }
 }
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
@@ -579,10 +677,11 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// manifold-engine-cef specifically — see that crate's main.rs for why (CEF
 /// parses this process's own argv as its own command line). We do the same
 /// for the other engines too, for one consistent spawn path.
-pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::Result<EngineTab> {
+pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> Result<EngineTab, SpawnError> {
     if kind == EngineKind::Webkit {
-        return spawn_webkit_tab(tab_id, initial_url);
+        return Ok(spawn_webkit_tab(tab_id, initial_url)?);
     }
+    check_spawnable(kind, if kind == EngineKind::Cef { cef_on_disk() } else { RuntimeOnDisk::Ready })?;
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -597,7 +696,7 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
             let fallback_id = fresh_fallback_socket_id(tab_id);
             match listen_local_pair_with_retry(&fallback_id) {
                 Ok(listeners) => (fallback_id, listeners),
-                Err(_) => return Err(primary_err),
+                Err(_) => return Err(primary_err.into()),
             }
         }
     };
@@ -643,7 +742,7 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
             if let Some(dir) = cache_dir {
                 remove_cache_dir(dir);
             }
-            return Err(e);
+            return Err(e.into());
         }
     };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
@@ -748,7 +847,64 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::path::Path;
     use std::time::Duration;
+
+    #[test]
+    fn bundled_engines_are_always_installed() {
+        for kind in [EngineKind::Servo, EngineKind::Webview2, EngineKind::Webkit] {
+            assert_eq!(engine_availability(kind, RuntimeOnDisk::Missing, None, None, None), EngineState::Installed);
+            assert_eq!(
+                engine_availability(kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x"), None),
+                EngineState::Installed
+            );
+        }
+    }
+
+    #[test]
+    fn cef_state_follows_disk_then_overrides() {
+        let a =
+            |disk, installing, failed, custom| engine_availability(EngineKind::Cef, disk, installing, failed, custom);
+        assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
+        assert_eq!(a(RuntimeOnDisk::Missing, None, None, None), EngineState::NotInstalled { size: CEF_PIN.size });
+        assert_eq!(a(RuntimeOnDisk::Stale, None, None, None), EngineState::UpdateNeeded { size: CEF_PIN.size });
+        assert_eq!(
+            a(RuntimeOnDisk::Missing, Some((5, 9)), Some("old"), None),
+            EngineState::Installing { received: 5, total: 9 }
+        );
+        assert_eq!(a(RuntimeOnDisk::Missing, None, Some("boom"), None), EngineState::Failed("boom".into()));
+        let p = Path::new("C:/my/cef");
+        assert_eq!(a(RuntimeOnDisk::Missing, Some((1, 2)), Some("x"), Some(p)), EngineState::Custom(p.to_path_buf()));
+    }
+
+    #[test]
+    fn a_stale_marker_is_update_needed_not_a_spawn() {
+        let state = engine_availability(EngineKind::Cef, RuntimeOnDisk::Stale, None, None, None);
+        assert_eq!(state, EngineState::UpdateNeeded { size: CEF_PIN.size });
+        assert!(matches!(
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale),
+            Err(SpawnError::EngineMissing(EngineKind::Cef))
+        ));
+        assert!(matches!(
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing),
+            Err(SpawnError::EngineMissing(EngineKind::Cef))
+        ));
+        assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready).is_ok());
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing).is_ok());
+    }
+
+    #[test]
+    fn a_missing_engine_error_reads_plainly() {
+        assert_eq!(SpawnError::EngineMissing(EngineKind::Cef).to_string(), "Blink (CEF) is not installed");
+    }
+
+    #[test]
+    fn only_cef_has_a_downloaded_runtime_dir() {
+        // `engine_data_dir()` is None under cfg(test), so no real profile is touched.
+        assert_eq!(engine_runtime_dir(EngineKind::Cef), None);
+        assert_eq!(engine_runtime_dir(EngineKind::Servo), None);
+    }
 
     /// A dir whose files a live CEF holds (opened without share-delete, as
     /// Chromium's SQLite does) survives the sweep untouched; a dead one and
