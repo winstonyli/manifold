@@ -348,7 +348,7 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         send "ADDRESSBAR exam" "SLEEP 2"; HOVER_X0=210 HOVER_BAND=820 hover_column dropdown 400 40 250; send ESCAPE "SLEEP 1"
     fi
     if has tabview-find; then send OPENFINDBAR "FINDTEXT abc" "SLEEP 1"; shot tabview-find; send CLOSEFINDBAR; fi
-    # Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card.
+    # Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card, its Close Tab row removes one.
     if has tabview-actions-click; then
         npinned() { state; python -P -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["pinned"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
         ncards() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d ''; }
@@ -357,6 +357,8 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         echo "$([ "$(npinned)" = "$((pins0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Pin pins the tab"
         send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 76" "SLEEP 2"
         echo "$([ "$(ncards)" = "$((cards0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Duplicate adds a card"
+        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 157" "SLEEP 2"
+        echo "$([ "$(ncards)" = "$cards0" ] && echo PASS || echo "FAIL ($(ncards) vs $cards0)"): Tab actions > Close Tab removes the tab"
     fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi
     if has hover-find; then
