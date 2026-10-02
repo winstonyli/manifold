@@ -137,16 +137,20 @@ pub(crate) fn selectable_label(ui: &mut egui::Ui, selected: bool, text: impl Int
 
 /// The one solid-gold button a toolbar has: its main action.
 pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    add_borderless(
-        ui,
-        true,
-        egui::Button::new(
-            egui::RichText::new(label)
-                .font(egui::FontId::new(14.0, bound_family(ui.ctx(), control_bold_family())))
-                .color(BG),
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding.x = 11.0;
+        add_borderless(
+            ui,
+            true,
+            egui::Button::new(
+                egui::RichText::new(label)
+                    .font(egui::FontId::new(14.0, bound_family(ui.ctx(), control_bold_family())))
+                    .color(BG),
+            )
+            .fill(ACCENT),
         )
-        .fill(ACCENT),
-    )
+    })
+    .inner
 }
 
 /// Compact rows for a menu or dropdown, applied inside its `popup_frame`:
@@ -516,10 +520,12 @@ pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::
 pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(CHROME_HEIGHT_POINTS)
-        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 7)))
+        .frame(egui::Frame::default().fill(TOOLBAR_FILL).inner_margin(egui::Margin::symmetric(8, 5)))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            // Buttons and fields are 28 px tall (the mockup's control height).
+            ui.spacing_mut().interact_size.y = 28.0;
             control_font(ui);
             // Soft-filled fields and borderless buttons: the raised fill
             // alone separates them from the bar (approved toolbar mockup).
@@ -574,7 +580,8 @@ pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Int
         ui.visuals().widgets.hovered.fg_stroke.color,
         hover_t,
     );
-    let response = ui.add(egui::Button::new(egui::RichText::new(label.into()).color(fg)).fill(bg));
+    let response =
+        ui.add(egui::Button::new(egui::RichText::new(label.into()).color(fg)).fill(bg).min_size(egui::vec2(32.0, 0.0)));
     ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
     response
 }
@@ -614,7 +621,11 @@ pub(crate) fn chip_icon_button_enabled(
         ui.visuals().widgets.hovered.fg_stroke.color,
         hover_t,
     );
-    let response = add_borderless(ui, enabled, egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg));
+    let response = add_borderless(
+        ui,
+        enabled,
+        egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg).min_size(egui::vec2(32.0, 26.0)),
+    );
     ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
     response
 }
@@ -641,15 +652,20 @@ pub(crate) fn chip_icon_button_enabled(
 pub(crate) fn toolbar_chip(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> egui::Rect) {
     // A hairline between this chip and whatever came before it in the row.
     if ui.min_rect().width() > 1.0 {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, SURFACE_HOVER);
     }
     let chip_bg_slot = ui.painter().add(egui::Shape::Noop);
-    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(1.0, 0.0), egui::Sense::hover());
-    ui.spacing_mut().item_spacing.x = 2.0;
+    // 2 px of chip padding around 26 px buttons: a 30 px chip in a 28 px row.
+    let (lead_rect, _) = ui.allocate_exact_size(egui::Vec2::new(2.0, 0.0), egui::Sense::hover());
+    let (outer_spacing, outer_interact_y) = (ui.spacing().item_spacing.x, ui.spacing().interact_size.y);
+    ui.spacing_mut().item_spacing.x = 0.0;
+    ui.spacing_mut().interact_size.y = 26.0;
     let content_rect = content(ui);
-    let (trail_rect, _) = ui.allocate_exact_size(egui::Vec2::new(1.0, 0.0), egui::Sense::hover());
-    let rect = lead_rect.union(content_rect).union(trail_rect);
+    ui.spacing_mut().item_spacing.x = outer_spacing;
+    ui.spacing_mut().interact_size.y = outer_interact_y;
+    let (trail_rect, _) = ui.allocate_exact_size(egui::Vec2::new(2.0, 0.0), egui::Sense::hover());
+    let rect = lead_rect.union(content_rect).union(trail_rect).expand2(egui::vec2(0.0, 2.0));
     // Content that renders nothing can leave `ui.cursor()`'s fallback
     // infinite in one axis (`.max.x` for left-to-right layouts, `.min.x`
     // for right-to-left) -- skip painting rather than filling an

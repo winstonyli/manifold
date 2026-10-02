@@ -379,6 +379,7 @@ impl App {
             ui.add(
                 egui::TextEdit::singleline(&mut self.address_bar.text)
                     .desired_width(text_width)
+                    .min_size(egui::vec2(0.0, 28.0))
                     .hint_text("Search or enter address (Ctrl+L)")
                     // Match `style.spacing.button_padding` (set in
                     // `apply_style`) so the address bar renders the
