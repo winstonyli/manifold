@@ -1916,6 +1916,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Header F is on every card kind: each kind's body painter reaches the shared header (or, for
+    /// the tab card and the JSON preview, the code that draws the same 40-point one). Source-text
+    /// check, like `profile::tests`, so a new kind or a rewrite that drops its header fails here
+    /// rather than only in a screenshot.
+    #[test]
+    fn every_card_body_draws_a_header() {
+        let src = include_str!("card.rs");
+        let production = &src[..src.find("mod tests {").unwrap()];
+        let markers = ["paint_card_header(", "paint_missing_file_card(", "tab_has_header(", "look.preview", "preview"];
+        for name in ["unloaded_tab", "download", "note", "image", "pdf", "json", "group", "tab"] {
+            let start = production.find(&format!("fn paint_{name}_body(")).unwrap_or_else(|| panic!("no {name} body"));
+            let rest = &production[start + 1..];
+            let body = &rest[..rest
+                .find(
+                    "
+    pub(crate) fn ",
+                )
+                .unwrap_or(rest.len())];
+            assert!(markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
+        }
+    }
     use crate::json_view::JsonView;
 
     /// A `CardView` for `kind` with nothing set, for tests to override.

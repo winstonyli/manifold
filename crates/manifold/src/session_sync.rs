@@ -2215,6 +2215,23 @@ pub(crate) mod tests {
         assert_eq!(restored.nodes[&id].as_download().and_then(|d| d.url.as_deref()), Some("https://x.test/f.bin"));
     }
 
+    /// A download saved before cards kept their URL (or by an engine that can't say) restores with
+    /// none, so its card falls back to showing the file's path.
+    #[test]
+    fn a_download_without_a_url_restores_without_one() {
+        let path = crate::store::testutil::temp_dir("download-no-url").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let id = app.alloc_node_id();
+        let payload =
+            DownloadPayload { path: "f.bin".into(), url: None, bytes_received: 0, total_bytes: None, completed: true };
+        app.insert_placeholder_node(id.clone(), egui::Vec2::ZERO, NodePayload::Download(payload));
+        assert!(app.save_session());
+        app.close_store();
+        let mut restored = app_on(&path, 2);
+        assert!(restored.restore_session());
+        assert_eq!(restored.nodes[&id].as_download().map(|d| d.url.clone()), Some(None));
+    }
+
     #[test]
     fn path_is_explicit() {
         assert!(crate::store::model::field_def(field::PATH).unwrap().explicit);
