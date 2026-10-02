@@ -904,9 +904,9 @@ impl App {
                     } else if ui
                         .button(&display_name)
                         .on_hover_text(if display_name == *name {
-                            "Click to rename".to_string()
+                            "Click to rename (F2)".to_string()
                         } else {
-                            format!("Click to rename ({name})")
+                            format!("Click to rename, F2 ({name})")
                         })
                         .clicked()
                     {
