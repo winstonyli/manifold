@@ -1477,7 +1477,17 @@ impl App {
             return body;
         }
         let len = crate::json_view::entry_count(&json.value);
-        let rows = len.min(crate::json_view::PREVIEW_ROWS);
+        // The header is 40 screen points, so at other zooms the rows get more or less of the card:
+        // show only the rows that fit, with a `+ N more` row when some are cut. A card too short for
+        // the header (`tab_has_header`) keeps the level cards' compact one.
+        let inv_zoom = 1.0 / zoom_scale;
+        let preview = tab_has_header(rect, inv_zoom);
+        let header_height = if preview { TAB_HEADER_POINTS * inv_zoom } else { crate::json_view::HEADER_HEIGHT };
+        let fit = ((rect.height() - header_height) / crate::json_view::ROW_HEIGHT).floor().max(0.0) as usize;
+        let mut rows = len.min(crate::json_view::PREVIEW_ROWS).min(fit);
+        if rows < len {
+            rows = rows.min(fit.saturating_sub(1));
+        }
         let card = crate::json_view::Card {
             pointer: String::new(),
             parent: None,
@@ -1487,19 +1497,22 @@ impl App {
             more: len - rows,
         };
         let mut header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
-        header.source = file_header_text(&json.path, None).1.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
+        if preview {
+            header.source =
+                file_header_text(&json.path, None).1.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
+        }
         let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);
         let look = crate::json_level_ui::CardLook {
             palette: &pal,
             text_color: ui.visuals().text_color(),
-            inv_zoom: 1.0 / zoom_scale,
+            inv_zoom,
             text,
             selected_row: None,
             hit_rows: &[],
             // No child cards or edges at the parent level: a port dot here
             // would point at nothing.
             ports: false,
-            preview: true,
+            preview,
         };
         crate::json_level_ui::paint_json_content(
             ui.painter(),

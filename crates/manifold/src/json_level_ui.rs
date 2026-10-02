@@ -15,6 +15,8 @@ const TEXT_SIZE: f32 = 12.0;
 /// The Json card preview's title and second line, in screen points, as card header F sets them.
 const TITLE_SIZE: f32 = 13.0;
 const SECOND_LINE_SIZE: f32 = 11.0;
+/// The Json card preview's header height in screen points (`TAB_HEADER_POINTS`).
+const PREVIEW_HEADER_POINTS: f32 = 40.0;
 /// Inset of a card's text from its edges.
 const PAD: f32 = 8.0;
 /// An object row's key column.
@@ -270,7 +272,8 @@ pub(crate) fn paint_json_content(
     look: &CardLook,
 ) {
     use json_view::ROW_HEIGHT;
-    let header_height = if look.preview { json_view::PREVIEW_HEADER_HEIGHT } else { json_view::HEADER_HEIGHT };
+    // The preview's header is header F's 40 screen points, whatever the zoom; the level's is world-sized.
+    let header_height = if look.preview { PREVIEW_HEADER_POINTS * look.inv_zoom } else { json_view::HEADER_HEIGHT };
     let pal = look.palette;
     let row_rect = |row: usize| {
         egui::Rect::from_min_size(
@@ -278,7 +281,7 @@ pub(crate) fn paint_json_content(
             egui::vec2(rect.width(), ROW_HEIGHT),
         )
     };
-    if rows + usize::from(more > 0) > 0 {
+    if !look.preview && rows + usize::from(more > 0) > 0 {
         painter.hline(
             rect.x_range(),
             rect.top() + header_height,
@@ -300,12 +303,15 @@ pub(crate) fn paint_json_content(
         let y = rect.top() + header_height / 2.0;
         let count_color = if header.count_kind == ValueKind::Container { pal.muted } else { pal.of(header.count_kind) };
         if look.preview {
-            // Header F's layout: the glyph centred on the header, the title over a dim second line (or
-            // centred alone), all in screen points like the other cards' headers.
+            // Header F's layout, as `paint_card_header` places it: the glyph centred on the title and
+            // source lines, 10 and 28 points in from the card's edge, the lines 12 and 28 points down.
             let z = look.inv_zoom;
-            let title_y = if header.source.is_some() { y - 8.0 * z } else { y };
+            let top = rect.top();
+            let title_y = if header.source.is_some() { top + 12.0 * z } else { top + 20.0 * z };
+            let text_left = rect.left() + 28.0 * z;
+            let text_width = rect.right() - text_left - COUNT_WIDTH - PAD;
             text.push(TextItem {
-                pos: egui::pos2(left, y),
+                pos: egui::pos2(rect.left() + 10.0 * z, top + 20.0 * z),
                 align: egui::Align2::LEFT_CENTER,
                 text: header.icon.into(),
                 color: pal.container,
@@ -313,20 +319,20 @@ pub(crate) fn paint_json_content(
                 size: 14.0 * z,
             });
             text.push(TextItem {
-                pos: egui::pos2(left + 22.0, title_y),
+                pos: egui::pos2(text_left, title_y),
                 align: egui::Align2::LEFT_CENTER,
                 text: header.title.clone(),
                 color: look.text_color,
-                max_width: inner - 22.0 - COUNT_WIDTH,
+                max_width: text_width,
                 size: TITLE_SIZE * z,
             });
             if let Some(source) = &header.source {
                 text.push(TextItem {
-                    pos: egui::pos2(left + 22.0, y + 8.0 * z),
+                    pos: egui::pos2(text_left, top + 28.0 * z),
                     align: egui::Align2::LEFT_CENTER,
                     text: source.clone(),
                     color: pal.muted,
-                    max_width: inner - 22.0 - COUNT_WIDTH,
+                    max_width: text_width,
                     size: SECOND_LINE_SIZE * z,
                 });
             }
