@@ -61,6 +61,25 @@ pub(crate) fn kbd_keys(ui: &mut egui::Ui, keys: &str) {
     }
 }
 
+/// A floating, non-interactive bar of "keycaps + what they do" pairs.
+pub(crate) fn key_hint_strip<'a>(
+    ctx: &egui::Context,
+    area: egui::Area,
+    hints: impl Iterator<Item = (&'a str, &'a str)>,
+) {
+    area.order(egui::Order::Foreground).interactable(false).show(ctx, |ui| {
+        popup_frame(ui).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (keys, what) in hints {
+                    kbd_keys(ui, keys);
+                    ui.label(egui::RichText::new(what).small().weak());
+                    ui.add_space(4.0);
+                }
+            });
+        });
+    });
+}
+
 /// An outline on a keyboard-focused widget. egui shows focus only as the widget's
 /// "active" look, which is invisible on a button whose fill is overridden or that
 /// has no frame; this paints inside the widget's rect, so it moves nothing.

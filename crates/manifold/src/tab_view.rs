@@ -78,7 +78,7 @@ impl AddressBar {
 /// it, which is an acceptable, honest reading of the approved mockup
 /// rather than a literal pixel reproduction of it.
 pub(crate) fn render_return_to_graph(ui: &mut egui::Ui) -> bool {
-    ui.button("Graph").clicked()
+    ui.button("Graph").on_hover_text("Back to Graph (Esc, Ctrl+G)").clicked()
 }
 
 /// Everything the Tab toolbar's own content (see `render_tab_toolbar_

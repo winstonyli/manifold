@@ -1092,6 +1092,10 @@ impl App {
             ("Ctrl+0", "Reset zoom"),
             ("F12", "Open devtools"),
             ("F1", "Toggle this shortcut reference"),
+            ("#", "Graph canvas"),
+            ("Arrows", "Move focus to the nearest node"),
+            ("Enter", "Open the focused node"),
+            ("Escape", "Clear the selection, close a menu, dismiss a preview"),
             ("#", "Graph cards (Tab onto the canvas)"),
             ("Tab / Shift+Tab", "Next / previous card, in creation order (numbered badges)"),
             ("Enter", "Open the focused card; enters a group or JSON level"),
@@ -1103,6 +1107,14 @@ impl App {
             ("Up / Down", "Select the previous / next outline row"),
             ("Enter", "Expand / collapse the selected card"),
             ("Right / Left", "Open / close the row (Left on a closed row selects its parent)"),
+            ("Ctrl+C", "Copy the selected value"),
+            ("Ctrl+Shift+C", "Copy the selected path"),
+            ("#", "Tab view and pages"),
+            ("Escape", "Back to Graph (closes an open popup first)"),
+            ("#", "Lists and popups"),
+            ("Up / Down", "Move the highlight (Recently Closed, Bookmarks, History, Downloads, quick switcher)"),
+            ("Enter", "Pick the highlighted row"),
+            ("Escape", "Close and return to the button that opened it"),
         ];
 
         let area = egui::Area::new(egui::Id::new("shortcuts_help"))

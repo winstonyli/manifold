@@ -708,6 +708,7 @@ impl App {
             self.build_recently_closed_popup(ui, rect, fade);
         }
         self.build_card_hint(ui);
+        self.build_json_hint(ui);
         self.build_node_menu(ui);
         self.build_json_menu(ui);
     }
@@ -730,22 +731,20 @@ impl App {
             (rect.top() - 8.0, egui::Align2::CENTER_BOTTOM)
         };
         let x = rect.center().x.clamp(screen.left() + 190.0, (screen.right() - 190.0).max(screen.left() + 190.0));
-        egui::Area::new(egui::Id::new("card_key_hint"))
-            .order(egui::Order::Foreground)
-            .interactable(false)
-            .pivot(pivot)
-            .fixed_pos(egui::pos2(x, anchor_y))
-            .show(ui.ctx(), |ui| {
-                popup_frame(ui).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for (keys, what) in hints.copied() {
-                            kbd_keys(ui, keys);
-                            ui.label(egui::RichText::new(what).small().weak());
-                            ui.add_space(4.0);
-                        }
-                    });
-                });
-            });
+        let area = egui::Area::new(egui::Id::new("card_key_hint")).pivot(pivot).fixed_pos(egui::pos2(x, anchor_y));
+        key_hint_strip(ui.ctx(), area, hints.copied());
+    }
+
+    /// In a JSON level with a row or card selected, a strip of keycaps at the bottom of the window
+    /// lists the keys the level takes.
+    fn build_json_hint(&self, ui: &egui::Ui) {
+        if self.json_level.as_ref().is_none_or(|l| l.selected.is_none() || l.menu.is_some()) {
+            return;
+        }
+        let area = egui::Area::new(egui::Id::new("json_key_hint")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]);
+        let hints =
+            [("Up / Down", "select"), ("Enter", "expand"), ("Right / Left", "open / close row"), ("Ctrl+C", "copy")];
+        key_hint_strip(ui.ctx(), area, hints.into_iter());
     }
 
     /// The Graph view's toolbar row: the group breadcrumb, "+ New Tab",
@@ -786,7 +785,7 @@ impl App {
                 // anyway (their sole consumption site is unreachable
                 // from the early-return branch) -- removing them is a
                 // pure simplification, not a capability loss.
-                if !on_json_level && primary_button(ui, "+ New Tab").clicked() {
+                if !on_json_level && primary_button(ui, "+ New Tab").on_hover_text("New tab (Ctrl+T)").clicked() {
                     actions.push(GraphAction::NewTab(self.focused.clone()));
                 }
                 if !on_json_level && (!self.headless || !groups_at_level.is_empty()) {
@@ -1051,7 +1050,7 @@ impl App {
         let mut recently_closed_button_rect: Option<egui::Rect> = None;
         if !self.closed.is_empty() {
             let label = format!("Recently Closed ({})", self.closed.len());
-            let response = ui.button(label);
+            let response = ui.button(label).on_hover_text("Reopen the last closed tab (Ctrl+Shift+T)");
             self.popup_opener_clicked(ui, AnchoredPopup::RecentlyClosed, &response);
             recently_closed_button_rect = Some(response.rect);
         }
