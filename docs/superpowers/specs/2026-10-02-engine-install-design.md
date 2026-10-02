@@ -1,10 +1,10 @@
 # On-demand engine install (CEF) — design
 
-Status: draft for review, 2026-10-02. Nothing is built. Survey and decisions came from a brainstorm; the README's "Speculative groundwork" entry has the earlier survey.
+Status: built 2026-10-02 (plan `docs/superpowers/plans/2026-10-02-engine-install.md`); the README's "On-demand CEF install" entry describes what shipped. Survey and decisions came from a brainstorm.
 
 ## Goal
 
-A packaged build ships `manifold`, `manifold-engine-webview2` and the small `manifold-engine-cef` host (about 1 MB), and downloads CEF's runtime (about 172 MB compressed, about 430 MB unpacked in the debug tree) only when a user picks CEF. Engine availability is always visible and explicit: no engine is ever silently missing, silently installing, or silently substituted.
+A packaged build ships `manifold`, `manifold-engine-webview2` and the small `manifold-engine-cef` host (about 1 MB), and downloads CEF's runtime (about 172 MB compressed, 423 MB unpacked, measured: `Release/` + `Resources/` of the `minimal` archive) only when a user picks CEF. Engine availability is always visible and explicit: no engine is ever silently missing, silently installing, or silently substituted.
 
 ## Scope
 
@@ -46,19 +46,21 @@ A tab, session or restored node that needs a missing engine shows its card as "C
 3. Verify SHA-256 (and SHA-1) of the archive before unpacking anything.
 4. Unpack only `Release/` and `Resources/` (bz2 + tar) into a temp directory next to the final one; drop build leftovers (`include/`, `cmake/`, `libcef_dll/`, `libcef.lib`, `CMakeLists.txt`, `debug.log`); write a `ready` marker holding the pin; rename the directory into place.
 5. Failure at any step deletes the temp directory and `.part` only when verification failed (keep `.part` for resume on network errors), sets state Failed with the reason, and leaves any previous install untouched.
-6. Cancel stops the download and keeps `.part`.
+6. Cancel stops the download and keeps `.part`. It hides the job at once, but the thread ends only at its next read, so a new install of that engine waits (a toast says so) until the old thread is done. Install also refuses to start while a CEF tab is live: its process holds the runtime's DLLs open and the swap would fail.
 
 ## 4. Lookup
 
-`engine_binary_path` (`process_manager.rs`) keeps its sibling-then-`engine-hosts/` order. The CEF host exe ships with the app; the runtime is resolved from the data directory, and only when the `ready` marker matches the pin. A stale or missing marker yields state Not installed or Update needed, never a spawn that crashes.
+`engine_binary_path` (`process_manager.rs`) keeps its sibling-then-`engine-hosts/` order. The CEF host exe ships with the app; the runtime is resolved from the data directory, and only when the `ready` marker matches the pin. A stale or missing marker yields state Not installed or Update needed, never a spawn that crashes. The downloaded runtime holds no host exe (the archive has none), so at spawn the shipped host is copied into the runtime directory (`ensure_host_copy`): Windows resolves `libcef.dll` from the exe's own directory first.
 
 ## 5. Management
 
-Settings shows installed size per downloaded engine and a Remove button (deletes `cef-runtime/`). An app update that changes the pin turns the state to Update needed; the old runtime keeps working until the user updates, unless the host/runtime protocol is incompatible (then the engine is unusable until updated, and the state says why).
+Settings shows installed size per downloaded engine and a Remove button (deletes `cef-runtime/`). An app update that changes the pin turns the state to Update needed, and a stale marker means a spawn is refused: the shipped host links the pinned CEF exactly, so an older runtime would crash it. (This replaces the earlier idea that the old runtime keeps working until the user updates.) The Update button runs the normal install flow. A Failed install outranks what is on disk in the displayed state, so a failed update over an old runtime reads Failed, with Retry and Remove.
 
 ## 6. Bring-your-own
 
-A "CEF directory" setting accepts a runtime directory. Validation reads its `archive.json` (or `libcef.dll` version) against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it.
+A "CEF directory" setting accepts a runtime directory. Validation requires `libcef.dll` and reads the version from its `archive.json` only (the `name` field) against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. A directory our own install made has no `archive.json`, so it does not validate as a custom one.
+
+There is no auto-switch: after an install (or choosing a custom directory) the engine becomes available, but no tab, default or setting changes by itself.
 
 ## Testing
 
@@ -66,7 +68,9 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 
 ## Open questions
 
-- Release-build runtime size (only the debug tree was measured), and whether the `signed` archive (136 MB) holds everything and is worth preferring.
+- **Runtime size (measured 2026-10-02, resolved).** The unpacked `minimal` archive's `Release/` + `Resources/` is 423,265,193 bytes (about 404 MiB), of which `libcef.dll` is 284,865,024; it is the same files for a debug or a release host, since the runtime is CEF's own release binary and only the 1 MB host differs. It includes `bootstrap.exe` and `bootstrapc.exe` (4.3 MB each, unused by the host) that could be dropped. Pure-Rust bz2 + tar unpack through `engine_install::unpack` took 35 s (debug-profile test binary; the download itself 3.6 s on this machine), under the one-minute bar, so `bzip2-sys` is not needed.
+- **The `signed` archive (136 MB): still open.** Not downloaded (not approved), so whether it holds everything the host needs, and whether it is worth preferring over `minimal`, is unmeasured.
+- **Launching verified (2026-10-02):** a real CEF host ran and loaded a page from a runtime unpacked by `unpack` into the data directory, and from a custom directory (with the host copied in). The first attempt failed: no code put a host beside the downloaded runtime (spawn looked for `engine-hosts/cef-runtime/manifold-engine-cef.exe`), fixed in `process_manager::spawn_tab` with `host_home`/`shipped_cef_host`.
 - Whether to trim locales or other files after unpack.
 - Where the Settings "Engines" section lives relative to the existing sections.
 - Servo and WebKit availability: both always "Installed" for now; the same states apply if either ever becomes downloadable.

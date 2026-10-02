@@ -17,6 +17,11 @@
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
 #   shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
+#   engine-states-picker engine-states-settings engine-install-confirm (the CEF install states: any of the
+#   three runs one second instance, a copy of the exe on its own profile, and writes engine-states-* for
+#   Not installed, Failed, Installing, Installed, Update needed and Custom (valid and refused) in the
+#   Settings page and the default-engine picker, engine-states-failed-tab (the card of a CEF tab with no
+#   runtime) and engine-install-confirm; see the comment above that block for how each state is reached)
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
 # sweep the mouse along the toolbar and report where a hover moves anything
@@ -38,7 +43,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -514,6 +519,81 @@ fi
 send QUIT
 wait "$inst" 2>/dev/null
 inst=""
+
+# Engine states (CEF install) need what the instance above can't give: a manifold.exe with no `cef-runtime/`
+# beside it (the dev tree has one, so CEF would always read Installed) and a runtime directory that changes
+# state mid-run. So a second instance (fresh profile, a copy of the exe in $work) walks Not installed ->
+# Failed -> Installing -> Installed -> Update needed with nothing mocked in the app: the runtime is files in
+# the profile's data dir, and the download goes through HTTPS_PROXY (ureq honours it) to scripts/fake_proxy.py,
+# which answers 502 (Failed) or opens the tunnel and goes silent (Installing at 0 bytes; the half-filled
+# bar would need a real transfer, so it isn't shot). Custom is two more instances whose settings.json names
+# a directory that matches the pin, or doesn't.
+if has engine-states-picker || has engine-states-settings || has engine-install-confirm; then
+    eng="$work/eng"; mkdir -p "$eng"
+    cp "$exe" "$eng/manifold.exe"; cp "$(dirname "$exe")/manifold-engine-webview2.exe" "$eng/"
+    pin_version="$(grep -o 'version: "[^"]*"' "$repo_root/crates/manifold/src/cef_pin.rs" | head -1 | cut -d'"' -f2)"
+    python -P "$repo_root/scripts/fake_proxy.py" "$(w "$work/proxy-port")" "$(w "$work/proxy-mode")" 600 </dev/null >/dev/null 2>&1 &
+    proxy=$!
+    echo refuse >"$work/proxy-mode"
+    wait_file "$work/proxy-port"
+    # engine_app NAME [SETTINGS-EXTRA]: restart the instance on a fresh profile "eng-NAME" (the settings
+    # page open). `eng_data` is where the runtime lives: etcetera's data dir under this APPDATA.
+    engine_app() {
+        profile="$work/eng-$1"; mkdir -p "$profile/manifold"
+        echo "{\"has_shown_first_launch_demo\": true, \"default_starting_engine\": \"webview2\"${2:-}}" >"$profile/manifold/settings.json"
+        eng_data="$profile/manifold/manifold/data/engine-hosts"; mkdir -p "$eng_data"
+        cat >"$work/seed-eng.json" <<SEED
+{"nodes": [
+ {"id": "t1", "kind": "tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
+ {"id": "t3", "kind": "tab", "url": "https://example.com/", "engine": "cef", "pos": [300.0, 0.0]}
+]}
+SEED
+        "$eng/manifold.exe" --import-json "$(w "$work/seed-eng.json")" --out "$(w "$profile/manifold/session.mnf")" >/dev/null
+        cmd="$work/cmd-$1"; : >"$cmd"
+        APPDATA="$(w "$profile")" HTTPS_PROXY="http://127.0.0.1:$(cat "$work/proxy-port")" \
+            "$eng/manifold.exe" --headless < <(exec tail -n +1 -f --pid=$$ "$cmd" 2>/dev/null) >"$work/log-eng-$1" 2>&1 &
+        inst=$!
+        send "RESIZE ${SIZE% *} 1000" WAITTABS "SLEEP 3"
+    }
+    engine_stop() { send QUIT; wait "$inst" 2>/dev/null; inst=""; }
+    # fake_runtime MARKER: a runtime directory with a (sparse) 423 MB libcef.dll and MARKER in `ready`.
+    fake_runtime() { mkdir -p "$eng_data/cef-runtime"; truncate -s 423M "$eng_data/cef-runtime/libcef.dll"; printf '%s' "$1" >"$eng_data/cef-runtime/ready"; }
+    engine_app states
+    # The seeded CEF tab can't start: its card says so (graph view, then its Tab view).
+    shot engine-states-graph
+    send GRAPHRIGHT GRAPHOPEN "SLEEP 3"; shot engine-states-failed-tab
+    send TOGGLEVIEW "SLEEP 1"
+    send TOGGLESETTINGSPAGE "SLEEP 2"
+    shot engine-states-settings-notinstalled
+    send "CLICK 63 180" "SLEEP 1"; shot engine-states-picker-notinstalled; send "CLICK 1100 300" "SLEEP 1"
+    # The Engines section's Download button asks first, with the size.
+    send "CLICK 57 672" "SLEEP 1"; shot engine-install-confirm
+    # Confirm with the proxy refusing: the install fails and the row says why, with Retry.
+    send "CLICK 476 529" "SLEEP 4"; shot engine-states-settings-failed
+    send "CLICK 63 180" "SLEEP 1"; shot engine-states-picker-failed; send "CLICK 1100 300" "SLEEP 1"
+    # Retry with the proxy silent: Installing, with Cancel.
+    echo stall >"$work/proxy-mode"
+    send "CLICK 57 672" "SLEEP 1" "CLICK 476 529" "SLEEP 2"; shot engine-states-settings-installing
+    send "CLICK 63 180" "SLEEP 1"; shot engine-states-picker-installing; send "CLICK 1100 300" "SLEEP 1"
+    engine_stop
+    # Files on disk, judged by their marker: this pin's is Installed (size, Remove), another's is Update needed.
+    # Fresh instances: a failed install outranks the disk in the state, so they can't follow the one above.
+    engine_app installed; fake_runtime "$pin_version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-installed; engine_stop
+    engine_app stale; fake_runtime "old-version"; send TOGGLESETTINGSPAGE "SLEEP 2"; shot engine-states-settings-stale
+    send "CLICK 63 180" "SLEEP 1"; shot engine-states-picker-stale; send "CLICK 1100 300" "SLEEP 1"
+    engine_stop
+    # Bring-your-own folders: one whose archive.json names this pin (Custom), one that names another build.
+    for variant in "custom $pin_version" "custom-bad 151.0.1+gabcdef+chromium-151.0.0.1"; do
+        set -- $variant
+        mkdir -p "$work/mycef-$1"; : >"$work/mycef-$1/libcef.dll"
+        echo "{\"type\": \"minimal\", \"name\": \"cef_binary_$2_windows64_minimal.tar.bz2\"}" >"$work/mycef-$1/archive.json"
+        engine_app "$1" ", \"cef_directory\": \"$(cygpath -m "$work/mycef-$1")\""
+        send TOGGLESETTINGSPAGE "SLEEP 2"; shot "engine-states-settings-$1"
+        send "CLICK 63 180" "SLEEP 1"; shot "engine-states-picker-$1"; send "CLICK 1100 300" "SLEEP 1"
+        engine_stop
+    done
+    kill $proxy 2>/dev/null
+fi
 
 python -P - "$OUT" "$CROP_PX" "$VIEWS" </dev/null <<'EOF' 2>&1 | tail -2
 import os, sys

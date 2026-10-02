@@ -89,7 +89,8 @@ pub(crate) fn install_progress_bar(ui: &mut egui::Ui, received: u64, total: u64)
     ui.add(
         egui::ProgressBar::new(fraction)
             .text(format!("{} / {}", megabytes(received), megabytes(total)))
-            .desired_width(f32::INFINITY),
+            // Not INFINITY: in the Settings column that is the whole window, not the 480-point page.
+            .desired_width(ui.available_width().min(320.0)),
     );
 }
 
@@ -459,5 +460,18 @@ mod tests {
         frame(&ctx, selected, vec![key(egui::Key::Tab)]);
         frame(&ctx, selected, vec![]);
         assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(selected));
+    }
+
+    #[test]
+    fn the_install_bar_has_a_finite_width_in_a_popup_that_sizes_itself() {
+        // An infinite bar made the picker's auto-sized popup NaN-wide, which egui panics on.
+        let ctx = egui::Context::default();
+        let state = EngineState::Installing { received: 0, total: 10 };
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                egui::Area::new(egui::Id::new("bar")).show(ui.ctx(), |ui| engine_state_line(ui, &state));
+            });
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+        }
     }
 }

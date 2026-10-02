@@ -551,6 +551,28 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
     Ok(dest)
 }
 
+/// The CEF host exe that ships with the app: beside `manifold.exe` in a packaged build, else the
+/// `cef-runtime/` copy a dev build keeps. This is what gets copied next to a runtime that has no host.
+fn shipped_cef_host() -> PathBuf {
+    let flat = sibling_binary(EngineKind::Cef.desc().binary);
+    if flat.exists() {
+        flat
+    } else {
+        cef_sibling_exe()
+    }
+}
+
+/// The directory a CEF host copy must live in (see `custom_host_path`), or None to run the host as
+/// `engine_binary_path` finds it. A custom directory wins; a dev build's own `cef-runtime/` already holds
+/// its host; otherwise the downloaded runtime, which holds libcef but never a host, so it gets a copy too.
+fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Option<PathBuf>) -> Option<PathBuf> {
+    match custom {
+        Some(dir) => Some(dir.to_path_buf()),
+        None if dev_runtime_has_host => None,
+        None => downloaded,
+    }
+}
+
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
 fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
     match engine_availability(kind, cef_on_disk, None, None, custom) {
@@ -744,9 +766,9 @@ pub fn spawn_tab(
         }
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
-    let host_exe = match custom_cef {
-        Some(dir) => ensure_host_copy(dir, &engine_binary_path(kind))?,
-        None => engine_binary_path(kind),
+    let host_exe = match (kind, host_home(custom_cef, cef_sibling_exe().exists(), engine_runtime_dir(kind))) {
+        (EngineKind::Cef, Some(dir)) => ensure_host_copy(&dir, &shipped_cef_host())?,
+        _ => engine_binary_path(kind),
     };
 
     // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
@@ -973,6 +995,15 @@ mod tests {
 
         let err = ensure_host_copy(&custom, &src_dir.join("nope.exe")).unwrap_err();
         assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn the_cef_host_is_copied_beside_a_runtime_that_lacks_one() {
+        let (custom, runtime) = (Path::new("D:/mine"), PathBuf::from("D:/data/cef-runtime"));
+        assert_eq!(host_home(Some(custom), true, Some(runtime.clone())), Some(custom.to_path_buf()));
+        assert_eq!(host_home(None, true, Some(runtime.clone())), None, "a dev tree runs its own host");
+        assert_eq!(host_home(None, false, Some(runtime.clone())), Some(runtime), "a downloaded runtime has none");
+        assert_eq!(host_home(None, false, None), None);
     }
 
     #[test]
