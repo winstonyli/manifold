@@ -12,6 +12,8 @@ use serde_json::Value;
 /// A card's width in world units (100% zoom).
 pub(crate) const CARD_WIDTH: f32 = 220.0;
 pub(crate) const HEADER_HEIGHT: f32 = 26.0;
+/// The Json card preview's header: two lines, as card header F's 40 (here world units).
+pub(crate) const PREVIEW_HEADER_HEIGHT: f32 = 40.0;
 pub(crate) const ROW_HEIGHT: f32 = 22.0;
 /// Between depth columns.
 pub(crate) const COLUMN_GAP: f32 = 60.0;
@@ -509,7 +511,7 @@ pub(crate) fn card_title(root: &Value, pointer: &str, root_name: &str) -> String
 pub(crate) fn preview_size(value: &Value) -> egui::Vec2 {
     let len = entry_count(value);
     let rows = if len == 0 { 1 } else { len.min(PREVIEW_ROWS) + usize::from(len > PREVIEW_ROWS) };
-    egui::vec2(CARD_WIDTH, HEADER_HEIGHT + ROW_HEIGHT * rows as f32)
+    egui::vec2(CARD_WIDTH, PREVIEW_HEADER_HEIGHT + ROW_HEIGHT * rows as f32)
 }
 
 #[cfg(test)]
@@ -778,9 +780,9 @@ mod tests {
         assert_eq!(card_title(&root, "/users/0", "users.json"), "users[0]");
         assert_eq!(card_title(&root, "/meta/bbox/1", "users.json"), "bbox[1]");
         assert_eq!(card_title(&root, "/meta", "users.json"), "meta");
-        assert_eq!(preview_size(&root), egui::vec2(CARD_WIDTH, HEADER_HEIGHT + ROW_HEIGHT * 3.0));
+        assert_eq!(preview_size(&root), egui::vec2(CARD_WIDTH, PREVIEW_HEADER_HEIGHT + ROW_HEIGHT * 3.0));
         let wide = json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
-        assert_eq!(preview_size(&wide).y, HEADER_HEIGHT + ROW_HEIGHT * 5.0); // 4 rows and "+ 1 more"
-        assert_eq!(preview_size(&json!(7)).y, HEADER_HEIGHT + ROW_HEIGHT);
+        assert_eq!(preview_size(&wide).y, PREVIEW_HEADER_HEIGHT + ROW_HEIGHT * 5.0); // 4 rows and "+ 1 more"
+        assert_eq!(preview_size(&json!(7)).y, PREVIEW_HEADER_HEIGHT + ROW_HEIGHT);
     }
 }
