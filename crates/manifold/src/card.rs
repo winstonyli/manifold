@@ -281,6 +281,25 @@ pub(crate) struct CardPass<'a> {
     /// Where the card being dragged would drop right now
     /// (`App::drop_target`), computed once before the pass.
     pub(crate) drop_preview: &'a Option<(DropEffect, Option<String>)>,
+    /// Keyboard navigation is on (a card or control had focus last frame): each card shows its
+    /// Tab-order number.
+    pub(crate) show_order: bool,
+    /// Cards drawn so far this pass, which is the Tab order (egui walks widgets in the order they
+    /// are registered).
+    pub(crate) drawn: usize,
+    /// A card or one of its controls has keyboard focus this frame.
+    pub(crate) any_focused: bool,
+}
+
+/// An outline on a keyboard-focused card or control, white so it reads differently from the gold
+/// border of the active tab. Outside the rect, in world units (`inv_zoom` keeps it a constant size).
+fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
+    ui.painter().rect_stroke(
+        rect.expand(3.0 * inv_zoom),
+        3.0 * inv_zoom,
+        egui::Stroke::new(2.0 * inv_zoom, TEXT_PRIMARY),
+        egui::StrokeKind::Outside,
+    );
 }
 
 /// One of a card's `card_controls`, hit-tested and drawn at its corner.
@@ -303,6 +322,9 @@ pub(crate) fn paint_card_control(
     let response = ui
         .interact(rect, egui::Id::new(("graph_card_control", control, id)), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.has_focus() {
+        card_focus_ring(ui, rect, inv_zoom);
+    }
     match control {
         CardControl::Swatch => {
             match view.color {
@@ -663,6 +685,30 @@ impl App {
             Some(tooltip) if self.node_menu.is_none() => response.on_hover_text(tooltip),
             _ => response,
         };
+        // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
+        pass.drawn += 1;
+        pass.any_focused |= response.has_focus();
+        if response.has_focus() {
+            card_focus_ring(ui, rect, inv_zoom);
+        }
+        if response.gained_focus() {
+            self.pan_to_card(rect);
+        }
+        if pass.show_order {
+            let (number, corner) = (pass.drawn, rect.left_top());
+            deferred_overlays.push(Box::new(move |painter, project| {
+                let center = project(corner);
+                painter.circle_filled(center, 9.0, BG);
+                painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, TEXT_PRIMARY));
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    number.to_string(),
+                    egui::FontId::proportional(11.0),
+                    TEXT_PRIMARY,
+                );
+            }));
+        }
         let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", id)), egui::Sense::hover());
         let pointer_on_card = hover.hovered() || response.hovered();
         // Last frame's hover too, which keeps the ✕ drawn while the
@@ -733,6 +779,7 @@ impl App {
                 self.graph_lod_simplified,
             );
             control_hovered |= control_response.hovered();
+            pass.any_focused |= control_response.has_focus();
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action(view.kind));
             }

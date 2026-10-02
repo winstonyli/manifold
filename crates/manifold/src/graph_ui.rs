@@ -1092,8 +1092,10 @@ impl App {
                 self.move_graph_focus(dir);
             }
             // Enter opens whatever arrow-key navigation landed on, the same
-            // way clicking the node's card does.
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            // way clicking the node's card does. A Tab-focused card handles its own
+            // Enter in the card pass, so this skips it (else it would open the
+            // app-focused tab instead of the card).
+            if !self.card_nav_active && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
             // Escape clears a rectangle-select selection, dismisses any
@@ -1490,7 +1492,16 @@ impl App {
         // also their stacking order: a later kind draws, and takes
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
-        let mut pass = CardPass { deferred_overlays, actions, inv_zoom, zoom_scale, drop_preview: &drop_preview };
+        let mut pass = CardPass {
+            deferred_overlays,
+            actions,
+            inv_zoom,
+            zoom_scale,
+            drop_preview: &drop_preview,
+            show_order: self.card_nav_active,
+            drawn: 0,
+            any_focused: false,
+        };
         for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
             for id in ids.iter() {
                 // Read before the frame: a Note's `TextEdit` can lose
@@ -1517,6 +1528,10 @@ impl App {
                         || n.as_json().is_some_and(|j| j.error.is_some())
                         || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
                 });
+                // A double-click, or Enter on the keyboard-focused card (a single Enter already
+                // counts as `clicked()`, which is what the other kinds act on).
+                let activated = card.response.double_clicked()
+                    || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 match kind {
                     _ if missing_file => {
                         if card.response.clicked() {
@@ -1549,18 +1564,25 @@ impl App {
                     // file failed to load (plan ruling 10) or it's still
                     // being refetched (`JsonPayload::enterable`).
                     ItemNodeKind::Json
-                        if card.response.double_clicked()
-                            && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
+                        if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                     {
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))
                     }
                     // Drills into the group's own subgraph.
-                    ItemNodeKind::Group if card.response.double_clicked() => {
-                        pass.actions.push(GraphAction::EnterGroup(id.clone()))
-                    }
+                    ItemNodeKind::Group if activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
                     _ => {}
                 }
             }
+        }
+        self.card_nav_active = pass.any_focused;
+    }
+
+    /// Eases the camera so a card that just took keyboard focus is in view, centered on it when it
+    /// isn't already fully visible.
+    pub(crate) fn pan_to_card(&mut self, card: egui::Rect) {
+        let view = self.camera.rect;
+        if !view.contains_rect(card) {
+            self.camera.ease_to(egui::Rect::from_center_size(card.center(), view.size()));
         }
     }
 

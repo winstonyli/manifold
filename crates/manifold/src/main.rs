@@ -1221,6 +1221,9 @@ struct App {
     /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
     /// `close_popup`.
     open_popup: Option<AnchoredPopup>,
+    /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
+    /// show their Tab-order numbers (`CardPass::show_order`).
+    card_nav_active: bool,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -1394,6 +1397,7 @@ impl Default for App {
             history_dirty: false,
             history_filter: String::new(),
             open_popup: None,
+            card_nav_active: false,
             transition: None,
             event_proxy: None,
             pending_respawn_focus: None,
