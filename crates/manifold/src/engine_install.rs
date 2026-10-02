@@ -64,6 +64,34 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     }
 }
 
+/// The CEF version a bring-your-own directory's `archive.json` names: its `name` is the archive the
+/// build came from (`cef_binary_<version>_<platform>_<distribution>.tar.bz2`); the version has no `_`.
+fn archive_version(dir: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(dir.join("archive.json"))
+        .map_err(|e| format!("no archive.json to read the CEF version from ({e})"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("archive.json is not valid ({e})"))?;
+    let name = json.get("name").and_then(|n| n.as_str()).ok_or("archive.json has no \"name\"")?;
+    let rest = name.strip_prefix("cef_binary_").unwrap_or(name);
+    Ok(rest.split('_').next().unwrap_or(rest).to_string())
+}
+
+/// Whether `dir` is a CEF runtime of the pinned version: it holds `libcef.dll` and its `archive.json` names
+/// `pin.version`. An `Err` says what is wrong, naming both versions on a mismatch.
+pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    if !dir.join("libcef.dll").is_file() {
+        return Err("no libcef.dll in that directory".into());
+    }
+    let found = archive_version(dir)?;
+    if found != pin.version {
+        return Err(format!("found CEF {found}, expected {}", pin.version));
+    }
+    Ok(())
+}
+
 /// Why an install step failed.
 // Later tasks construct `Unpack` and show these.
 #[allow(dead_code)]
@@ -433,7 +461,36 @@ impl crate::App {
             .filter(|job| !job.cancelled)
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
         let failed = self.engine_failures.get(&kind).map(String::as_str);
-        crate::process_manager::engine_availability(kind, cef_on_disk, installing, failed, None)
+        let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
+        crate::process_manager::engine_availability(kind, cef_on_disk, installing, failed, custom.as_deref())
+    }
+
+    /// The configured bring-your-own CEF directory, only when it validates against the pin.
+    pub(crate) fn custom_cef_dir(&self) -> Option<PathBuf> {
+        self.cef_dir_verdict().and_then(|(dir, verdict)| verdict.ok().map(|()| dir))
+    }
+
+    /// The configured directory and whether it validates; `None` when none is set. The verdict is cached
+    /// with the path (`cef_dir_check`): the disk is read when the path changes, not every frame.
+    pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
+        let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
+        let mut cache = self.cef_dir_check.borrow_mut();
+        if cache.as_ref().is_none_or(|(path, _)| path != configured) {
+            let verdict = validate_custom(Path::new(configured), &crate::cef_pin::CEF_PIN);
+            *cache = Some((configured.to_string(), verdict));
+        }
+        let verdict = cache.as_ref().map(|(_, v)| v.clone())?;
+        Some((PathBuf::from(configured), verdict))
+    }
+
+    /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached
+    /// verdict and states so the next read validates it.
+    pub(crate) fn set_cef_directory(&mut self, path: &str) {
+        let path = path.trim();
+        self.settings.cef_directory = (!path.is_empty()).then(|| path.to_string());
+        *self.cef_dir_check.borrow_mut() = None;
+        self.engine_state_cache.borrow_mut().clear();
+        self.save_settings();
     }
 
     /// Download and install `kind`'s runtime into the data directory. See `start_engine_install_at`.
@@ -594,6 +651,73 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Ready);
         std::fs::write(dir.join(MARKER), "0.9").unwrap();
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
+    }
+
+    /// A bring-your-own directory as CEF's own archive lays it out: `libcef.dll` and `archive.json`.
+    fn custom_dir(tag: &str, archive_name: Option<&str>, dll: bool) -> PathBuf {
+        let dir = temp_dir(tag);
+        if dll {
+            std::fs::write(dir.join("libcef.dll"), b"x").unwrap();
+        }
+        if let Some(name) = archive_name {
+            std::fs::write(dir.join("archive.json"), format!(r#"{{"type":"minimal","name":"{name}","sha1":"ab"}}"#))
+                .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_custom_directory_of_the_pinned_version_validates() {
+        let pin = &crate::cef_pin::CEF_PIN;
+        let name = format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version);
+        assert_eq!(validate_custom(&custom_dir("vc1", Some(&name), true), pin), Ok(()));
+        // The pin's own sample: a name without the prefix or suffix still reads.
+        assert_eq!(validate_custom(&custom_dir("vc1b", Some(pin.version), true), pin), Ok(()));
+    }
+
+    #[test]
+    fn a_custom_directory_of_another_version_names_both() {
+        let dir = custom_dir("vc2", Some("cef_binary_150.1.2+gabc+chromium-150.0.1_windows64_minimal.tar.bz2"), true);
+        let err = validate_custom(&dir, &crate::cef_pin::CEF_PIN).unwrap_err();
+        assert!(err.contains("150.1.2+gabc+chromium-150.0.1"), "{err}");
+        assert!(err.contains(crate::cef_pin::CEF_PIN.version), "{err}");
+    }
+
+    #[test]
+    fn a_custom_directory_without_archive_json_or_libcef_is_refused() {
+        let pin = &crate::cef_pin::CEF_PIN;
+        assert!(validate_custom(&custom_dir("vc3", None, true), pin).unwrap_err().contains("archive.json"));
+        let name = format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version);
+        assert!(validate_custom(&custom_dir("vc4", Some(&name), false), pin).unwrap_err().contains("libcef.dll"));
+        assert!(validate_custom(&temp_dir("vc5").join("nope"), pin).is_err());
+        let bad = custom_dir("vc6", None, true);
+        std::fs::write(bad.join("archive.json"), "{}").unwrap();
+        assert!(validate_custom(&bad, pin).is_err());
+    }
+
+    #[test]
+    fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
+        let pin = &crate::cef_pin::CEF_PIN;
+        let good = custom_dir("vc7", Some(&format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version)), true);
+        let mut app = App::default();
+        app.set_cef_directory(good.to_str().unwrap());
+        assert_eq!(app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Missing), EngineState::Custom(good.clone()));
+        assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Installed);
+
+        let bad = custom_dir("vc8", Some("cef_binary_1.0_windows64_minimal.tar.bz2"), true);
+        app.set_cef_directory(bad.to_str().unwrap());
+        assert_eq!(app.custom_cef_dir(), None);
+        assert!(app.cef_dir_verdict().unwrap().1.is_err(), "the page shows why");
+        // No silent fallback and no Custom: the normal on-disk state.
+        assert_eq!(
+            app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Missing),
+            EngineState::NotInstalled { size: pin.size }
+        );
+        assert_eq!(app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Ready), EngineState::Installed);
+
+        app.set_cef_directory("  ");
+        assert_eq!(app.settings.cef_directory, None);
+        assert!(app.cef_dir_verdict().is_none());
     }
 
     #[test]

@@ -33,8 +33,9 @@ impl App {
             return;
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
+        let custom_cef = self.custom_cef_dir();
         std::thread::spawn(move || {
-            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url);
+            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref());
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
         });
     }

@@ -1193,6 +1193,10 @@ struct App {
     /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
     /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
     engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
+    /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
+    cef_dir_check: std::cell::RefCell<Option<(String, Result<(), String>)>>,
+    /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
+    cef_dir_draft: Option<String>,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1420,6 +1424,8 @@ impl Default for App {
             engine_failures: HashMap::new(),
             pending_engine_confirm: None,
             engine_state_cache: Default::default(),
+            cef_dir_check: Default::default(),
+            cef_dir_draft: None,
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,

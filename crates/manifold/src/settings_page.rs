@@ -280,6 +280,42 @@ impl App {
                 }
             });
         }
+        self.settings_cef_directory_row(ui);
+    }
+
+    /// Settings, Engines: a CEF directory to use instead of a download. The text is committed (and
+    /// validated, `set_cef_directory`) on Enter, focus loss, Browse or Clear, never per keystroke; a
+    /// directory that fails validation shows why and is not used.
+    fn settings_cef_directory_row(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(TEXT_PRIMARY));
+        let mut commit = None;
+        let configured = self.settings.cef_directory.clone().unwrap_or_default();
+        ui.horizontal(|ui| {
+            let draft = self.cef_dir_draft.get_or_insert_with(|| configured.clone());
+            let response =
+                ui.add(egui::TextEdit::singleline(draft).desired_width(220.0).hint_text("Folder with libcef.dll"));
+            if response.lost_focus() {
+                commit = Some(draft.clone());
+            }
+            if ui.button("Browse").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    commit = Some(dir.to_string_lossy().into_owned());
+                }
+            }
+            if !configured.is_empty() && ui.button("Clear").clicked() {
+                commit = Some(String::new());
+            }
+        });
+        if let Some(text) = commit {
+            if text.trim() != configured {
+                self.set_cef_directory(&text);
+            }
+            self.cef_dir_draft = None;
+        }
+        if let Some((_, Err(message))) = self.cef_dir_verdict() {
+            ui.add(egui::Label::new(egui::RichText::new(message).small().color(DANGER_COLOR)).wrap());
+        }
     }
 
     /// Settings, "Lists": the bookmarks/history/downloads buttons.

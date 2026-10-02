@@ -517,9 +517,16 @@ impl From<std::io::Error> for SpawnError {
     }
 }
 
+/// The current `PATH` with `dir` in front.
+fn path_with_first(dir: &Path) -> std::ffi::OsString {
+    let rest = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&rest));
+    std::env::join_paths(paths).unwrap_or(rest)
+}
+
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
-fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk) -> Result<(), SpawnError> {
-    match engine_availability(kind, cef_on_disk, None, None, None) {
+fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
+    match engine_availability(kind, cef_on_disk, None, None, custom) {
         EngineState::Installed | EngineState::Custom(_) => Ok(()),
         _ => Err(SpawnError::EngineMissing(kind)),
     }
@@ -677,11 +684,20 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// manifold-engine-cef specifically — see that crate's main.rs for why (CEF
 /// parses this process's own argv as its own command line). We do the same
 /// for the other engines too, for one consistent spawn path.
-pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> Result<EngineTab, SpawnError> {
+///
+/// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check and goes
+/// first on the host's `PATH`, where Windows looks for `libcef.dll` when the host's own directory has none.
+pub fn spawn_tab(
+    kind: EngineKind,
+    tab_id: &str,
+    initial_url: &str,
+    custom_cef: Option<&Path>,
+) -> Result<EngineTab, SpawnError> {
     if kind == EngineKind::Webkit {
         return Ok(spawn_webkit_tab(tab_id, initial_url)?);
     }
-    check_spawnable(kind, if kind == EngineKind::Cef { cef_on_disk() } else { RuntimeOnDisk::Ready })?;
+    let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
+    check_spawnable(kind, if kind == EngineKind::Cef { cef_on_disk() } else { RuntimeOnDisk::Ready }, custom_cef)?;
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -719,6 +735,9 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> Result<En
         .stderr(stderr_file);
     if let Some(dir) = &cache_dir {
         command.env("ENGINE_CACHE_DIR", dir);
+    }
+    if let Some(dir) = custom_cef {
+        command.env("PATH", path_with_first(dir));
     }
     let mut child = command.spawn()?;
     assign_to_engine_job(&child);
@@ -883,15 +902,29 @@ mod tests {
         let state = engine_availability(EngineKind::Cef, RuntimeOnDisk::Stale, None, None, None);
         assert_eq!(state, EngineState::UpdateNeeded { size: CEF_PIN.size });
         assert!(matches!(
-            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale),
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale, None),
             Err(SpawnError::EngineMissing(EngineKind::Cef))
         ));
         assert!(matches!(
-            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing),
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing, None),
             Err(SpawnError::EngineMissing(EngineKind::Cef))
         ));
-        assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready).is_ok());
-        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing).is_ok());
+        assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready, None).is_ok());
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, None).is_ok());
+    }
+
+    #[test]
+    fn a_custom_directory_allows_a_spawn_the_disk_would_refuse() {
+        let custom = Path::new("D:/cef");
+        for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
+            assert!(check_spawnable(EngineKind::Cef, disk, Some(custom)).is_ok());
+        }
+    }
+
+    #[test]
+    fn path_with_first_puts_the_directory_in_front() {
+        let paths: Vec<_> = std::env::split_paths(&path_with_first(Path::new("D:/cef"))).collect();
+        assert_eq!(paths[0], Path::new("D:/cef"));
     }
 
     #[test]

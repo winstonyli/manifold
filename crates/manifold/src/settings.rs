@@ -122,6 +122,10 @@ pub struct Settings {
     /// `idle_sleep`.
     #[serde(default)]
     pub idle_sleep_minutes: Option<u32>,
+    /// A CEF runtime directory the user supplied instead of downloading one (`engine_install::
+    /// validate_custom`); used for launches only while it validates.
+    #[serde(default)]
+    pub cef_directory: Option<String>,
 }
 
 fn default_already_shown() -> bool {
@@ -141,6 +145,7 @@ impl Default for Settings {
             window_y: None,
             has_shown_first_launch_demo: false,
             idle_sleep_minutes: None,
+            cef_directory: None,
         }
     }
 }
@@ -205,5 +210,19 @@ impl Settings {
     /// conflict_path()` instead of overwriting the real `settings.json`.
     pub fn save_to(&self, path: &std::path::Path) {
         crate::json_file::save(self, path, "settings");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cef_directory_defaults_when_missing_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.cef_directory, None);
+        let settings = Settings { cef_directory: Some("D:/cef".into()), ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(back.cef_directory.as_deref(), Some("D:/cef"));
     }
 }
