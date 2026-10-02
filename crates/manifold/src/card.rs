@@ -46,8 +46,20 @@ fn truncate_start_to_width(
     }
 }
 
-/// Height of a Tab card's header (favicon, title, source line), in screen points.
-const TAB_HEADER_POINTS: f32 = 40.0;
+/// Height of a card's header F (glyph or favicon, title, source line), in screen points.
+pub(crate) const TAB_HEADER_POINTS: f32 = 40.0;
+/// The strip a card too short for the header (`tab_has_header`) gets along its bottom instead, in screen points.
+pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
+/// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
+/// preview's own header (`json_level_ui::paint_json_content`) both place their text from these.
+pub(crate) const HEADER_GLYPH_X: f32 = 10.0;
+/// The line the glyph sits on, and the title's when there is no source line.
+pub(crate) const HEADER_CENTER_Y: f32 = 20.0;
+pub(crate) const HEADER_TEXT_X: f32 = 28.0;
+pub(crate) const HEADER_TITLE_Y: f32 = 12.0;
+pub(crate) const HEADER_SOURCE_Y: f32 = 28.0;
+pub(crate) const HEADER_TITLE_SIZE: f32 = 13.0;
+pub(crate) const HEADER_SOURCE_SIZE: f32 = 11.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
 const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
 
@@ -55,6 +67,27 @@ const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
 /// enough on screen to show its header.
 pub(crate) fn tab_has_header(rect: egui::Rect, inv_zoom: f32) -> bool {
     rect.height() / inv_zoom >= TAB_HEADER_MIN_CARD_POINTS
+}
+
+/// The body of a card whose header (when `tall`) takes the top `TAB_HEADER_POINTS`: the whole
+/// card when it has only the bottom strip.
+pub(crate) fn card_body_rect(rect: egui::Rect, tall: bool, inv_zoom: f32) -> egui::Rect {
+    let top = if tall { rect.top() + TAB_HEADER_POINTS * inv_zoom } else { rect.top() };
+    egui::Rect::from_min_max(egui::pos2(rect.left(), top), rect.right_bottom())
+}
+
+/// Queues `text` at `size` screen points, centred on `pos` (world units).
+fn push_centered_text(
+    deferred_overlays: &mut DeferredOverlays,
+    pos: egui::Pos2,
+    text: impl Into<String>,
+    size: f32,
+    color: egui::Color32,
+) {
+    let text = text.into();
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        overlay_painter.text(project(pos), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), color);
+    }));
 }
 
 /// The part of a `src`-sized texture (as a uv rect) that fills a `dst`-shaped rect without
@@ -996,19 +1029,10 @@ impl App {
         let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
         // The middle of the body below the header: the failure icon, the waking spinner, or the
         // moon of a sleeping tab.
-        let body_top = if tall { rect.top() + TAB_HEADER_POINTS * inv_zoom } else { rect.top() };
-        let middle = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
+        let middle = card_body_rect(rect, tall, inv_zoom).center();
         match &state {
             UnloadedState::Failed(_) => {
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(middle),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::light::WARNING_CIRCLE,
-                        egui::FontId::proportional(24.0),
-                        DANGER_COLOR,
-                    );
-                }));
+                push_centered_text(deferred_overlays, middle, egui_phosphor::light::WARNING_CIRCLE, 24.0, DANGER_COLOR);
             }
             UnloadedState::Waking => {
                 ui.put(
@@ -1017,16 +1041,13 @@ impl App {
                 );
             }
             UnloadedState::Sleeping => {
-                let color = ui.visuals().weak_text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(middle),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::light::MOON,
-                        egui::FontId::proportional(24.0),
-                        color,
-                    );
-                }));
+                push_centered_text(
+                    deferred_overlays,
+                    middle,
+                    egui_phosphor::light::MOON,
+                    24.0,
+                    ui.visuals().weak_text_color(),
+                );
             }
         }
         body
@@ -1076,18 +1097,8 @@ impl App {
                     }
                     (false, None) => crate::human_bytes(bytes_received),
                 };
-                let body_top = rect.top() + TAB_HEADER_POINTS * inv_zoom;
-                let middle = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
-                let color = ui.visuals().weak_text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(middle),
-                        egui::Align2::CENTER_CENTER,
-                        size,
-                        egui::FontId::proportional(13.0),
-                        color,
-                    );
-                }));
+                let middle = card_body_rect(rect, true, inv_zoom).center();
+                push_centered_text(deferred_overlays, middle, size, 13.0, ui.visuals().weak_text_color());
             }
         }
         // Live progress bar, only while not yet complete
@@ -1151,7 +1162,7 @@ impl App {
         let handle = if tall {
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, paper.min.y))
         } else {
-            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 18.0 * inv_zoom), rect.max)
+            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - TAB_STRIP_POINTS * inv_zoom), rect.max)
         };
         let is_editing = self.nodes.get(id).and_then(|n| n.as_note()).is_some_and(|n| n.editing);
 
@@ -1258,17 +1269,8 @@ impl App {
             right_margin: 0.0,
         };
         let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
-        let body_top = if tall { rect.top() + TAB_HEADER_POINTS * inv_zoom } else { rect.top() };
-        let icon_pos = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
-        deferred_overlays.push(Box::new(move |overlay_painter, project| {
-            overlay_painter.text(
-                project(icon_pos),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::light::FILE_X,
-                egui::FontId::proportional(24.0),
-                DANGER_COLOR,
-            );
-        }));
+        let icon_pos = card_body_rect(rect, tall, inv_zoom).center();
+        push_centered_text(deferred_overlays, icon_pos, egui_phosphor::light::FILE_X, 24.0, DANGER_COLOR);
     }
 
     /// Image: a locally-added picture, no engine/IPC behind it --
@@ -1617,7 +1619,8 @@ impl App {
                 // with no thumbnail yet gets a plain tinted square. "Collapse Groups" leaves the
                 // header alone.
                 if member_count > 0 && !self.groups_collapsed {
-                    let (top, bottom) = if tall { (TAB_HEADER_POINTS * inv_zoom, 0.0) } else { (0.0, 18.0 * inv_zoom) };
+                    let (top, bottom) =
+                        if tall { (TAB_HEADER_POINTS * inv_zoom, 0.0) } else { (0.0, TAB_STRIP_POINTS * inv_zoom) };
                     let grid_rect =
                         egui::Rect::from_min_max(rect.min + egui::vec2(0.0, top), rect.max - egui::vec2(0.0, bottom))
                             .shrink(GRAPH_THUMB_MARGIN);
@@ -1682,7 +1685,7 @@ impl App {
             return tall;
         }
         let CardHeader { glyph, glyph_color, icon_image, name, source, source_is_path, scrim, right_margin } = header;
-        let band_height = if tall { TAB_HEADER_POINTS } else { 18.0 } * inv_zoom;
+        let band_height = if tall { TAB_HEADER_POINTS } else { TAB_STRIP_POINTS } * inv_zoom;
         let band = if tall {
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
         } else {
@@ -1701,9 +1704,9 @@ impl App {
         let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
         let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
         let glyph_color = glyph_color.unwrap_or(source_color);
-        let title_font = egui::FontId::proportional(13.0);
-        let source_font = egui::FontId::proportional(11.0);
-        let text_left = if tall { 28.0 } else { 8.0 };
+        let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
+        let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
+        let text_left = if tall { HEADER_TEXT_X } else { 8.0 };
         let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
         let title = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width);
         let source = match (tall, source_is_path) {
@@ -1714,7 +1717,7 @@ impl App {
             (true, false) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width),
         };
         if let (true, Some(tex_id)) = (tall, icon_image) {
-            let center = band.left_top() + egui::vec2(18.0, 20.0) * inv_zoom;
+            let center = band.left_top() + egui::vec2(18.0, HEADER_CENTER_Y) * inv_zoom;
             let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
             ui.painter().image(
                 tex_id,
@@ -1731,7 +1734,7 @@ impl App {
             if tall {
                 if draw_glyph {
                     overlay_painter.text(
-                        base + egui::vec2(10.0, 20.0),
+                        base + egui::vec2(HEADER_GLYPH_X, HEADER_CENTER_Y),
                         egui::Align2::LEFT_CENTER,
                         glyph,
                         egui::FontId::proportional(14.0),
@@ -1739,14 +1742,14 @@ impl App {
                     );
                 }
                 overlay_painter.text(
-                    base + egui::vec2(text_left, 12.0),
+                    base + egui::vec2(text_left, HEADER_TITLE_Y),
                     egui::Align2::LEFT_CENTER,
                     title,
                     title_font,
                     title_color,
                 );
                 overlay_painter.text(
-                    base + egui::vec2(text_left, 28.0),
+                    base + egui::vec2(text_left, HEADER_SOURCE_Y),
                     egui::Align2::LEFT_CENTER,
                     source,
                     source_font,
@@ -1818,8 +1821,10 @@ impl App {
             let show_text = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
             if header {
                 // Favicon (or the engine dot), title and source line over the card's own fill.
-                let icon_center =
-                    egui::pos2(rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom, rect.top() + 20.0 * inv_zoom);
+                let icon_center = egui::pos2(
+                    rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom,
+                    rect.top() + HEADER_CENTER_Y * inv_zoom,
+                );
                 match favicon {
                     Some(tex_id) => {
                         ui.painter().image(
@@ -1838,8 +1843,8 @@ impl App {
                     let text_left = GRAPH_THUMB_MARGIN + 22.0;
                     // Leave room for the audio indicator at the top-right corner.
                     let max_width = (rect.width() * zoom_scale - text_left - 28.0).max(0.0);
-                    let title_font = egui::FontId::proportional(13.0);
-                    let source_font = egui::FontId::proportional(11.0);
+                    let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
+                    let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
                     let title_text =
                         truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &title_font, max_width);
                     let source_text =
@@ -1867,7 +1872,7 @@ impl App {
             } else {
                 // A flat scrim behind the title strip so it stays legible over a light thumbnail.
                 let title_strip = egui::Rect::from_min_max(
-                    egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - 18.0 * inv_zoom),
+                    egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - TAB_STRIP_POINTS * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
                 ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));

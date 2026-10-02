@@ -13,7 +13,7 @@ use serde_json::Value;
 pub(crate) const CARD_WIDTH: f32 = 220.0;
 pub(crate) const HEADER_HEIGHT: f32 = 26.0;
 /// The Json card preview's header: two lines, as card header F's 40 (here world units).
-pub(crate) const PREVIEW_HEADER_HEIGHT: f32 = 40.0;
+pub(crate) const PREVIEW_HEADER_HEIGHT: f32 = crate::card::TAB_HEADER_POINTS;
 /// The Json card preview's width: the other cards' (`GRAPH_NODE_SIZE`), not a level card's `CARD_WIDTH`.
 pub(crate) const PREVIEW_CARD_WIDTH: f32 = 160.0;
 pub(crate) const ROW_HEIGHT: f32 = 22.0;
