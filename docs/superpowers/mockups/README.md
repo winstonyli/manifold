@@ -16,3 +16,4 @@ Compare with the running app using `scripts/chrome-shots.sh`.
 
 - **2026-10-02:** parity gaps 1, 2, 3, 6, 8 (control height 28, chip 30, icon button 32 wide, filter 150, divider 1x18, primary padding) are fixed in the app; gaps 4, 5, 7 (Tab toolbar restructure) remain open.
 - **2026-10-02:** gaps 4, 5, 7 (Graph in the nav chip, standalone bookmark, favicon and Ctrl L keycaps in the address field) are done; the parity audit has no open gaps.
+- **2026-10-02 menu/settings audit:** menu row height (26) and popup radius (8) now match. Open: key hints should be right-aligned in menus; the settings page's radio-button rows (e.g. sleep time) vs the mockup's toggle and select widgets is a design change, not a parity fix.

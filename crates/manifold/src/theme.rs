@@ -31,7 +31,7 @@ pub(crate) fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::default()
         .fill(TOOLBAR_FILL)
         .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-        .corner_radius(4u8)
+        .corner_radius(8u8)
         .inner_margin(egui::Margin::same(4))
 }
 
@@ -198,6 +198,13 @@ pub(crate) fn menu_item_style(ui: &mut egui::Ui) {
     let style = ui.style_mut();
     style.spacing.item_spacing.y = 0.0;
     style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    // 26 px rows with 5 px hover corners, as in the mockup's menu.
+    style.spacing.interact_size.y = 26.0;
+    for w in
+        [&mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active, &mut style.visuals.widgets.inactive]
+    {
+        w.corner_radius = egui::CornerRadius::same(5);
+    }
     style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
