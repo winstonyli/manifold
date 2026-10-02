@@ -73,6 +73,8 @@ getrandom = "0.3"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sha1 = "0.10.7"
+sha2 = "0.10.9"
 ureq = "3"
 wgpu = "30.0.1"
 winit = "0.30.13"
