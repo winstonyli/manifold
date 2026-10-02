@@ -330,6 +330,7 @@ pub(crate) fn install(
     if let Err(e) = verify(&part, pin) {
         if matches!(e, InstallError::BadHash { .. }) {
             remove_file(&part);
+            let _ = remove_dir(&tmp);
         }
         return Err(e);
     }
@@ -339,10 +340,32 @@ pub(crate) fn install(
         remove_file(&part);
         return Err(e);
     }
-    remove_dir(&live)?;
-    std::fs::rename(&tmp, &live).map_err(io)?;
+    swap(&tmp, &live)?;
     remove_file(&part);
     Ok(live)
+}
+
+/// Put `new` at `live`, keeping the previous `live` aside as `live.old` until the new one is in place.
+/// If the second rename fails, the previous install is moved back, so `live` is never half-deleted.
+// Task 6 calls `install`.
+#[allow(dead_code)]
+fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
+    let io = |e: std::io::Error| InstallError::Io(e.to_string());
+    let old = live.with_extension("old");
+    remove_dir(&old)?;
+    let had_old = match std::fs::rename(live, &old) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(io(e)),
+    };
+    if let Err(e) = std::fs::rename(new, live) {
+        if had_old {
+            let _ = std::fs::rename(&old, live);
+        }
+        return Err(io(e));
+    }
+    let _ = remove_dir(&old);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -669,13 +692,24 @@ Connection: close
     fn unpack_refuses_a_path_that_escapes() {
         let dir = temp_dir("ei21");
         let a = archive(&dir, &[("top/Release/libcef.dll", b"x"), ("top/Release/../../evil", b"x")]);
-        let out = dir.join("out");
+        // `into` is nested so that a naive join lands at a place inside `dir` that we can check.
+        let nested = dir.join("nested");
+        let out = nested.join("out");
         let err = unpack(&a, &out, &pin_for(&a, String::new())).unwrap_err();
         assert!(matches!(err, InstallError::Unpack(_)), "{err:?}");
         assert!(!dir.join("evil").exists() && !out.join(MARKER).exists());
-        let a = archive(&dir, &[("../evil", b"x")]);
-        assert!(matches!(unpack(&a, &out, &pin_for(&a, String::new())), Err(InstallError::Unpack(_))));
-        assert!(!dir.parent().unwrap().join("evil").exists());
+        for (name, lands) in [
+            ("top/Release/../evil", nested.join("evil")),
+            ("top/Release/..\\evil", nested.join("evil")),
+            ("top\\Release\\..\\..\\evil", dir.join("evil")),
+            ("../evil", dir.join("evil")),
+            ("/top/Release/evil", PathBuf::from("/top/Release/evil")),
+        ] {
+            let a = archive(&dir, &[(name, b"x")]);
+            let r = unpack(&a, &out, &pin_for(&a, String::new()));
+            assert!(matches!(r, Err(InstallError::Unpack(_))), "{name}: {r:?}");
+            assert!(!lands.exists(), "{name} wrote {lands:?}");
+        }
     }
 
     #[test]
@@ -718,11 +752,41 @@ Connection: close
     }
 
     #[test]
+    fn install_clears_a_stale_tmp_and_old() {
+        let dir = temp_dir("ei27");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("cef-runtime.tmp")).unwrap();
+        std::fs::write(data.join("cef-runtime.tmp").join("junk"), b"x").unwrap();
+        std::fs::create_dir_all(data.join("cef-runtime.old")).unwrap();
+        std::fs::write(data.join("cef-runtime.old").join("junk"), b"x").unwrap();
+        let out = install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(runtime_state(&out, &pin), RuntimeOnDisk::Ready);
+        assert!(!out.join("junk").exists());
+        assert!(!data.join("cef-runtime.tmp").exists() && !data.join("cef-runtime.old").exists());
+    }
+
+    #[test]
+    fn a_failed_swap_restores_the_previous_install() {
+        let dir = temp_dir("ei28");
+        let live = dir.join("cef-runtime");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join(MARKER), "old").unwrap();
+        // The new directory does not exist, so the second rename fails.
+        let err = swap(&dir.join("cef-runtime.tmp"), &live).unwrap_err();
+        assert!(matches!(err, InstallError::Io(_)), "{err:?}");
+        assert_eq!(std::fs::read_to_string(live.join(MARKER)).unwrap(), "old");
+        assert!(!dir.join("cef-runtime.old").exists());
+    }
+
+    #[test]
     fn a_bad_hash_leaves_no_runtime_directory_and_no_part_file() {
         let dir = temp_dir("ei24");
         let a = archive(&dir, &GOOD);
         let pin = Pin { sha256: "00", ..pin_for(&a, serve_file(&a)) };
         let data = dir.join("data");
+        std::fs::create_dir_all(data.join("cef-runtime.tmp")).unwrap();
         let err = install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
         assert!(matches!(err, InstallError::BadHash { .. }), "{err:?}");
         assert!(!data.join("cef-runtime").exists() && !data.join("cef-runtime.tmp").exists());
