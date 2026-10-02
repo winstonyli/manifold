@@ -1071,7 +1071,9 @@ impl App {
             return;
         }
 
+        // A key of "#" starts a section; its text is the heading.
         const SHORTCUTS: &[(&str, &str)] = &[
+            ("#", "Everywhere"),
             ("Ctrl+T", "New tab"),
             ("Ctrl+W", "Close focused tab"),
             ("Ctrl+Shift+W", "Close all tabs at the current level"),
@@ -1090,6 +1092,17 @@ impl App {
             ("Ctrl+0", "Reset zoom"),
             ("F12", "Open devtools"),
             ("F1", "Toggle this shortcut reference"),
+            ("#", "Graph cards (Tab onto the canvas)"),
+            ("Tab / Shift+Tab", "Next / previous card, in creation order (numbered badges)"),
+            ("Enter", "Open the focused card; enters a group or JSON level"),
+            ("Space", "Select / deselect a tab card"),
+            ("Delete", "Close the focused card"),
+            ("Shift+F10", "The card's menu: color, move to a group, ..."),
+            ("Escape", "Close a menu or popup, back to its card"),
+            ("#", "JSON level"),
+            ("Up / Down", "Select the previous / next outline row"),
+            ("Enter", "Expand / collapse the selected card"),
+            ("Right / Left", "Open / close the row (Left on a closed row selects its parent)"),
         ];
 
         let area = egui::Area::new(egui::Id::new("shortcuts_help"))
@@ -1100,13 +1113,18 @@ impl App {
                     ui.set_width(360.0);
                     ui.label(heading_text("Keyboard Shortcuts"));
                     ui.separator();
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
                         egui::Grid::new("shortcuts_help_grid").num_columns(2).spacing(egui::vec2(16.0, 6.0)).show(
                             ui,
                             |ui| {
                                 for (keys, desc) in SHORTCUTS {
-                                    ui.monospace(*keys);
-                                    ui.label(*desc);
+                                    if *keys == "#" {
+                                        ui.label(egui::RichText::new(*desc).strong().color(ACCENT));
+                                        ui.label("");
+                                    } else {
+                                        ui.monospace(*keys);
+                                        ui.label(*desc);
+                                    }
                                     ui.end_row();
                                 }
                             },
