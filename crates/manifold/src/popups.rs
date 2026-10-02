@@ -189,13 +189,48 @@ impl App {
         let open = self.open_popup == Some(which);
         let (area_rect, picked) =
             build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, fade, open);
-        if picked.is_some()
-            || clicked_outside_popup(ui, area_rect, Some(rect))
-            || (open && ui.input(|i| i.key_pressed(egui::Key::Escape)))
-        {
+        let escape = open && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if picked.is_some() || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
             close_popup(&mut self.open_popup, which);
+            // Closed from the keyboard: focus goes back to the button that opened it.
+            if open && !ui.input(|i| i.pointer.any_click()) {
+                if let Some(button) = ui.data(|d| d.get_temp::<egui::Id>(Self::engine_opener_key(which))) {
+                    ui.memory_mut(|m| m.request_focus(button));
+                }
+            }
         }
         picked
+    }
+
+    fn engine_opener_key(which: AnchoredPopup) -> egui::Id {
+        egui::Id::new(("engine_opener", which))
+    }
+
+    /// The settings page's button showing `kind`, opening engine picker `which`. Its label is
+    /// the engine's color, which is unreadable on the gold a focused button gets, so a
+    /// focused one uses the dark label instead.
+    pub(crate) fn engine_opener_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        which: AnchoredPopup,
+        kind: EngineKind,
+    ) -> egui::Response {
+        let focused = ui
+            .data(|d| d.get_temp::<egui::Id>(Self::engine_opener_key(which)))
+            .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+        let color = if focused { BG } else { engine_color(kind) };
+        let response = ui.button(egui::RichText::new(engine_label(kind)).color(color));
+        self.engine_opener_clicked(ui, which, &response);
+        response
+    }
+
+    /// The button that opens engine picker `which`: toggles it when clicked and
+    /// remembers itself, so the picker can hand focus back on a keyboard close.
+    pub(crate) fn engine_opener_clicked(&mut self, ui: &egui::Ui, which: AnchoredPopup, button: &egui::Response) {
+        if button.clicked() {
+            toggle_popup(&mut self.open_popup, which);
+        }
+        ui.data_mut(|d| d.insert_temp(Self::engine_opener_key(which), button.id));
     }
 
     /// Whether an engine picker is open: it takes Escape for itself, so the

@@ -115,12 +115,8 @@ impl App {
 
         ui.add_space(8.0);
         ui.label("Default starting engine (new tabs)");
-        let combo_text = egui::RichText::new(engine_label(self.settings.default_starting_engine))
-            .color(engine_color(self.settings.default_starting_engine));
-        let default_engine_response = ui.button(combo_text);
-        if default_engine_response.clicked() {
-            toggle_popup(&mut self.open_popup, AnchoredPopup::DefaultEngine);
-        }
+        let default_engine_response =
+            self.engine_opener_button(ui, AnchoredPopup::DefaultEngine, self.settings.default_starting_engine);
         req.default_engine_button_rect = Some(default_engine_response.rect);
 
         ui.add_space(8.0);
@@ -200,11 +196,7 @@ impl App {
                 req.current_tab_id = Some(id.clone());
                 ui.horizontal(|ui| {
                     ui.label("Engine");
-                    let combo_text = egui::RichText::new(engine_label(kind)).color(engine_color(kind));
-                    let current_engine_response = ui.button(combo_text);
-                    if current_engine_response.clicked() {
-                        toggle_popup(&mut self.open_popup, AnchoredPopup::CurrentEngine);
-                    }
+                    let current_engine_response = self.engine_opener_button(ui, AnchoredPopup::CurrentEngine, kind);
                     req.current_engine_button_rect = Some(current_engine_response.rect);
                 });
                 let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);

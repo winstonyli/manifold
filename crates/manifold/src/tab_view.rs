@@ -332,9 +332,7 @@ impl App {
         // own toolbar/address-bar controls only ever apply to
         // the primary (left) pane.
         let split_engine_response = trailing_ui.button(if self.split_tab.is_some() { "Split ▾" } else { "Split" });
-        if split_engine_response.clicked() {
-            toggle_popup(&mut self.open_popup, AnchoredPopup::SplitEngine);
-        }
+        self.engine_opener_clicked(trailing_ui, AnchoredPopup::SplitEngine, &split_engine_response);
         actions.split_engine_button_rect = Some(split_engine_response.rect);
         let is_bookmarked = self
             .nodes

@@ -237,7 +237,7 @@ if has json-level || has json-menu || has json-tooltip || has hover-json || has 
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset
 fi
-if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find || has tab-dropdown; then
+if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown || has tabview-find || has tabview-actions || has tabview-split || has tabview-engine || has hover-find || has hover-dropdown || has tab-find || has tab-dropdown || has tabview-split-key; then
     read -r x y < <(center Tab); send "DOUBLECLICK $x $y" "SLEEP 5"
     has tabview && shot tabview
     has tab-tabview && tab_scan tabview 12
@@ -259,6 +259,13 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
     fi
     # The Split button opens the engine picker.
     if has tabview-engine; then send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-engine; send ESCAPE "SLEEP 1"; fi
+    # Keyboard-only pick from the Split engine picker: it opens on the selected card,
+    # Down moves, Enter picks and opens the Split pane.
+    if has tabview-split-key; then
+        send "CLICK $((${SIZE% *} - 197)) 16" "SLEEP 1"; shot tabview-split-key-open
+        send ARROWDOWN "SLEEP 1"; shot tabview-split-key-down
+        send ENTER "SLEEP 3"; shot tabview-split-key; send CLOSESPLIT "SLEEP 1"
+    fi
     if has tabview-split; then send "SPLIT webview2" "SLEEP 3"; shot tabview-split; send CLOSESPLIT "SLEEP 1"; fi
     reset
 fi
