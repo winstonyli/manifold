@@ -6,6 +6,7 @@
 use serde_json::Value;
 
 use super::*;
+use crate::card::card_focus_ring;
 use crate::json_level::{CopyWhat, JsonEdit};
 use crate::json_view::{self, Card};
 
@@ -450,6 +451,13 @@ impl App {
                 egui::Id::new(("json_card", &level.node_id, &card.pointer)),
                 egui::Sense::click_and_drag(),
             );
+            // Keyboard focus (Tab) selects the card; Enter then toggles it (`handle_json_keys`).
+            if response.has_focus() {
+                card_focus_ring(ui, rect, inv_zoom);
+            }
+            if response.gained_focus() {
+                edits.push(JsonEdit::Select(card.pointer.clone()));
+            }
             let at = response.interact_pointer_pos().or(response.hover_pos());
             let in_header = at.is_some_and(|p| p.y < rect.top() + json_view::HEADER_HEIGHT);
             if response.double_clicked() && in_header && json_view::entry_count(value) > 0 {

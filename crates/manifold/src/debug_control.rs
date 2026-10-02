@@ -81,6 +81,9 @@ pub enum DebugCommand {
     /// whichever row ends up highlighted.
     ArrowDown,
     ArrowUp,
+    /// Real Right/Left key presses (a JSON level's outline open/close).
+    ArrowRight,
+    ArrowLeft,
     /// An egui Tab key press (Shift+Tab with `true`): moves egui's keyboard focus
     /// between widgets, for checking how focus looks and that it moves nothing.
     TabKey(bool),
@@ -368,6 +371,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ADDRESSBAR text", "Set the address bar's text and focus"),
     ("ENTER", "Accept the address bar / confirm a dropdown row"),
     ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
+    ("ARROWRIGHT", "A Right arrow key press (JSON level: open the selected outline row)"),
+    ("ARROWLEFT", "A Left arrow key press (JSON level: close it, or select its parent)"),
     ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
     ("ARROWUP", "Move the address-bar suggestion highlight up"),
     ("SHIFTF10", "Shift+F10 -- open the focused graph card's menu"),
@@ -551,6 +556,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDRESSBAR" => Some(DebugCommand::AddressBar(rest.to_string())),
         "ENTER" => Some(DebugCommand::Enter),
         "ESCAPE" => Some(DebugCommand::Escape),
+        "ARROWRIGHT" => Some(DebugCommand::ArrowRight),
+        "ARROWLEFT" => Some(DebugCommand::ArrowLeft),
         "ARROWDOWN" => Some(DebugCommand::ArrowDown),
         "ARROWUP" => Some(DebugCommand::ArrowUp),
         "SHIFTF10" => Some(DebugCommand::ShiftF10),

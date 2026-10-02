@@ -244,10 +244,13 @@ if has json-level || has json-menu || has json-tooltip || has json-keys || has h
     if has hover-json-sel; then send "CLICK 280 380" "SLEEP 1"; hover_scan json-sel; fi
     if has json-tooltip; then send "MOUSEMOVE $JSON_TIP_X 16" "SLEEP 2"; shot json-tooltip; send "MOUSEMOVE 5 790"; fi
     # Right-click the first card the level lays out (data.json at 1280x800).
-    # Keys: Down x3 selects the third outline row, Enter toggles it.
+    # Keys: Down x3 selects the third outline row, Enter toggles it, Right opens it, Up+Left+Left closes then selects the parent, Tab focuses a card.
     if has json-keys; then
         send ARROWDOWN ARROWDOWN ARROWDOWN "SLEEP 1"; shot json-keys-down
         send ENTER "SLEEP 1"; shot json-keys-enter
+        send ARROWRIGHT "SLEEP 1"; shot json-keys-right
+        send ARROWUP ARROWLEFT ARROWLEFT "SLEEP 1"; shot json-keys-left
+        tab_scan json "${JSON_TAB_STOPS:-18}"
     fi
     if has json-menu; then settle; send "MOUSEMOVE 280 380" "MOUSEDOWN 280 380 right" "MOUSEUP 280 380 right" "SLEEP 1"; shot json-menu; send ESCAPE; fi
     reset

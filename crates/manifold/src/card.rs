@@ -293,7 +293,7 @@ pub(crate) struct CardPass<'a> {
 
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
 /// border of the active tab. Outside the rect, in world units (`inv_zoom` keeps it a constant size).
-fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
+pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
     ui.painter().rect_stroke(
         rect.expand(3.0 * inv_zoom),
         3.0 * inv_zoom,
