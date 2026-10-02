@@ -567,28 +567,6 @@ pub(crate) fn paint_control_square(
     }));
 }
 
-/// A restored image/JSON card whose file couldn't be loaded: the same
-/// `FILE_X` glyph a failed PDF card shows (see `ImagePayload::error`).
-pub(crate) fn paint_missing_file_card(
-    deferred_overlays: &mut DeferredOverlays,
-    rect: egui::Rect,
-    lod_simplified: bool,
-) {
-    if lod_simplified {
-        return;
-    }
-    let icon_pos = rect.center();
-    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(
-            project(icon_pos),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::light::FILE_X,
-            egui::FontId::proportional(24.0),
-            DANGER_COLOR,
-        );
-    }));
-}
-
 /// An image node's own card size: `width`x`height` scaled down (never up)
 /// to fit inside `IMAGE_NODE_MAX_SIZE` while preserving aspect ratio --
 /// shared by the graph card's own layout and `fit_all_nodes_scene_rect`'s
@@ -1232,6 +1210,45 @@ impl App {
         body
     }
 
+    /// A restored image/JSON card whose file couldn't be loaded: header F (a `FILE_X` glyph in the
+    /// danger colour, the file name, its path) with the same glyph a failed PDF card shows in the
+    /// middle of the body below it (see `ImagePayload::error`).
+    pub(crate) fn paint_missing_file_card(
+        &mut self,
+        ui: &egui::Ui,
+        deferred_overlays: &mut DeferredOverlays,
+        rect: egui::Rect,
+        inv_zoom: f32,
+        zoom_scale: f32,
+        (name, source, source_is_path): (String, String, bool),
+    ) {
+        if self.graph_lod_simplified {
+            return;
+        }
+        let header = CardHeader {
+            glyph: egui_phosphor::light::FILE_X,
+            glyph_color: Some(DANGER_COLOR),
+            icon_image: None,
+            name,
+            source,
+            source_is_path,
+            scrim: false,
+            right_margin: 0.0,
+        };
+        let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+        let body_top = if tall { rect.top() + TAB_HEADER_POINTS * inv_zoom } else { rect.top() };
+        let icon_pos = egui::Rect::from_min_max(egui::pos2(rect.left(), body_top), rect.right_bottom()).center();
+        deferred_overlays.push(Box::new(move |overlay_painter, project| {
+            overlay_painter.text(
+                project(icon_pos),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::light::FILE_X,
+                egui::FontId::proportional(24.0),
+                DANGER_COLOR,
+            );
+        }));
+    }
+
     /// Image: a locally-added picture, no engine/IPC behind it --
     /// see `ImagePayload`'s own doc comment. Unlike a note, nothing
     /// inside the card needs its own clicks (no embedded text
@@ -1253,7 +1270,12 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_image()).and_then(|i| i.error.clone());
         if let Some(error) = error {
-            paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
+            if let Some((path, url)) =
+                self.nodes.get(id).and_then(|n| n.as_image()).map(|i| (i.path.clone(), i.url.clone()))
+            {
+                let text = file_header_text(&path, url.as_deref());
+                self.paint_missing_file_card(ui, deferred_overlays, rect, inv_zoom, zoom_scale, text);
+            }
             body.tooltip = Some(error);
             return body;
         }
@@ -1449,7 +1471,10 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
         if let Some(error) = error {
-            paint_missing_file_card(deferred_overlays, rect, self.graph_lod_simplified);
+            if let Some(path) = self.nodes.get(id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+                let text = file_header_text(&path, None);
+                self.paint_missing_file_card(ui, deferred_overlays, rect, 1.0 / zoom_scale, zoom_scale, text);
+            }
             body.tooltip = Some(error);
             return body;
         }
