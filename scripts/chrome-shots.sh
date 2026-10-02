@@ -15,7 +15,7 @@
 #   graph-filter graph-group json-level json-menu
 #   tabview tabview-dropdown tabview-find tabview-actions
 #   tabview-split settings popup-bookmarks popup-history popup-downloads
-#   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom
+#   shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
 # and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key note-key digit-jump json-tab-offscreen tabview-actions-click json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
@@ -38,7 +38,7 @@ CROP_PX="${CROP_PX:-110}"
 CLOSED_BUTTON_X="${CLOSED_BUTTON_X:-515}"
 # A JSON bar button with a tooltip (Copy value).
 JSON_TIP_X="${JSON_TIP_X:-120}"
-ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
+ALL="graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip"
 VIEWS="${VIEWS:-$ALL}"
 mkdir -p "$OUT/crop"
 work="$(mktemp -d)"
@@ -317,6 +317,10 @@ if has focus-graph; then focus_scan graph 385 16 235 16; fi
 # Right-click on empty canvas: the New Tab/Note/Group card.
 if has graph-newnode-menu; then
     send "MOUSEMOVE 700 150" "MOUSEDOWN 700 150 right" "MOUSEUP 700 150 right" "SLEEP 1"; shot graph-newnode-menu; reset
+fi
+# The same card zoomed far out: its rows keep a constant screen size (they once scaled with zoom and overflowed).
+if has newnode-zoom; then
+    send "CLICK 219 19" "SLEEP 1" "CLICK 219 19" "SLEEP 1" "CLICK 219 19" "SLEEP 1" "CLICK 219 19" "SLEEP 1" "CLICK 219 19" "SLEEP 1" "CLICK 219 19" "SLEEP 1" "MOUSEMOVE 700 150" "MOUSEDOWN 700 150 right" "MOUSEUP 700 150 right" "SLEEP 1"; shot newnode-zoom; reset
 fi
 # A toolbar tooltip (the shortcuts help button).
 if has graph-tooltip; then
