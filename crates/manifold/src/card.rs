@@ -1497,9 +1497,16 @@ impl App {
             more: len - rows,
         };
         let mut header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
-        if preview {
-            header.source =
-                file_header_text(&json.path, None).1.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
+        if preview && text {
+            // The folder, cut at the start so its last part stays visible, as a download's path is.
+            let folder = file_header_text(&json.path, None).1;
+            let folder = folder.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
+            let width =
+                (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale - 28.0;
+            header.source = folder.map(|dir| {
+                let font = egui::FontId::proportional(11.0);
+                truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &dir, &font, width.max(0.0))
+            });
         }
         let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);
         let look = crate::json_level_ui::CardLook {
@@ -2082,7 +2089,7 @@ mod tests {
         };
         let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
         assert_eq!(node_card_size(&json(five.clone(), None, None)), crate::json_view::preview_size(&five));
-        assert_eq!(node_card_size(&json(serde_json::json!({}), None, None)).x, crate::json_view::CARD_WIDTH);
+        assert_eq!(node_card_size(&json(serde_json::json!({}), None, None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
         // A leaf from an old "Expand as Graph" and an error card keep the small size.
         assert_eq!(node_card_size(&json(serde_json::json!(1), Some("k"), None)), JSON_NODE_SIZE);
         assert_eq!(node_card_size(&json(five, None, Some("missing"))), JSON_NODE_SIZE);

@@ -18,13 +18,13 @@ const SECOND_LINE_SIZE: f32 = 11.0;
 /// The Json card preview's header height in screen points (`TAB_HEADER_POINTS`).
 const PREVIEW_HEADER_POINTS: f32 = 40.0;
 /// Inset of a card's text from its edges.
-const PAD: f32 = 8.0;
+pub(crate) const PAD: f32 = 8.0;
 /// An object row's key column.
 const KEY_WIDTH: f32 = 84.0;
 /// An array row's index column, right-aligned.
 const INDEX_WIDTH: f32 = 22.0;
 /// A container row's `{n}` / `[n]` column.
-const COUNT_WIDTH: f32 = 44.0;
+pub(crate) const COUNT_WIDTH: f32 = 44.0;
 /// Below this zoom, rows are gray bars without text (spec "Level of
 /// detail").
 const LOD_TEXT_ZOOM: f32 = 0.5;
