@@ -18,7 +18,8 @@
 #   shortcuts quickswitch graph-closed graph-newnode-menu graph-tooltip image-view
 #   settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip
 # Opt-in (not in the default set): hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings,
-# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and Tab-key scans tab-graph graph-enter-group graph-enter-json graph-menu-key graph-select-key mouse-regress json-keys tab-tabview tab-settings tab-find tab-quickswitch tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo, which
+# and mouse-regress (asserted, prints PASS/FAIL: drag, swatch click, middle-click close),
 # sweep the mouse along the toolbar and report where a hover moves anything
 # other than the hovered widget (see scripts/hover_diff.py).
 # The app has no light theme, so there is one set of images.
@@ -225,6 +226,36 @@ if has graph-select-key; then
     for _ in $(seq "${SELECT_STOP:-12}"); do send TABKEY "SLEEP 0.5"; done
     send SPACEKEY "SLEEP 1"; shot graph-select-key-on
     send SPACEKEY "SLEEP 1"; shot graph-select-key-off; reset
+fi
+# Mouse behaviour that the Tab-focus model must not disturb, asserted rather than shot: dragging a
+# card moves it, clicking its swatch tags it, middle-click closes it. Prints PASS/FAIL lines.
+if has mouse-regress; then
+    cardrect() {
+        state
+        python -P -c '
+import json, sys
+for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]:
+    if c["kind"] == sys.argv[2]:
+        print(*[int(v) for v in c["rect"]]); break
+' "$(w "$work/state.json")" "$1" </dev/null | tr -d '\r'
+    }
+    cardcount() { state; python -P -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["cards"]))' "$(w "$work/state.json")" </dev/null | tr -d '\r'; }
+    check() { if [ "$2" = "$3" ]; then echo "PASS: $1"; else echo "FAIL: $1 (got $2, want $3)"; fi; }
+    read -r x0 y0 x1 y1 < <(cardrect Note)
+    cx=$(((x0 + x1) / 2)); cy=$(((y0 + y1) / 2))
+    send "MOUSEMOVE $cx $cy" "MOUSEDOWN $cx $cy" "MOUSEMOVE $((cx + 30)) $((cy + 15))" "MOUSEMOVE $((cx + 60)) $((cy + 30))" "MOUSEMOVE $((cx + 90)) $((cy + 45))" "MOUSEUP $((cx + 90)) $((cy + 45))" "SLEEP 1"
+    read -r n0 m0 n1 m1 < <(cardrect Note)
+    check "drag moves the card by the drag distance" "$((n0 - x0)),$((m0 - y0))" "90,45"
+    # The swatch sits on the bottom-right corner (hover reveals nothing extra; the click is what counts).
+    sx=$n1; sy=$m1
+    send "MOUSEMOVE $((n0 + 20)) $((m0 + 20))" "SLEEP 0.5" "CLICK $sx $sy" "SLEEP 1"; shot mouse-regress-swatch
+    state
+    check "swatch click tags the card" "$(python -P -c 'import json,sys; print([c["color"] for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"] if c["kind"]=="Note"][0])' "$(w "$work/state.json")" </dev/null)" "True"
+    before=$(cardcount)
+    mx=$(((n0 + n1) / 2)); my=$(((m0 + m1) / 2))
+    send "MOUSEMOVE $mx $my" "MOUSEDOWN $mx $my middle" "MOUSEUP $mx $my middle" "SLEEP 1"
+    check "middle-click closes the card" "$(cardcount)" "$((before - 1))"
+    reset
 fi
 if has hover-menu-tab; then
     read -r x y < <(center Tab); send "MOUSEMOVE $x $y" "MOUSEDOWN $x $y right" "MOUSEUP $x $y right" "SLEEP 1"
