@@ -91,12 +91,10 @@ pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
 /// same footprint a tab card has: a 60-high card had no room for the 40-point header.
 pub(crate) const DOWNLOAD_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
-/// A group card's footprint — same idea as `DOWNLOAD_NODE_SIZE` (no live
-/// thumbnail, just a name/member-count), sized a bit larger since it's a
-/// container rather than a single file. Also the drop-target rect a
-/// dragged tab is tested against on release — see `GroupPayload`'s own doc
+/// A group card's footprint: a tab card's, for the same header-and-body layout. Also the
+/// drop-target rect a dragged tab is tested against on release — see `GroupPayload`'s own doc
 /// comment.
-pub(crate) const GROUP_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
+pub(crate) const GROUP_NODE_SIZE: egui::Vec2 = GRAPH_NODE_SIZE;
 
 /// A note card's footprint -- taller than the other non-thumbnail kinds
 /// since its whole body is an editable multi-line text area, not just a
@@ -1517,9 +1515,9 @@ impl App {
         body
     }
 
-    /// A member thumbnail grid (or the name and member count, when
-    /// empty or with "Collapse Groups" on). LOD: skipped once
-    /// simplified, leaving the frame's plain card.
+    /// Header F (folder glyph, name, item count) over a member thumbnail grid (header only when
+    /// empty or with "Collapse Groups" on). LOD: skipped once simplified, leaving the frame's
+    /// plain card.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_group_body(
         &mut self,
@@ -1536,27 +1534,27 @@ impl App {
         let member_count = member_ids.len();
         if !self.graph_lod_simplified {
             if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
-                // Below `MIN_LABEL_CARD_SCREEN_WIDTH`, skip both
-                // labels entirely rather than truncating to a
-                // near-illegible sliver -- a group card has no
-                // other decoration to fall back on, so it's just
-                // a small colored card (or thumbnail grid) at
-                // this size.
-                let show_labels = rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH;
+                let name = node.name.clone();
+                let header = CardHeader {
+                    glyph: egui_phosphor::light::FOLDER,
+                    glyph_color: None,
+                    icon_image: None,
+                    name,
+                    source: format!("{member_count} item{}", if member_count == 1 { "" } else { "s" }),
+                    source_is_path: false,
+                    scrim: false,
+                    right_margin: 0.0,
+                };
+                let tall = self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, header);
+                // Up to 4 member thumbnails, a 2x2 grid in the body below the header, like a folder
+                // previewing its contents (`GpuState::thumbnail_id`, as a tab's own card does). A cell
+                // with no thumbnail yet gets a plain tinted square. "Collapse Groups" leaves the
+                // header alone.
                 if member_count > 0 && !self.groups_collapsed {
-                    // Member thumbnails: up to 4, a 2x2 grid
-                    // filling the card above a bottom name strip
-                    // -- like a folder icon previewing its own
-                    // contents, using the exact same
-                    // `GpuState::thumbnail_id` lookup a tab's
-                    // own card already does. A cell with no
-                    // thumbnail yet (still loading) falls back
-                    // to a plain tinted square rather than
-                    // leaving a hole.
-                    let title_strip_h = 18.0 * inv_zoom;
+                    let (top, bottom) = if tall { (TAB_HEADER_POINTS * inv_zoom, 0.0) } else { (0.0, 18.0 * inv_zoom) };
                     let grid_rect =
-                        egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.max.y - title_strip_h))
-                            .shrink(4.0 * inv_zoom);
+                        egui::Rect::from_min_max(rect.min + egui::vec2(0.0, top), rect.max - egui::vec2(0.0, bottom))
+                            .shrink(GRAPH_THUMB_MARGIN);
                     let gap = 3.0 * inv_zoom;
                     let cell_size = egui::vec2((grid_rect.width() - gap) / 2.0, (grid_rect.height() - gap) / 2.0);
                     for (i, member_id) in member_ids.iter().take(4).enumerate() {
@@ -1581,79 +1579,19 @@ impl App {
                             }
                         }
                     }
-                    if show_labels {
-                        if member_count > 4 {
-                            let overflow_pos = grid_rect.right_bottom();
-                            let overflow_text = format!("+{}", member_count - 4);
-                            deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                                overlay_painter.text(
-                                    project(overflow_pos) + egui::vec2(-3.0, -3.0),
-                                    egui::Align2::RIGHT_BOTTOM,
-                                    overflow_text,
-                                    egui::FontId::proportional(12.0),
-                                    egui::Color32::WHITE,
-                                );
-                            }));
-                        }
-                        let title_strip = egui::Rect::from_min_max(
-                            egui::Pos2::new(rect.left(), rect.bottom() - title_strip_h),
-                            rect.right_bottom(),
-                        );
-                        ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
-                        let name_font = egui::FontId::proportional(13.0);
-                        let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                        let name = truncate_to_width(
-                            &mut self.truncate_cache,
-                            ui.ctx(),
-                            &node.name,
-                            &name_font,
-                            name_max_width,
-                        );
-                        let name_pos = title_strip.center();
+                    if member_count > 4 && rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH {
+                        let overflow_pos = grid_rect.right_bottom();
+                        let overflow_text = format!("+{}", member_count - 4);
                         deferred_overlays.push(Box::new(move |overlay_painter, project| {
                             overlay_painter.text(
-                                project(name_pos),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                name_font,
+                                project(overflow_pos) + egui::vec2(-3.0, -3.0),
+                                egui::Align2::RIGHT_BOTTOM,
+                                overflow_text,
+                                egui::FontId::proportional(12.0),
                                 egui::Color32::WHITE,
                             );
                         }));
                     }
-                } else if show_labels {
-                    // Nothing to preview (empty group), or
-                    // previews deliberately hidden by "Collapse
-                    // Groups" -- the original plain centered
-                    // name + tab-count layout, count included
-                    // either way so a collapsed non-empty group
-                    // doesn't read as empty.
-                    let name_font = egui::FontId::proportional(16.0);
-                    let name_max_width = (rect.width() * zoom_scale - 12.0).max(0.0);
-                    let name =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), &node.name, &name_font, name_max_width);
-                    let name_pos = rect.center_top();
-                    let name_color = ui.visuals().text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(name_pos) + egui::vec2(0.0, 14.0),
-                            egui::Align2::CENTER_TOP,
-                            name,
-                            name_font,
-                            name_color,
-                        );
-                    }));
-                    let count_label = format!("{} member{}", member_count, if member_count == 1 { "" } else { "s" });
-                    let count_pos = rect.center_bottom();
-                    let count_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(count_pos) + egui::vec2(0.0, -10.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            count_label,
-                            egui::FontId::proportional(14.0),
-                            count_color,
-                        );
-                    }));
                 }
             }
         }
