@@ -202,7 +202,7 @@ correctness discipline (isolate what could break), not a time-cost one:
 - Touch/pinch (`SendPointerInput` + `PT_TOUCH`) — new capability, no existing
   `InputEvent` variant models it; separate follow-up once the core migration
   lands.
-- **Horizontal scroll on WebView2 (`InputEvent::Scroll`'s `delta_x`).** A real
+- **Horizontal scroll on WebView2: fixed 2026-10-02.** `InputEvent::Scroll` now sends a `KIND_WHEEL` event for `delta_y` and a `KIND_HORIZONTAL_WHEEL` one for `delta_x`, each only when nonzero. No sign flip: the host's deltas come from winit, which passes Windows' `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` through, so positive dx scrolls right. `scripts/hscroll-probe.sh` (a 6000 px `/wide` page) fails without the change and passes with it on WebView2; CEF not run. Original note, kept for the reasoning: **Horizontal scroll on WebView2 (`InputEvent::Scroll`'s `delta_x`).** A real
   regression against the pre-migration behavior, deliberately not fixed here:
   the old JS path called `window.scrollBy(delta_x, delta_y)` and so used both
   axes, while the migrated `SendMouseInput` path sends one

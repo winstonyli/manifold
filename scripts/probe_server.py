@@ -8,7 +8,8 @@ to <log-file>. GET /data.json is a JSON response and GET /pixel.png a small
 valid PNG, each with its real content type, for the page-kind probe. GET
 /tall is a 6000 px page that requests /s?e=load|scroll&y=.. on load and after
 each scroll settles (logged as `<e> y=<y>`); /tall?dirty also fills its
-input, for the sleep probe. Writes
+input, for the sleep probe. GET /wide is 6000 px wide and logs `hscroll y=<scrollX>`
+after each scroll settles, for hscroll-probe.sh. Writes
 the port to <port-file> and exits after <seconds> on its own.
 """
 
@@ -59,6 +60,19 @@ addEventListener('scroll', () => {
 </script>"""
 
 
+# A page wider than any window, for hscroll-probe.sh: it reports its horizontal
+# scroll position (`hscroll y=<scrollX>`) after each scroll settles.
+WIDE = b"""<!doctype html><title>wide</title>
+<div style="width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)"></div>
+<script>
+let t;
+addEventListener('scroll', () => {
+  clearTimeout(t);
+  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);
+});
+</script>"""
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
@@ -76,7 +90,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
-        routes = {"/data.json": ("application/json", JSON), "/pixel.png": ("image/png", PNG), "/tall": ("text/html", TALL)}
+        routes = {"/data.json": ("application/json", JSON), "/pixel.png": ("image/png", PNG), "/tall": ("text/html", TALL), "/wide": ("text/html", WIDE)}
         ctype, body = routes.get(url.path, ("text/html", PAGE))
         self.send_response(200)
         self.send_header("Content-Type", ctype)

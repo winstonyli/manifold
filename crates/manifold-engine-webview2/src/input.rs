@@ -65,11 +65,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
-    COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
-    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
-    COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON,
-    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
+    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
 };
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
 use windows::core::HSTRING;
@@ -205,13 +206,24 @@ pub fn send_input(
                 );
             }
         }
-        InputEvent::Scroll { x, y, delta_y, .. } => unsafe {
-            let _ = comp_controller.SendMouseInput(
-                COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
-                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
-                delta_y as i32 as u32,
-                POINT { x: x as i32, y: y as i32 },
-            );
+        // One wheel event per axis (the composition API takes a single delta). The host's deltas
+        // already follow Windows' wheel convention (winit passes `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
+        // through), so neither is negated; a zero axis sends nothing.
+        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => unsafe {
+            let at = POINT { x: x as i32, y: y as i32 };
+            for (kind, delta) in [
+                (COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, delta_y),
+                (COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, delta_x),
+            ] {
+                if delta as i32 != 0 {
+                    let _ = comp_controller.SendMouseInput(
+                        kind,
+                        COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                        delta as i32 as u32,
+                        at,
+                    );
+                }
+            }
         },
         // See this module's own doc comment for why a CDP-injected key
         // event, unlike a hand-dispatched DOM `KeyboardEvent`, actually
