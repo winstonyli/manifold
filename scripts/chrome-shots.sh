@@ -367,7 +367,7 @@ if has tabview || has hover-tabview || has tab-tabview || has tabview-dropdown |
         echo "$([ "$(npinned)" = "$((pins0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Pin pins the tab"
         send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 76" "SLEEP 2"
         echo "$([ "$(ncards)" = "$((cards0 + 1))" ] && echo PASS || echo FAIL): Tab actions > Duplicate adds a card"
-        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 157" "SLEEP 2"
+        send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1" "CLICK $((${SIZE% *} - 135)) 140" "SLEEP 2"
         echo "$([ "$(ncards)" = "$cards0" ] && echo PASS || echo "FAIL ($(ncards) vs $cards0)"): Tab actions > Close Tab removes the tab"
     fi
     if has tabview-actions; then send "CLICK $((${SIZE% *} - 145)) 16" "SLEEP 1"; shot tabview-actions; send ESCAPE; fi

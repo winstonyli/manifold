@@ -365,21 +365,23 @@ impl App {
         // sized to stop exactly where the trailing cluster's
         // real measured width begins.
         let text_width = (ui.available_rect_before_wrap().width() - trailing_width).max(40.0);
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut self.address_bar.text)
-                .desired_width(text_width)
-                .hint_text("Search or enter address (Ctrl+L)")
-                // Match `style.spacing.button_padding` (set in
-                // `apply_style`) so the address bar renders the
-                // same height as the back/forward buttons next
-                // to it — `TextEdit`'s own default margin
-                // (`Margin::symmetric(4, 2)`) doesn't share that
-                // style value, so left unset the row's tallest
-                // item (the text field) stood out with visibly
-                // more height than its neighbors instead of a
-                // level toolbar.
-                .margin(egui::Margin::symmetric(8, 4)),
-        );
+        let response = toolbar_field(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.address_bar.text)
+                    .desired_width(text_width)
+                    .hint_text("Search or enter address (Ctrl+L)")
+                    // Match `style.spacing.button_padding` (set in
+                    // `apply_style`) so the address bar renders the
+                    // same height as the back/forward buttons next
+                    // to it — `TextEdit`'s own default margin
+                    // (`Margin::symmetric(4, 2)`) doesn't share that
+                    // style value, so left unset the row's tallest
+                    // item (the text field) stood out with visibly
+                    // more height than its neighbors instead of a
+                    // level toolbar.
+                    .margin(egui::Margin::symmetric(8, 4)),
+            )
+        });
         if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
             response.request_focus();
         }

@@ -98,7 +98,7 @@ use winit::window::{Icon, Window, WindowId};
 /// the identity info (favicon/spinner, engine dot) now lives inline with
 /// navigation controls in the same bar, and the separate page-title label
 /// was dropped as redundant with the address bar's URL.
-const CHROME_HEIGHT_POINTS: f32 = 32.0;
+const CHROME_HEIGHT_POINTS: f32 = 38.0;
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
 /// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned — a shorter

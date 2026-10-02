@@ -1055,7 +1055,9 @@ impl App {
         // Not on a JSON level: it filters no cards there, and the
         // outline has the level's own search.
         if !on_json_level {
-            ui.add(egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."));
+            toolbar_field(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.graph_filter).desired_width(120.0).hint_text("Filter..."))
+            });
         }
         // Only shown once there's actually something to clear --
         // same `egui_phosphor::light::X` glyph every other close/
