@@ -1648,7 +1648,7 @@ impl App {
             (true, false) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width),
         };
         if let (true, Some(tex_id)) = (tall, icon_image) {
-            let center = band.left_top() + egui::vec2(18.0, 12.0) * inv_zoom;
+            let center = band.left_top() + egui::vec2(18.0, 20.0) * inv_zoom;
             let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
             ui.painter().image(
                 tex_id,
@@ -1665,7 +1665,7 @@ impl App {
             if tall {
                 if draw_glyph {
                     overlay_painter.text(
-                        base + egui::vec2(10.0, 12.0),
+                        base + egui::vec2(10.0, 20.0),
                         egui::Align2::LEFT_CENTER,
                         glyph,
                         egui::FontId::proportional(14.0),
@@ -1753,7 +1753,7 @@ impl App {
             if header {
                 // Favicon (or the engine dot), title and source line over the card's own fill.
                 let icon_center =
-                    egui::pos2(rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom, rect.top() + 12.0 * inv_zoom);
+                    egui::pos2(rect.left() + (GRAPH_THUMB_MARGIN + 8.0) * inv_zoom, rect.top() + 20.0 * inv_zoom);
                 match favicon {
                     Some(tex_id) => {
                         ui.painter().image(
