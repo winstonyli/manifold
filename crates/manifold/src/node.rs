@@ -558,6 +558,27 @@ impl GraphNode {
     }
 
     /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
+    /// What a screen reader announces for the node's card: its kind, then what identifies it.
+    pub(crate) fn accessible_name(&self) -> String {
+        let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
+        let (kind, detail) = match &self.payload {
+            NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
+            NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
+            NodePayload::Download(d) => ("Download", d.path.rsplit(['/', '\\']).next().map(str::to_string)),
+            NodePayload::Group(g) => ("Group", first_nonempty(&[&g.name])),
+            NodePayload::Note(n) => {
+                ("Note", n.text.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
+            }
+            NodePayload::Image(_) => ("Image", self.source_url().map(str::to_string)),
+            NodePayload::Pdf(_) => ("PDF", self.source_url().map(str::to_string)),
+            NodePayload::Json(_) => ("JSON", self.source_url().map(str::to_string)),
+        };
+        match detail {
+            Some(detail) => format!("{kind}: {detail}"),
+            None => kind.to_string(),
+        }
+    }
+
     pub(crate) fn source_url(&self) -> Option<&str> {
         match &self.payload {
             NodePayload::Image(p) => p.url.as_deref(),
@@ -674,6 +695,24 @@ mod tests {
             })),
             ItemNodeKind::Json
         );
+    }
+
+    /// A card's screen-reader name is its kind, then its title (or the first line of a note).
+    #[test]
+    fn accessible_name_is_kind_then_title() {
+        let mut app = crate::App::default();
+        let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_note_at(n.clone(), None);
+        let name = |app: &crate::App, id: &str| app.nodes[id].accessible_name();
+        assert_eq!(name(&app, &n), "Note");
+        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = "
+  first line
+second"
+            .into();
+        assert_eq!(name(&app, &n), "Note: first line");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        assert_eq!(name(&app, &g), "Group: Reading");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

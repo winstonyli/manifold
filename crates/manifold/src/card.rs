@@ -696,6 +696,12 @@ impl App {
             Some(tooltip) if self.node_menu.is_none() => response.on_hover_text(tooltip),
             _ => response,
         };
+        // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
+        if let Some(node) = self.nodes.get(id) {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), node.accessible_name())
+            });
+        }
         // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
         pass.any_focused |= response.has_focus();
         if response.has_focus() {
