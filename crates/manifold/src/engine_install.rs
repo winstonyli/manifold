@@ -483,13 +483,18 @@ impl crate::App {
         Some((PathBuf::from(configured), verdict))
     }
 
+    /// Forget the cached verdict (and the states built on it) so the next read looks at the disk again.
+    pub(crate) fn invalidate_cef_dir_check(&self) {
+        *self.cef_dir_check.borrow_mut() = None;
+        self.engine_state_cache.borrow_mut().clear();
+    }
+
     /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached
     /// verdict and states so the next read validates it.
     pub(crate) fn set_cef_directory(&mut self, path: &str) {
         let path = path.trim();
         self.settings.cef_directory = (!path.is_empty()).then(|| path.to_string());
-        *self.cef_dir_check.borrow_mut() = None;
-        self.engine_state_cache.borrow_mut().clear();
+        self.invalidate_cef_dir_check();
         self.save_settings();
     }
 

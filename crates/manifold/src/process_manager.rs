@@ -517,11 +517,38 @@ impl From<std::io::Error> for SpawnError {
     }
 }
 
-/// The current `PATH` with `dir` in front.
-fn path_with_first(dir: &Path) -> std::ffi::OsString {
-    let rest = std::env::var_os("PATH").unwrap_or_default();
-    let paths = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&rest));
-    std::env::join_paths(paths).unwrap_or(rest)
+/// Where the host runs from when a custom CEF directory is in use: a copy of the host exe inside it.
+///
+/// Windows resolves the host's implicit `libcef.dll` from the exe's own directory before `PATH`, so the
+/// only way to make the host load the custom runtime is for the host to live there. (A PATH entry would
+/// lose to any `libcef.dll` beside the original host, and a clean machine has no host beside a bring-your-own
+/// runtime at all.)
+fn custom_host_path(custom_dir: &Path, host_exe: &Path) -> PathBuf {
+    custom_dir.join(host_exe.file_name().unwrap_or_default())
+}
+
+/// Makes `custom_host_path` hold the current host exe: copied when missing, replaced when the source's
+/// size or modification time differs, left alone otherwise. Returns the path to launch.
+fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathBuf> {
+    let source = std::fs::metadata(host_exe).map_err(|e| {
+        std::io::Error::new(e.kind(), format!("the CEF host {} was not found: {e}", host_exe.display()))
+    })?;
+    let dest = custom_host_path(custom_dir, host_exe);
+    let same = std::fs::metadata(&dest)
+        .map(|m| m.len() == source.len() && m.modified().ok() == source.modified().ok())
+        .unwrap_or(false);
+    if !same {
+        // `fs::copy` carries no mtime on every platform; set it so the next launch can skip.
+        std::fs::copy(host_exe, &dest).map_err(|e| {
+            std::io::Error::new(e.kind(), format!("could not copy the CEF host into {}: {e}", custom_dir.display()))
+        })?;
+        if let Ok(modified) = source.modified() {
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&dest) {
+                let _ = file.set_modified(modified);
+            }
+        }
+    }
+    Ok(dest)
 }
 
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
@@ -685,8 +712,8 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// parses this process's own argv as its own command line). We do the same
 /// for the other engines too, for one consistent spawn path.
 ///
-/// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check and goes
-/// first on the host's `PATH`, where Windows looks for `libcef.dll` when the host's own directory has none.
+/// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check, and the
+/// host runs from a copy inside it so Windows loads that directory's `libcef.dll` (`ensure_host_copy`).
 pub fn spawn_tab(
     kind: EngineKind,
     tab_id: &str,
@@ -717,6 +744,10 @@ pub fn spawn_tab(
         }
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
+    let host_exe = match custom_cef {
+        Some(dir) => ensure_host_copy(dir, &engine_binary_path(kind))?,
+        None => engine_binary_path(kind),
+    };
 
     // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
     // don't share cookies or logins and keep none across a restart (see
@@ -726,7 +757,7 @@ pub fn spawn_tab(
         cef_cache_root().join(format!("{}-{n}", std::process::id()))
     });
 
-    let mut command = Command::new(engine_binary_path(kind));
+    let mut command = Command::new(host_exe);
     command
         .env("ENGINE_TAB_ID", tab_id)
         .env("ENGINE_SOCKET_ID", &socket_id)
@@ -735,9 +766,6 @@ pub fn spawn_tab(
         .stderr(stderr_file);
     if let Some(dir) = &cache_dir {
         command.env("ENGINE_CACHE_DIR", dir);
-    }
-    if let Some(dir) = custom_cef {
-        command.env("PATH", path_with_first(dir));
     }
     let mut child = command.spawn()?;
     assign_to_engine_job(&child);
@@ -922,9 +950,29 @@ mod tests {
     }
 
     #[test]
-    fn path_with_first_puts_the_directory_in_front() {
-        let paths: Vec<_> = std::env::split_paths(&path_with_first(Path::new("D:/cef"))).collect();
-        assert_eq!(paths[0], Path::new("D:/cef"));
+    fn the_host_copy_is_made_when_missing_skipped_when_unchanged_and_replaced_when_the_source_changes() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_src");
+        let custom = temp_dir("host_custom");
+        let host = src_dir.join("manifold-engine-cef.exe");
+        std::fs::write(&host, b"v1").unwrap();
+
+        let dest = ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(dest, custom_host_path(&custom, &host));
+        assert_eq!(dest.parent().unwrap(), custom);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"v1", "copied when missing");
+
+        // Unchanged: a marker written into the copy survives only if it was not recopied.
+        let stamp = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().modified().unwrap(), stamp);
+
+        std::fs::write(&host, b"version 2").unwrap();
+        ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"version 2", "replaced when the source changed");
+
+        let err = ensure_host_copy(&custom, &src_dir.join("nope.exe")).unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
     }
 
     #[test]

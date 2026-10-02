@@ -296,7 +296,12 @@ impl App {
             let response =
                 ui.add(egui::TextEdit::singleline(draft).desired_width(220.0).hint_text("Folder with libcef.dll"));
             if response.lost_focus() {
-                commit = Some(draft.clone());
+                // Escape gives up the edit instead of committing it.
+                commit = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    configured.clone()
+                } else {
+                    draft.clone()
+                });
             }
             if ui.button("Browse").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -310,6 +315,9 @@ impl App {
         if let Some(text) = commit {
             if text.trim() != configured {
                 self.set_cef_directory(&text);
+            } else {
+                // Same folder (Browse again, or Enter): its contents may have been fixed on disk.
+                self.invalidate_cef_dir_check();
             }
             self.cef_dir_draft = None;
         }
@@ -553,6 +561,7 @@ impl App {
     /// the return view with `Settings` itself).
     pub(crate) fn open_settings_page(&mut self) {
         if self.view_mode != ViewMode::Settings {
+            self.invalidate_cef_dir_check();
             self.settings_return_view = self.view_mode;
             self.view_mode = ViewMode::Settings;
         }
