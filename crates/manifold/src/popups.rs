@@ -1192,3 +1192,55 @@ mod tests {
         assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
     }
 }
+
+#[cfg(test)]
+mod engine_picker_tests {
+    use super::*;
+
+    fn escape() -> egui::Event {
+        let key = egui::Key::Escape;
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.build_ui(ui));
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+    }
+
+    /// Escape closes an open engine picker and nothing else (the settings page stays), and focus goes back to
+    /// the button that opened it; the next Escape leaves the page.
+    #[test]
+    fn escape_closes_the_picker_then_the_page_and_refocuses_the_button() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        app.open_popup = Some(AnchoredPopup::DefaultEngine);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        assert_eq!(app.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker should stay open");
+        frame(&mut app, &ctx, vec![escape()]);
+        assert_eq!(app.open_popup, None, "Escape should close the picker");
+        assert_eq!(app.view_mode, ViewMode::Settings, "the same Escape must not leave the settings page");
+        let opener = ctx.data(|d| d.get_temp::<egui::Id>(App::engine_opener_key(AnchoredPopup::DefaultEngine)));
+        frame(&mut app, &ctx, vec![]);
+        assert!(opener.is_some_and(|id| ctx.memory(|m| m.has_focus(id))), "focus should return to the opening button");
+        frame(&mut app, &ctx, vec![escape()]);
+        assert_ne!(app.view_mode, ViewMode::Settings, "a second Escape should leave the page");
+    }
+}
