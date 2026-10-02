@@ -603,6 +603,14 @@ pub(crate) enum WebBody {
 enum UserEvent {
     Debug(DebugCommand),
     TabSpawned(Box<TabSpawnOutcome>),
+    /// A screen reader connected, acted on a node, or left (`egui_winit::accesskit_winit`).
+    Accessibility(egui_winit::accesskit_winit::Event),
+}
+
+impl From<egui_winit::accesskit_winit::Event> for UserEvent {
+    fn from(event: egui_winit::accesskit_winit::Event) -> Self {
+        UserEvent::Accessibility(event)
+    }
 }
 
 /// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses

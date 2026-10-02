@@ -11,7 +11,7 @@ egui = "0.36.2"
 # less-heavy typography this app's chrome now uses.
 egui-phosphor = { version = "0.14.0", default-features = false, features = ["light"] }
 egui-wgpu = "0.36.2"
-egui-winit = "0.36.2"
+egui-winit = { version = "0.36.2", features = ["accesskit"] }
 # Notes rendered as real Markdown -- `default-features = false` drops this
 # crate's own `load-images` (default-on): a note's body is user-typed text,
 # and rendering an `![alt](url)` inside it would otherwise fire a real,

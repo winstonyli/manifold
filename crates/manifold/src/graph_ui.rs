@@ -1889,4 +1889,31 @@ mod tests {
         frame(&mut app, vec![tab(egui::Modifiers::NONE)]);
         assert!(!ctx.memory(|m| m.has_focus(card(0)) || m.has_focus(card(1))), "no wrap past the end");
     }
+
+    /// With accesskit on, a card's `widget_info` puts a Button named by `Node::accessible_name`
+    /// in the tree egui hands the platform.
+    #[test]
+    fn card_widget_info_reaches_the_accesskit_tree() {
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 200.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(50.0, 50.0));
+            let response = ui.interact(rect, egui::Id::new(("graph_card", g.as_str())), egui::Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.nodes[&g].accessible_name())
+            });
+        });
+        output.textures_delta.clear();
+        let update = output.platform_output.accesskit_update.expect("accesskit update");
+        let named = update.nodes.iter().find(|(_, n)| n.label() == Some("Group: Reading"));
+        assert_eq!(named.map(|(_, n)| n.role()), Some(egui::accesskit::Role::Button));
+    }
 }

@@ -48,17 +48,28 @@ impl ApplicationHandler<UserEvent> for App {
                 attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
             }
         }
-        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
+        // The accesskit adapter must exist before the window is shown, so the real window is
+        // created hidden and shown once it is wired up (the headless one stays as it is: no
+        // screen reader there).
+        let real_window = !self.headless;
+        let window = Arc::new(event_loop.create_window(attrs.with_visible(!real_window)).expect("create window"));
         apply_dark_titlebar(&window);
         self.gpu = Some(GpuState::new(window.clone()));
-        self.egui_state = Some(egui_winit::State::new(
+        let mut egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
             window.as_ref(),
             Some(window.scale_factor() as f32),
             None,
             None,
-        ));
+        );
+        if real_window {
+            if let Some(proxy) = self.event_proxy.clone() {
+                egui_state.init_accesskit(event_loop, window.as_ref(), proxy);
+            }
+            window.set_visible(true);
+        }
+        self.egui_state = Some(egui_state);
         self.window = Some(window);
         self.open_store();
         if !self.restore_session() {
@@ -126,6 +137,22 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         self.mark_active();
         match event {
+            UserEvent::Accessibility(event) => {
+                use egui_winit::accesskit_winit::WindowEvent as A11y;
+                match event.window_event {
+                    A11y::InitialTreeRequested => {
+                        self.egui_ctx.enable_accesskit();
+                        self.egui_ctx.request_repaint();
+                    }
+                    A11y::ActionRequested(request) => {
+                        if let Some(state) = self.egui_state.as_mut() {
+                            state.on_accesskit_action_request(request);
+                        }
+                        self.egui_ctx.request_repaint();
+                    }
+                    A11y::AccessibilityDeactivated => self.egui_ctx.disable_accesskit(),
+                }
+            }
             UserEvent::Debug(cmd) => {
                 // egui hit-tests pointer input against the widgets of the
                 // last frame, which may predate whatever changed since the
