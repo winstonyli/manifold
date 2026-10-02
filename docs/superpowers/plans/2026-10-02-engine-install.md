@@ -6,7 +6,7 @@
 
 **Architecture:** A new `engine_install` module holds the pure parts: the pin, the availability state function, a resumable download, SHA verification and a safe unpack. The app runs an install job on a worker thread and reports progress through the existing event path. `engine_binary_path` consults the install marker. The UI reads one `engine_availability` function.
 
-**Tech Stack:** Rust, egui 0.36, `ureq` 3 (already a dependency), `sha2`, `bzip2`, `tar` (resolved in `Cargo.lock` via the cef build dependency, to be added to `crates/manifold/Cargo.toml`).
+**Tech Stack:** Rust, egui 0.36, `ureq` 3 (already a dependency), `sha2` 0.10/0.11, `sha1` 0.10/0.11, `bzip2` 0.6.1 (default feature: pure-Rust `libbz2-rs-sys`, no C toolchain; never enable `bzip2-sys`), `tar` 0.4.46. All are already in `Cargo.lock` (via the cef build dependency); add them to `crates/manifold/Cargo.toml` at those versions. Surveyed 2026-10-02 and rejected: reusing `download-cef` (always pulls clap/indicatif/regex, no Range resume, no cancel or progress callback, no SHA-256, moves unwanted directories) and shelling out to `tar.exe` (no progress or path control).
 
 **Spec:** `docs/superpowers/specs/2026-10-02-engine-install-design.md`
 
@@ -81,7 +81,7 @@ mod tests {
 
 ### Task 2: Resumable download with hash verification
 
-**Files:** Modify `crates/manifold/src/engine_install.rs`, `crates/manifold/Cargo.toml` (`sha2`, `sha1`/or compute SHA-1 via `sha1` crate; check which is already resolved in `Cargo.lock` first).
+**Files:** Modify `crates/manifold/src/engine_install.rs`, `crates/manifold/Cargo.toml` (`sha2`, `sha1`, versions as in the Tech Stack line).
 
 **Interfaces:**
 - Produces: `pub(crate) fn download(url: &str, part: &Path, total: u64, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), InstallError>` (resumes from `part`'s length with `Range: bytes=N-`; if the server answers 200 instead of 206, restarts from 0); `pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError>`; `pub(crate) enum InstallError { Network(String), Cancelled, BadHash { want: String, got: String }, Unpack(String), Io(String) }` with `Display`.
@@ -99,7 +99,7 @@ mod tests {
 
 ### Task 3: Safe unpack and `install`
 
-**Files:** Modify `engine_install.rs`, `Cargo.toml` (`bzip2`, `tar`; confirm `bzip2` in `Cargo.lock` is the pure-Rust or the C-binding crate and note it in the commit message).
+**Files:** Modify `engine_install.rs`, `Cargo.toml` (`bzip2` with default features, `tar`; versions as in the Tech Stack line).
 
 **Interfaces:**
 - Produces: `pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin) -> Result<(), InstallError>` (extract only entries under `<top>/Release/` and `<top>/Resources/`, flattening both into `into`, skipping `libcef.lib`, `*.lib`, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`, `debug.log`; reject any entry whose path escapes `into` — `..`, absolute paths, symlinks; write `MARKER` last); `pub(crate) fn install(pin: &Pin, data_dir: &Path, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<PathBuf, InstallError>` (download to `data_dir/cef-runtime.part` → verify → unpack into `data_dir/cef-runtime.tmp` → remove an old `cef-runtime` → rename → delete `.part`; on a hash or unpack failure delete `.tmp` and the `.part`, on a network failure keep `.part`).
@@ -169,4 +169,4 @@ mod tests {
 
 - Spec coverage: pin (T1, T4), states and UI (T5, T7), install flow incl. resume/verify/atomic (T2, T3, T6), lookup (T5), management/Remove (T7), BYO (T8), testing against a local server (T2, T3, T6), shots (T9). Open questions are addressed in T9 step 1.
 - Type names used across tasks: `Pin`, `EngineState`, `RuntimeOnDisk`, `MARKER`, `InstallError`, `InstallJob`, `engine_availability`, `runtime_state`, `CEF_PIN`: consistent.
-- Risks: the CEF archive top-level directory name must be taken from the pin version, not hard-coded; `bzip2`'s C binding may need a build tool on Windows (check in T3; a pure-Rust crate is the fallback); SHA-1 crate availability (check `Cargo.lock`).
+- Risks: the CEF archive top-level directory name must be taken from the pin version, not hard-coded. Decode speed of the pure-Rust bz2 is unmeasured: in Task 9 step 1 time one decode of the real archive (ask before downloading it); only if it exceeds about a minute consider the `bzip2-sys` C binding.
