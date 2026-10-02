@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// A Tab actions row: label, the key shown at its edge, and what it does.
+type TabActionRow = (&'static str, &'static str, fn(&mut App));
+
 /// Every dropdown/popup (bookmarks, history, downloads, tab actions, tab
 /// context menu, group context menu, recently-closed) closes itself on a
 /// click landing outside both its own area and, where one exists, the
@@ -685,6 +688,9 @@ impl App {
         let mut mute_others = false;
         let mut close_others = false;
         let mut toggle_pin_all = false;
+        // The focused tab's own actions, each with its shortcut shown at the row's edge.
+        let mut tab_action: Option<fn(&mut App)> = None;
+        let focused_pinned = self.nodes.get(focused_id).is_some_and(|n| n.payload.pinned());
         let tab_pin_states: Vec<bool> =
             self.nodes.values().filter(|n| n.payload.saved_tab().is_some()).map(|n| n.payload.pinned()).collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
@@ -697,6 +703,19 @@ impl App {
                 popup_frame(ui).show(ui, |ui| {
                     menu_item_style(ui);
                     ui.set_min_width(140.0);
+                    let rows: [TabActionRow; 4] = [
+                        (if focused_pinned { "Unpin" } else { "Pin" }, "Ctrl+P", App::pin_focused_tab_shortcut),
+                        ("Duplicate", "Ctrl+D", App::duplicate_focused_tab_shortcut),
+                        ("Find in Page", "Ctrl+F", App::open_find_bar_shortcut),
+                        ("Developer Tools", "F12", App::open_devtools_shortcut),
+                    ];
+                    for (label, keys, action) in rows {
+                        if ui.add(egui::Button::new(label).shortcut_text(keys)).clicked() {
+                            tab_action = Some(action);
+                            close = true;
+                        }
+                    }
+                    ui.separator();
                     if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
                         mute_others = true;
                         close = true;
@@ -716,6 +735,9 @@ impl App {
 
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect));
 
+        if let Some(action) = tab_action {
+            action(self);
+        }
         if mute_others {
             self.mute_all_except(focused_id);
         }
