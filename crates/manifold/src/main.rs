@@ -1190,6 +1190,9 @@ struct App {
     engine_failures: HashMap<EngineKind, String>,
     /// An engine download or removal waiting for its confirm dialog (`build_engine_confirm_popup`).
     pending_engine_confirm: Option<EngineConfirm>,
+    /// `engine_state` per engine for the current frame: it stats the disk, and cards, pickers, menus
+    /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
+    engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1416,6 +1419,7 @@ impl Default for App {
             engine_installs: HashMap::new(),
             engine_failures: HashMap::new(),
             pending_engine_confirm: None,
+            engine_state_cache: Default::default(),
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
@@ -2397,6 +2401,7 @@ impl App {
     /// One frame of UI. An open anchored popup takes Escape (the views skip theirs while one is
     /// open, `popup_open`), and when it closes from the keyboard focus goes back to its opening button.
     fn build_ui(&mut self, ui: &mut egui::Ui) {
+        self.engine_state_cache.borrow_mut().clear();
         let open_at_start = self.open_popup;
         let escape = open_at_start.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape));
         self.build_ui_inner(ui);

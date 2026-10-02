@@ -50,7 +50,8 @@ impl App {
     pub(crate) fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut req = SettingsRequests::default();
 
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.popup_open() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.popup_open() && self.pending_engine_confirm.is_none()
+        {
             self.close_settings_page();
         }
 

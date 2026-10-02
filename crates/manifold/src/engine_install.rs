@@ -414,8 +414,15 @@ pub(crate) struct InstallJob {
 impl crate::App {
     /// How `kind` is available now: the disk, then this app's running install (a cancelled one doesn't
     /// count) and its last failure.
+    ///
+    /// Cached for the frame (`engine_state_cache`): the disk is read once per engine per frame.
     pub(crate) fn engine_state(&self, kind: EngineKind) -> EngineState {
-        self.engine_state_at(kind, crate::process_manager::cef_on_disk())
+        if let Some(state) = self.engine_state_cache.borrow().get(&kind) {
+            return state.clone();
+        }
+        let state = self.engine_state_at(kind, crate::process_manager::cef_on_disk());
+        self.engine_state_cache.borrow_mut().insert(kind, state.clone());
+        state
     }
 
     /// `engine_state` with the runtime's on-disk state given (tests use a temporary directory).
@@ -464,6 +471,7 @@ impl crate::App {
             return false;
         }
         self.engine_failures.remove(&kind);
+        self.engine_state_cache.borrow_mut().clear();
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (thread_progress, thread_cancel) = (progress.clone(), cancel.clone());
@@ -496,6 +504,7 @@ impl crate::App {
             job.cancel.store(true, Ordering::Relaxed);
             job.cancelled = true;
         }
+        self.engine_state_cache.borrow_mut().clear();
         self.egui_ctx.request_repaint();
     }
 
@@ -507,6 +516,9 @@ impl crate::App {
         }
         let finished: Vec<EngineKind> =
             self.engine_installs.iter().filter(|(_, job)| job.handle.is_finished()).map(|(kind, _)| *kind).collect();
+        if !finished.is_empty() {
+            self.engine_state_cache.borrow_mut().clear();
+        }
         for kind in finished {
             let Some(job) = self.engine_installs.remove(&kind) else { continue };
             let result =
@@ -540,6 +552,19 @@ mod tests {
     use std::net::TcpListener;
 
     const PIN: Pin = Pin { version: "1.0", url: "http://x/a", size: 10, sha1: "aa", sha256: "bb" };
+
+    #[test]
+    fn engine_state_is_reused_within_a_frame_and_refreshed_when_an_install_changes() {
+        let mut app = App::default();
+        let kind = EngineKind::Cef;
+        app.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
+        assert_eq!(app.engine_state(kind), EngineState::Failed("cached".into()), "reused");
+        app.cancel_engine_install(kind);
+        assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()), "refreshed");
+        app.engine_state_cache.borrow_mut().insert(kind, EngineState::Failed("cached".into()));
+        app.engine_state_cache.borrow_mut().clear(); // what each new frame does
+        assert_ne!(app.engine_state(kind), EngineState::Failed("cached".into()));
+    }
 
     #[test]
     fn remove_deletes_only_the_runtime_and_only_when_idle() {
