@@ -16,6 +16,26 @@ pub(crate) fn tab_has_header(rect: egui::Rect, inv_zoom: f32) -> bool {
     rect.height() / inv_zoom >= TAB_HEADER_MIN_CARD_POINTS
 }
 
+/// The part of a `src`-sized texture (as a uv rect) that fills a `dst`-shaped rect without
+/// stretching: the full width or height, cropped on the other axis around the top-center, so a
+/// page's header stays in view.
+pub(crate) fn cover_uv(src: (u32, u32), dst: egui::Vec2) -> egui::Rect {
+    let full = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+    if src.0 == 0 || src.1 == 0 || dst.x <= 0.0 || dst.y <= 0.0 {
+        return full;
+    }
+    let src_aspect = src.0 as f32 / src.1 as f32;
+    let dst_aspect = dst.x / dst.y;
+    if src_aspect > dst_aspect {
+        // Source is wider: crop the sides, centered.
+        let w = dst_aspect / src_aspect;
+        egui::Rect::from_min_max(egui::pos2((1.0 - w) / 2.0, 0.0), egui::pos2((1.0 + w) / 2.0, 1.0))
+    } else {
+        // Source is taller: crop the bottom.
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, src_aspect / dst_aspect))
+    }
+}
+
 /// Where a Tab card's thumbnail lands: the card inset by `GRAPH_THUMB_MARGIN`, minus the header
 /// when `tab_has_header`. World units: the margin scales with the card, the header does not.
 pub(crate) fn tab_thumb_rect(rect: egui::Rect, inv_zoom: f32) -> egui::Rect {
@@ -1675,12 +1695,14 @@ impl App {
             let thumb_rect = tab_thumb_rect(rect, inv_zoom);
             let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));
             if let Some(tex_id) = thumb_id {
-                ui.painter().image(
-                    tex_id,
-                    thumb_rect,
-                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                let uv = self
+                    .gpu
+                    .as_ref()
+                    .and_then(|g| g.thumbnail_size(id))
+                    .map_or(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), |size| {
+                        cover_uv(size, thumb_rect.size())
+                    });
+                ui.painter().image(tex_id, thumb_rect, uv, egui::Color32::WHITE);
             } else {
                 ui.put(
                     egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(24.0, 24.0) * inv_zoom),
@@ -1834,6 +1856,21 @@ mod tests {
         let focused = CardView { color: Some(red), focused: true, ..test_view(ItemNodeKind::Tab) };
         assert_eq!(card_border(&focused, &style, 0.0), (2.5, ACCENT));
         assert_eq!(card_border(&focused, &style, 1.0), (2.5, ACCENT));
+    }
+
+    #[test]
+    fn cover_uv_crops_the_longer_axis_and_never_stretches() {
+        let uv = |src, w, h| cover_uv(src, egui::vec2(w, h));
+        // Same shape: the whole texture.
+        assert_eq!(uv((256, 192), 128.0, 96.0), egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)));
+        // Wider source: sides cropped evenly.
+        let wide = uv((200, 100), 100.0, 100.0);
+        assert_eq!((wide.min.x, wide.max.x, wide.min.y, wide.max.y), (0.25, 0.75, 0.0, 1.0));
+        // Taller source: bottom cropped, top kept.
+        let tall = uv((100, 200), 100.0, 100.0);
+        assert_eq!((tall.min.y, tall.max.y, tall.min.x, tall.max.x), (0.0, 0.5, 0.0, 1.0));
+        // A degenerate size falls back to the whole texture.
+        assert_eq!(uv((0, 0), 10.0, 10.0).max, egui::pos2(1.0, 1.0));
     }
 
     #[test]

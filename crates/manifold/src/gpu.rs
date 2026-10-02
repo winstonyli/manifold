@@ -688,6 +688,11 @@ impl GpuState {
         self.thumbnails.get(tab_id).map(|t| t.egui_id)
     }
 
+    /// A tab's thumbnail size in pixels, for cropping it to a card (see `cover_uv`).
+    pub fn thumbnail_size(&self, tab_id: &str) -> Option<(u32, u32)> {
+        self.thumbnails.get(tab_id).map(|t| (t.width, t.height))
+    }
+
     /// Must be called when a tab closes — `egui_wgpu::Renderer` doesn't
     /// know about manually-registered native textures on its own, so
     /// unlike egui's own font/image-loader textures (freed automatically
