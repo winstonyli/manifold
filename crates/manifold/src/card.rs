@@ -656,7 +656,11 @@ impl App {
         // drag tracking is what keeps a drag alive frame to
         // frame, so skipping it mid-drag would freeze the node
         // in place the instant it crossed the visible edge.
-        if self.dragging.as_deref() != Some(id) && !rect.intersects(self.camera.rect) {
+        // The Tab entry (first card) and the card holding keyboard focus stay registered too, so
+        // Tab can reach them and focus survives a pan that hasn't brought them into view yet.
+        let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
+            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))));
+        if self.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
             return None;
         }
         let view = self.card_view(id)?;
