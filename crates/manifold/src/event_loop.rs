@@ -1231,13 +1231,7 @@ impl App {
                 }
             }
             DebugCommand::SetJar(name) => {
-                if let Some(tab) = self.focused.clone() {
-                    let jar = if name.eq_ignore_ascii_case("default") {
-                        None
-                    } else {
-                        Some(self.jar_named(&name).unwrap_or_else(|| self.create_jar(&name)))
-                    };
-                    self.set_tab_jar(&tab, jar);
+                if self.set_focused_tab_jar_named(&name) {
                     self.save_session();
                 }
             }

@@ -165,6 +165,20 @@ impl App {
         self.jar_defs.iter().find(|(_, d)| d.name == name).map(|(id, _)| *id)
     }
 
+    /// `SETJAR`: the focused tab picks the jar named `name` ("default", any case, for the default jar), made first if
+    /// none has that name. Nothing happens, and no jar is made, when the focused node is not a tab. Returns whether
+    /// it acted.
+    pub(crate) fn set_focused_tab_jar_named(&mut self, name: &str) -> bool {
+        let Some(tab) = self.focused.clone().filter(|t| self.tab_jar(t).is_some()) else { return false };
+        let jar = if name.eq_ignore_ascii_case("default") {
+            None
+        } else {
+            Some(self.jar_named(name).unwrap_or_else(|| self.create_jar(name)))
+        };
+        self.set_tab_jar(&tab, jar);
+        true
+    }
+
     pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
         let name = name.trim();
         if let (false, Some(def)) = (name.is_empty(), self.jar_defs.get_mut(&id)) {
@@ -666,6 +680,28 @@ mod tests {
         assert!(chip.missing);
         assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
         assert!(app.jar_chip("nobody").is_none());
+    }
+
+    /// `SETJAR` (Task 8 review): makes a jar only for a focused tab, reuses one by name, and "default" picks Default.
+    #[test]
+    fn setjar_acts_only_on_a_focused_tab() {
+        let mut app = App::default();
+        let g = group_in(&mut app, None);
+        app.focused = Some(g);
+        assert!(!app.set_focused_tab_jar_named("Stray"));
+        assert!(app.jar_defs.is_empty(), "a focused group makes no jar");
+        app.focused = None;
+        assert!(!app.set_focused_tab_jar_named("Stray"));
+        assert!(app.jar_defs.is_empty());
+        let t = tab_in(&mut app, None);
+        app.focused = Some(t.clone());
+        assert!(app.set_focused_tab_jar_named("Work"));
+        let work = app.jar_named("Work").expect("made for the tab");
+        assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: true });
+        assert!(app.set_focused_tab_jar_named("Work"));
+        assert_eq!(app.jar_defs.len(), 1, "an existing name is reused");
+        assert!(app.set_focused_tab_jar_named("DEFAULT"));
+        assert_eq!(jar_of(&app, &t).jar, None);
     }
 
     #[test]

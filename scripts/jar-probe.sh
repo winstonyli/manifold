@@ -13,10 +13,10 @@
 # as two probe users, and each login must land in its own jar's file with the default jar untouched; `jarswitch`
 # restarts on that profile, moves Alice's tab to Bob with SETJAR and SWITCHJARNOW, and its next request must be Bob's.
 # Uses a throwaway APPDATA (never the real profile) and prints counts, flags, the test server's domain and probe
-# usernames only, no cookie values. Build first (`cargo build`); this runs the existing target/debug exes, each at
-# below-normal priority.
+# usernames only, no cookie values. Build first (`cargo build`); this runs the existing target/debug exes, the app at
+# below-normal priority (see `start`).
 # Usage: scripts/jar-probe.sh   (JAR_PROBE_HOST=127.0.0.1 to use an IP host instead; RUNS="perjar jarswitch" runs
-# only the named runs; jarswitch needs perjar's profile, so it is skipped without it)
+# only the named runs; jarswitch needs perjar's profile, so RUNS=jarswitch alone fails)
 set -u
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sp="$repo/scripts"
@@ -44,7 +44,8 @@ seed() {
 }
 
 # start <name> [debug commands...]: one headless app run on the profile's session as it stands; the commands run in
-# order, then QUIT. The app runs at below-normal priority, set before its hosts spawn so they inherit it.
+# order, then QUIT. The app is set to below-normal priority right after launch; hosts spawned after that inherit it,
+# but one spawned during the PowerShell round trip (a restored tab, say) may start at normal priority.
 start() {
   local name="$1"
   shift
@@ -266,11 +267,29 @@ if [ "$perjar_ok" = 1 ]; then
   echo "--- run jarswitch (Alice's tab moves to jar Bob)"
   start jarswitch WAITTABS QUICKSWITCHOPEN "QUICKSWITCHTEXT u=alice" QUICKSWITCHENTER WAITTABS "SLEEP 3" \
     "ADDRESSBAR $base/whoami?switch" "SLEEP 1" ENTER "SLEEP 3" "SETJAR Bob" SWITCHJARNOW WAITTABS "SLEEP 8" \
-    "ADDRESSBAR $base/whoami?switch2" "SLEEP 1" ENTER "SLEEP 3"
+    "ADDRESSBAR $base/whoami?switch2" "SLEEP 1" ENTER "SLEEP 3" "EXPORTSESSION $(cygpath -w "$out/s2.json")"
   sw_log="$(tail -n +"$((n0 + 1))" "$out/req.log")"
   echo "=== jarswitch requests (engine path auth user)"; awk '{print "    " $2, $3, $4, $5}' <<<"$sw_log"
   u1="$(awk '$3 == "/whoami?switch" {print $5; exit}' <<<"$sw_log")"
   u2="$(awk '$3 == "/whoami?switch2" {print $5; exit}' <<<"$sw_log")"
+  # The switched host reloads /whoami?switch, now as Bob: the tab that asked it as Alice is the one that switched.
+  reload="$(awk '$3 == "/whoami?switch" {print $5}' <<<"$sw_log" | sed -n 2p)"
+  # And the session agrees: Alice's tab (the one not on /login?u=bob) now names jar Bob; Bob's tab still does too.
+  cat >"$out/jarswitch.py" <<'PY'
+import json, sys
+nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
+ids = {n.get("name"): n["id"] for n in nodes if n["kind"] == "jar"}
+name = {v: k for k, v in ids.items()}
+tabs = [n for n in nodes if n["kind"] == "tab"]
+alice = [n for n in tabs if "u=bob" not in n.get("url", "")]
+bob = [n for n in tabs if "u=bob" in n.get("url", "")]
+print(f"alice-tab jar={','.join(name.get(n.get('jar'), 'Default') for n in alice) or 'no-tab'}"
+      f" bob-tab jar={','.join(name.get(n.get('jar'), 'Default') for n in bob) or 'no-tab'}")
+PY
+  jars="$(python -P "$(cygpath -w "$out/jarswitch.py")" "$(cygpath -w "$out/s2.json")" </dev/null 2>&1)"
+  echo "jarswitch: reload after the switch: ${reload:-no request}; session: $jars"
+  [ "$reload" = "user=bob" ] || { echo "FAIL: the switched tab's reload was not Bob's"; fail=1; }
+  [ "$jars" = "alice-tab jar=Bob bob-tab jar=Bob" ] || { echo "FAIL: Alice's tab does not name jar Bob in the session"; fail=1; }
   if [ "$u1" = "user=alice" ] && [ "$u2" = "user=bob" ]; then
     echo "jarswitch: whoami alice -> bob PASS"
   else
