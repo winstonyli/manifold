@@ -87,9 +87,18 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     /// A clean exit (a window close, or headless `QUIT`): the store's last
-    /// save and close.
+    /// save and close, then everything tied to the window, while the event
+    /// loop still exists. `run_app` drops the event loop (on Wayland, its
+    /// display connection) before `main` drops `App`, and egui-winit's
+    /// clipboard worker releases its Wayland objects on that connection when
+    /// dropped: dropped after it, it crashed with SIGSEGV on every quit under
+    /// WSLg. Children before the window: egui's state and the surface hold
+    /// handles to it.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.close_store();
+        self.egui_state = None;
+        self.gpu = None;
+        self.window = None;
     }
 
     /// A minimized window shows nothing, so instead of redrawing every
