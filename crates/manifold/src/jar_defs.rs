@@ -369,7 +369,8 @@ impl App {
             .collect()
     }
 
-    /// How many tabs `set_group_default_jar(group, jar)` would change, for the confirmation it asks first.
+    /// How many tabs `set_group_default_jar(group, jar)` would change, shown on the group menu's entry for `jar`
+    /// (spec "UI": no confirm dialog).
     pub(crate) fn cascade_count(&self, group: &str, jar: NodeId) -> usize {
         self.cascade_targets(group, jar).len()
     }
