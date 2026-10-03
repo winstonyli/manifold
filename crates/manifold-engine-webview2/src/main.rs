@@ -632,8 +632,9 @@ fn set_cookies(webview: &ICoreWebView2, cookies: &[serde_json::Value]) -> bool {
 /// interfaces -- confirmed live this session, not assumed); `webview`
 /// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
 ///
-/// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies) in a profile named
-/// for this host's pid, so no two tabs share a cookie store. If the runtime
+/// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies) in the profile
+/// manifold names in `ENGINE_WEBVIEW2_PROFILE`, one no other live host uses, so no two tabs share a cookie store
+/// (`manifold_<pid>` if it is unset). If the runtime
 /// lacks `ICoreWebView2Environment10` or the options fail, it falls back to the shared profile and `in_private`
 /// is `false`; callers must then neither seed nor report cookies.
 fn create_composition_controller(
@@ -645,10 +646,13 @@ fn create_composition_controller(
         let options = env10.CreateCoreWebView2ControllerOptions()?;
         options.SetIsInPrivateModeEnabled(true)?;
         // Hosts share one browser process (one user-data folder), and InPrivate controllers of one profile share one
-        // in-memory cookie store. A profile per host gives each tab its own store, as a CEF tab has. The profile
-        // still leaves a directory (caches, empty databases); manifold deletes it (`process_manager`, which builds
-        // the same name).
-        options.SetProfileName(&HSTRING::from(format!("manifold_{}", std::process::id())))?;
+        // in-memory cookie store. A profile per live host gives each tab its own store, as a CEF tab has. Manifold
+        // reuses names from a small pool (WebView2 remembers every profile name in `Local State`) and deletes the
+        // directory a profile leaves (`process_manager::claim_webview2_slot`).
+        let name =
+            std::env::var("ENGINE_WEBVIEW2_PROFILE").unwrap_or_else(|_| format!("manifold_{}", std::process::id()));
+        options.SetProfileName(&HSTRING::from(name.as_str()))?;
+        eprintln!("jar: InPrivate profile {name}");
         Ok((env10, options))
     });
     let private_options = match private_options {
