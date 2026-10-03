@@ -65,9 +65,8 @@ if [ "${1:-}" = "--check" ]; then check; fi
 if [ -n "$(git status --porcelain)" ]; then echo "package.sh: the working tree is dirty; commit first" >&2; exit 1; fi
 if [ -z "${SKIP_BUILD:-}" ]; then
     # depot_tools' extensionless `ninja` shadows the real ninja.exe and breaks CEF's build (README, "Building").
-    PATH="$(echo "$PATH" | tr ':' '
-' | grep -v -F depot_tools | tr '
-' ':')" \n    cargo build --release -j 12 -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
+    PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -F depot_tools | tr '\n' ':')" \
+        cargo build --release -j 12 -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
 fi
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
