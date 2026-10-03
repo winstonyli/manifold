@@ -87,7 +87,7 @@ winit = "0.30.13"
 [target.'cfg(windows)'.dependencies]
 # Only for `SetProcessDpiAwarenessContext` at startup -- see `main()`'s own
 # doc comment on it.
-windows = { version = "0.62", features = ["Win32_UI_HiDpi"] }
+windows = { version = "0.62", features = ["Win32_UI_HiDpi", "Win32_Security_Cryptography"] }
 # Forces the native titlebar dark regardless of the OS theme setting (see
 # `apply_dark_titlebar`'s own doc comment in theme.rs), plus the uses below.
 windows-sys = { version = "0.59", features = [

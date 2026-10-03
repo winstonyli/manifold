@@ -61,6 +61,8 @@ with the OS store (DPAPI on Windows; the platform keyring elsewhere). Never log 
 ones; the host must filter and the debug commands must not exist outside debug builds). A jar can be exported only by an
 explicit user action.
 
+Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, no entropy); a plaintext legacy file still loads and is rewritten protected on the next save. A file that cannot be read is renamed to `default.json.unreadable` at load, so a later save cannot overwrite it. Follow-up, not built: on Linux and macOS the file is still plain JSON behind the `MJR1` header; platform keyring protection is future work.
+
 ## Decided
 
 - The default jar starts empty. The old WebView2 folder is not imported (decided 2026-10-02).

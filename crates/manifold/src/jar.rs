@@ -66,6 +66,59 @@ fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
+/// First 4 bytes of a protected jar file. A file without them is a legacy plaintext jar.
+const MAGIC: &[u8] = b"MJR1";
+
+/// Error text only (serde's message can quote input, so reduce it to the position).
+fn parse(bytes: &[u8]) -> Result<Jar, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON at line {} column {}", e.line(), e.column()))
+}
+
+/// Windows: DPAPI for the current user, no extra entropy.
+#[cfg(windows)]
+fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+    let input = CRYPT_INTEGER_BLOB { cbData: plain.len() as u32, pbData: plain.as_ptr() as *mut u8 };
+    let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: `input` borrows `plain` for the call; DPAPI only reads it.
+    unsafe { CryptProtectData(&input, windows::core::w!("manifold jar"), None, None, None, 0, &mut out) }
+        .map_err(std::io::Error::other)?;
+    Ok(take_blob(out))
+}
+
+#[cfg(windows)]
+fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
+    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    let input = CRYPT_INTEGER_BLOB { cbData: blob.len() as u32, pbData: blob.as_ptr() as *mut u8 };
+    let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: as in `protect`.
+    unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut out) }.map_err(std::io::Error::other)?;
+    Ok(take_blob(out))
+}
+
+/// Copies a DPAPI output blob into a `Vec` and frees it with `LocalFree`.
+#[cfg(windows)]
+fn take_blob(blob: windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB) -> Vec<u8> {
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    // SAFETY: DPAPI returned `cbData` bytes at `pbData`, allocated with LocalAlloc.
+    unsafe {
+        let v = std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec();
+        LocalFree(Some(HLOCAL(blob.pbData.cast())));
+        v
+    }
+}
+
+/// Not Windows: no protection. Linux and macOS keyring protection is not in v1.
+#[cfg(not(windows))]
+fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    Ok(plain.to_vec())
+}
+
+#[cfg(not(windows))]
+fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
+    Ok(blob.to_vec())
+}
+
 impl Jar {
     /// `<dir>\default.json`: v1 has one jar.
     pub fn path(dir: &Path) -> PathBuf {
@@ -73,15 +126,33 @@ impl Jar {
     }
 
     /// The saved jar, or an empty one when the file is missing or unreadable (a corrupt jar must not stop the app).
+    /// A file that exists but cannot be read (wrong user or machine, tampered, not JSON) is renamed to
+    /// `default.json.unreadable` so the next save cannot overwrite it; only the error is logged, never contents.
     pub fn load(dir: &Path) -> Jar {
-        std::fs::read_to_string(Self::path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let path = Self::path(dir);
+        let Ok(bytes) = std::fs::read(&path) else { return Jar::default() };
+        let parsed = match bytes.strip_prefix(MAGIC) {
+            Some(blob) => unprotect(blob).map_err(|e| e.to_string()).and_then(|plain| parse(&plain)),
+            None => parse(&bytes),
+        };
+        parsed.unwrap_or_else(|why| {
+            let aside = dir.join("default.json.unreadable");
+            match std::fs::rename(&path, &aside) {
+                Ok(()) => eprintln!("jar: cannot read the jar file ({why}); kept it as {}", aside.display()),
+                Err(e) => eprintln!("jar: cannot read the jar file ({why}) and could not move it aside: {e}"),
+            }
+            Jar::default()
+        })
     }
 
-    /// Writes beside the target and renames, so a crash mid-write leaves the old jar.
+    /// Writes beside the target and renames, so a crash mid-write leaves the old jar. The file is `MJR1` then the
+    /// protected JSON.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join("default.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(self).map_err(std::io::Error::other)?)?;
+        let mut out = MAGIC.to_vec();
+        out.extend(protect(&serde_json::to_vec(self).map_err(std::io::Error::other)?)?);
+        std::fs::write(&tmp, out)?;
         std::fs::rename(&tmp, Self::path(dir))
     }
 
@@ -184,11 +255,62 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_corrupt_file_loads_as_an_empty_jar() {
+    fn a_missing_file_loads_as_an_empty_jar() {
+        assert_eq!(Jar::load(&temp_dir("jar-missing")), Jar::default());
+    }
+
+    #[test]
+    fn a_corrupt_file_loads_empty_and_is_moved_aside() {
         let dir = temp_dir("jar-corrupt");
-        assert_eq!(Jar::load(&dir), Jar::default());
         std::fs::write(Jar::path(&dir), "not json").unwrap();
         assert_eq!(Jar::load(&dir), Jar::default());
+        assert!(!Jar::path(&dir).exists());
+        assert_eq!(std::fs::read(dir.join("default.json.unreadable")).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn protect_and_unprotect_round_trip() {
+        let plain = b"{\"cookies\":[]} some bytes";
+        let blob = protect(plain).unwrap();
+        assert_eq!(unprotect(&blob).unwrap(), plain);
+    }
+
+    #[test]
+    fn a_saved_jar_is_protected_on_disk() {
+        let dir = temp_dir("jar-protected");
+        let jar = Jar { cookies: vec![c("sid", "SECRET123")] };
+        jar.save(&dir).unwrap();
+        let bytes = std::fs::read(Jar::path(&dir)).unwrap();
+        assert!(bytes.starts_with(b"MJR1"));
+        if cfg!(windows) {
+            assert!(!String::from_utf8_lossy(&bytes).contains("SECRET123"), "the value must not appear on disk");
+        }
+        assert_eq!(Jar::load(&dir), jar);
+    }
+
+    #[test]
+    fn a_legacy_plaintext_jar_loads_and_the_next_save_protects_it() {
+        let dir = temp_dir("jar-legacy");
+        let jar = Jar { cookies: vec![c("sid", "1")] };
+        std::fs::write(Jar::path(&dir), serde_json::to_vec(&jar).unwrap()).unwrap();
+        assert_eq!(Jar::load(&dir), jar);
+        jar.save(&dir).unwrap();
+        assert!(std::fs::read(Jar::path(&dir)).unwrap().starts_with(b"MJR1"));
+    }
+
+    #[test]
+    fn a_tampered_protected_file_loads_empty_and_is_kept_aside() {
+        let dir = temp_dir("jar-tamper");
+        Jar { cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
+        let mut bytes = std::fs::read(Jar::path(&dir)).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(Jar::path(&dir), &bytes).unwrap();
+        assert_eq!(Jar::load(&dir), Jar::default());
+        assert_eq!(std::fs::read(dir.join("default.json.unreadable")).unwrap(), bytes);
+        // A save after the failed load writes a fresh file and leaves the aside copy alone.
+        Jar::default().save(&dir).unwrap();
+        assert!(dir.join("default.json.unreadable").exists());
     }
 
     #[test]

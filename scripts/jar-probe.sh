@@ -33,14 +33,28 @@ JSON
   grep -a "^jar:" "$profile/log-$name" | cut -c1-200
 }
 cat >"$out/jar_summary.py" <<'PY'
-import json, sys
+import ctypes, json, sys
+from ctypes import wintypes
+class Blob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+def unprotect(data):
+    src = Blob(len(data), ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_char)))
+    out = Blob()
+    if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+        raise OSError("DPAPI unprotect failed")
+    res = ctypes.string_at(out.pbData, out.cbData)
+    ctypes.windll.kernel32.LocalFree(out.pbData)
+    return res
 try:
-    j = json.load(open(sys.argv[1]))
+    raw = open(sys.argv[1], "rb").read()
+    if not raw.startswith(b"MJR1"):
+        print("jar file: NOT PROTECTED (no MJR1 header)"); sys.exit()
+    j = json.loads(unprotect(raw[4:]))
 except Exception as e:
     print("jar file: missing or unreadable:", type(e).__name__); sys.exit()
 cs = j if isinstance(j, list) else j.get("cookies", [])
 sid = [c for c in cs if c.get("name") == "sid"]
-print(f"jar file: {len(cs)} cookies; sid present={bool(sid)} http_only={[c.get('http_only') for c in sid]}")
+print(f"jar file: protected (MJR1); {len(cs)} cookies; sid present={bool(sid)} http_only={[c.get('http_only') for c in sid]}")
 PY
 fail=0
 jar_summary() {
