@@ -10,7 +10,7 @@ A packaged build ships `manifold`, `manifold-engine-webview2` and the small `man
 
 - CEF only, Windows first (other platforms: see "Platforms"). Servo stays bundled (decided). WebView2 is the default and always present. WebKit is unchanged (WSL/macOS-native).
 - Out of scope: installer integration, a package-manager add-on, delta updates, a hosted manifest or mirror.
-- Open product question, not an engineering one: whether packaged builds offer CEF at all (WebView2 is already Chromium). This spec only applies if they do.
+- **Product decision (2026-10-02): packaged builds offer CEF on demand, opt-in.** A package ships the 1 MB host and the pin; the runtime downloads only after the user confirms, and CEF is never the default engine. The picker and Settings label it as an optional download. Every release re-pins (the `Cargo.lock` test fails until it does). Bundling the runtime was rejected (423 MB to 1.5 GB per package, and it ties our update cadence to CEF's); shipping no CEF was rejected because Linux and macOS would be left with Servo alone. No packaging pipeline exists in the repo yet, so this binds the first one.
 
 ## Decisions (and the alternatives dropped)
 
