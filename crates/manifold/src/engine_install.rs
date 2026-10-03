@@ -31,12 +31,25 @@ pub(crate) struct Pin {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EngineState {
     Installed,
-    NotInstalled { size: u64 },
-    Installing { received: u64, total: u64 },
-    UpdateNeeded { size: u64 },
+    NotInstalled {
+        size: u64,
+    },
+    Installing {
+        received: u64,
+        total: u64,
+    },
+    UpdateNeeded {
+        size: u64,
+    },
     Failed(String),
     Custom(PathBuf),
+    /// No CEF build is pinned for this platform (`cef_pin::pin_for_platform`): nothing to download, no
+    /// offer made. Holds the reason to show.
+    Unavailable(String),
 }
+
+/// Why CEF cannot be installed where `cef_pin::pin_for_platform` is `None`.
+pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// What the install directory holds, judged by its marker alone.
 // Later tasks use it.
@@ -76,14 +89,16 @@ fn archive_version(dir: &Path) -> Result<String, String> {
     Ok(rest.split('_').next().unwrap_or(rest).to_string())
 }
 
-/// Whether `dir` is a CEF runtime of the pinned version: it holds `libcef.dll` and its `archive.json` names
+/// Whether `dir` is a CEF runtime of the pinned version: it holds the platform's runtime library (`libcef.dll`)
+/// and its `archive.json` names
 /// `pin.version`. An `Err` says what is wrong, naming both versions on a mismatch.
 pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
-    if !dir.join("libcef.dll").is_file() {
-        return Err("no libcef.dll in that directory".into());
+    let lib = crate::cef_platform::PLATFORM.runtime_lib;
+    if !dir.join(lib).is_file() {
+        return Err(format!("no {lib} in that directory"));
     }
     let found = archive_version(dir)?;
     if found != pin.version {
@@ -331,21 +346,21 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
         }
     }
     let [_top, dir, rest @ ..] = names.as_slice() else { return Ok(None) };
-    if (*dir != "Release" && *dir != "Resources") || rest.is_empty() {
+    let platform = &crate::cef_platform::PLATFORM;
+    if !platform.runtime_dirs.iter().any(|d| *dir == *d) || rest.is_empty() {
         return Ok(None);
     }
-    const SKIP_DIRS: [&str; 3] = ["include", "cmake", "libcef_dll"];
-    const SKIP_FILES: [&str; 2] = ["CMakeLists.txt", "debug.log"];
     let last = rest[rest.len() - 1].to_string_lossy().to_ascii_lowercase();
-    let skipped = rest.iter().any(|n| SKIP_DIRS.iter().any(|s| *n == *s))
-        || SKIP_FILES.iter().any(|s| last == s.to_ascii_lowercase())
-        || last.ends_with(".lib");
+    let skipped = rest.iter().any(|n| platform.skip_dirs.iter().any(|s| *n == *s))
+        || platform.skip_files.iter().any(|s| last == s.to_ascii_lowercase())
+        || platform.skip_suffixes.iter().any(|s| last.ends_with(s));
     Ok((!skipped).then(|| rest.iter().fold(into.to_path_buf(), |p, n| p.join(n))))
 }
 
 /// Extract the runtime from the CEF `tar.bz2` at `archive` into `into`: the files under `<top>/Release/`
-/// and `<top>/Resources/`, flattened into `into`, without the build leftovers (`*.lib`, `include`, `cmake`,
-/// `libcef_dll`, `CMakeLists.txt`, `debug.log`). Any entry that is a link, or whose path has a `..`,
+/// and `<top>/Resources/` (`CefPlatform::runtime_dirs`), flattened into `into`, without the build leftovers
+/// (`CefPlatform::skip_*`; on Windows `*.lib`, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`,
+/// `debug.log`). Any entry that is a link, or whose path has a `..`,
 /// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
 /// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
 /// discards it.
@@ -610,7 +625,10 @@ impl crate::App {
         let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
         let mut cache = self.cef_dir_check.borrow_mut();
         if cache.as_ref().is_none_or(|(path, _)| path != configured) {
-            let verdict = validate_custom(Path::new(configured), &crate::cef_pin::CEF_PIN);
+            let verdict = match crate::cef_pin::pin_for_platform() {
+                Some(pin) => validate_custom(Path::new(configured), pin),
+                None => Err(NO_PIN_REASON.to_string()),
+            };
             *cache = Some((configured.to_string(), verdict));
         }
         let verdict = cache.as_ref().map(|(_, v)| v.clone())?;
@@ -638,7 +656,14 @@ impl crate::App {
             self.queue_toast("No data directory to install into".into());
             return false;
         };
-        self.start_engine_install_at(kind, &data_dir, &crate::cef_pin::CEF_PIN)
+        let Some(pin) = crate::cef_pin::pin_for_platform() else {
+            self.queue_toast(format!(
+                "{} is not available on this platform yet",
+                crate::engine_info::engine_label(kind)
+            ));
+            return false;
+        };
+        self.start_engine_install_at(kind, &data_dir, pin)
     }
 
     /// Start installing `kind` (only CEF downloads anything) under `data_dir`. Refused, with a toast
@@ -786,7 +811,7 @@ mod tests {
     fn remove_deletes_the_runtime_and_its_leftovers_only_when_idle() {
         let dir = temp_dir("remove_runtime");
         std::fs::create_dir_all(dir.join("cef-runtime")).unwrap();
-        std::fs::write(dir.join("cef-runtime").join("libcef.dll"), vec![0u8; 5]).unwrap();
+        std::fs::write(dir.join("cef-runtime").join(lib()), vec![0u8; 5]).unwrap();
         std::fs::write(dir.join("cef-runtime.part"), b"keep").unwrap();
         assert_eq!(dir_size(&dir.join("cef-runtime")), 5);
         assert!(remove_runtime(&dir, true, false).is_err());
@@ -812,11 +837,21 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
     }
 
-    /// A bring-your-own directory as CEF's own archive lays it out: `libcef.dll` and `archive.json`.
+    /// The pin of the platform the tests run on (Windows today).
+    fn cef_pin() -> &'static Pin {
+        crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests")
+    }
+
+    /// The runtime library's file name on this platform.
+    fn lib() -> &'static str {
+        crate::cef_platform::PLATFORM.runtime_lib
+    }
+
+    /// A bring-your-own directory as CEF's own archive lays it out: the runtime library and `archive.json`.
     fn custom_dir(tag: &str, archive_name: Option<&str>, dll: bool) -> PathBuf {
         let dir = temp_dir(tag);
         if dll {
-            std::fs::write(dir.join("libcef.dll"), b"x").unwrap();
+            std::fs::write(dir.join(lib()), b"x").unwrap();
         }
         if let Some(name) = archive_name {
             std::fs::write(dir.join("archive.json"), format!(r#"{{"type":"minimal","name":"{name}","sha1":"ab"}}"#))
@@ -827,8 +862,8 @@ mod tests {
 
     #[test]
     fn a_custom_directory_of_the_pinned_version_validates() {
-        let pin = &crate::cef_pin::CEF_PIN;
-        let name = format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version);
+        let pin = cef_pin();
+        let name = crate::cef_platform::PLATFORM.archive_name(pin.version);
         assert_eq!(validate_custom(&custom_dir("vc1", Some(&name), true), pin), Ok(()));
         // The pin's own sample: a name without the prefix or suffix still reads.
         assert_eq!(validate_custom(&custom_dir("vc1b", Some(pin.version), true), pin), Ok(()));
@@ -836,18 +871,19 @@ mod tests {
 
     #[test]
     fn a_custom_directory_of_another_version_names_both() {
-        let dir = custom_dir("vc2", Some("cef_binary_150.1.2+gabc+chromium-150.0.1_windows64_minimal.tar.bz2"), true);
-        let err = validate_custom(&dir, &crate::cef_pin::CEF_PIN).unwrap_err();
+        let dir =
+            custom_dir("vc2", Some(&crate::cef_platform::PLATFORM.archive_name("150.1.2+gabc+chromium-150.0.1")), true);
+        let err = validate_custom(&dir, cef_pin()).unwrap_err();
         assert!(err.contains("150.1.2+gabc+chromium-150.0.1"), "{err}");
-        assert!(err.contains(crate::cef_pin::CEF_PIN.version), "{err}");
+        assert!(err.contains(cef_pin().version), "{err}");
     }
 
     #[test]
     fn a_custom_directory_without_archive_json_or_libcef_is_refused() {
-        let pin = &crate::cef_pin::CEF_PIN;
+        let pin = cef_pin();
         assert!(validate_custom(&custom_dir("vc3", None, true), pin).unwrap_err().contains("archive.json"));
-        let name = format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version);
-        assert!(validate_custom(&custom_dir("vc4", Some(&name), false), pin).unwrap_err().contains("libcef.dll"));
+        let name = crate::cef_platform::PLATFORM.archive_name(pin.version);
+        assert!(validate_custom(&custom_dir("vc4", Some(&name), false), pin).unwrap_err().contains(lib()));
         assert!(validate_custom(&temp_dir("vc5").join("nope"), pin).is_err());
         let bad = custom_dir("vc6", None, true);
         std::fs::write(bad.join("archive.json"), "{}").unwrap();
@@ -856,14 +892,14 @@ mod tests {
 
     #[test]
     fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
-        let pin = &crate::cef_pin::CEF_PIN;
-        let good = custom_dir("vc7", Some(&format!("cef_binary_{}_windows64_minimal.tar.bz2", pin.version)), true);
+        let pin = cef_pin();
+        let good = custom_dir("vc7", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
         let mut app = App::default();
         app.set_cef_directory(good.to_str().unwrap());
         assert_eq!(app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Missing), EngineState::Custom(good.clone()));
         assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Installed);
 
-        let bad = custom_dir("vc8", Some("cef_binary_1.0_windows64_minimal.tar.bz2"), true);
+        let bad = custom_dir("vc8", Some(&crate::cef_platform::PLATFORM.archive_name("1.0")), true);
         app.set_cef_directory(bad.to_str().unwrap());
         assert_eq!(app.custom_cef_dir(), None);
         assert!(app.cef_dir_verdict().unwrap().1.is_err(), "the page shows why");
@@ -882,7 +918,7 @@ mod tests {
     #[test]
     fn a_directory_without_a_marker_is_missing_not_ready() {
         let dir = temp_dir("ei3");
-        std::fs::write(dir.join("libcef.dll"), b"x").unwrap();
+        std::fs::write(dir.join(lib()), b"x").unwrap();
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Missing);
     }
 
@@ -1144,7 +1180,7 @@ Connection: close
     }
 
     const GOOD: [(&str, &[u8]); 4] = [
-        ("top/Release/libcef.dll", b"dll"),
+        ("top/Release/runtime.bin", b"dll"),
         ("top/Resources/resources.pak", b"pak"),
         ("top/include/x.h", b"h"),
         ("top/Release/libcef.lib", b"lib"),
@@ -1169,16 +1205,18 @@ Connection: close
         let a = archive(&dir, &GOOD);
         let out = dir.join("out");
         unpack(&a, &out, &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap();
-        assert_eq!(std::fs::read(out.join("libcef.dll")).unwrap(), b"dll");
+        assert_eq!(std::fs::read(out.join("runtime.bin")).unwrap(), b"dll");
         assert_eq!(std::fs::read(out.join("resources.pak")).unwrap(), b"pak");
-        assert!(!out.join("libcef.lib").exists() && !out.join("x.h").exists() && !out.join("include").exists());
+        assert!(!out.join("x.h").exists() && !out.join("include").exists());
+        // An import library is a Windows build leftover; elsewhere `.lib` is not special.
+        assert_eq!(!out.join("libcef.lib").exists(), !crate::cef_platform::PLATFORM.skip_suffixes.is_empty());
         assert_eq!(std::fs::read_to_string(out.join(MARKER)).unwrap(), "9.9");
     }
 
     #[test]
     fn unpack_refuses_a_path_that_escapes() {
         let dir = temp_dir("ei21");
-        let a = archive(&dir, &[("top/Release/libcef.dll", b"x"), ("top/Release/../../evil", b"x")]);
+        let a = archive(&dir, &[("top/Release/runtime.bin", b"x"), ("top/Release/../../evil", b"x")]);
         // `into` is nested so that a naive join lands at a place inside `dir` that we can check.
         let nested = dir.join("nested");
         let out = nested.join("out");
@@ -1211,7 +1249,7 @@ Connection: close
             assert!(!out.join(MARKER).exists(), "{name}");
         }
         assert!(target(Path::new("top/Release/C:evil.dll"), &out).is_err());
-        assert!(target(Path::new("top/Release/libcef.dll"), &out).unwrap().is_some());
+        assert!(target(Path::new("top/Release/runtime.bin"), &out).unwrap().is_some());
     }
 
     #[test]
@@ -1368,7 +1406,7 @@ Connection: close
         let live = dir.join("cef-runtime");
         std::fs::create_dir_all(&live).unwrap();
         std::fs::write(live.join(MARKER), "v").unwrap();
-        std::fs::write(live.join("libcef.dll"), b"x").unwrap();
+        std::fs::write(live.join(lib()), b"x").unwrap();
         std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
         std::fs::create_dir_all(dir.join("cef-runtime.tmp")).unwrap();
         std::fs::create_dir_all(dir.join("cef-runtime.old")).unwrap();
@@ -1417,7 +1455,7 @@ Connection: close
         // A second install replaces the first.
         std::fs::write(out.join("stale.txt"), b"x").unwrap();
         install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap();
-        assert!(!out.join("stale.txt").exists() && out.join("libcef.dll").exists());
+        assert!(!out.join("stale.txt").exists() && out.join("runtime.bin").exists());
     }
 
     #[test]
@@ -1645,7 +1683,7 @@ Connection: close
         let version = line.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')).expect("a version line");
         // `152.1.0+152.0.6`: the crate's own version, then the CEF build it wraps.
         let build = version.split_once('+').expect("the cef crate version names its CEF build").1;
-        let pinned = crate::cef_pin::CEF_PIN.version;
+        let pinned = cef_pin().version;
         assert_eq!(pinned.split('+').next(), Some(build), "the pin is not the CEF build the crate wraps: {pinned}");
     }
 }

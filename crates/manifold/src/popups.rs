@@ -276,6 +276,10 @@ impl App {
                 self.queue_toast(format!("{} is already installing", engine_label(kind)));
                 None
             }
+            PickOutcome::Unavailable(kind) => {
+                self.queue_toast(format!("{} is not available on this platform yet", engine_label(kind)));
+                None
+            }
         }
     }
 
@@ -285,7 +289,7 @@ impl App {
         let Some(confirm) = self.pending_engine_confirm else { return };
         let (title, detail, button) = match confirm {
             EngineConfirm::Download(kind) => {
-                let size = crate::engine_info::megabytes(crate::cef_pin::CEF_PIN.size);
+                let size = crate::engine_info::megabytes(crate::cef_pin::pin_for_platform().map_or(0, |pin| pin.size));
                 let verb = if matches!(self.engine_state(kind), crate::engine_install::EngineState::UpdateNeeded { .. })
                 {
                     "Update"

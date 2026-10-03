@@ -1000,10 +1000,14 @@ impl App {
         let missing_engine = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
         body.tooltip = Some(match &state {
-            UnloadedState::Failed(_) if missing_engine => {
-                let size = crate::engine_info::megabytes(crate::cef_pin::CEF_PIN.size);
-                format!("{} is not installed\nClick to download it ({size}).", engine_label(kind))
-            }
+            UnloadedState::Failed(_) if missing_engine => match crate::cef_pin::pin_for_platform() {
+                Some(pin) => format!(
+                    "{} is not installed\nClick to download it ({}).",
+                    engine_label(kind),
+                    crate::engine_info::megabytes(pin.size)
+                ),
+                None => format!("{} is not available on this platform yet", engine_label(kind)),
+            },
             UnloadedState::Failed(error) => {
                 format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
             }

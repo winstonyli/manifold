@@ -43,6 +43,7 @@ pub(crate) fn engine_state_label(state: &EngineState) -> (String, Tone) {
         EngineState::UpdateNeeded { size } => (format!("Update needed \u{b7} {}", megabytes(*size)), Tone::Weak),
         EngineState::Failed(reason) => (format!("Failed: {reason}"), Tone::Danger),
         EngineState::Custom(path) => (format!("Custom: {}", path.display()), Tone::Weak),
+        EngineState::Unavailable(reason) => (format!("Unavailable: {reason}"), Tone::Weak),
     }
 }
 
@@ -55,12 +56,15 @@ pub(crate) enum PickOutcome {
     AskInstall(EngineKind),
     /// Its install is already running; nothing to switch to yet.
     AlreadyInstalling(EngineKind),
+    /// Nothing to install on this platform (no pin); say so, offer nothing.
+    Unavailable(EngineKind),
 }
 
 pub(crate) fn pick_outcome(kind: EngineKind, state: &EngineState) -> PickOutcome {
     match state {
         EngineState::Installed | EngineState::Custom(_) => PickOutcome::Switch(kind),
         EngineState::Installing { .. } => PickOutcome::AlreadyInstalling(kind),
+        EngineState::Unavailable(_) => PickOutcome::Unavailable(kind),
         EngineState::NotInstalled { .. } | EngineState::UpdateNeeded { .. } | EngineState::Failed(_) => {
             PickOutcome::AskInstall(kind)
         }

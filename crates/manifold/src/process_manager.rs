@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::cef_pin::CEF_PIN;
-use crate::engine_install::{runtime_state, EngineState, RuntimeOnDisk};
+use crate::engine_install::{runtime_state, EngineState, Pin, RuntimeOnDisk, NO_PIN_REASON};
 use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
 
@@ -372,7 +371,7 @@ fn sweep_cache_dirs(root: &Path, min_age: Duration) {
 /// Cargo workspace layout, no separate install/discovery step needed.
 fn sibling_binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe");
-    path.set_file_name(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() });
+    path.set_file_name(crate::cef_platform::PLATFORM.host_exe(name));
     path
 }
 
@@ -396,7 +395,7 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// when the sibling binary isn't there — for an engine fetched on demand
 /// after install rather than bundled next to `manifold.exe`.
 fn engine_binary_path(kind: EngineKind) -> PathBuf {
-    let file_name = if cfg!(windows) { format!("{}.exe", kind.desc().binary) } else { kind.desc().binary.to_string() };
+    let file_name = crate::cef_platform::PLATFORM.host_exe(kind.desc().binary);
     let sibling = match kind {
         EngineKind::Servo => sibling_binary(kind.desc().binary),
         EngineKind::Cef => cef_sibling_exe(),
@@ -455,9 +454,9 @@ pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
     if cef_sibling_exe().exists() {
         return RuntimeOnDisk::Ready;
     }
-    match engine_runtime_dir(EngineKind::Cef) {
-        Some(dir) => runtime_state(&dir, &CEF_PIN),
-        None => RuntimeOnDisk::Missing,
+    match (engine_runtime_dir(EngineKind::Cef), crate::cef_pin::pin_for_platform()) {
+        (Some(dir), Some(pin)) => runtime_state(&dir, pin),
+        _ => RuntimeOnDisk::Missing,
     }
 }
 
@@ -465,6 +464,19 @@ pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
 /// always Installed; CEF follows the disk (`cef_on_disk`). A custom path and a running install
 /// override it; a failed install overrides Missing and Stale but not a current runtime.
 pub(crate) fn engine_availability(
+    kind: EngineKind,
+    cef_on_disk: RuntimeOnDisk,
+    installing: Option<(u64, u64)>,
+    failed: Option<&str>,
+    custom: Option<&Path>,
+) -> EngineState {
+    availability_with(crate::cef_pin::pin_for_platform(), kind, cef_on_disk, installing, failed, custom)
+}
+
+/// `engine_availability` for a given pin. `None` means this platform has no CEF build, so there is nothing
+/// to download: `Unavailable`, unless a runtime is already there (a dev tree's) or a custom one is set.
+fn availability_with(
+    pin: Option<&Pin>,
     kind: EngineKind,
     cef_on_disk: RuntimeOnDisk,
     installing: Option<(u64, u64)>,
@@ -485,13 +497,14 @@ pub(crate) fn engine_availability(
     if cef_on_disk == RuntimeOnDisk::Ready {
         return EngineState::Installed;
     }
+    let Some(pin) = pin else { return EngineState::Unavailable(NO_PIN_REASON.to_string()) };
     if let Some(message) = failed {
         return EngineState::Failed(message.to_string());
     }
     match cef_on_disk {
         RuntimeOnDisk::Ready => EngineState::Installed,
-        RuntimeOnDisk::Missing => EngineState::NotInstalled { size: CEF_PIN.size },
-        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: CEF_PIN.size },
+        RuntimeOnDisk::Missing => EngineState::NotInstalled { size: pin.size },
+        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: pin.size },
     }
 }
 
@@ -958,11 +971,12 @@ mod tests {
 
     #[test]
     fn cef_state_follows_disk_then_overrides() {
+        let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
         let a =
             |disk, installing, failed, custom| engine_availability(EngineKind::Cef, disk, installing, failed, custom);
         assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
-        assert_eq!(a(RuntimeOnDisk::Missing, None, None, None), EngineState::NotInstalled { size: CEF_PIN.size });
-        assert_eq!(a(RuntimeOnDisk::Stale, None, None, None), EngineState::UpdateNeeded { size: CEF_PIN.size });
+        assert_eq!(a(RuntimeOnDisk::Missing, None, None, None), EngineState::NotInstalled { size: pin.size });
+        assert_eq!(a(RuntimeOnDisk::Stale, None, None, None), EngineState::UpdateNeeded { size: pin.size });
         assert_eq!(
             a(RuntimeOnDisk::Missing, Some((5, 9)), Some("old"), None),
             EngineState::Installing { received: 5, total: 9 }
@@ -976,9 +990,37 @@ mod tests {
     }
 
     #[test]
+    fn a_platform_without_a_pin_offers_no_install() {
+        let a = |disk, installing, failed, custom| {
+            availability_with(None, EngineKind::Cef, disk, installing, failed, custom)
+        };
+        let unavailable = EngineState::Unavailable(NO_PIN_REASON.to_string());
+        for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
+            assert_eq!(a(disk, None, None, None), unavailable);
+            // A recorded failure cannot exist without a pin, and would not change the answer.
+            assert_eq!(a(disk, None, Some("boom"), None), unavailable);
+        }
+        // What is already on disk (a dev tree) or configured still works, and other engines are untouched.
+        assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
+        let p = Path::new("C:/my/cef");
+        assert_eq!(a(RuntimeOnDisk::Missing, None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
+        assert_eq!(
+            availability_with(None, EngineKind::Servo, RuntimeOnDisk::Missing, None, None, None),
+            EngineState::Installed
+        );
+        // The pick says so rather than asking to download, and the label gives the reason.
+        assert_eq!(
+            crate::engine_info::pick_outcome(EngineKind::Cef, &unavailable),
+            crate::engine_info::PickOutcome::Unavailable(EngineKind::Cef)
+        );
+        assert!(crate::engine_info::engine_state_label(&unavailable).0.contains(NO_PIN_REASON));
+    }
+
+    #[test]
     fn a_stale_marker_is_update_needed_not_a_spawn() {
+        let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
         let state = engine_availability(EngineKind::Cef, RuntimeOnDisk::Stale, None, None, None);
-        assert_eq!(state, EngineState::UpdateNeeded { size: CEF_PIN.size });
+        assert_eq!(state, EngineState::UpdateNeeded { size: pin.size });
         assert!(matches!(
             check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale, None),
             Err(SpawnError::EngineMissing(EngineKind::Cef))

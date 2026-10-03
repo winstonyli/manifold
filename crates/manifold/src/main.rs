@@ -1,6 +1,7 @@
 mod bookmarks;
 mod card;
 mod cef_pin;
+mod cef_platform;
 mod cli;
 mod closed;
 mod content;
