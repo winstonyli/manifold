@@ -24,12 +24,19 @@ a `Kind` it does not know is kept but never shown (`store/model.rs`). New things
   means pinned in the graph.)
 - Group field `default_jar`: an Id.
 
-New fields get the next free numbers (15 onward; never reused). `jar`, `jar_set` and `default_jar` are `explicit` fields:
-written by named user actions, never by diffing.
+New fields get the next free numbers (15 onward; never reused). `jar`, `jar_set` and `default_jar` are ordinary diffed
+fields (`explicit: false`): the live payload holds the value and `session_sync::diff` writes a `Set` when it differs, as for
+`pinned` and `engine`. (`explicit` is for fields that change continuously, `pos` and `url`, where only a named action writes.)
+They join `kind_fields` (`Tab`: `jar`, `jar_set`; `Group`: `default_jar`; `Jar`: `name`, `color`, `ephemeral`) and are carried
+by both tab payloads (`TabPayload`, `UnloadedTabPayload`) and `GroupPayload`.
 
 The default jar is built in and has no node; its file stays `jars\default.json`. A node exists only for a named jar.
-`Node::is_live` is true for a Jar node, so the graph, node counts and anything else that means "shown in the graph" must
-skip `Kind::Jar`.
+A jar is not a `NodePayload` and never enters `App.nodes` (the graph): `NodePayload` is matched exhaustively in many places
+and a jar has no position or card. Jar definitions live in `App.jar_defs: BTreeMap<String, JarDef>` and are bridged to the
+document at the three places the app and the store meet: `shared_nodes` adds a `Kind::Jar` entry per definition (otherwise
+`diff` would delete the document's jar nodes as "missing from live"), `materialize` routes a `Kind::Jar` change into
+`jar_defs`, and `remove_remotely_deleted` removes a definition another replica deleted. `store::json` export and import
+already handle any `Kind` by name, so a whole-document export includes jar nodes.
 
 The reference is a field, not an edge. In this codebase an edge is already an Id field (`parent`, `group`), so the field is
 the edge's storage; it enforces one jar per tab, reuses the sync machinery and is written atomically by the cascade. Drawing
@@ -48,8 +55,8 @@ Spawn, pull, swap, the chip and the cascade all use it.
 - **Moving** an unset tab (`jar_set` false) into another group re-snapshots it from that group's nearest default.
 - **Picking a jar** on a tab writes `jar` and sets `jar_set`. "Follow group's jar" clears `jar_set` and re-snapshots.
 - **Changing a group's `default_jar`** writes it, then walks the group's subtree (nested groups with no default of their
-  own included) and writes the new `jar` into every tab whose `jar_set` is false. The writes share one undo step.
-  "Clear default" removes `default_jar` and leaves existing tabs alone.
+  own included) and writes the new `jar` into every tab whose `jar_set` is false. The writes are ordinary field edits (there
+  is no user-level undo in manifold). "Clear default" removes `default_jar` and leaves existing tabs alone.
 - A remote device's cascade arrives as ordinary tab edits. Each device's writes follow its own group write, so concurrent
   changes converge on whichever group change wins. A tab created elsewhere during the change can keep the old default until
   a later cascade; accepted.
@@ -107,8 +114,8 @@ action) and the settings page's sections.
   colour and picks it for the tab. "Follow group's jar" appears only for a set tab whose group has a default. New actions:
   `SetJar(Option<NodeId>)`, `NewJar(String)`, `FollowGroupJar`, `SwitchJarNow`.
 - **Group menu:** the same list under "Default jar for new tabs" with a tick on the current default, and "Clear default". The
-  entry shows how many tabs the cascade will change; no confirm dialog (sleeping a background tab loses nothing, and one undo
-  step reverses the writes).
+  entry shows how many tabs the cascade will change; no confirm dialog (sleeping a background tab loses nothing, and setting the
+  default back re-cascades to the tabs that are still unset).
 - **Chip:** a coloured dot with the jar name on a tab's card, only for a non-default jar. An outlined dot means following the
   group; a warning colour means a missing jar; a second dot with an arrow means "will switch", its tooltip offering "switch
   now". The same dot sits beside the address bar in Tab view.
@@ -138,6 +145,6 @@ localStorage and the other storage the v1 spec leaves out.
 
 ## Open questions
 
-- Whether "apply to group" needs a confirm once groups are large (the cascade is one undo step today).
+- Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
