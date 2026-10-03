@@ -198,9 +198,11 @@ fn main() {
     // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
     let mut first_message: Option<HostToEngine> = None;
+    // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
+    let mut may_hold_cookies = false;
     if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
         match wait_for_first_message(&rx, COOKIE_SEED_WAIT) {
-            Some(HostToEngine::SetCookies(json)) => jar_cookies::seed(&json),
+            Some(HostToEngine::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
             Some(other) => first_message = Some(other),
             None => eprintln!("jar: no seed received"),
         }
@@ -307,7 +309,7 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
-                HostToEngine::SetCookies(json) => jar_cookies::seed(&json),
+                HostToEngine::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
                 HostToEngine::GetCookies => pull = Some(jar_cookies::start_pull()),
                 HostToEngine::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
@@ -401,9 +403,17 @@ fn main() {
             }
         }
 
-        if let Some(json) = pull.as_ref().and_then(|p| p.take()) {
-            let _ = control.send(&EngineToHost::Cookies(json));
-            pull = None;
+        match pull.as_ref().map(|p| p.poll(may_hold_cookies)) {
+            Some(jar_cookies::PullState::Answer(json)) => {
+                may_hold_cookies |= json != "[]";
+                let _ = control.send(&EngineToHost::Cookies(json));
+                pull = None;
+            }
+            Some(jar_cookies::PullState::Silent) => {
+                eprintln!("jar: no complete cookie read; not answering");
+                pull = None;
+            }
+            Some(jar_cookies::PullState::Pending) | None => {}
         }
 
         {
