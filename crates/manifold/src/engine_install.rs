@@ -77,20 +77,34 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     }
 }
 
-/// The CEF version a bring-your-own directory's `archive.json` names: its `name` is the archive the
-/// build came from (`cef_binary_<version>_<platform>_<distribution>.tar.bz2`); the version has no `_`.
-fn archive_version(dir: &Path) -> Result<String, String> {
-    let text = std::fs::read_to_string(dir.join("archive.json"))
-        .map_err(|e| format!("no archive.json to read the CEF version from ({e})"))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("archive.json is not valid ({e})"))?;
-    let name = json.get("name").and_then(|n| n.as_str()).ok_or("archive.json has no \"name\"")?;
-    let rest = name.strip_prefix("cef_binary_").unwrap_or(name);
-    Ok(rest.split('_').next().unwrap_or(rest).to_string())
+/// The CEF version a bring-your-own directory names. Two sources, on every platform:
+/// - `archive.json` (a runtime exported by the `cef` crate's tool): its `name` is the archive the build
+///   came from (`cef_binary_<version>_<platform>_<distribution>.tar.bz2`); the version has no `_`.
+/// - our own `MARKER`, which holds the pin's version (a runtime this app installed; the CDN archives on
+///   Windows and Linux carry no `archive.json`).
+///
+/// `archive.json` wins when present (an invalid one is an error, not a fall-through); with neither, it
+/// is refused.
+fn custom_version(dir: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(dir.join("archive.json")) {
+        Ok(text) => {
+            let json: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("archive.json is not valid ({e})"))?;
+            let name = json.get("name").and_then(|n| n.as_str()).ok_or("archive.json has no \"name\"")?;
+            let rest = name.strip_prefix("cef_binary_").unwrap_or(name);
+            Ok(rest.split('_').next().unwrap_or(rest).to_string())
+        }
+        Err(archive_err) => match std::fs::read_to_string(dir.join(MARKER)) {
+            Ok(v) => Ok(v.trim().to_string()),
+            Err(_) => {
+                Err(format!("no archive.json or \"{MARKER}\" marker to read the CEF version from ({archive_err})"))
+            }
+        },
+    }
 }
 
-/// Whether `dir` is a CEF runtime of the pinned version: it holds the platform's runtime library (`libcef.dll`)
-/// and its `archive.json` names
+/// Whether `dir` is a CEF runtime of the pinned version: it holds the platform's runtime library
+/// (`CefPlatform::runtime_lib`) and its version (`custom_version`: `archive.json` or our `MARKER`) is
 /// `pin.version`. An `Err` says what is wrong, naming both versions on a mismatch.
 pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
@@ -100,7 +114,7 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.join(lib).is_file() {
         return Err(format!("no {lib} in that directory"));
     }
-    let found = archive_version(dir)?;
+    let found = custom_version(dir)?;
     if found != pin.version {
         return Err(format!("found CEF {found}, expected {}", pin.version));
     }
@@ -837,7 +851,7 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
     }
 
-    /// The pin of the platform the tests run on (Windows today).
+    /// The pin of the platform the tests run on (Windows or Linux).
     fn cef_pin() -> &'static Pin {
         crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests")
     }
@@ -888,6 +902,36 @@ mod tests {
         let bad = custom_dir("vc6", None, true);
         std::fs::write(bad.join("archive.json"), "{}").unwrap();
         assert!(validate_custom(&bad, pin).is_err());
+    }
+
+    #[test]
+    fn a_runtime_we_installed_validates_by_its_marker() {
+        // Our install leaves the runtime library and `MARKER` (the pin's version), no `archive.json`.
+        let pin = cef_pin();
+        let ours = custom_dir("vm1", None, true);
+        std::fs::write(ours.join(MARKER), pin.version).unwrap();
+        assert_eq!(validate_custom(&ours, pin), Ok(()));
+
+        let stale = custom_dir("vm2", None, true);
+        std::fs::write(stale.join(MARKER), "150.1.2+gabc+chromium-150.0.1\n").unwrap();
+        let err = validate_custom(&stale, pin).unwrap_err();
+        assert!(err.contains("150.1.2+gabc+chromium-150.0.1") && err.contains(pin.version), "{err}");
+
+        // No marker and no archive.json: both sources are named.
+        let none = validate_custom(&custom_dir("vm3", None, true), pin).unwrap_err();
+        assert!(none.contains("archive.json") && none.contains(MARKER), "{none}");
+    }
+
+    #[test]
+    fn archive_json_outranks_the_marker() {
+        let pin = cef_pin();
+        let other = crate::cef_platform::PLATFORM.archive_name("150.1.2+gabc+chromium-150.0.1");
+        let dir = custom_dir("vm4", Some(&other), true);
+        std::fs::write(dir.join(MARKER), pin.version).unwrap();
+        assert!(validate_custom(&dir, pin).unwrap_err().contains("150.1.2"));
+        // An invalid archive.json is an error even with a good marker beside it.
+        std::fs::write(dir.join("archive.json"), "{}").unwrap();
+        assert!(validate_custom(&dir, pin).unwrap_err().contains("archive.json"));
     }
 
     #[test]
