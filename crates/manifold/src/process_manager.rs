@@ -108,14 +108,17 @@ fn assign_to_engine_job(child: &Child) {
         let _ = AssignProcessToJobObject(job, process_handle);
     }
 }
-/// No kill-on-exit job on other platforms yet (Linux would use `PR_SET_PDEATHSIG` or a process group): an
-/// engine-host outlives a manifold that is force-killed, until its reader thread sees the socket drop and
-/// shuts it down (`ipc_protocol::transport::spawn_host_reader`). Said once on stderr rather than silently.
+/// No kill-on-exit job off Windows: an engine-host sees the socket drop when manifold dies and shuts itself down
+/// (`ipc_protocol::transport::spawn_host_reader`). Measured on Linux (WSL2, 2026-10-02): `kill -9` of manifold with a
+/// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
+/// on stderr rather than silently, since other hosts (WebKit in WSL) are not covered by that measurement.
 #[cfg(not(target_os = "windows"))]
 fn assign_to_engine_job(_child: &Child) {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-        eprintln!("manifold: engine hosts are not tied to manifold's lifetime on this platform yet (no job object)")
+        eprintln!(
+            "manifold: no kill-on-exit job on this platform; engine hosts exit when their socket to manifold drops"
+        )
     });
 }
 

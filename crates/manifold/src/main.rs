@@ -1965,10 +1965,17 @@ impl App {
         let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
         Ok(())
     }
-    /// Not built for other platforms yet: says so instead of doing nothing.
+    /// Elsewhere there is no portable "select this file", so the containing folder is opened with the desktop's
+    /// own handler (`xdg-open` on Linux, `open` on macOS).
     #[cfg(not(windows))]
-    fn reveal_in_explorer(_path: &str) -> Result<(), String> {
-        Err("Open Containing Folder is not supported on this platform yet".to_string())
+    fn reveal_in_explorer(path: &str) -> Result<(), String> {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let folder = std::path::Path::new(path).parent().ok_or_else(|| format!("{path} has no containing folder"))?;
+        std::process::Command::new(opener)
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Couldn't open {}: {opener}: {e}", folder.display()))
     }
 
     /// The real file behind a Download/Image/Pdf/Json node, in the form
