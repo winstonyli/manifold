@@ -197,7 +197,7 @@ impl App {
         let key = JarKey::Named(id);
         if on {
             if let Some(dir) = self.jars_dir() {
-                if let Err(e) = Jar::delete_file(&dir, key) {
+                if let Err(e) = Jar::delete_files(&dir, key) {
                     eprintln!("jar: could not delete {}: {e}", key.file_stem());
                 }
             }
@@ -222,7 +222,8 @@ impl App {
         self.sweep_jar_switches();
     }
 
-    /// Drops jar `id` (a local or remote delete): its definition, its cookies and its file. A tab still running on it
+    /// Drops jar `id` (a local or remote delete): its definition, its cookies and its files, unreadable copies and
+    /// crashed saves' temp files included (`Jar::delete_files`). A tab still running on it
     /// has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it switches: the caller
     /// sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
@@ -233,7 +234,7 @@ impl App {
             snapshots.remove(&key);
         }
         if let Some(dir) = self.jars_dir() {
-            if let Err(e) = Jar::delete_file(&dir, key) {
+            if let Err(e) = Jar::delete_files(&dir, key) {
                 eprintln!("jar: could not delete {}: {e}", key.file_stem());
             }
         }

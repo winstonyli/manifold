@@ -307,12 +307,22 @@ impl Jar {
         dir.join(key.file_name())
     }
 
-    /// Removes key `key`'s file (a deleted or newly ephemeral jar). A file already gone is fine.
-    pub fn delete_file(dir: &Path, key: JarKey) -> std::io::Result<()> {
-        match std::fs::remove_file(Self::path(dir, key)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
+    /// Removes every file holding key `key`'s cookies (a deleted or newly ephemeral jar): its file, its
+    /// `.unreadable-*` copies and the `.<pid>.tmp` files of crashed saves, each a full copy of its credentials. A live
+    /// process's temp file is its save in progress and stays (`remove_dead_tmps`). A file already gone is fine; the
+    /// first other failure is returned after trying the rest.
+    pub fn delete_files(dir: &Path, key: JarKey) -> std::io::Result<()> {
+        let file = key.file_name();
+        remove_dead_tmps(dir, &file);
+        let paths = std::iter::once(Self::path(dir, key)).chain(asides_in(dir, &file).into_iter().map(|(_, p)| p));
+        let mut first = Ok(());
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound && first.is_ok() => first = Err(e),
+                _ => {}
+            }
         }
+        first
     }
 
     /// Key `key`'s saved jar, or an empty one when its file is missing. A file that exists but cannot be read (wrong
@@ -757,10 +767,33 @@ mod tests {
         b.save(&dir, named).unwrap();
         assert_eq!(Jar::load(&dir, JarKey::Default), a);
         assert_eq!(Jar::load(&dir, named), b);
-        Jar::delete_file(&dir, named).unwrap();
+        Jar::delete_files(&dir, named).unwrap();
         assert!(!Jar::path(&dir, named).exists());
-        Jar::delete_file(&dir, named).unwrap(); // already gone: fine
+        Jar::delete_files(&dir, named).unwrap(); // already gone: fine
         assert_eq!(Jar::load(&dir, JarKey::Default), a, "the default jar is untouched");
+    }
+
+    /// Final review I2: every copy of a deleted jar goes, and only that jar's: `…-12` shares `…-1`'s prefix.
+    #[test]
+    fn delete_files_takes_only_that_jars_copies() {
+        let dir = temp_dir("jar-delete-files");
+        let one = JarKey::Named(NodeId { actor: ActorId(7), counter: 1 });
+        let twelve = JarKey::Named(NodeId { actor: ActorId(7), counter: 12 });
+        let (a, b) = (one.file_name(), twelve.file_name());
+        let gone =
+            [a.clone(), format!("{a}.unreadable-5"), format!("{a}.unreadable-5-1"), format!("{a}.4294967295.tmp")];
+        let kept =
+            [format!("{a}.{}.tmp", std::process::id()), b.clone(), format!("{b}.unreadable-5"), "default.json".into()];
+        for name in gone.iter().chain(&kept) {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        Jar::delete_files(&dir, one).unwrap();
+        for name in &gone {
+            assert!(!dir.join(name).exists(), "{name}");
+        }
+        for name in &kept {
+            assert!(dir.join(name).exists(), "{name}");
+        }
     }
 
     #[test]

@@ -2841,6 +2841,30 @@ mod tests {
         assert!(!app.jars.contains_key(&key));
     }
 
+    /// Final review I2: an unreadable copy or a crashed save's temp file is a full copy of the jar's credentials, so
+    /// deleting the jar takes them too. A live process's temp file and other jars' files stay.
+    #[test]
+    fn deleting_a_jar_removes_its_unreadable_copies_and_dead_temp_files() {
+        let dir = store::testutil::temp_dir("jar-delete-asides");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let home = app.create_jar("Home");
+        let (w, h) = (jar::JarKey::Named(work).file_stem(), jar::JarKey::Named(home).file_stem());
+        let live = format!("{w}.json.{}.tmp", std::process::id());
+        let gone = [format!("{w}.json"), format!("{w}.json.unreadable-100"), format!("{w}.json.4294967295.tmp")];
+        let kept = [live, format!("{h}.json"), format!("{h}.json.unreadable-100"), "default.json".to_string()];
+        for name in gone.iter().chain(&kept) {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        app.delete_jar(work);
+        for name in &gone {
+            assert!(!dir.join(name).exists(), "{name} should be deleted");
+        }
+        for name in &kept {
+            assert!(dir.join(name).exists(), "{name} should be kept");
+        }
+    }
+
     #[test]
     fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
         let mut app = App::default();
