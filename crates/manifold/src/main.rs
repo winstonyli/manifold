@@ -1808,6 +1808,11 @@ impl App {
         self.replace_running_session(&json);
     }
 
+    /// Whether the first-launch demo can render here: its `manifold://` pages need WebView2.
+    fn demo_available(&self) -> bool {
+        !matches!(self.engine_state(EngineKind::Webview2), engine_install::EngineState::Unavailable(_))
+    }
+
     /// The one-time first-launch experience for a brand-new install -- see
     /// `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// exactly when this fires instead of `spawn_root_tab`. A small,
@@ -1823,8 +1828,12 @@ impl App {
     /// stealing focus from the intended main tab, not `Root`'s own "jump
     /// straight to Tab view" behavior, which would hide the very layout
     /// this exists to show off.
+    ///
+    /// Always WebView2, whatever the default engine: it is the only engine that serves `manifold://` (see
+    /// `docs/superpowers/specs/2026-09-19-manifold-scheme-design.md`). Where WebView2 is unavailable the caller opens
+    /// a normal root tab instead (`demo_available`).
     fn spawn_first_launch_demo(&mut self) {
-        let kind = self.settings.default_starting_engine;
+        let kind = EngineKind::Webview2;
         let zoom = self.settings.zoom_factor;
 
         let welcome_id = self.alloc_node_id();

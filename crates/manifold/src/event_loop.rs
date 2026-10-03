@@ -75,7 +75,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.open_store();
         if !self.restore_session() {
-            if self.settings.has_shown_first_launch_demo {
+            if self.settings.has_shown_first_launch_demo || !self.demo_available() {
                 self.spawn_root_tab();
             } else {
                 self.spawn_first_launch_demo();
