@@ -147,16 +147,69 @@ fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(blob.to_vec())
 }
 
-/// `default.json.unreadable-<unix seconds>`, with `-<n>` added if that name is taken.
+/// How many `default.json.unreadable-*` files are kept. Each holds credentials, so older ones are deleted.
+const KEEP_ASIDES: usize = 5;
+
+/// The `default.json.unreadable-<secs>[-<n>]` files in `dir` with their `(secs, n)` (`n` is 0 when absent), which
+/// orders them oldest to newest.
+fn asides_in(dir: &Path) -> Vec<((u64, u64), PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let name = e.file_name().into_string().ok()?;
+            let rest = name.strip_prefix("default.json.unreadable-")?;
+            let (secs, n) = rest.split_once('-').unwrap_or((rest, "0"));
+            Some(((secs.parse().ok()?, n.parse().ok()?), e.path()))
+        })
+        .collect()
+}
+
+/// Deletes all but the `KEEP_ASIDES` newest unreadable files in `dir`.
+fn prune_asides(dir: &Path) {
+    let mut asides = asides_in(dir);
+    asides.sort_by_key(|a| std::cmp::Reverse(a.0));
+    for (_, old) in asides.into_iter().skip(KEEP_ASIDES) {
+        if let Err(e) = std::fs::remove_file(&old) {
+            eprintln!("jar: could not delete an old unreadable jar file: {e}");
+        }
+    }
+}
+
+/// Writes `bytes` to a new file only the current user can read where the OS has file modes (0600 on Unix). On
+/// Windows the file gets the profile folder's ACL; the content is DPAPI-protected there.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        // `mode` applies only when the file is created, so a leftover with looser permissions goes first.
+        let _ = std::fs::remove_file(path);
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
+/// `default.json.unreadable-<unix seconds>`, or, when that second already has one, `-<n>` past its highest `n`, so a
+/// new name always sorts newest (a pruned name is never reused for a newer file).
 fn unique_aside(dir: &Path) -> PathBuf {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let mut aside = dir.join(format!("default.json.unreadable-{secs}"));
-    let mut n = 1;
-    while aside.exists() {
-        aside = dir.join(format!("default.json.unreadable-{secs}-{n}"));
+    let mut n = asides_in(dir).iter().filter(|((s, _), _)| *s == secs).map(|((_, n), _)| n + 1).max().unwrap_or(0);
+    loop {
+        let name = if n == 0 {
+            format!("default.json.unreadable-{secs}")
+        } else {
+            format!("default.json.unreadable-{secs}-{n}")
+        };
+        let aside = dir.join(name);
+        if !aside.exists() {
+            return aside;
+        }
         n += 1;
     }
-    aside
 }
 
 impl Jar {
@@ -167,12 +220,12 @@ impl Jar {
 
     /// The saved jar, or an empty one when the file is missing. A file that exists but cannot be read (wrong user
     /// or machine, tampered, truncated, not JSON) is renamed to `default.json.unreadable-<unix seconds>` (never over
-    /// an earlier one). If it cannot be read at all, or cannot be moved aside, the jar is `locked`: usable in
-    /// memory, but `save` writes nothing, so the file is never overwritten. Only reasons are logged, never contents.
+    /// an earlier one; only the `KEEP_ASIDES` newest are kept). If it cannot be read at all, or cannot be moved
+    /// aside, the jar is `locked`: usable in memory, but `save` writes nothing, so the file is never overwritten.
+    /// Only reasons are logged, never contents. A `default.json.<pid>.tmp` is left alone: it may be another running
+    /// instance's save in progress.
     pub fn load(dir: &Path) -> Jar {
         let path = Self::path(dir);
-        // A tmp left by a crash mid-save; harmless, but remove it so it does not linger.
-        let _ = std::fs::remove_file(dir.join("default.json.tmp"));
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Jar::default(),
@@ -189,6 +242,7 @@ impl Jar {
                 match std::fs::rename(&path, &aside) {
                     Ok(()) => {
                         eprintln!("jar: cannot read the jar file ({why}); kept it as {}", aside.display());
+                        prune_asides(dir);
                         Jar::default()
                     }
                     Err(e) => {
@@ -204,17 +258,19 @@ impl Jar {
         Jar { locked: true, ..Jar::default() }
     }
 
-    /// Writes beside the target and renames, so a crash mid-write leaves the old jar. The file is `MJR1` then the
-    /// protected JSON. A locked jar writes nothing (`load` already logged why).
+    /// Writes beside the target and renames, so a crash mid-write leaves the old jar. The temp file carries the process
+    /// id, so two instances saving at once do not write into one file. (They still overwrite each other's jar: two
+    /// instances on one profile are not supported in v1.) The file is `MJR1` then the protected JSON. A locked jar
+    /// writes nothing (`load` already logged why).
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         if self.locked {
             return Ok(());
         }
         std::fs::create_dir_all(dir)?;
-        let tmp = dir.join("default.json.tmp");
+        let tmp = dir.join(format!("default.json.{}.tmp", std::process::id()));
         let mut out = MAGIC.to_vec();
         out.extend(protect(&serde_json::to_vec(self).map_err(std::io::Error::other)?)?);
-        std::fs::write(&tmp, out)?;
+        write_private(&tmp, &out)?;
         std::fs::rename(&tmp, Self::path(dir))
     }
 
@@ -452,11 +508,27 @@ mod tests {
     }
 
     #[test]
-    fn load_removes_a_stale_tmp() {
-        let dir = temp_dir("jar-stale-tmp");
-        std::fs::write(dir.join("default.json.tmp"), "old").unwrap();
+    fn load_leaves_another_instances_tmp_alone_and_save_leaves_no_tmp() {
+        let dir = temp_dir("jar-tmp");
+        let theirs = dir.join("default.json.4294967295.tmp");
+        std::fs::write(&theirs, "theirs").unwrap();
         Jar::load(&dir);
-        assert!(!dir.join("default.json.tmp").exists());
+        assert!(theirs.exists(), "another instance may be mid-save");
+        Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
+        assert!(!dir.join(format!("default.json.{}.tmp", std::process::id())).exists());
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"theirs");
+    }
+
+    #[test]
+    fn only_the_five_newest_unreadable_files_are_kept() {
+        let dir = temp_dir("jar-aside-cap");
+        for i in 0..7 {
+            std::fs::write(Jar::path(&dir), format!("bad{i}")).unwrap();
+            Jar::load(&dir);
+        }
+        let mut kept: Vec<_> = asides(&dir).iter().map(|p| std::fs::read_to_string(p).unwrap()).collect();
+        kept.sort();
+        assert_eq!(kept, ["bad2", "bad3", "bad4", "bad5", "bad6"]);
     }
 
     #[test]
