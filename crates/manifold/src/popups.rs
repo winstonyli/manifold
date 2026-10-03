@@ -340,7 +340,12 @@ impl App {
                     ui.set_min_width(240.0);
                     ui.label(heading_text(title));
                     ui.add_space(4.0);
-                    ui.add(egui::Label::new(egui::RichText::new(&detail).small().weak()).wrap());
+                    // The first line is the explanation; any later line is a warning (`download_detail`).
+                    for (i, line) in detail.lines().enumerate() {
+                        let text = egui::RichText::new(line).small();
+                        let text = if i == 0 { text.weak() } else { text.color(crate::theme::ACCENT) };
+                        ui.add(egui::Label::new(text).wrap());
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         yes = ui.button(button).clicked();
