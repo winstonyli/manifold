@@ -110,8 +110,12 @@ impl App {
     /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
     /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
     /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse, a tab with no `jar_tabs` entry
-    /// (closed or replaced since it was asked; deviation 5), or a named jar deleted while it ran.
+    /// (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a host whose jar was
+    /// cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
+        if self.jar_reseed.contains(tab_id) {
+            return false;
+        }
         let Some(pulled) = crate::jar::from_json(json) else { return false };
         let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
         let key = *key;
@@ -169,9 +173,11 @@ impl App {
     }
 
     /// Forgets everything cookie-related about tab `id`'s host (it closed, or a new host replaces it): its `jar_tabs`
-    /// entry, pull bookkeeping and any held answer, which is cancelled, not run against whatever host comes next.
+    /// entry, pull bookkeeping, its reseed mark and any held answer, which is cancelled, not run against whatever host
+    /// comes next.
     pub(crate) fn clear_cookie_state(&mut self, id: &str) {
         self.jar_tabs.remove(id);
+        self.jar_reseed.remove(id);
         self.jar_pulls.remove(id);
         self.jar_silent.remove(id);
         if let Some((_, held)) = self.cookie_holds.remove(id) {
@@ -798,8 +804,9 @@ impl App {
 
     /// Settles requests the engine never answered (hung page, no script
     /// context). A manual one sleeps the tab anyway, without a scroll to
-    /// restore, so Sleep still works on a stuck tab; an idle one is dropped
-    /// and the tab's clock restarts so it is not asked again every sweep.
+    /// restore, so Sleep still works on a stuck tab; an idle or jar-switch one
+    /// is dropped and the tab's clock restarts so it is not asked again every
+    /// sweep (a waiting jar switch is asked again by the next sweep).
     fn expire_pending_sleeps(&mut self, now: std::time::Instant) {
         let dead: Vec<(String, SleepWhy)> = self
             .pending_sleeps
@@ -813,7 +820,7 @@ impl App {
                 SleepWhy::Manual => {
                     self.sleep_now(&id, None);
                 }
-                SleepWhy::Idle => self.idle_clock.restart(&id, now),
+                SleepWhy::Idle | SleepWhy::JarSwitch => self.idle_clock.restart(&id, now),
             }
         }
     }
@@ -822,10 +829,23 @@ impl App {
     /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
     /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
     /// seconds.
+    /// Each sweep also switches the tabs whose jar change was waiting and that now qualify (`sweep_jar_switches`).
     pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
         let now = std::time::Instant::now();
         self.expire_pending_sleeps(now);
-        let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
+        // Taken out so the views can borrow the rest of `self`.
+        let mut clock = std::mem::take(&mut self.idle_clock);
+        let idle = clock.sweep(now, limit, self.tab_idle_views());
+        self.idle_clock = clock;
+        for id in idle {
+            self.request_sleep(&id, SleepWhy::Idle);
+        }
+        self.sweep_jar_switches();
+    }
+
+    /// What the idle and jar-switch sweeps need to know about each live tab.
+    fn tab_idle_views(&self) -> Vec<crate::idle_sleep::TabIdleView<'_>> {
+        let on_screen = self.showing_tab_view().then_some(self.focused.as_deref()).flatten();
         // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
         let downloading: std::collections::HashSet<&str> = self
             .nodes
@@ -833,20 +853,67 @@ impl App {
             .filter(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed))
             .filter_map(|n| n.parent.as_deref())
             .collect();
-        let views = self.nodes.iter().filter_map(|(id, n)| {
-            let t = n.as_tab()?;
-            Some(crate::idle_sleep::TabIdleView {
-                id,
-                on_screen: on_screen.as_deref() == Some(id) || self.split_tab.as_deref() == Some(id),
-                audio_playing: t.audio_playing,
-                pinned: t.pinned,
-                loading: t.loading,
-                downloading: downloading.contains(id.as_str()),
+        self.nodes
+            .iter()
+            .filter_map(|(id, n)| {
+                let t = n.as_tab()?;
+                Some(crate::idle_sleep::TabIdleView {
+                    id,
+                    on_screen: on_screen == Some(id.as_str()) || self.split_tab.as_deref() == Some(id),
+                    audio_playing: t.audio_playing,
+                    pinned: t.pinned,
+                    loading: t.loading,
+                    downloading: downloading.contains(id.as_str()),
+                })
             })
-        });
-        let idle = self.idle_clock.sweep(now, limit, views);
-        for id in idle {
-            self.request_sleep(&id, SleepWhy::Idle);
+            .collect()
+    }
+
+    /// A live WebView2 or CEF tab running on a jar other than the one it now resolves to, or on a jar the user
+    /// cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
+    pub(crate) fn will_switch(&self, id: &str) -> bool {
+        let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
+        let Some((had, _)) = self.jar_tabs.get(id) else { return false };
+        matches!(tab.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
+            && (*had != self.resolved_jar(&tab.jar).0 || self.jar_reseed.contains(id))
+    }
+
+    /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
+    /// new jar (spec table). Runs after a local jar change, a remote batch (`apply_remote`) and each idle sweep, so a
+    /// waiting tab switches once it qualifies (deviation 11). A dirty form keeps it awake (`sleep_state::verdict`).
+    pub(crate) fn sweep_jar_switches(&mut self) {
+        let todo: Vec<String> = self
+            .tab_idle_views()
+            .iter()
+            .filter(|v| self.will_switch(v.id))
+            .filter(|v| {
+                let Some(tab) = self.nodes.get(v.id).and_then(|n| n.as_tab()) else { return false };
+                let had = self.jar_tabs.get(v.id).map(|(k, _)| *k);
+                let focused = self.focused.as_deref() == Some(v.id);
+                let reseed = self.jar_reseed.contains(v.id);
+                sleep_state::jar_switch(had, self.resolved_jar(&tab.jar).0, reseed, v.busy(), focused)
+                    == sleep_state::JarSwitch::SleepNow
+            })
+            .map(|v| v.id.to_string())
+            .collect();
+        for id in todo {
+            self.request_sleep(&id, SleepWhy::JarSwitch);
+        }
+    }
+
+    /// "Switch jar now": the old jar gets the tab's final cookies, then the host is replaced in place by one seeded
+    /// from the new jar (the engine-swap path, same engine).
+    #[allow(dead_code)] // The "will switch" chip (a later task) calls it.
+    pub(crate) fn switch_jar_now(&mut self, id: &str) {
+        let Some((kind, url)) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone())) else {
+            return;
+        };
+        if !self.will_switch(id) {
+            return;
+        }
+        self.pull_cookies(id);
+        if let Some(held) = self.hold_for_cookies(id, Held::Snapshot(kind, url)) {
+            self.run_held(id, held);
         }
     }
 
@@ -1006,11 +1073,11 @@ mod tests {
     fn unanswered_requests_are_settled_after_the_timeout() {
         let mut app = App::default();
         let t0 = std::time::Instant::now();
-        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle)] {
+        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle), ("j", SleepWhy::JarSwitch)] {
             app.pending_sleeps.insert(id.into(), PendingSleep { why, sent: t0 });
         }
         app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
-        assert_eq!(app.pending_sleeps.len(), 2);
+        assert_eq!(app.pending_sleeps.len(), 3);
         app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
         assert!(app.pending_sleeps.is_empty());
     }

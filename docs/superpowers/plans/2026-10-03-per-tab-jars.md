@@ -42,7 +42,7 @@ Each item is a decision the spec leaves open, or a small departure, with the rea
 11. **A tab with a dirty form is asked again each sweep.** A tab that refused a jar switch is re-asked every idle sweep (`SWEEP_EVERY`, 10 s) until it qualifies. The spec says "switches when it next qualifies". This is the cheapest way to notice when it does. Each attempt is one cookie pull plus one `QueryPageState`.
 12. **Re-snapshot runs on any move.** An unset tab's snapshot is refreshed on every move between groups: drop, eject, Join, Merge, and Dissolve (members move to the parent). The spec says "moving".
 13. **A tab menu shows the jar list only for tabs.** The Tab and Unloaded menus show it; other kinds (notes, images and so on) do not, since they have no host.
-14. **Clearing a jar also respawns tabs that are not busy.** "Clear cookies" on a jar used by live tabs sends those tabs through the switch flow, so a busy tab keeps the old cookies until it qualifies, as the spec says. A not-busy tab is respawned at once, not slept. This stays within "puts the live tabs using it through the switch flow".
+14. **Clearing a jar switches the live tabs using it.** "Clear cookies" on a jar used by live tabs sends those tabs through the switch flow, so a busy tab keeps the old cookies until it qualifies, as the spec says. Until its host is replaced, such a tab's pulls are dropped (`jar_reseed`), so the old cookies its engine still holds cannot refill the cleared jar. This stays within "puts the live tabs using it through the switch flow".
 
 ## Global Constraints
 

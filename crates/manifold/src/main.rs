@@ -895,6 +895,10 @@ struct App {
     /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
     /// the tab itself reported can be deleted by its absence.
     jar_tabs: HashMap<String, (jar::JarKey, jar::TabCookies)>,
+    /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
+    /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
+    /// leaves when its host is replaced or closed (`clear_cookie_state`).
+    jar_reseed: HashSet<String>,
     /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts.
     jar_snapshots: Arc<std::sync::Mutex<BTreeMap<jar::JarKey, jar::Jar>>>,
     /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
@@ -1411,6 +1415,7 @@ impl Default for App {
             pending_sleeps: HashMap::new(),
             jars,
             jar_tabs: HashMap::new(),
+            jar_reseed: HashSet::new(),
             jar_snapshots,
             cookie_holds: HashMap::new(),
             jar_last_pull: None,
@@ -2824,6 +2829,51 @@ mod tests {
         app.delete_jar(work);
         assert!(!jar::Jar::path(&dir, key).exists());
         assert!(!app.jars.contains_key(&key));
+    }
+
+    #[test]
+    fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        // A stale entry from before it slept, on a key other than the one it now resolves to.
+        app.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
+        app.set_tab_jar(&t, Some(work));
+        assert!(!app.will_switch(&t), "asleep: it spawns into the new jar");
+        app.jar_reseed.insert(t.clone());
+        assert!(!app.will_switch(&t), "asleep: a reseed spawns into the cleared jar anyway");
+        assert!(app.pending_sleeps.is_empty(), "the sweeps after each jar change asked nothing of it");
+        // A host spawned with Work whose jar is then deleted must head for Default.
+        app.jar_tabs.insert(t.clone(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        app.forget_jar(work);
+        assert_eq!(app.resolved_jar(&app.tab_jar(&t).unwrap()).0, jar::JarKey::Default);
+    }
+
+    #[test]
+    fn clearing_a_jar_marks_its_running_tabs_for_a_reseed() {
+        let mut app = App::default();
+        app.jar_tabs.insert("a".into(), (jar::JarKey::Default, jar::TabCookies::default()));
+        let work = app.create_jar("Work");
+        app.jar_tabs.insert("b".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        app.clear_jar_cookies(jar::JarKey::Default);
+        assert!(app.jar_reseed.contains("a"));
+        assert!(!app.jar_reseed.contains("b"), "another jar's tab keeps its host");
+        app.clear_cookie_state("a");
+        assert!(!app.jar_reseed.contains("a"));
+    }
+
+    /// The pull `request_sleep` (or a timed pull, or one already in flight) sends a reseed tab still returns the
+    /// cookies its engine was seeded with; they must not refill the jar the user just cleared.
+    #[test]
+    fn a_cleared_jar_is_not_refilled_by_its_old_tabs_pulls() {
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        app.clear_jar_cookies(jar::JarKey::Default);
+        assert!(!app.apply_pulled_cookies("a", SID), "a host still holding the old cookies: dropped");
+        assert!(default_jar(&app).cookies.is_empty());
+        app.clear_cookie_state("a"); // its replacement host landed
+        on_default(&mut app, "a");
+        assert!(app.apply_pulled_cookies("a", SID), "the new host's pulls count again");
     }
 
     #[test]

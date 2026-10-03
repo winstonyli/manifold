@@ -22,6 +22,13 @@ pub(crate) struct TabIdleView<'a> {
     pub(crate) downloading: bool,
 }
 
+impl TabIdleView<'_> {
+    /// On screen, playing audio, pinned, loading or downloading: never put to sleep by a sweep or a jar switch.
+    pub(crate) fn busy(&self) -> bool {
+        self.on_screen || self.audio_playing || self.pinned || self.loading || self.downloading
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct IdleClock {
     seen: HashMap<String, Instant>,
@@ -49,9 +56,8 @@ impl IdleClock {
         let mut idle = Vec::new();
         for tab in tabs {
             live.insert(tab.id.to_string());
-            let busy = tab.on_screen || tab.audio_playing || tab.pinned || tab.loading || tab.downloading;
             let seen = self.seen.entry(tab.id.to_string()).or_insert(now);
-            if busy {
+            if tab.busy() {
                 *seen = now;
             } else if limit.is_some_and(|l| now.duration_since(*seen) >= l) {
                 idle.push(tab.id.to_string());
@@ -114,6 +120,17 @@ mod tests {
         // The clock restarted at `later`, not at `t0`.
         assert!(clock.sweep(later + Duration::from_secs(30), LIMIT, [tab("on")]).is_empty());
         assert_eq!(clock.sweep(later + Duration::from_secs(60), LIMIT, [tab("on")]), vec!["on"]);
+    }
+
+    #[test]
+    fn busy_is_any_reason_to_stay_awake() {
+        let quiet = tab("a");
+        assert!(!quiet.busy());
+        assert!(TabIdleView { on_screen: true, ..tab("a") }.busy());
+        assert!(TabIdleView { audio_playing: true, ..tab("a") }.busy());
+        assert!(TabIdleView { pinned: true, ..tab("a") }.busy());
+        assert!(TabIdleView { loading: true, ..tab("a") }.busy());
+        assert!(TabIdleView { downloading: true, ..tab("a") }.busy());
     }
 
     #[test]

@@ -52,7 +52,8 @@ impl App {
     }
 
     /// The user deleted jar `id`: tabs and groups that named it fall back to the default jar (deviation 9), then it is
-    /// forgotten. Its document node is deleted by the next save (`diff`: live no longer has it).
+    /// forgotten and the live tabs that used it switch. Its document node is deleted by the next save (`diff`: live no
+    /// longer has it).
     #[allow(dead_code)] // The jars page (a later task) calls it.
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
         for node in self.nodes.values_mut() {
@@ -64,10 +65,12 @@ impl App {
             }
         }
         self.forget_jar(id);
+        self.sweep_jar_switches();
     }
 
     /// Drops jar `id` (a local or remote delete): its definition, its cookies and its file. A tab still running on it
-    /// has its pulls dropped (`apply_pulled_cookies`).
+    /// has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it switches: the caller
+    /// sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
         self.jar_defs.remove(&id);
         let key = JarKey::Named(id);
@@ -140,10 +143,18 @@ impl App {
     #[allow(dead_code)] // The tab's jar menu (a later task) calls it.
     pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
         self.put_tab_jar(id, JarChoice { jar, set: true });
+        self.sweep_jar_switches();
     }
 
     /// "Follow group's jar": clears the pick and re-snapshots from where the tab sits.
+    #[allow(dead_code)] // The tab's jar menu (a later task) calls it; `refollow` uses `resnapshot`.
     pub(crate) fn follow_group_jar(&mut self, id: &str) {
+        self.resnapshot(id);
+        self.sweep_jar_switches();
+    }
+
+    /// `follow_group_jar` without the sweep, for `refollow`'s loop.
+    fn resnapshot(&mut self, id: &str) {
         let group = self.nodes.get(id).and_then(|n| n.group.clone());
         self.put_tab_jar(id, self.new_tab_jar(group.as_deref()));
     }
@@ -159,9 +170,10 @@ impl App {
             .collect();
         for t in tabs {
             if self.tab_jar(&t).is_some_and(|c| !c.set) {
-                self.follow_group_jar(&t);
+                self.resnapshot(&t);
             }
         }
+        self.sweep_jar_switches();
     }
 
     /// Whether `at` sits somewhere inside group `group`.
@@ -222,6 +234,7 @@ impl App {
         for t in &targets {
             self.put_tab_jar(t, JarChoice { jar: Some(jar), set: false });
         }
+        self.sweep_jar_switches();
         targets.len()
     }
 
@@ -270,8 +283,8 @@ impl App {
         }
     }
 
-    /// Empties `key`'s jar and saves it. Task 6 also switches the live tabs using it (their engines still hold the
-    /// old cookies). A named jar that no longer exists is left alone, so no file is written for it.
+    /// Empties `key`'s jar and saves it, then switches the live tabs running on it (deviation 14): their engines still
+    /// hold the old cookies. A named jar that no longer exists is left alone, so no file is written for it.
     #[allow(dead_code)] // The jars page's "Clear cookies" (a later task) calls it.
     pub(crate) fn clear_jar_cookies(&mut self, key: JarKey) {
         if matches!(key, JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
@@ -284,6 +297,11 @@ impl App {
         jar.cookies.clear();
         self.publish_jar(key, jar);
         self.save_jar(key);
+        // Their engines still hold the old cookies: they must be replaced although their key is unchanged.
+        let running: Vec<String> =
+            self.jar_tabs.iter().filter(|(_, (k, _))| *k == key).map(|(id, _)| id.clone()).collect();
+        self.jar_reseed.extend(running);
+        self.sweep_jar_switches();
     }
 
     /// A `Kind::Jar` change from the document: applies the fields that differ from what this replica last saw.

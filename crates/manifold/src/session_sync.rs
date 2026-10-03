@@ -748,6 +748,9 @@ impl App {
             }
         }
         self.collapse_toasts_since(toasts);
+        // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is in, so
+        // a tab is judged by where the batch leaves it.
+        self.sweep_jar_switches();
     }
 
     /// Removes a node another replica deleted, recording nothing and saving
