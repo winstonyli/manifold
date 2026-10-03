@@ -21,6 +21,7 @@ mod idle_sleep;
 mod image_view;
 mod input;
 mod jar;
+mod jar_defs;
 mod json_file;
 mod json_level;
 mod json_level_ui;
@@ -56,7 +57,7 @@ use node_menu::*;
 use view_modes::*;
 use zoom_chip::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
@@ -763,6 +764,14 @@ impl TabSpawn {
     }
 }
 
+/// A named jar's synced definition (a `Kind::Jar` node). Not a graph node (spec "Data model").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct JarDef {
+    pub(crate) name: String,
+    pub(crate) color: Option<egui::Color32>,
+    pub(crate) ephemeral: bool,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     /// The OS window title `update_window_title` last actually set --
@@ -943,6 +952,9 @@ struct App {
     /// now differs, so a remote change to one field doesn't overwrite
     /// another field's unsaved local value.
     last_shared: HashMap<String, session_sync::Shared>,
+    /// Named jars' synced definitions (spec "Data model"). A jar is a `Kind::Jar` store node but never a graph node:
+    /// `session_sync` bridges this map to the document.
+    jar_defs: BTreeMap<store::model::NodeId, JarDef>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
@@ -1406,6 +1418,7 @@ impl Default for App {
             navigated_from: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
+            jar_defs: BTreeMap::new(),
             local_written: None,
             local_written_at: std::time::Instant::now(),
             closed_changed_at: None,

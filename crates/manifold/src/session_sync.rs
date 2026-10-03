@@ -382,6 +382,15 @@ impl App {
             });
             out.insert(id, Shared { kind, group: parse_id(&node.group), fields });
         }
+        // Jar definitions are not graph nodes but must be live, or `diff` deletes their document nodes.
+        for (id, def) in &self.jar_defs {
+            let fields = Fields::from([
+                (field::COLOR, color_value(def.color)),
+                (field::NAME, str(&def.name)),
+                (field::EPHEMERAL, FieldValue::Bool(def.ephemeral)),
+            ]);
+            out.insert(*id, Shared { kind: Kind::Jar, group: None, fields });
+        }
         out
     }
 
@@ -415,6 +424,13 @@ impl App {
         group: Option<String>,
         local: Option<&LocalNode>,
     ) {
+        if kind == Kind::Jar {
+            let Ok(jar) = id.parse::<NodeId>() else { return };
+            let now = Shared { kind, group: None, fields: fields.clone() };
+            let seen = self.last_shared.insert(id, now.clone());
+            self.materialize_jar(jar, fields, &seen, &now);
+            return;
+        }
         if self.spawning.contains_key(&id) {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
@@ -711,7 +727,12 @@ impl App {
     /// tabs"): another replica opening a big session mustn't start an
     /// engine here for every tab in it.
     pub(crate) fn apply_remote(&mut self, mut changes: Vec<RemoteChange>) {
-        changes.sort_by_key(|(_, c)| !matches!(c, Some((Kind::Group, ..))));
+        // Jars first, then groups: a tab naming a jar created in the same batch resolves at once.
+        changes.sort_by_key(|(_, c)| match c {
+            Some((Kind::Jar, ..)) => 0,
+            Some((Kind::Group, ..)) => 1,
+            _ => 2,
+        });
         let toasts = self.save_toast_queue.len();
         for (id, change) in changes {
             let key = id.to_string();
@@ -737,6 +758,10 @@ impl App {
     /// from there, and one only this replica has lands where the store
     /// would show it. Either way no live node names a removed group.
     pub(crate) fn remove_remotely_deleted(&mut self, id: &str) {
+        if let Some(jar) = id.parse::<NodeId>().ok().filter(|j| self.jar_defs.contains_key(j)) {
+            self.forget_jar(jar);
+            return;
+        }
         let Some(node) = self.nodes.get(id) else { return };
         let (parent, up) = (node.parent.clone(), node.group.clone());
         let is_group = node.as_group().is_some();
@@ -993,13 +1018,18 @@ impl App {
             Some(Ok(Some(bytes))) => LocalState::from_bytes(&bytes).unwrap_or_default(),
             _ => LocalState::default(),
         };
+        let toasts = self.save_toast_queue.len();
+        // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
+        for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| *kind == Kind::Jar) {
+            self.materialize(id.to_string(), *kind, fields, None, None);
+        }
+        nodes.retain(|(_, kind, ..)| *kind != Kind::Jar);
         if nodes.is_empty() {
             self.restore_closed(local.closed);
             self.local_written = Some(self.local_state());
             return false;
         }
         nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
-        let toasts = self.save_toast_queue.len();
         for (id, kind, fields, group) in &nodes {
             let group = group.map(|g| g.to_string());
             // The store's own `pos` still becomes `last_shared` inside
@@ -1360,12 +1390,34 @@ impl App {
         root: Option<ImportRoot>,
         keep_live_parents: bool,
     ) {
+        let mut imported = imported;
+        // A jar named like an existing one is that jar (deviation 4): its tabs and groups point at the existing id.
+        let mut alias: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        imported.retain(|i| {
+            if i.kind != Kind::Jar {
+                return true;
+            }
+            let name = match i.fields.get(&field::NAME) {
+                Some(FieldValue::Str(s)) => s.as_str(),
+                _ => "",
+            };
+            match self.jar_named(name) {
+                Some(existing) => {
+                    alias.insert(i.id, existing);
+                    false
+                }
+                None => true,
+            }
+        });
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
         let (dest, root_pos) = root.map_or((None, None), |r| (r.group, r.pos));
-        let mut imported = imported;
-        imported.sort_by_key(|i| i.kind != Kind::Group);
+        imported.sort_by_key(|i| match i.kind {
+            Kind::Jar => 0,
+            Kind::Group => 1,
+            _ => 2,
+        });
         let toasts = self.save_toast_queue.len();
         for node in imported {
             let is_root = Some(node.id) == root_id;
@@ -1374,6 +1426,13 @@ impl App {
                 _ => dest.clone(),
             };
             let mut fields = imported_fields(node.kind, &node.fields);
+            for no in [field::JAR, field::DEFAULT_JAR] {
+                if let Some(FieldValue::Id(Some(j))) = fields.get_mut(&no) {
+                    if let Some(existing) = alias.get(j) {
+                        *j = *existing;
+                    }
+                }
+            }
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
                 let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(&p.to_string());
                 *parent = parent.filter(|p| ids.contains(p) || live(p));
@@ -1468,7 +1527,7 @@ impl App {
         self.host_loads.clear();
         self.navigated_from.clear();
         self.remote_in_flight.clear();
-        self.last_shared.clear();
+        self.last_shared.clear(); // `jar_defs` stays: jars are not part of the graph being replaced
         self.pending_local = None;
         self.session_generation += 1;
     }
@@ -2655,6 +2714,86 @@ pub(crate) mod tests {
     fn json_node(id: &str, kind: &str, fields: serde_json::Value) -> crate::store::json::JsonNode {
         let serde_json::Value::Object(fields) = fields else { panic!("fields are an object") };
         crate::store::json::JsonNode { id: id.into(), kind: kind.into(), fields }
+    }
+
+    #[test]
+    fn a_jar_def_is_saved_as_a_jar_node_and_survives_later_saves() {
+        let dir = crate::store::testutil::temp_dir("jar-def-saved");
+        let mut app = app_on(&dir.join("session.mnf"), 1);
+        add(&mut app, sleeping_tab("https://a.com/", "A"));
+        let jar = app.create_jar("Work");
+        app.save_session();
+        let doc = app.journal.as_ref().unwrap().doc();
+        let node = doc.nodes.get(&jar).filter(|n| n.is_live()).expect("jar node created");
+        assert_eq!(node.kind, Kind::Jar);
+        assert_eq!(fields_of(node).get(&field::NAME), Some(&FieldValue::Str("Work".into())));
+        app.save_session();
+        assert!(app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "a second save must not delete it");
+        assert!(!app.nodes.contains_key(&jar.to_string()), "a jar never enters the graph");
+    }
+
+    #[test]
+    fn remote_jar_create_rename_and_delete_reach_jar_defs() {
+        let jar = id(40);
+        let named = |name: &str| shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str(name.into()))]);
+        let mut app = app_with(&BTreeMap::from([(jar, named("Home"))]));
+        assert_eq!(app.jar_defs[&jar].name, "Home");
+        assert!(!app.nodes.contains_key(&jar.to_string()), "never a graph node");
+        app.apply_remote(vec![(jar, Some((Kind::Jar, named("House").fields, None)))]);
+        assert_eq!(app.jar_defs[&jar].name, "House");
+        assert_eq!(app.shared_nodes()[&jar], named("House"), "projects back unchanged");
+        app.apply_remote(vec![(jar, None)]);
+        assert!(!app.jar_defs.contains_key(&jar));
+    }
+
+    #[test]
+    fn a_session_with_only_jars_still_restores_them() {
+        let dir = crate::store::testutil::temp_dir("jar-only-restore");
+        let path = dir.join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
+        let jar = app.create_jar("Work");
+        app.save_session();
+        app.nodes.remove(&tab);
+        app.save_session();
+        drop(app);
+        let mut back = app_on(&path, 3);
+        assert!(!back.restore_session(), "no graph node: a fresh start");
+        assert_eq!(back.jar_defs[&jar].name, "Work", "but the jar is kept, so the next save keeps it");
+        back.save_session();
+        assert!(back.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
+    }
+
+    #[test]
+    fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
+        let mut app = App::default();
+        let jar = app.create_jar("Work");
+        let tab = add(&mut app, sleeping_tab("https://a.com/", "A"));
+        let mut group = GroupPayload::named("G");
+        group.default_jar = Some(jar);
+        let grp = add(&mut app, NodePayload::Group(group));
+        let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload else { panic!("sleeping tab") };
+        t.jar = crate::jar::JarChoice { jar: Some(jar), set: true };
+        app.delete_jar(jar);
+        assert!(app.jar_defs.is_empty());
+        assert_eq!(app.nodes[&tab].payload.as_unloaded().unwrap().jar.jar, None);
+        assert_eq!(app.nodes[&grp].as_group().unwrap().default_jar, None);
+    }
+
+    #[test]
+    fn opening_a_session_reuses_a_jar_with_the_same_name() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        // A file exported elsewhere: a jar "Work" (label j) and a tab using it.
+        let json = serde_json::json!({ "nodes": [
+            json_node("j", "jar", serde_json::json!({ "name": "Work" })),
+            json_node("t", "tab", serde_json::json!({ "url": "https://a.com/", "jar": "j", "jar_set": true })),
+        ]});
+        let doc: JsonDoc = serde_json::from_value(json).unwrap();
+        app.replace_running_session(&doc);
+        assert_eq!(app.jar_defs.len(), 1, "no second Work");
+        let tab = app.nodes.values().find_map(|n| n.payload.as_unloaded()).expect("tab imported");
+        assert_eq!(tab.jar.jar, Some(work));
     }
 
     /// A reopened tab comes back asleep, starting no engine, and keeps its
