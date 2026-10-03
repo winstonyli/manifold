@@ -20,6 +20,9 @@ mod history;
 mod idle_sleep;
 mod image_view;
 mod input;
+// Unused until the IPC, host and App wiring tasks of the cookie-jar plan land.
+#[allow(dead_code)]
+mod jar;
 mod json_file;
 mod json_level;
 mod json_level_ui;

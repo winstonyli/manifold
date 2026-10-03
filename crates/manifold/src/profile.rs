@@ -48,6 +48,13 @@ pub fn content_dir() -> Option<PathBuf> {
     Some(dir()?.join("content"))
 }
 
+/// Where cookie jars live (`jar::Jar`). `None` like `dir()`.
+// Unused until App loads and saves the jar (cookie-jar plan).
+#[allow(dead_code)]
+pub fn jars_dir() -> Option<PathBuf> {
+    Some(dir()?.join("jars"))
+}
+
 /// The per-user data directory (Known Folders on Windows, which puts it at
 /// `%APPDATA%\manifold\manifold\data`; XDG on Linux; Application Support on
 /// macOS) where `process_manager::engine_binary_path` looks for an engine
@@ -73,6 +80,7 @@ mod tests {
         assert_eq!(super::engine_data_dir(), None);
         assert_eq!(super::cef_cache_dir(), None);
         assert_eq!(super::content_dir(), None);
+        assert_eq!(super::jars_dir(), None);
     }
 
     #[test]
