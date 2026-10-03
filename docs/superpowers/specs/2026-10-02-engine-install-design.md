@@ -129,3 +129,9 @@ CEF on Linux needs `libnss3` and `libnspr4` from the system. `CefPlatform::syste
 `missing_system_libs()` reads `ldconfig -p` (cached 10 s) and the Download confirm dialog adds a "Missing system
 libraries: ..." line before the 321 MB download. It is a warning, not a block: if `ldconfig` cannot be run, nothing is
 shown, since unknown is not missing. Checked in WSL with a stub `ldconfig` that omits `libnspr4.so`: it reports exactly that one; real `ldconfig` reports none. The dialog text is unit-tested; the rendered dialog was not viewed.
+
+## Windows package install check (2026-10-02)
+
+From the unzipped `manifold-v0.1.0-windows-x64.zip` with a temp `APPDATA`: `INSTALLENGINE cef` went Installing 0% to Installed in 63 s
+(405 MB on disk, `libcef.dll`, `ready` and a host copy in `data/engine-hosts/cef-runtime`). A restart with a CEF tab on a local
+page then loaded it (the page reported `load y=0`) and exited cleanly with no manifold process left. The temp profile was deleted.
