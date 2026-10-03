@@ -147,15 +147,20 @@ impl App {
             }
             ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
         }
-        for node in self.nodes.values_mut() {
+        let mut moved = Vec::new();
+        for (id, node) in self.nodes.iter_mut() {
             if node.group.as_deref() == Some(source) {
                 node.group = Some(target.to_string());
+                moved.push(id.clone());
             }
         }
         self.nodes.remove(source);
         self.node_order.retain(|g| g != source);
         self.forget_removed_group(source);
-        self.refollow(target);
+        // Only the members that moved: `target`'s own tabs keep their jar (deviation 12).
+        for member in moved {
+            self.refollow(&member);
+        }
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?

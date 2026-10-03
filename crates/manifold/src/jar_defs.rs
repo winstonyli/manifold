@@ -422,6 +422,25 @@ mod tests {
         assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
     }
 
+    /// A merge re-snapshots only the members that moved: a tab already in the target keeps its jar, even one that
+    /// differs from what it would inherit now (spec: "Clear default" leaves existing tabs alone).
+    #[test]
+    fn a_merge_leaves_the_targets_own_tabs_alone() {
+        let mut app = App::default();
+        let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+        let h = group_in(&mut app, None);
+        let stayed = tab_in(&mut app, Some(&h));
+        app.set_group_default_jar(&h, home);
+        app.clear_group_default_jar(&h);
+        let w = group_in(&mut app, None);
+        let moved = tab_in(&mut app, Some(&w));
+        app.set_group_default_jar(&w, work);
+        app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
+        assert_eq!(app.nodes[&moved].group.as_deref(), Some(h.as_str()));
+        assert_eq!(jar_of(&app, &moved), JarChoice::default(), "a moved member re-snapshots: `h` has no default");
+        assert_eq!(jar_of(&app, &stayed), JarChoice { jar: Some(home), set: false }, "a tab that never moved");
+    }
+
     /// The real move paths, not `refollow` called by hand: each re-snapshots unset tabs and leaves set ones.
     #[test]
     fn every_move_between_groups_re_snapshots_unset_tabs() {
@@ -456,6 +475,7 @@ mod tests {
         // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
         let inner = group_in(&mut app, Some(&h));
         app.nodes.get_mut(&unset).unwrap().group = Some(inner.clone());
+        app.put_tab_jar(&unset, JarChoice { jar: Some(work), set: false }); // stale, so the dissolve must fix it
         app.dissolve_group(&inner);
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
         app.dissolve_group(&h);
