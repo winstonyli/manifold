@@ -555,6 +555,7 @@ impl App {
         if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
             self.node_menu = None;
         }
+        self.drop_stray_jar_name();
         let current = self.node_menu.clone().and_then(|(id, pos)| self.node_menu_view(&id).map(|view| (id, pos, view)));
         let Some(((id, pos, view), fade)) =
             fade_popup_state(ui.ctx(), egui::Id::new("node_menu_fade"), &current, &mut self.node_menu_cache)
@@ -596,6 +597,15 @@ impl App {
             if !ui.input(|i| i.pointer.any_click()) {
                 ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
             }
+        }
+    }
+
+    /// "New Jar..."'s name field belongs to its tab's open menu: once that menu is closed (Escape, a click on empty
+    /// graph) or another node's menu opens, the draft is dropped, so it can't reappear the next time the tab's menu
+    /// opens.
+    fn drop_stray_jar_name(&mut self) {
+        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.node_menu.as_ref().map(|(id, _)| id) != Some(tid)) {
+            self.naming_jar = None;
         }
     }
 
@@ -651,14 +661,16 @@ impl App {
         };
         if let Some(choice) = self.tab_jar(id) {
             let group_default = self.inherited_jar(node.group.as_deref());
+            // Tick the jar the tab uses: Default for one naming a jar deleted elsewhere.
+            let (key, _) = self.resolved_jar(&choice);
             let mut rows = vec![JarRow {
                 id: None,
                 name: "Default".into(),
                 color: None,
-                ticked: choice.jar.is_none(),
+                ticked: key == crate::jar::JarKey::Default,
                 count: None,
             }];
-            rows.extend(named(&|j| choice.jar == Some(j), &|_| None));
+            rows.extend(named(&|j| key == crate::jar::JarKey::Named(j), &|_| None));
             return Some(JarMenu {
                 rows,
                 can_follow: choice.set && group_default.is_some(),
@@ -677,6 +689,7 @@ impl App {
             has_default: g.default_jar.is_some(),
         })
     }
+
     /// Applies whichever item was clicked in a node's right-click menu.
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
@@ -1009,6 +1022,30 @@ mod tests {
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         let shown: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect();
         assert_eq!(shown, [("Default", false), ("Work", true)]);
+        app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
+        let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
+        assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect::<Vec<_>>(), [("Default", true)]);
+    }
+
+    /// "New Jar..."'s draft goes with its menu: closed, or another node's menu open, drops it.
+    #[test]
+    fn a_jar_name_draft_does_not_outlive_its_menu() {
+        let mut app = App::default();
+        let ctx = egui::Context::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let u = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://b/", "B"));
+        app.node_menu = Some((t.clone(), egui::Pos2::ZERO));
+        app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+        app.drop_stray_jar_name();
+        assert!(app.naming_jar.is_some(), "its own menu is open");
+        app.node_menu = Some((u, egui::Pos2::ZERO));
+        app.drop_stray_jar_name();
+        assert_eq!(app.naming_jar, None, "another node's menu opened");
+        app.node_menu = Some((t.clone(), egui::Pos2::ZERO));
+        app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+        app.node_menu = None;
+        app.drop_stray_jar_name();
+        assert_eq!(app.naming_jar, None, "the menu closed");
     }
 
     /// A group lists only named jars, each with how many tabs picking it would change, and offers "Clear Default

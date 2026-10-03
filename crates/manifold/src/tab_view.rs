@@ -344,7 +344,7 @@ impl App {
             actions.toggle_bookmark_requested = true;
         }
         // The jar dot, beside the address bar (spec "UI"): the card chip's colour, its name and warnings as hover
-        // text. A click switches a tab that is waiting to.
+        // text. A click switches a tab that is waiting to, unless another host change is already on its way.
         if let Some(chip) = self.jar_chip(focused_id) {
             let (rect, response) = trailing_ui.allocate_exact_size(egui::vec2(16.0, 28.0), egui::Sense::click());
             let color = if chip.missing { trailing_ui.visuals().warn_fg_color } else { chip.color };
@@ -361,9 +361,9 @@ impl App {
             }
             let response = response.on_hover_text(hover);
             let response =
-                if chip.will_switch { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+                if chip.can_switch_now { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
             if response.clicked() {
-                actions.switch_jar = chip.will_switch;
+                actions.switch_jar = chip.can_switch_now;
             }
         }
         let trailing_width = trailing_ui.min_rect().width();

@@ -22,6 +22,9 @@ pub(crate) struct JarChip {
     /// The live tab still runs on the jar it spawned with (`App::will_switch`): the chip shows that jar's dot
     /// (`was_color`), an arrow, then this one.
     pub(crate) will_switch: bool,
+    /// "Switch Jar Now" would act (`App::can_switch_jar_now`): not while a sleep, swap or earlier switch is on its
+    /// way. Only then do the hover texts offer it and Tab view's dot take a click.
+    pub(crate) can_switch_now: bool,
     pub(crate) was_color: egui::Color32,
     /// A Servo or WebKit tab on a named jar: its engine ignores jars (spec "Hosts").
     pub(crate) engine_ignores: bool,
@@ -40,15 +43,21 @@ pub(crate) enum JarConfirm {
 pub(crate) const SWITCH_NOW_HINT: &str = "right-click for Switch Jar Now";
 
 /// The chip's hover text while a live tab waits to switch. `cleared`: its jar's cookies were cleared under it, so its
-/// pulls are dropped until it restarts (Task 6 ruling), and `target` is where it restarts.
-pub(crate) fn will_switch_tooltip(cleared: bool, target: &str) -> String {
-    if cleared {
+/// pulls are dropped until it restarts (Task 6 ruling), and `target` is where it restarts. `can_switch_now`: offer
+/// "Switch Jar Now" (not while another host change is on its way, when the menu hides the item too).
+pub(crate) fn will_switch_tooltip(cleared: bool, target: &str, can_switch_now: bool) -> String {
+    let text = if cleared {
         format!(
             "Its jar's cookies were cleared: this tab signs out and restarts on {target} when it is next out of \
-             sight, and anything signed in meanwhile is not kept; {SWITCH_NOW_HINT}"
+             sight, and anything signed in meanwhile is not kept"
         )
     } else {
-        format!("Switches to {target} when it is next out of sight; {SWITCH_NOW_HINT}")
+        format!("Switches to {target} when it is next out of sight")
+    };
+    if can_switch_now {
+        format!("{text}; {SWITCH_NOW_HINT}")
+    } else {
+        text
     }
 }
 
@@ -58,6 +67,7 @@ impl App {
         let choice = self.tab_jar(id)?;
         let (key, missing) = self.resolved_jar(&choice);
         let will_switch = self.will_switch(id);
+        let can_switch_now = self.can_switch_jar_now(id);
         let engine = match &self.nodes.get(id)?.payload {
             NodePayload::Tab(t) => t.tab.kind,
             NodePayload::Unloaded(t) => t.kind,
@@ -79,7 +89,7 @@ impl App {
         if will_switch {
             let cleared = self.jar_reseed.contains(id);
             let target = if cleared && was == key { "the empty jar".to_string() } else { name.clone() };
-            tips.push(will_switch_tooltip(cleared, &target));
+            tips.push(will_switch_tooltip(cleared, &target, can_switch_now));
         }
         Some(JarChip {
             color: self.jar_color(key),
@@ -88,6 +98,7 @@ impl App {
             following: !choice.set,
             missing,
             will_switch,
+            can_switch_now,
             engine_ignores,
             tooltip: (!tips.is_empty()).then(|| tips.join("\n")),
         })
@@ -659,8 +670,14 @@ mod tests {
 
     #[test]
     fn the_will_switch_tooltip_says_where_and_what_a_clear_loses() {
-        let tip = |cleared, target: &str| super::will_switch_tooltip(cleared, target);
+        let tip = |cleared, target: &str| super::will_switch_tooltip(cleared, target, true);
         assert_eq!(tip(false, "Work"), "Switches to Work when it is next out of sight; right-click for Switch Jar Now");
+        assert_eq!(
+            super::will_switch_tooltip(false, "Work", false),
+            "Switches to Work when it is next out of sight",
+            "no Switch Jar Now hint while a sleep, swap or earlier switch is on its way"
+        );
+        assert!(!super::will_switch_tooltip(true, "the empty jar", false).contains("Switch Jar Now"));
         let cleared = tip(true, "the empty jar");
         assert!(cleared.contains("signs out and restarts on the empty jar"), "{cleared}");
         assert!(cleared.contains("anything signed in meanwhile is not kept"), "{cleared}");

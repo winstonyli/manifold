@@ -464,11 +464,10 @@ impl App {
         for (&id, def) in &self.jar_defs {
             ui.horizontal(|ui| {
                 jar_swatch(ui, self.jar_color(JarKey::Named(id)));
-                // The draft lives in egui memory while the field has focus, so typing writes nothing until it is
-                // committed on focus loss (Escape gives the edit up).
+                let mut draft = jar_name_draft(ui, id, &def.name);
                 let key = egui::Id::new(("jar_name", id));
-                let mut draft = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| def.name.clone());
-                let response = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(120.0));
+                let edit = egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(120.0);
+                let response = ui.add(edit);
                 if response.lost_focus() {
                     ui.data_mut(|d| d.remove::<String>(key));
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -696,6 +695,29 @@ fn jar_swatch(ui: &mut egui::Ui, color: egui::Color32) {
     ui.painter().circle_filled(rect.center(), 5.0, color);
 }
 
+/// A Settings jar-name field's widget id.
+fn jar_name_edit_id(id: NodeId) -> egui::Id {
+    egui::Id::new(("jar_name_edit", id))
+}
+
+/// What a Settings jar-name field shows. The draft lives in egui memory while the field has focus, so typing writes
+/// nothing until it is committed on focus loss (Escape gives the edit up); it is read in the frame that reports the
+/// loss too, which is when it is committed (egui may report it a frame late, after focus moved between frames, so
+/// this asks the field's last response rather than `had_focus_last_frame`). Otherwise the jar's name: a draft left
+/// by a field that went away while focused (the page closed mid-edit) is dropped, not shown when the page reopens.
+fn jar_name_draft(ui: &egui::Ui, id: NodeId, name: &str) -> String {
+    let key = egui::Id::new(("jar_name", id));
+    let edit = jar_name_edit_id(id);
+    if ui.memory(|m| m.has_focus(edit)) || ui.ctx().read_response(edit).is_some_and(|r| r.lost_focus()) {
+        if let Some(draft) = ui.data(|d| d.get_temp::<String>(key)) {
+            return draft;
+        }
+    } else {
+        ui.data_mut(|d| d.remove::<String>(key));
+    }
+    name.to_string()
+}
+
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
 /// runtime's files on every frame.
 fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
@@ -709,4 +731,54 @@ fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
     let size = crate::engine_install::dir_size(dir);
     ctx.data_mut(|d| d.insert_temp(key, (now, size)));
     size
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jars_frame(app: &mut App, ctx: &egui::Context) -> SettingsRequests {
+        let mut req = SettingsRequests::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.settings_jars_section(ui, &mut req));
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+        req
+    }
+
+    /// Task 6/7 review: a draft left by a field that lost its page while focused must not come back later, while a
+    /// focused field keeps its draft and commits it when it loses focus.
+    #[test]
+    fn a_jar_name_draft_lives_only_while_its_field_has_focus() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let key = egui::Id::new(("jar_name", work));
+        ctx.data_mut(|d| d.insert_temp(key, "Stale".to_string()));
+        jars_frame(&mut app, &ctx);
+        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None, "an orphaned draft is dropped");
+
+        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
+        jars_frame(&mut app, &ctx);
+        ctx.data_mut(|d| d.insert_temp(key, "Home".to_string()));
+        jars_frame(&mut app, &ctx);
+        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)).as_deref(), Some("Home"), "kept while focused");
+        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(work)));
+        let req = jars_frame(&mut app, &ctx);
+        assert_eq!(req.rename_jar, Some((work, "Home".to_string())), "committed on focus loss");
+        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None);
+
+        // The page closes while the field has focus: the draft is orphaned and must not show on reopening.
+        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
+        jars_frame(&mut app, &ctx);
+        ctx.data_mut(|d| d.insert_temp(key, "Half-typed".to_string()));
+        jars_frame(&mut app, &ctx);
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+        }
+        let req = jars_frame(&mut app, &ctx);
+        assert_eq!(req.rename_jar, None);
+        assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None, "the closed page's draft is dropped");
+    }
 }
