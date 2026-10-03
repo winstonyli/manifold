@@ -109,6 +109,10 @@ pub enum DebugCommand {
     KeyPage(KeyCode),
     /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
     ReopenTab,
+    /// Starts `App::start_engine_install` for the engine, as the picker's Download does.
+    InstallEngine(EngineKind),
+    /// Prints the engine's `EngineState` to stderr as `engine-state <name>: <label>`.
+    EngineState(EngineKind),
     /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
     ZoomIn,
     /// `Ctrl+-` equivalent — see `App::zoom_out_shortcut`.
@@ -389,6 +393,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
+    ("INSTALLENGINE kind", "Start downloading and installing the engine's runtime (CEF only)"),
+    ("ENGINESTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
     ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
@@ -577,6 +583,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),
+        "INSTALLENGINE" => parse_engine_kind(rest).map(DebugCommand::InstallEngine),
+        "ENGINESTATE" => parse_engine_kind(rest).map(DebugCommand::EngineState),
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
         "ZOOMOUT" => Some(DebugCommand::ZoomOut),
         "ZOOMRESET" => Some(DebugCommand::ZoomReset),
@@ -753,6 +761,13 @@ mod tests {
         assert!(matches!(parse_line("JSONTOGGLE"), Some(DebugCommand::JsonToggle(p)) if p.is_empty()));
         assert!(matches!(parse_line("JSONSEARCH two words"), Some(DebugCommand::JsonSearch(q)) if q == "two words"));
         assert!(matches!(parse_line("JSONRELAYOUT"), Some(DebugCommand::JsonRelayout)));
+    }
+
+    #[test]
+    fn parses_engine_install_commands() {
+        assert!(matches!(parse_line("INSTALLENGINE cef"), Some(DebugCommand::InstallEngine(EngineKind::Cef))));
+        assert!(matches!(parse_line("ENGINESTATE CEF"), Some(DebugCommand::EngineState(EngineKind::Cef))));
+        assert!(parse_line("INSTALLENGINE nope").is_none());
     }
 
     #[test]

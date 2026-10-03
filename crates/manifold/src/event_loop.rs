@@ -967,6 +967,16 @@ impl App {
                 }
             }
             DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
+            DebugCommand::InstallEngine(kind) => {
+                self.start_engine_install(kind);
+            }
+            DebugCommand::EngineState(kind) => {
+                eprintln!(
+                    "engine-state {}: {}",
+                    kind.desc().name,
+                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0
+                )
+            }
             DebugCommand::ZoomIn => self.zoom_in_shortcut(),
             DebugCommand::ZoomOut => self.zoom_out_shortcut(),
             DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
