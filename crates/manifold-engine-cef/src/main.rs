@@ -104,8 +104,9 @@ fn main() {
     // automatically. Same fix `engine-host-webview2` already applies for
     // its own equivalent multi-process tree; `_job`'s only purpose is to
     // stay alive for the whole process lifetime. Elsewhere there is no job;
-    // whether CEF's subprocesses outlive a killed host on Linux is not yet
-    // checked (the engine-install spec's Platforms section).
+    // on Linux CEF's subprocesses exited by themselves within 5 s of a
+    // `kill -9` of this process (WSL2, 2026-10-02; the engine-install spec's
+    // Platforms section).
     #[cfg(windows)]
     let _job = setup_kill_on_exit_job();
 
