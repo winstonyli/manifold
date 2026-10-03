@@ -65,17 +65,33 @@ impl SharedFrameBuffer {
         Err(last_err.unwrap())
     }
 
+    /// On Unix the new buffer is a new file renamed over `path`, never the old
+    /// one truncated: Unix lets a file be truncated while another process has
+    /// it mapped, and that reader's next access past the new end dies with
+    /// SIGBUS (manifold did, in `upload_frame`, when a CEF tab resized under
+    /// WSL). A reader keeps the old file until it drops its mapping. Windows
+    /// refuses to truncate a mapped file instead (error 1224, retried above).
     fn try_create(name: &str, width: u32, height: u32) -> io::Result<Self> {
         let path = frame_path(name);
         let len = (width as u64) * (height as u64) * 4;
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+        #[cfg(unix)]
+        let open_path = path.with_extension(format!("bin.{}.tmp", std::process::id()));
+        #[cfg(not(unix))]
+        let open_path = path.clone();
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&open_path)?;
         file.set_len(len)?;
         let mmap = unsafe { MmapMut::map_mut(&file)? };
+        #[cfg(unix)]
+        if let Err(err) = std::fs::rename(&open_path, &path) {
+            let _ = std::fs::remove_file(&open_path);
+            return Err(err);
+        }
         Ok(Self { mmap, path, width, height })
     }
 
-    /// `InvalidData` when the file isn't `width * height * 4` bytes: the engine-host
-    /// truncates then regrows it on resize, so a reader can briefly see the wrong size.
+    /// `InvalidData` when the file isn't `width * height * 4` bytes: on resize the
+    /// engine-host truncates and regrows it (Windows) or replaces it (Unix), so a
+    /// reader can briefly see the wrong size.
     pub fn open_existing(path: PathBuf, width: u32, height: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let expected = u64::from(width) * u64::from(height) * 4;
@@ -123,6 +139,23 @@ mod tests {
         let err = SharedFrameBuffer::open_existing(frame_path(&name), 8, 8).err().expect("size mismatch");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         drop(created);
+        let _ = std::fs::remove_file(frame_path(&name));
+    }
+
+    /// A resize (a second `create` under the same name) must leave a reader's
+    /// existing mapping readable to its end. Before the fix this failed on Linux:
+    /// the reader's bytes read back zeroed, and past the new end they fault.
+    #[cfg(unix)]
+    #[test]
+    fn a_resize_leaves_an_open_reader_whole() {
+        let name = format!("test-resize-reader-{}", std::process::id());
+        let mut first = SharedFrameBuffer::create(&name, 64, 64).unwrap();
+        first.write_frame(&[7; 64 * 64 * 4]);
+        let reader = SharedFrameBuffer::open_existing(frame_path(&name), 64, 64).unwrap();
+        let second = SharedFrameBuffer::create(&name, 2, 2).unwrap();
+        assert!(reader.as_slice().iter().all(|&b| b == 7), "the old frame is intact");
+        assert!(SharedFrameBuffer::open_existing(frame_path(&name), 2, 2).is_ok(), "the path has the new size");
+        drop((first, second, reader));
         let _ = std::fs::remove_file(frame_path(&name));
     }
 }

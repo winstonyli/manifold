@@ -35,6 +35,11 @@ wrap_app! {
             command_line.append_switch(Some(&"noerrdialogs".into()));
             command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
             command_line.append_switch(Some(&"use-mock-keychain".into()));
+            // Chromium 151 made a first-run EULA required on Linux; with no
+            // dialog to show, initialize fails with exit code 28
+            // (CHROME_RESULT_CODE_EULA_REFUSED). An embedded engine has no
+            // first run at all.
+            command_line.append_switch(Some(&"no-first-run".into()));
             command_line.append_switch_with_value(
                 Some(&"enable-logging".into()),
                 Some(&"stderr".into()),

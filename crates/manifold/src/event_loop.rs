@@ -1462,7 +1462,7 @@ impl App {
                 SharedFrameBuffer::open_existing(frame_path(&update.socket_id), update.width, update.height)
             {
                 // `open_existing` refuses a file of the wrong size (the engine-host
-                // truncates-then-grows it on resize), so a frame caught mid-resize
+                // regrows or replaces it on resize), so a frame caught mid-resize
                 // is skipped and the next redraw tries again.
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_frame(&update.tab_id, buf.as_slice(), update.width, update.height, format);
