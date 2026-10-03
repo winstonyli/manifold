@@ -63,6 +63,13 @@ mkdir -p "$profile/manifold"
 echo '{"has_shown_first_launch_demo": true}' >"$profile/manifold/settings.json"
 export APPDATA="$(cygpath -w "$profile")"
 
+# Address-bar suggestions come from a local server (probe_server.py's /ac/), not DuckDuckGo, so those checks
+# don't depend on the network. Its lifetime covers the whole run; `cleanup` kills it.
+python -P "$repo_root/scripts/probe_server.py" "$(cygpath -w "$profile/port")" "$(cygpath -w "$profile/page.log")" 1800 </dev/null >/dev/null 2>&1 &
+probe_pid=$!
+for _ in $(seq 50); do [ -s "$profile/port" ] && break; sleep 0.1; done
+export MANIFOLD_SUGGESTIONS_URL="http://127.0.0.1:$(cat "$profile/port")/ac/"
+
 fail=0
 pass() { echo "PASS: $1"; }
 failed() {
@@ -136,9 +143,9 @@ check_state() {
     fi
 }
 
-# Polls until EXPR holds, for up to ~15 s: suggestions come from
-# DuckDuckGo over the network, so a fixed sleep either wastes time or
-# (seen about once in 15 runs at 3 s) isn't enough.
+# Polls until EXPR holds, for up to ~15 s: suggestions are fetched on a
+# background thread after a debounce, so a fixed sleep either wastes time or
+# isn't enough.
 wait_state() {
     local name="$1" label="$2" expr="$3" i
     for i in $(seq 1 30); do
@@ -161,7 +168,7 @@ browser_pid=$BROWSER_PID
 send() { echo "$1" >&"${BROWSER[1]}"; }
 
 cleanup() {
-    kill "$browser_pid" 2>/dev/null || true
+    kill "$browser_pid" "$probe_pid" 2>/dev/null || true
     wait "$browser_pid" 2>/dev/null
     rm -rf "$profile"
 }

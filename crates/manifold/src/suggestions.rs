@@ -206,7 +206,7 @@ fn spawn_fetch(query: String, generation: u64, tx: mpsc::Sender<(u64, Vec<String
 /// `SuggestionFetcher`'s doc comment — this is cosmetic, never
 /// load-bearing).
 fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
-    let url = format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding_light(query));
+    let url = suggestions_url(std::env::var("MANIFOLD_SUGGESTIONS_URL").ok().as_deref(), query);
     let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let body = response.into_body().with_config().limit(200_000).read_to_vec().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
@@ -214,9 +214,24 @@ fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
     Some(phrases.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
 }
 
+/// The suggestions request for `query`. `base` is the endpoint; `MANIFOLD_SUGGESTIONS_URL` overrides it so the
+/// smoke test can answer from a local server instead of DuckDuckGo (no network, no flakiness).
+fn suggestions_url(base: Option<&str>, query: &str) -> String {
+    format!("{}?q={}&type=list", base.unwrap_or("https://duckduckgo.com/ac/"), urlencoding_light(query))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_endpoint_can_be_overridden() {
+        assert_eq!(
+            suggestions_url(None, "a b"),
+            format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding_light("a b"))
+        );
+        assert!(suggestions_url(Some("http://127.0.0.1:1/ac/"), "x").starts_with("http://127.0.0.1:1/ac/?q=x"));
+    }
 
     #[test]
     fn a_cancelled_fetch_cannot_deliver() {
