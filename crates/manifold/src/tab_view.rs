@@ -100,6 +100,8 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) home_requested: bool,
     pub(crate) enter_pressed: bool,
     pub(crate) toggle_bookmark_requested: bool,
+    /// The jar dot was clicked while the tab waits to switch: "Switch Jar Now".
+    pub(crate) switch_jar: bool,
     pub(crate) close_split_requested: bool,
     /// The Graph button inside the Tab toolbar's nav chip was clicked.
     pub(crate) back_to_graph: bool,
@@ -341,6 +343,29 @@ impl App {
         if bookmark.clicked() {
             actions.toggle_bookmark_requested = true;
         }
+        // The jar dot, beside the address bar (spec "UI"): the card chip's colour, its name and warnings as hover
+        // text. A click switches a tab that is waiting to.
+        if let Some(chip) = self.jar_chip(focused_id) {
+            let (rect, response) = trailing_ui.allocate_exact_size(egui::vec2(16.0, 28.0), egui::Sense::click());
+            let color = if chip.missing { trailing_ui.visuals().warn_fg_color } else { chip.color };
+            if chip.following {
+                trailing_ui.painter().circle_stroke(rect.center(), 3.5, egui::Stroke::new(1.5, color));
+            } else {
+                trailing_ui.painter().circle_filled(rect.center(), 4.0, color);
+            }
+            let follows = if chip.following { " (follows its group)" } else { "" };
+            let mut hover = format!("Jar: {}{follows}", chip.name);
+            if let Some(tooltip) = &chip.tooltip {
+                hover =
+                    format!("{hover}\n{}", tooltip.replace(crate::jar_defs::SWITCH_NOW_HINT, "click to switch now"));
+            }
+            let response = response.on_hover_text(hover);
+            let response =
+                if chip.will_switch { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+            if response.clicked() {
+                actions.switch_jar = chip.will_switch;
+            }
+        }
         let trailing_width = trailing_ui.min_rect().width();
 
         // Now the address bar gets whatever's actually left,
@@ -463,6 +488,7 @@ impl App {
                     home_requested,
                     enter_pressed,
                     toggle_bookmark_requested,
+                    switch_jar,
                     close_split_requested,
                     // Folded into `back_to_graph` by `render_item_toolbar`.
                     back_to_graph: _,
@@ -583,6 +609,9 @@ impl App {
         }
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
+        }
+        if switch_jar {
+            self.switch_jar_now(&focused_id);
         }
         let ctx = ui.ctx().clone();
         if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::TabActions, tab_actions_button_rect) {

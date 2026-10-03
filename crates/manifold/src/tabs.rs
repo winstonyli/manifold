@@ -902,19 +902,33 @@ impl App {
     }
 
     /// "Switch jar now": the old jar gets the tab's final cookies, then the host is replaced in place by one seeded
-    /// from the new jar (the engine-swap path, same engine).
-    #[allow(dead_code)] // The "will switch" chip (a later task) calls it.
+    /// from the new jar (the engine-swap path, same engine). Does nothing while another host change is on its way
+    /// (`host_change_pending`): that one replaces the host anyway.
     pub(crate) fn switch_jar_now(&mut self, id: &str) {
         let Some((kind, url)) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone())) else {
             return;
         };
-        if !self.will_switch(id) {
+        if !self.can_switch_jar_now(id) {
             return;
         }
         self.pull_cookies(id);
         if let Some(held) = self.hold_for_cookies(id, Held::Snapshot(kind, url)) {
             self.run_held(id, held);
         }
+    }
+
+    /// Whether "Switch Jar Now" would do anything for tab `id`: it waits to switch and nothing else is about to
+    /// replace its host. The menu hides the item otherwise.
+    pub(crate) fn can_switch_jar_now(&self, id: &str) -> bool {
+        self.will_switch(id) && !self.host_change_pending(id)
+    }
+
+    /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id` (Task 6 review M3).
+    /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
+    pub(crate) fn host_change_pending(&self, id: &str) -> bool {
+        self.pending_sleeps.contains_key(id)
+            || self.cookie_holds.contains_key(id)
+            || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
     /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.
@@ -944,6 +958,9 @@ impl App {
         self.skip_convert.remove(id);
         self.pending_sleeps.remove(id);
         self.clear_cookie_state(id);
+        if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
+            self.naming_jar = None;
+        }
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
         // A rectangle-selected tab closed through any path other than

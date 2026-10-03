@@ -90,6 +90,70 @@ fn push_centered_text(
     }));
 }
 
+/// A jar chip's height in screen points.
+const JAR_CHIP_HEIGHT: f32 = 16.0;
+
+/// A jar chip with its top-left at `at` (screen): a dot (outlined when following the group, `warn`-coloured for a
+/// missing jar) and the name on a dark scrim, after the old jar's dot and an arrow while the tab waits to switch.
+/// Its hover text goes through `CardBody::tooltip`.
+pub(crate) fn paint_jar_chip(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    chip: &crate::jar_defs::JarChip,
+    font: egui::FontId,
+    text: egui::Color32,
+    warn: egui::Color32,
+) {
+    const R: f32 = 4.0;
+    let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
+    let arrow =
+        chip.will_switch.then(|| painter.layout_no_wrap(egui_phosphor::light::ARROW_RIGHT.into(), font.clone(), text));
+    let name = painter.layout_no_wrap(chip.name.clone(), font, text);
+    let lead = arrow.as_ref().map_or(0.0, |a| 2.0 * R + 3.0 + a.size().x + 3.0);
+    let width = 5.0 + lead + 2.0 * R + 4.0 + name.size().x + 6.0;
+    let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
+    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(160));
+    let mut x = at.x + 5.0;
+    if let Some(arrow) = arrow {
+        painter.circle_filled(egui::pos2(x + R, cy), R, chip.was_color);
+        x += 2.0 * R + 3.0;
+        let size = arrow.size();
+        painter.galley(egui::pos2(x, cy - size.y / 2.0), arrow, text);
+        x += size.x + 3.0;
+    }
+    let color = if chip.missing { warn } else { chip.color };
+    if chip.following {
+        painter.circle_stroke(egui::pos2(x + R, cy), R - 0.75, egui::Stroke::new(1.5, color));
+    } else {
+        painter.circle_filled(egui::pos2(x + R, cy), R, color);
+    }
+    x += 2.0 * R + 4.0;
+    let size = name.size();
+    painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
+}
+
+/// Queues tab `chip` at world point `world` (the card's corner it hangs from), moved by `offset` screen points.
+fn push_jar_chip(
+    deferred_overlays: &mut DeferredOverlays,
+    world: egui::Pos2,
+    offset: egui::Vec2,
+    chip: crate::jar_defs::JarChip,
+    warn: egui::Color32,
+) {
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        let font = egui::FontId::proportional(11.0);
+        paint_jar_chip(overlay_painter, project(world) + offset, &chip, font, egui::Color32::from_gray(240), warn);
+    }));
+}
+
+/// `tooltip`, with `more` on a line of its own when both exist.
+fn chain_tooltip(tooltip: Option<String>, more: Option<String>) -> Option<String> {
+    match (tooltip, more) {
+        (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The part of a `src`-sized texture (as a uv rect) that fills a `dst`-shaped rect without
 /// stretching: the full width or height, cropped on the other axis around the top-center, so a
 /// page's header stays in view.
@@ -1018,6 +1082,8 @@ impl App {
             }
             UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
+        let chip = self.jar_chip(id);
+        body.tooltip = chain_tooltip(body.tooltip, chip.as_ref().and_then(|c| c.tooltip.clone()));
         if self.graph_lod_simplified {
             return body;
         }
@@ -1078,6 +1144,12 @@ impl App {
                     ui.visuals().weak_text_color(),
                 );
             }
+        }
+        // The jar chip just below the title: under the header, or at the top of a short card (whose title is on
+        // the bottom strip).
+        if let Some(chip) = chip.filter(|_| rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH) {
+            let corner = card_body_rect(rect, tall, inv_zoom).left_top();
+            push_jar_chip(deferred_overlays, corner, egui::vec2(4.0, 4.0), chip, ui.visuals().warn_fg_color);
         }
         body
     }
@@ -1811,12 +1883,14 @@ impl App {
         inv_zoom: f32,
         zoom_scale: f32,
     ) -> CardBody {
-        let body = CardBody { interact_rect: rect, tooltip: None };
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some((title, url, engine_kind)) =
             self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.title.clone(), t.url.clone(), t.tab.kind))
         else {
             return body;
         };
+        let chip = self.jar_chip(id);
+        body.tooltip = chip.as_ref().and_then(|c| c.tooltip.clone());
         // LOD: the thumbnail texture blit and the title/
         // favicon text below are this card's two genuinely
         // expensive parts (a real GPU texture sample, and
@@ -1943,6 +2017,13 @@ impl App {
                         egui::Color32::WHITE,
                     );
                 }
+            }
+            // The jar chip at the thumbnail's bottom-left, above a short card's title strip.
+            if let Some(chip) = chip.filter(|_| show_text) {
+                let strip = if header { 0.0 } else { TAB_STRIP_POINTS * inv_zoom };
+                let corner = thumb_rect.left_bottom() + egui::vec2(0.0, -strip);
+                let offset = egui::vec2(4.0, -4.0 - JAR_CHIP_HEIGHT);
+                push_jar_chip(deferred_overlays, corner, offset, chip, ui.visuals().warn_fg_color);
             }
         }
         body

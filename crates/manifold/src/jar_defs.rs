@@ -4,14 +4,145 @@
 
 use crate::jar::{Jar, JarChoice, JarKey};
 use crate::node::NodePayload;
+use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, Fields, Shared};
 use crate::store::model::{field, FieldValue, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::{App, JarDef};
 
+/// What a tab's card and Tab view show of its jar (spec "UI", chip).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct JarChip {
+    pub(crate) name: String,
+    pub(crate) color: egui::Color32,
+    /// Unset: follows its group's default. The dot is outlined.
+    pub(crate) following: bool,
+    /// Names a jar that no longer exists; it uses the default jar. The dot takes the warning colour.
+    pub(crate) missing: bool,
+    /// The live tab still runs on the jar it spawned with (`App::will_switch`): the chip shows that jar's dot
+    /// (`was_color`), an arrow, then this one.
+    pub(crate) will_switch: bool,
+    pub(crate) was_color: egui::Color32,
+    /// A Servo or WebKit tab on a named jar: its engine ignores jars (spec "Hosts").
+    pub(crate) engine_ignores: bool,
+    /// The warnings above, one per line, for the card's hover text; `None` when there are none.
+    pub(crate) tooltip: Option<String>,
+}
+
+/// A Settings jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum JarConfirm {
+    Clear(JarKey),
+    Delete(NodeId),
+}
+
+/// How the card's chip tooltip says to switch now; Tab view's dot, which is clicked instead, swaps it out.
+pub(crate) const SWITCH_NOW_HINT: &str = "right-click for Switch Jar Now";
+
+/// The chip's hover text while a live tab waits to switch. `cleared`: its jar's cookies were cleared under it, so its
+/// pulls are dropped until it restarts (Task 6 ruling), and `target` is where it restarts.
+pub(crate) fn will_switch_tooltip(cleared: bool, target: &str) -> String {
+    if cleared {
+        format!(
+            "Its jar's cookies were cleared: this tab signs out and restarts on {target} when it is next out of \
+             sight, and anything signed in meanwhile is not kept; {SWITCH_NOW_HINT}"
+        )
+    } else {
+        format!("Switches to {target} when it is next out of sight; {SWITCH_NOW_HINT}")
+    }
+}
+
 impl App {
+    /// The card's jar chip (spec "UI"): `None` for a tab on the default jar with nothing to warn about.
+    pub(crate) fn jar_chip(&self, id: &str) -> Option<JarChip> {
+        let choice = self.tab_jar(id)?;
+        let (key, missing) = self.resolved_jar(&choice);
+        let will_switch = self.will_switch(id);
+        let engine = match &self.nodes.get(id)?.payload {
+            NodePayload::Tab(t) => t.tab.kind,
+            NodePayload::Unloaded(t) => t.kind,
+            _ => return None,
+        };
+        let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
+        if key == JarKey::Default && !missing && !will_switch {
+            return None;
+        }
+        let name = self.jar_label(key);
+        let was = self.jar_tabs.get(id).map_or(key, |(k, _)| *k);
+        let mut tips = Vec::new();
+        if missing {
+            tips.push("This tab's jar was deleted; it uses the default jar".to_string());
+        }
+        if engine_ignores {
+            tips.push("This engine does not use jars yet".to_string());
+        }
+        if will_switch {
+            let cleared = self.jar_reseed.contains(id);
+            let target = if cleared && was == key { "the empty jar".to_string() } else { name.clone() };
+            tips.push(will_switch_tooltip(cleared, &target));
+        }
+        Some(JarChip {
+            color: self.jar_color(key),
+            was_color: self.jar_color(was),
+            name,
+            following: !choice.set,
+            missing,
+            will_switch,
+            engine_ignores,
+            tooltip: (!tips.is_empty()).then(|| tips.join("\n")),
+        })
+    }
+
+    /// "Default", or a named jar's name (also "Default" once it is gone, as that is what its tabs use).
+    pub(crate) fn jar_label(&self, key: JarKey) -> String {
+        match key {
+            JarKey::Named(id) => self.jar_defs.get(&id).map_or_else(|| "Default".into(), |d| d.name.clone()),
+            JarKey::Default => "Default".into(),
+        }
+    }
+
+    /// A named jar's colour (the first palette colour if it has none); grey for the default jar.
+    pub(crate) fn jar_color(&self, key: JarKey) -> egui::Color32 {
+        match key {
+            JarKey::Named(id) => {
+                self.jar_defs.get(&id).map_or(egui::Color32::GRAY, |d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]))
+            }
+            JarKey::Default => egui::Color32::GRAY,
+        }
+    }
+
+    /// Tabs (live or asleep) that resolve to `key`, for Settings' count and the delete confirm.
+    pub(crate) fn jar_tab_count(&self, key: JarKey) -> usize {
+        self.nodes.keys().filter_map(|t| self.tab_jar(t)).filter(|c| self.resolved_jar(c).0 == key).count()
+    }
+
+    /// The confirm dialog's title, detail and button. `None` once a named jar it asks about is gone (deleted on
+    /// another device meanwhile): there is nothing left to confirm.
+    pub(crate) fn jar_confirm_text(&self, confirm: JarConfirm) -> Option<(String, String, &'static str)> {
+        let exists = |key| !matches!(key, JarKey::Named(id) if !self.jar_defs.contains_key(&id));
+        match confirm {
+            JarConfirm::Clear(key) if exists(key) => Some((
+                format!("Clear cookies in {}?", self.jar_label(key)),
+                "Tabs using it are signed out. Open ones restart on the empty jar when next out of sight; anything \
+                 signed in before then is not kept."
+                    .to_string(),
+                "Clear",
+            )),
+            JarConfirm::Delete(id) if exists(JarKey::Named(id)) => {
+                let n = self.jar_tab_count(JarKey::Named(id));
+                let uses =
+                    if n == 1 { "1 tab uses this; it'll".to_string() } else { format!("{n} tabs use this; they'll") };
+                Some((
+                    format!("Delete jar {}?", self.jar_label(JarKey::Named(id))),
+                    format!("{uses} use Default."),
+                    "Delete",
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// A new named jar with the next palette colour. Saved by the caller's `save_session`.
-    #[allow(dead_code)] // The jars page (a later task) calls it.
     pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
         let id: NodeId = self.alloc_node_id().parse().expect("alloc_node_id returns a store id");
         let color = Some(TAG_COLOR_PALETTE[self.jar_defs.len() % TAG_COLOR_PALETTE.len()]);
@@ -23,7 +154,6 @@ impl App {
         self.jar_defs.iter().find(|(_, d)| d.name == name).map(|(id, _)| *id)
     }
 
-    #[allow(dead_code)] // The jars page (a later task) calls it.
     pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
         let name = name.trim();
         if let (false, Some(def)) = (name.is_empty(), self.jar_defs.get_mut(&id)) {
@@ -54,7 +184,6 @@ impl App {
     /// The user deleted jar `id`: tabs and groups that named it fall back to the default jar (deviation 9), then it is
     /// forgotten and the live tabs that used it switch. Its document node is deleted by the next save (`diff`: live no
     /// longer has it).
-    #[allow(dead_code)] // The jars page (a later task) calls it.
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
         for node in self.nodes.values_mut() {
             match &mut node.payload {
@@ -140,14 +269,12 @@ impl App {
     }
 
     /// The user picked a jar for tab `id` (`None`: the default jar). Cascades and moves leave it alone from now on.
-    #[allow(dead_code)] // The tab's jar menu (a later task) calls it.
     pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
         self.put_tab_jar(id, JarChoice { jar, set: true });
         self.sweep_jar_switches();
     }
 
     /// "Follow group's jar": clears the pick and re-snapshots from where the tab sits.
-    #[allow(dead_code)] // The tab's jar menu (a later task) calls it; `refollow` uses `resnapshot`.
     pub(crate) fn follow_group_jar(&mut self, id: &str) {
         self.resnapshot(id);
         self.sweep_jar_switches();
@@ -218,14 +345,12 @@ impl App {
     }
 
     /// How many tabs `set_group_default_jar(group, jar)` would change, for the confirmation it asks first.
-    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
     pub(crate) fn cascade_count(&self, group: &str, jar: NodeId) -> usize {
         self.cascade_targets(group, jar).len()
     }
 
     /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
     /// `default_jar`"). Plain field edits; the next save writes them. Returns how many tabs changed.
-    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
     pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
         let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) else { return 0 };
         g.default_jar = Some(jar);
@@ -239,7 +364,6 @@ impl App {
     }
 
     /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
-    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
     pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
         if let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) {
             g.default_jar = None;
@@ -285,7 +409,6 @@ impl App {
 
     /// Empties `key`'s jar and saves it, then switches the live tabs running on it (deviation 14): their engines still
     /// hold the old cookies. A named jar that no longer exists is left alone, so no file is written for it.
-    #[allow(dead_code)] // The jars page's "Clear cookies" (a later task) calls it.
     pub(crate) fn clear_jar_cookies(&mut self, key: JarKey) {
         if matches!(key, JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
             return;
@@ -327,8 +450,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::JarConfirm;
     use crate::card::DropEffect;
-    use crate::jar::JarChoice;
+    use crate::jar::{JarChoice, JarKey};
     use crate::node::{GroupPayload, NodePayload};
     use crate::session_sync::tests::{add, sleeping_tab};
     use crate::App;
@@ -510,5 +634,99 @@ mod tests {
         let made = app.nodes[&unset].group.clone().unwrap();
         assert_eq!(app.nodes[&made].group.as_deref(), Some(level.as_str()), "the new group sits inside `level`");
         assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "group with");
+    }
+
+    #[test]
+    fn the_chip_shows_only_non_default_or_warning_states() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let t = tab_in(&mut app, None);
+        assert!(app.jar_chip(&t).is_none(), "default jar: no chip");
+        app.set_tab_jar(&t, Some(work));
+        let chip = app.jar_chip(&t).unwrap();
+        assert_eq!((chip.name.as_str(), chip.following, chip.missing), ("Work", false, false));
+        assert!(chip.engine_ignores, "`sleeping_tab` is a Servo tab");
+        assert_eq!(chip.tooltip.as_deref(), Some("This engine does not use jars yet"));
+        app.follow_group_jar(&t); // no group default: back to the default jar
+        assert!(app.jar_chip(&t).is_none());
+        app.set_tab_jar(&t, Some(work));
+        app.jar_defs.remove(&work); // a remote delete arrives before the tab's own field edit
+        let chip = app.jar_chip(&t).unwrap();
+        assert!(chip.missing);
+        assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
+        assert!(app.jar_chip("nobody").is_none());
+    }
+
+    #[test]
+    fn the_will_switch_tooltip_says_where_and_what_a_clear_loses() {
+        let tip = |cleared, target: &str| super::will_switch_tooltip(cleared, target);
+        assert_eq!(tip(false, "Work"), "Switches to Work when it is next out of sight; right-click for Switch Jar Now");
+        let cleared = tip(true, "the empty jar");
+        assert!(cleared.contains("signs out and restarts on the empty jar"), "{cleared}");
+        assert!(cleared.contains("anything signed in meanwhile is not kept"), "{cleared}");
+    }
+
+    #[test]
+    fn jar_tab_count_counts_live_and_sleeping_tabs_by_resolved_jar() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let (a, b) = (tab_in(&mut app, None), tab_in(&mut app, None));
+        group_in(&mut app, None);
+        app.set_tab_jar(&b, Some(work));
+        assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (1, 1));
+        app.set_tab_jar(&a, Some(work));
+        assert_eq!((app.jar_tab_count(JarKey::Default), app.jar_tab_count(JarKey::Named(work))), (0, 2));
+        app.jar_defs.remove(&work);
+        assert_eq!(app.jar_tab_count(JarKey::Default), 2, "a missing jar's tabs use the default jar");
+    }
+
+    #[test]
+    fn the_confirm_names_the_jar_and_what_it_costs() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let t = tab_in(&mut app, None);
+        app.set_tab_jar(&t, Some(work));
+        let (title, detail, button) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).unwrap();
+        assert_eq!((title.as_str(), button), ("Clear cookies in Work?", "Clear"));
+        assert!(detail.starts_with("Tabs using it are signed out."), "{detail}");
+        assert!(detail.contains("restart on the empty jar") && detail.contains("not kept"), "{detail}");
+        let (title, _, _) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap();
+        assert_eq!(title, "Clear cookies in Default?");
+        let (title, detail, button) = app.jar_confirm_text(JarConfirm::Delete(work)).unwrap();
+        assert_eq!(
+            (title.as_str(), detail.as_str(), button),
+            ("Delete jar Work?", "1 tab uses this; it'll use Default.", "Delete")
+        );
+        tab_in(&mut app, None);
+        let other = tab_in(&mut app, None);
+        app.set_tab_jar(&other, Some(work));
+        assert_eq!(app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1, "2 tabs use this; they'll use Default.");
+        app.jar_defs.remove(&work);
+        assert!(
+            app.jar_confirm_text(JarConfirm::Delete(work)).is_none(),
+            "deleted elsewhere meanwhile: nothing to ask"
+        );
+        assert!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).is_none());
+    }
+
+    /// Task 6 review M3: "Switch Jar Now" waits out an engine swap or a sleep already on its way, since either
+    /// replaces the host anyway and a second hold would cancel the first.
+    #[test]
+    fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
+        let mut app = App::default();
+        assert!(!app.host_change_pending("t"));
+        app.pending_sleeps.insert(
+            "t".into(),
+            crate::sleep_state::PendingSleep {
+                why: crate::sleep_state::SleepWhy::JarSwitch,
+                sent: std::time::Instant::now(),
+            },
+        );
+        assert!(app.host_change_pending("t"));
+        app.pending_sleeps.clear();
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        let held = crate::tabs::Held::Snapshot(crate::process_manager::EngineKind::Cef, "http://x/".into());
+        assert!(app.hold_for_cookies("t", held).is_none());
+        assert!(app.host_change_pending("t"), "a swap or switch parked waiting for its cookies");
     }
 }

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::sleep_state::SleepWhy;
+use crate::store::model::NodeId;
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -52,6 +53,20 @@ pub(crate) enum NodeAction {
     /// Delete for a file card, "Remove from List" for a download, Close
     /// for a tab or group.
     Delete,
+    /// A tab's jar row: that jar (`None`: the default jar), picked by hand (`App::set_tab_jar`).
+    SetJar(Option<NodeId>),
+    /// "New Jar...": swaps the tab menu's items for a name field (`App::naming_jar`); the menu stays open.
+    StartNewJar,
+    /// The name field lost focus by any means but Escape: creates the jar and picks it for the tab. The mapped
+    /// `CommitRename` (see `build_node_menu`).
+    NewJar(String),
+    /// Escape in the name field.
+    CancelNewJar,
+    FollowGroupJar,
+    SwitchJarNow,
+    /// A group's jar row: its default for new tabs, cascaded to the unset tabs it governs.
+    SetGroupDefaultJar(NodeId),
+    ClearGroupDefaultJar,
 }
 
 impl NodeAction {
@@ -66,9 +81,36 @@ impl NodeAction {
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
         match self {
             NodeAction::FitSubtree => Some("Zoom the graph to frame just this tab and its children"),
+            NodeAction::SwitchJarNow => Some("Reload this tab in its new jar now"),
             _ => None,
         }
     }
+}
+
+/// One jar in a tab's or group's menu.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct JarRow {
+    /// `None`: the default jar (tab menus only).
+    pub(crate) id: Option<NodeId>,
+    pub(crate) name: String,
+    pub(crate) color: Option<egui::Color32>,
+    /// The tab's jar, or the group's default.
+    pub(crate) ticked: bool,
+    /// Group menus: how many tabs picking it would change (`App::cascade_count`).
+    pub(crate) count: Option<usize>,
+}
+
+/// The jar part of a tab's or group's menu (`App::jar_menu`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct JarMenu {
+    pub(crate) rows: Vec<JarRow>,
+    /// A hand-picked tab whose group has a default: offers "Follow Group's Jar".
+    pub(crate) can_follow: bool,
+    /// A live tab waiting to switch with nothing else replacing its host (`App::can_switch_jar_now`): offers
+    /// "Switch Jar Now".
+    pub(crate) will_switch: bool,
+    /// A group with a default: offers "Clear Default Jar".
+    pub(crate) has_default: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -79,6 +121,13 @@ pub(crate) enum NodeMenuItem {
     Colors,
     /// One "Move to <name>" button per `(group id, name)`: the sibling groups a card can join.
     MoveTo(Vec<(String, String)>),
+    /// A small heading, then one row per jar with its colour dot and a tick on the current one. `group`: the rows
+    /// set the group's default rather than the tab's jar.
+    Jars {
+        heading: &'static str,
+        rows: Vec<JarRow>,
+        group: bool,
+    },
     Separator,
 }
 
@@ -155,6 +204,48 @@ pub(crate) fn build_node_context_menu(
                         for (group, name) in targets {
                             if menu_button(ui, &format!("Move to {name}"), None, &mut first_item).clicked() {
                                 action = Some(NodeAction::MoveToGroup(group.clone()));
+                            }
+                        }
+                    }
+                    NodeMenuItem::Jars { heading, rows, group } => {
+                        ui.add_space(3.0);
+                        ui.horizontal(|ui| {
+                            // Lined up with the menu rows' text, as `color_swatch_row` does.
+                            ui.add_space(ui.spacing().button_padding.x);
+                            ui.label(egui::RichText::new(*heading).small().weak());
+                        });
+                        for row in rows {
+                            let tick = if row.ticked { "\u{2713} " } else { "   " };
+                            let count = row.count.map_or(String::new(), |n| format!("  ({n})"));
+                            let text = format!("{tick}{}{count}", row.name);
+                            let response = ui
+                                .horizontal(|ui| {
+                                    let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                    // The default jar has no colour: an outlined dot.
+                                    let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+                                    match row.color {
+                                        Some(c) => {
+                                            ui.painter().circle_filled(dot.center(), 4.0, c);
+                                        }
+                                        None => {
+                                            ui.painter().circle_stroke(dot.center(), 4.0, stroke);
+                                        }
+                                    }
+                                    menu_button(ui, &text, None, &mut first_item)
+                                })
+                                .inner;
+                            let response = match row.count {
+                                Some(n) if *group => {
+                                    response.on_hover_text(format!("Tabs following this group that would change: {n}"))
+                                }
+                                _ => response,
+                            };
+                            if response.clicked() {
+                                action = Some(match (group, row.id) {
+                                    (true, Some(id)) => NodeAction::SetGroupDefaultJar(id),
+                                    (true, None) => NodeAction::ClearGroupDefaultJar,
+                                    (false, id) => NodeAction::SetJar(id),
+                                });
                             }
                         }
                     }
@@ -282,6 +373,27 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         NodeMenuConfig { area_id, min_width, items }
     };
     let delete = |label| vec![Button(label, A::Delete)];
+    // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
+    // can need "Switch Jar Now" (a sleeping one spawns into its jar).
+    let jar_items = |jars: &JarMenu, tab: bool, live: bool| -> Vec<NodeMenuItem> {
+        let mut out = vec![NodeMenuItem::Jars {
+            heading: if tab { "Jar" } else { "Default jar for new tabs" },
+            rows: jars.rows.clone(),
+            group: !tab,
+        }];
+        if tab {
+            out.push(Button("New Jar...", A::StartNewJar));
+            if jars.can_follow {
+                out.push(Button("Follow Group's Jar", A::FollowGroupJar));
+            }
+            if live && jars.will_switch {
+                out.push(Button("Switch Jar Now", A::SwitchJarNow));
+            }
+        } else if jars.has_default {
+            out.push(Button("Clear Default Jar", A::ClearGroupDefaultJar));
+        }
+        out
+    };
     match view.kind {
         ItemNodeKind::Download => {
             let mut items = url_items(false);
@@ -316,6 +428,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Copy URL", A::CopyUrl),
             ];
             items.push(Button("Fit Subtree", A::FitSubtree));
+            items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, true)));
             finish("tab_context_menu", 150.0, items, delete("Close"))
         }
         ItemNodeKind::Unloaded => {
@@ -331,6 +444,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             }
             items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
             items.push(Button("Copy URL", A::CopyUrl));
+            items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
         ItemNodeKind::Group => {
@@ -338,12 +452,9 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if !headless {
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
-            finish(
-                "group_context_menu",
-                150.0,
-                vec![Button("Rename", A::Rename), Button("Sleep Tabs", A::SleepGroup)],
-                delete_items,
-            )
+            let mut items = vec![Button("Rename", A::Rename), Button("Sleep Tabs", A::SleepGroup)];
+            items.extend(view.jars.iter().flat_map(|j| jar_items(j, false, false)));
+            finish("group_context_menu", 150.0, items, delete_items)
         }
     }
 }
@@ -375,8 +486,10 @@ pub(crate) struct NodeMenuView {
     engine_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
     move_targets: Vec<(String, String)>,
-    /// Group only: the rename draft, while this group is being renamed.
+    /// Group: the rename draft, while this group is being renamed. Tab: the "New Jar..." name draft.
     renaming: Option<String>,
+    /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).
+    jars: Option<JarMenu>,
 }
 
 impl App {
@@ -451,15 +564,25 @@ impl App {
         let live = current.is_some();
         let config = node_menu_config(&view, self.headless);
         let mut frozen_draft = view.renaming.clone();
-        let rename = match &mut self.renaming_group {
-            Some((gid, draft)) if live && *gid == id => {
+        let rename = match (&mut self.renaming_group, &mut self.naming_jar) {
+            (Some((gid, draft)), _) if live && *gid == id => {
                 Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename)))
+            }
+            (_, Some((tid, draft))) if live && *tid == id => {
+                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::JarName)))
             }
             _ => frozen_draft.as_mut().map(|draft| (draft, false)),
         };
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
+        // The name field reports the generic rename actions; while naming a jar they mean the jar's.
+        let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
+        let action = action.map(|a| match (a, naming) {
+            (NodeAction::CommitRename(name), true) => NodeAction::NewJar(name),
+            (NodeAction::CancelRename, true) => NodeAction::CancelNewJar,
+            (a, _) => a,
+        });
         let close = match action {
-            Some(NodeAction::Rename) => false,
+            Some(NodeAction::Rename | NodeAction::StartNewJar) => false,
             Some(_) => true,
             None => clicked_outside && view.renaming.is_none(),
         };
@@ -503,10 +626,57 @@ impl App {
                     Some((other.clone(), sibling.as_group()?.name.clone()))
                 })
                 .collect(),
-            renaming: self.renaming_group.as_ref().filter(|(gid, _)| gid == id).map(|(_, draft)| draft.clone()),
+            renaming: [&self.renaming_group, &self.naming_jar]
+                .into_iter()
+                .flatten()
+                .find(|(of, _)| of == id)
+                .map(|(_, draft)| draft.clone()),
+            jars: self.jar_menu(id, node),
         })
     }
 
+    /// The tab and group menus' jar list (spec "UI"); `None` for every other kind.
+    pub(crate) fn jar_menu(&self, id: &str, node: &crate::node::GraphNode) -> Option<JarMenu> {
+        let named = |ticked: &dyn Fn(NodeId) -> bool, count: &dyn Fn(NodeId) -> Option<usize>| -> Vec<JarRow> {
+            self.jar_defs
+                .iter()
+                .map(|(jid, d)| JarRow {
+                    id: Some(*jid),
+                    name: d.name.clone(),
+                    color: d.color,
+                    ticked: ticked(*jid),
+                    count: count(*jid),
+                })
+                .collect()
+        };
+        if let Some(choice) = self.tab_jar(id) {
+            let group_default = self.inherited_jar(node.group.as_deref());
+            let mut rows = vec![JarRow {
+                id: None,
+                name: "Default".into(),
+                color: None,
+                ticked: choice.jar.is_none(),
+                count: None,
+            }];
+            rows.extend(named(&|j| choice.jar == Some(j), &|_| None));
+            return Some(JarMenu {
+                rows,
+                can_follow: choice.set && group_default.is_some(),
+                will_switch: self.can_switch_jar_now(id),
+                has_default: false,
+            });
+        }
+        let g = node.as_group()?;
+        if self.jar_defs.is_empty() && g.default_jar.is_none() {
+            return None; // nothing to pick: jars are made from a tab's menu
+        }
+        Some(JarMenu {
+            rows: named(&|j| g.default_jar == Some(j), &|j| Some(self.cascade_count(id, j))),
+            can_follow: false,
+            will_switch: false,
+            has_default: g.default_jar.is_some(),
+        })
+    }
     /// Applies whichever item was clicked in a node's right-click menu.
     /// Each action only ever appears on kinds where it makes sense
     /// (`node_menu_config`), so none of these re-check the kind.
@@ -593,6 +763,25 @@ impl App {
                 }
             }
             NodeAction::Delete => self.close_node_and_save(id),
+            NodeAction::SetJar(jar) => self.set_tab_jar(id, jar),
+            NodeAction::StartNewJar => {
+                self.naming_jar = Some((id.to_string(), String::new()));
+                self.pending_focus = Some(FocusTarget::JarName);
+            }
+            NodeAction::NewJar(name) => {
+                self.naming_jar = None;
+                if !name.trim().is_empty() {
+                    let jar = self.create_jar(&name);
+                    self.set_tab_jar(id, Some(jar));
+                }
+            }
+            NodeAction::CancelNewJar => self.naming_jar = None,
+            NodeAction::FollowGroupJar => self.follow_group_jar(id),
+            NodeAction::SwitchJarNow => self.switch_jar_now(id),
+            NodeAction::SetGroupDefaultJar(jar) => {
+                self.set_group_default_jar(id, jar);
+            }
+            NodeAction::ClearGroupDefaultJar => self.clear_group_default_jar(id),
         }
     }
 }
@@ -640,6 +829,7 @@ mod tests {
                 engine_missing: false,
                 move_targets: Vec::new(),
                 renaming: None,
+                jars: None,
             }
         }
         fn menu_of(view: &NodeMenuView, headless: bool) -> (&'static str, f32, String) {
@@ -651,6 +841,7 @@ mod tests {
                     NodeMenuItem::Button(label, _) => *label,
                     NodeMenuItem::Colors => "<colors>",
                     NodeMenuItem::MoveTo(_) => "<move>",
+                    NodeMenuItem::Jars { .. } => "<jars>",
                     NodeMenuItem::Separator => "---",
                 })
                 .collect();
@@ -758,5 +949,98 @@ mod tests {
             menu_of(&with_url(ItemNodeKind::Note), false).2,
             "Open as Tab | Copy URL | Copy Text | <colors> | --- | Delete"
         );
+        // Jars (per-tab jars plan, Task 7): tabs and groups list them ahead of the colours.
+        let rows = vec![JarRow { id: None, name: "Default".into(), color: None, ticked: true, count: None }];
+        let jars = |can_follow, will_switch, has_default| {
+            Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
+        };
+        let tab = |j| NodeMenuView { jars: j, ..view_of(ItemNodeKind::Tab) };
+        assert_eq!(
+            menu_of(&tab(jars(false, false, false)), false).2,
+            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | <colors> | --- | Close"
+        );
+        assert_eq!(
+            menu_of(&tab(jars(true, true, false)), false).2,
+            "Pin | Duplicate | Sleep | Copy URL | Fit Subtree | <jars> | New Jar... | Follow Group's Jar | Switch Jar Now | <colors> | --- | Close"
+        );
+        let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(ItemNodeKind::Unloaded) };
+        assert_eq!(
+            menu_of(&unloaded, false).2,
+            "Open | Pin | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
+        );
+        let group =
+            |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
+        assert_eq!(
+            menu_of(&group(false), false).2,
+            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve | Close Group | Export Group..."
+        );
+        assert_eq!(
+            menu_of(&group(true), false).2,
+            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve | Close Group | Export Group..."
+        );
+    }
+
+    #[test]
+    fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
+        let mut app = App::default();
+        let ctx = egui::Context::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+        assert_eq!(app.naming_jar, Some((t.clone(), String::new())));
+        assert_eq!(app.node_menu_view(&t).unwrap().renaming, Some(String::new()), "the menu shows the name field");
+        app.apply_node_action(&ctx, &t, NodeAction::NewJar("  Work ".into()));
+        assert_eq!(app.naming_jar, None);
+        let work = app.jar_named("Work").expect("created, trimmed");
+        assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: true });
+        app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+        app.apply_node_action(&ctx, &t, NodeAction::NewJar("   ".into()));
+        assert_eq!(app.jar_defs.len(), 1, "an empty name creates nothing");
+        app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+        app.remove_tab(&t);
+        assert_eq!(app.naming_jar, None, "closing the tab drops its draft");
+    }
+
+    #[test]
+    fn the_tab_menu_lists_default_then_named_jars_with_a_tick() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.set_tab_jar(&t, Some(work));
+        let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
+        let shown: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect();
+        assert_eq!(shown, [("Default", false), ("Work", true)]);
+    }
+
+    /// A group lists only named jars, each with how many tabs picking it would change, and offers "Clear Default
+    /// Jar" once it has one; "Follow Group's Jar" appears only for a set tab under a group default.
+    #[test]
+    fn the_group_menu_counts_the_cascade_and_a_set_tab_can_follow() {
+        let mut app = App::default();
+        let ctx = egui::Context::default();
+        let work = app.create_jar("Work");
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.nodes.get_mut(&t).unwrap().group = Some(g.clone());
+        let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
+        assert_eq!(
+            menu.rows,
+            [JarRow { id: Some(work), name: "Work".into(), color: menu.rows[0].color, ticked: false, count: Some(1) }]
+        );
+        assert!(!menu.has_default);
+        app.apply_node_action(&ctx, &g, NodeAction::SetGroupDefaultJar(work));
+        let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
+        assert!(menu.has_default && menu.rows[0].ticked);
+        assert_eq!(menu.rows[0].count, Some(0), "the tab already took it");
+        assert!(!app.node_menu_view(&t).unwrap().jars.unwrap().can_follow, "an unset tab already follows");
+        app.apply_node_action(&ctx, &t, NodeAction::SetJar(None));
+        assert!(app.node_menu_view(&t).unwrap().jars.unwrap().can_follow);
+        app.apply_node_action(&ctx, &t, NodeAction::FollowGroupJar);
+        assert_eq!(app.tab_jar(&t).unwrap(), crate::jar::JarChoice { jar: Some(work), set: false });
+        app.apply_node_action(&ctx, &g, NodeAction::ClearGroupDefaultJar);
+        assert!(!app.node_menu_view(&g).unwrap().jars.unwrap().has_default);
+        let note = app.alloc_node_id();
+        app.insert_note_at(note.clone(), None);
+        assert!(app.node_menu_view(&note).unwrap().jars.is_none(), "only tabs and groups have jars");
     }
 }

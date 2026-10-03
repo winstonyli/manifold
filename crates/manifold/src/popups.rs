@@ -214,6 +214,44 @@ impl FindState {
     }
 }
 
+/// A centred confirm dialog: `title`, then `detail` (the first line is the explanation, any later line a warning, as
+/// `download_detail` writes), then `button` and Cancel. `Some(true)` on the button, `Some(false)` on Cancel or
+/// Escape, `None` while it waits.
+fn confirm_dialog(ui: &mut egui::Ui, area_id: &str, title: String, detail: &str, button: &str) -> Option<bool> {
+    let (mut yes, mut no) = (false, false);
+    egui::Area::new(egui::Id::new(area_id))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            dialog_frame(ui).show(ui, |ui| {
+                control_font(ui);
+                ui.set_min_width(240.0);
+                ui.label(heading_text(title));
+                ui.add_space(4.0);
+                for (i, line) in detail.lines().enumerate() {
+                    let text = egui::RichText::new(line).small();
+                    let text = if i == 0 { text.weak() } else { text.color(crate::theme::ACCENT) };
+                    ui.add(egui::Label::new(text).wrap());
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    yes = ui.button(button).clicked();
+                    no = ui.button("Cancel").clicked();
+                });
+            });
+        });
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        no = true;
+    }
+    if yes {
+        Some(true)
+    } else if no {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
 fn download_detail(missing: &[&str]) -> String {
     let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
@@ -330,42 +368,42 @@ impl App {
                 "Remove",
             ),
         };
-        let (mut yes, mut no) = (false, false);
-        egui::Area::new(egui::Id::new("engine_confirm_popup"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                dialog_frame(ui).show(ui, |ui| {
-                    control_font(ui);
-                    ui.set_min_width(240.0);
-                    ui.label(heading_text(title));
-                    ui.add_space(4.0);
-                    // The first line is the explanation; any later line is a warning (`download_detail`).
-                    for (i, line) in detail.lines().enumerate() {
-                        let text = egui::RichText::new(line).small();
-                        let text = if i == 0 { text.weak() } else { text.color(crate::theme::ACCENT) };
-                        ui.add(egui::Label::new(text).wrap());
+        match confirm_dialog(ui, "engine_confirm_popup", title, &detail, button) {
+            Some(true) => {
+                self.pending_engine_confirm = None;
+                match confirm {
+                    EngineConfirm::Download(kind) => {
+                        self.start_engine_install(kind);
                     }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        yes = ui.button(button).clicked();
-                        no = ui.button("Cancel").clicked();
-                    });
-                });
-            });
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            no = true;
-        }
-        if yes {
-            self.pending_engine_confirm = None;
-            match confirm {
-                EngineConfirm::Download(kind) => {
-                    self.start_engine_install(kind);
+                    EngineConfirm::Remove(kind) => self.remove_engine(kind),
                 }
-                EngineConfirm::Remove(kind) => self.remove_engine(kind),
             }
-        } else if no {
-            self.pending_engine_confirm = None;
+            Some(false) => self.pending_engine_confirm = None,
+            None => {}
+        }
+    }
+
+    /// The confirm before a Settings jar action that signs tabs out or loses a jar: "Clear cookies in Work?" or
+    /// "Delete jar Work?" (`jar_confirm_text`). A jar deleted on another device meanwhile just drops the question.
+    pub(crate) fn build_jar_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = self.pending_jar_confirm else { return };
+        let Some((title, detail, button)) = self.jar_confirm_text(confirm) else {
+            self.pending_jar_confirm = None;
+            return;
+        };
+        match confirm_dialog(ui, "jar_confirm_popup", title, &detail, button) {
+            Some(true) => {
+                self.pending_jar_confirm = None;
+                match confirm {
+                    crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
+                    crate::jar_defs::JarConfirm::Delete(id) => {
+                        self.delete_jar(id);
+                        self.save_session();
+                    }
+                }
+            }
+            Some(false) => self.pending_jar_confirm = None,
+            None => {}
         }
     }
 

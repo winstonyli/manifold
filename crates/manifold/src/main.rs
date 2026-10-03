@@ -575,6 +575,8 @@ enum FocusTarget {
     QuickSwitcher,
     GroupRename,
     BookmarkFolder,
+    /// The tab menu's "New Jar..." name field (`App::naming_jar`).
+    JarName,
 }
 
 /// True, once, if `target` is the pending focus request: clears it so the
@@ -821,6 +823,11 @@ struct App {
     /// it until Enter commits or Escape cancels. Transient UI state, not
     /// part of `GroupPayload` itself.
     renaming_group: Option<(String, String)>,
+    /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
+    /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
+    naming_jar: Option<(String, String)>,
+    /// A jar's "Clear Cookies" or "Delete" from Settings, waiting for its confirm dialog (`build_jar_confirm_popup`).
+    pending_jar_confirm: Option<jar_defs::JarConfirm>,
     /// `(node_id, screen_pos)` while a right-click context menu is showing
     /// for that node's card -- one field for every kind, so at most one
     /// menu is ever open by construction. Right-click is otherwise the
@@ -1399,6 +1406,8 @@ impl Default for App {
             json_outline_width: 260.0,
             json_accessor_paths: false,
             renaming_group: None,
+            naming_jar: None,
+            pending_jar_confirm: None,
             node_menu: None,
             node_menu_cache: None,
             quick_switcher: None,
@@ -2596,6 +2605,7 @@ impl App {
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
         self.build_engine_confirm_popup(ui);
+        self.build_jar_confirm_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.

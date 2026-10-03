@@ -2,6 +2,9 @@
 //! deferred effects and popups that run after the scroll area.
 
 use super::*;
+use crate::jar::JarKey;
+use crate::jar_defs::JarConfirm;
+use crate::store::model::NodeId;
 
 /// What the Settings page's sections (`App::settings_general_section`
 /// and the rest) asked for or laid out this frame. `build_settings_page`
@@ -32,6 +35,11 @@ pub(crate) struct SettingsRequests {
     pub(crate) downloads_button_rect: Option<egui::Rect>,
     pub(crate) default_engine_button_rect: Option<egui::Rect>,
     pub(crate) current_engine_button_rect: Option<egui::Rect>,
+    /// `settings_jars_section`: a jar's name field committed a new name.
+    pub(crate) rename_jar: Option<(NodeId, String)>,
+    pub(crate) jar_ephemeral: Option<(NodeId, bool)>,
+    /// "Clear Cookies" or "Delete": asks first (`build_jar_confirm_popup`).
+    pub(crate) jar_confirm: Option<JarConfirm>,
 }
 
 impl App {
@@ -50,7 +58,10 @@ impl App {
     pub(crate) fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut req = SettingsRequests::default();
 
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.popup_open() && self.pending_engine_confirm.is_none()
+        if ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && !self.popup_open()
+            && self.pending_engine_confirm.is_none()
+            && self.pending_jar_confirm.is_none()
         {
             self.close_settings_page();
         }
@@ -81,6 +92,7 @@ impl App {
                 self.settings_engines_section(ui);
                 self.settings_lists_section(ui, &mut req);
                 self.settings_sessions_section(ui, &mut req);
+                self.settings_jars_section(ui, &mut req);
                 self.settings_bookmarks_section(ui, &mut req);
 
                 ui.add_space(12.0);
@@ -434,6 +446,61 @@ impl App {
         }
     }
 
+    /// Settings, "Jars" (spec "UI"): the default jar first (it can only be cleared), then one row per named jar with
+    /// its swatch, name, tab count, ephemeral toggle, Clear Cookies and Delete. Clearing and deleting ask first.
+    pub(crate) fn settings_jars_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.label(heading_text("Jars"));
+        let count_text = |n: usize| egui::RichText::new(format!("{n} tabs")).small().weak();
+        ui.horizontal(|ui| {
+            jar_swatch(ui, egui::Color32::GRAY);
+            ui.label("Default");
+            ui.label(count_text(self.jar_tab_count(JarKey::Default)));
+            if ui.button("Clear Cookies").clicked() {
+                req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
+            }
+        });
+        for (&id, def) in &self.jar_defs {
+            ui.horizontal(|ui| {
+                jar_swatch(ui, self.jar_color(JarKey::Named(id)));
+                // The draft lives in egui memory while the field has focus, so typing writes nothing until it is
+                // committed on focus loss (Escape gives the edit up).
+                let key = egui::Id::new(("jar_name", id));
+                let mut draft = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| def.name.clone());
+                let response = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(120.0));
+                if response.lost_focus() {
+                    ui.data_mut(|d| d.remove::<String>(key));
+                    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if !escape && draft.trim() != def.name {
+                        req.rename_jar = Some((id, draft));
+                    }
+                } else if response.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(key, draft));
+                }
+                ui.label(count_text(self.jar_tab_count(JarKey::Named(id))));
+                let mut ephemeral = def.ephemeral;
+                if ui
+                    .checkbox(&mut ephemeral, "Ephemeral")
+                    .on_hover_text("Never saved to disk: its cookies are forgotten when Manifold quits")
+                    .changed()
+                {
+                    req.jar_ephemeral = Some((id, ephemeral));
+                }
+                if ui.button("Clear Cookies").clicked() {
+                    req.jar_confirm = Some(JarConfirm::Clear(JarKey::Named(id)));
+                }
+                if ui.button("Delete").clicked() {
+                    req.jar_confirm = Some(JarConfirm::Delete(id));
+                }
+            });
+        }
+        if self.jar_defs.is_empty() {
+            let hint = "Make a jar from a tab's right-click menu (New Jar...) to keep a second set of sign-ins.";
+            ui.add(egui::Label::new(egui::RichText::new(hint).small().weak()).wrap());
+        }
+    }
+
     /// Settings, "Bookmarks": export/import.
     pub(crate) fn settings_bookmarks_section(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         ui.add_space(10.0);
@@ -460,6 +527,18 @@ impl App {
     /// scroll area is done (`build_settings_page`).
     pub(crate) fn apply_settings_requests(&mut self, req: &SettingsRequests) {
         if req.save_now_requested {
+            self.save_session();
+        }
+        if let Some((id, name)) = &req.rename_jar {
+            self.rename_jar(*id, name);
+        }
+        if let Some((id, on)) = req.jar_ephemeral {
+            self.set_jar_ephemeral(id, on);
+        }
+        if req.jar_confirm.is_some() {
+            self.pending_jar_confirm = req.jar_confirm;
+        }
+        if req.rename_jar.is_some() || req.jar_ephemeral.is_some() {
             self.save_session();
         }
         if req.save_as_requested {
@@ -609,6 +688,12 @@ impl App {
             self.open_settings_page();
         }
     }
+}
+
+/// A jar's colour dot in the Settings rows.
+fn jar_swatch(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 5.0, color);
 }
 
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
