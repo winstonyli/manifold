@@ -1533,6 +1533,7 @@ impl App {
             }
             EngineToHost::Cookies(json) => {
                 self.jar_pulls.remove(tab_id);
+                self.jar_silent.remove(tab_id);
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }

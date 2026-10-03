@@ -11,6 +11,34 @@ pub(crate) enum Held {
 /// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
 const COOKIE_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// A tab whose last `MAX_SILENT_PULLS` pulls all went unanswered is given up on: its host cannot answer (the WebView2
+/// shared-profile fallback, a CDP error), so it is no longer asked and nothing waits on it.
+const MAX_SILENT_PULLS: u8 = 3;
+
+/// Records a new `GetCookies` to `id` and returns whether to send it: not while one is pending, and not once the host
+/// has stayed silent `MAX_SILENT_PULLS` times in a row (`silent` counts the unanswered ones; a reply resets it).
+pub(crate) fn start_pull(
+    pulls: &mut HashMap<String, std::time::Instant>,
+    silent: &mut HashMap<String, u8>,
+    id: &str,
+    now: std::time::Instant,
+) -> bool {
+    if silent.get(id).is_some_and(|n| *n >= MAX_SILENT_PULLS) || pull_pending(pulls, id, now) {
+        return false;
+    }
+    if pulls.contains_key(id) {
+        // The previous pull timed out unanswered.
+        let n = silent.entry(id.to_string()).or_default();
+        *n += 1;
+        if *n >= MAX_SILENT_PULLS {
+            pulls.remove(id);
+            return false;
+        }
+    }
+    pulls.insert(id.to_string(), now);
+    true
+}
+
 /// Whether `id` has a `GetCookies` sent less than `JAR_PULL_TIMEOUT` ago and not yet answered.
 pub(crate) fn pull_pending(pulls: &HashMap<String, std::time::Instant>, id: &str, now: std::time::Instant) -> bool {
     pulls.get(id).is_some_and(|sent| now.saturating_duration_since(*sent) < JAR_PULL_TIMEOUT)
@@ -96,14 +124,11 @@ impl App {
     /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort: a
     /// host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not stacked.
     pub(crate) fn pull_cookies(&mut self, id: &str) {
-        let now = std::time::Instant::now();
-        if pull_pending(&self.jar_pulls, id, now) {
-            return;
-        }
         let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
-        if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef) {
+        if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
+            && start_pull(&mut self.jar_pulls, &mut self.jar_silent, id, std::time::Instant::now())
+        {
             node.tab.send(&HostToEngine::GetCookies);
-            self.jar_pulls.insert(id.to_string(), now);
         }
     }
 
@@ -114,6 +139,8 @@ impl App {
         if !pull_pending(&self.jar_pulls, id, now) {
             return Some(held);
         }
+        // A second hold must not drop the first (a sleep then a swap): the earlier one goes ahead now, in order.
+        self.release_cookie_hold(id);
         self.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
         None
     }
@@ -217,6 +244,7 @@ impl App {
         match result {
             Ok(mut tab) => {
                 self.jar_known.insert(id.clone(), seeded);
+                self.jar_silent.remove(&id);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -663,8 +691,9 @@ impl App {
         if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
             return false;
         }
-        let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
-        let _ = tab;
+        if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {
+            return false;
+        }
         self.pull_cookies(id);
         let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
         tab.tab.send(&HostToEngine::QueryPageState);
@@ -765,6 +794,10 @@ impl App {
         self.node_order.retain(|t| t != id);
         self.skip_convert.remove(id);
         self.pending_sleeps.remove(id);
+        self.jar_known.remove(id);
+        self.jar_pulls.remove(id);
+        self.jar_silent.remove(id);
+        self.cookie_holds.remove(id);
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
         // A rectangle-selected tab closed through any path other than

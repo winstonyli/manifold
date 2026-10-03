@@ -882,6 +882,8 @@ struct App {
     /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
     /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
     jar_pulls: HashMap<String, std::time::Instant>,
+    /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
+    jar_silent: HashMap<String, u8>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -1380,6 +1382,7 @@ impl Default for App {
             cookie_holds: HashMap::new(),
             jar_last_pull: None,
             jar_pulls: HashMap::new(),
+            jar_silent: HashMap::new(),
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,
@@ -2696,6 +2699,56 @@ mod tests {
         assert!(tabs::pull_pending(&pulls, "t", now + Duration::from_secs(1)));
         assert!(!tabs::pull_pending(&pulls, "t", now + Duration::from_secs(11)), "a silent host is asked again");
         assert!(!tabs::pull_pending(&pulls, "other", now));
+    }
+
+    #[test]
+    fn a_second_hold_on_a_tab_releases_the_first_instead_of_dropping_it() {
+        let mut app = App::default();
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        let state = ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
+        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state)).is_none());
+        // The tab is gone, so releasing the sleep is a no-op; what matters is that it left the slot.
+        let swap = tabs::Held::Snapshot(process_manager::EngineKind::Cef, "http://x/".into());
+        assert!(app.hold_for_cookies("t", swap).is_none());
+        let (_, held) = &app.cookie_holds["t"];
+        assert!(matches!(held, tabs::Held::Snapshot(..)), "the earlier hold was released, the new one parked");
+    }
+
+    #[test]
+    fn closing_a_tab_clears_its_cookie_bookkeeping() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+        let mut app = App::default();
+        let tab = add(&mut app, sleeping_tab("https://x.test/", "A"));
+        app.jar_known.insert(tab.clone(), HashSet::new());
+        app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
+        app.jar_silent.insert(tab.clone(), 2);
+        app.cookie_holds.insert(
+            tab.clone(),
+            (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::EngineKind::Cef, String::new())),
+        );
+        app.remove_tab(&tab);
+        assert!(
+            !app.jar_known.contains_key(&tab)
+                && !app.jar_pulls.contains_key(&tab)
+                && !app.jar_silent.contains_key(&tab)
+                && !app.cookie_holds.contains_key(&tab)
+        );
+    }
+
+    #[test]
+    fn a_host_that_never_answers_is_given_up_on_after_three_pulls() {
+        use std::time::{Duration, Instant};
+        let (mut pulls, mut silent) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0));
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(1)), "pending");
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(30)), "second ask");
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(60)), "third ask");
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(90)), "three silences: stop");
+        assert!(!pulls.contains_key("t"), "so no hold waits on it");
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(300)));
+        silent.clear(); // a reply (or a respawn) resets it
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(400)));
     }
 
     #[test]

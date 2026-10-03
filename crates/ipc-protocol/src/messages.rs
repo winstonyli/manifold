@@ -231,6 +231,8 @@ pub enum HostToEngine {
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
+    /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
+    /// this message (or `EngineToHost::Cookies`) with `{:?}`.
     /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
     /// hosts started with `ENGINE_AWAIT_COOKIES=1`, which wait for it before their first navigation.
     SetCookies(String),
