@@ -142,21 +142,36 @@ already degrades when Environment15 is missing, `main.rs:224`; do the same, and 
 Side effect to know: the spike also showed the non-InPrivate path writing to the real shared folder, which is why the
 spike deleted its two test cookies afterwards.
 
-**One profile per host (built, 2026-10-03).** All WebView2 hosts share one browser process (one user-data folder), and
-InPrivate controllers of one profile share one in-memory cookie store: the two-tab run of `scripts/jar-probe.sh` showed a
-second tab, seeded with an empty jar, sending the first tab's login. So each host also calls
-`ICoreWebView2ControllerOptions::SetProfileName("manifold_<host pid>")`, still InPrivate; the same run then reports the
-tabs do not share. Costs seen on runtime 154.0.4258.53:
+**One profile per live host (built, 2026-10-03).** All WebView2 hosts share one browser process (one user-data folder),
+and InPrivate controllers of one profile share one in-memory cookie store: the two-tab run of `scripts/jar-probe.sh`
+showed a second tab, seeded with an empty jar, sending the first tab's login. So each host also calls
+`ICoreWebView2ControllerOptions::SetProfileName` with a name no other live host has, still InPrivate; the same run then
+reports the tabs do not share.
+
+The name comes from a pool (built 2026-10-03, replacing a name per host pid): manifold hands each new host the lowest
+free slot, `manifold_0` to `manifold_7`, in `ENGINE_WEBVIEW2_PROFILE` (`process_manager::claim_webview2_slot`), and frees
+it when the host is dropped, only after the host process has exited and its profile folder's deletion has been tried. A
+lock file per slot (`<user-data folder>\manifold-profile-<n>.lock`, held open without sharing) keeps two manifold
+instances on one user-data folder from taking the same slot. More concurrent WebView2 tabs than the pool get names
+beyond it (`manifold_8`, ...), and the log says so. A slot does not wait for its folder to be deleted: the shared browser
+process keeps a closed profile's folder open for as long as it lives, and waiting made the ten-tab probe climb past the
+pool. Reusing the name is still safe because the cookies are InPrivate, in memory, and go with the host: in the reuse
+run of `scripts/jar-probe.sh`, tab A logs in and closes, tab B then gets the same name in the same live browser and is
+not signed in; in the fresh run a name reused after a browser restart is not signed in either.
+
+Costs seen on runtime 154.0.4258.53:
 - No extra processes (two tabs: one browser process, one more renderer, as before).
-- A named InPrivate profile still writes a directory, `EBWebView\WV2Profile_manifold_<pid>` (~1.8 MB: caches, an empty
-  `Network\Cookies` database; no cookie rows). Manifold deletes it when it drops the host (as it does a CEF cache dir, with
-  retries) and sweeps leftovers older than a minute at startup (`process_manager::sweep_webview2_profiles`, only that
-  prefix). A browser process starting up also recreates the last-used profile's directory, so after a run a few
-  directories remain until the next start.
+- A named InPrivate profile still writes a directory, `EBWebView\WV2Profile_manifold_<n>` (~1.8 MB: caches, an empty
+  `Network\Cookies` database; no cookie rows). Manifold deletes it when it drops the host (as it does a CEF cache dir,
+  with retries) or when it next takes the slot, and sweeps leftovers older than a minute at startup
+  (`process_manager::sweep_webview2_profiles`, only that prefix). The live browser holds closed profiles' folders, and a
+  browser starting up recreates the last-used profile's folder, so after a run up to the pool's worth of folders
+  remain until the next start.
 - WebView2 registers every named profile in the folder's `Local State` (`profile.info_cache`, ~1.1 KB each, plus
-  `profile.profiles_order`) and never forgets it. `ICoreWebView2Profile8::Delete` on `Shutdown` did not remove the entries
-  (tried: manifold kills the host right after sending `Shutdown`, and the browser dies with it before it writes
-  `Local State`). That file grows by about 1 KB per WebView2 host ever started; see Open questions.
+  `profile.profiles_order`) and never forgets it. `ICoreWebView2Profile8::Delete` on `Shutdown` did not remove the
+  entries (tried: manifold kills the host right after sending `Shutdown`, and the browser dies with it before it writes
+  `Local State`). With the pool, the entries stop at the most WebView2 tabs ever open at once (at least the pool's 8):
+  the probe's ten tabs opened and closed in turn used 3 names and added none.
 
 ## Out of scope for v1
 
@@ -176,11 +191,11 @@ What was built answers some of these; each says so.
 - With no delta broadcast, a logout in one tab is undone by another tab that still holds the cookie only if that tab
   changes it again; an unchanged copy (expiries within 1 ms) does not overwrite the jar (the per-tab baseline). A rotation
   in one tab likewise survives an idle tab's stale copy.
-- WebView2's `Local State` grows by about 1 KB per WebView2 host ever started (one named profile each, never
-  unregistered). Unbounded but slow; fixes if it matters: reuse a small pool of profile names (only once a name's old
-  browser process is gone, or its in-memory cookies come back), let hosts exit on their own after `Shutdown` so a profile
-  `Delete` can land, or give each host its own user-data folder (deleted whole, like a CEF cache dir; one browser
-  process per tab).
+- WebView2's `Local State` grew by about 1 KB per WebView2 host ever started (one named profile each, never
+  unregistered). Answered by the profile-name pool (WebView2 isolation, above): it now grows only when more WebView2 tabs
+  are open at once than ever before, past 8. Names made before the pool (`manifold_<pid>`) stay in an existing
+  `Local State`; nothing removes them. Still open: a host killed right after `Shutdown` never lets a profile `Delete`
+  land, which a host exiting on its own would allow.
 - A tab closed within 30 s of its last cookie change loses that change: there is no pull on close (only every 30 s, before a
   sleep or swap, and at quit), and never from a host that is gone.
 - Pulls are best effort. An unanswered `GetCookies` times out after 10 s and blocks nothing, but a reply that arrives late
