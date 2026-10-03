@@ -2701,17 +2701,46 @@ mod tests {
         assert!(!tabs::pull_pending(&pulls, "other", now));
     }
 
+    fn sleep_answer() -> tabs::Held {
+        tabs::Held::PageState(ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false })
+    }
+
+    fn swap_answer() -> tabs::Held {
+        tabs::Held::Snapshot(process_manager::EngineKind::Cef, "http://x/".into())
+    }
+
     #[test]
-    fn a_second_hold_on_a_tab_releases_the_first_instead_of_dropping_it() {
+    fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
         let mut app = App::default();
         app.jar_pulls.insert("t".into(), std::time::Instant::now());
-        let state = ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
-        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state)).is_none());
-        // The tab is gone, so releasing the sleep is a no-op; what matters is that it left the slot.
-        let swap = tabs::Held::Snapshot(process_manager::EngineKind::Cef, "http://x/".into());
-        assert!(app.hold_for_cookies("t", swap).is_none());
-        let (_, held) = &app.cookie_holds["t"];
-        assert!(matches!(held, tabs::Held::Snapshot(..)), "the earlier hold was released, the new one parked");
+        // Sleep, then swap: only the swap stays parked, and the sleep's pending entry is gone (no timeout sleep).
+        app.pending_sleeps.insert(
+            "t".into(),
+            sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        );
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        assert!(app.hold_for_cookies("t", swap_answer()).is_none());
+        assert!(matches!(app.cookie_holds["t"].1, tabs::Held::Snapshot(..)));
+        assert!(app.pending_sleeps.is_empty(), "the cancelled sleep left nothing behind");
+        // Swap, then sleep: only the sleep stays parked.
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        assert!(matches!(app.cookie_holds["t"].1, tabs::Held::PageState(..)));
+        assert_eq!(app.cookie_holds.len(), 1);
+    }
+
+    #[test]
+    fn a_respawn_drops_a_held_answer_meant_for_the_old_host() {
+        let mut app = App::default();
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        app.pending_sleeps.insert(
+            "t".into(),
+            sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        );
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        app.clear_cookie_state("t"); // what a spawn result for the same id does first
+        assert!(app.cookie_holds.is_empty() && app.jar_pulls.is_empty() && app.pending_sleeps.is_empty());
+        app.release_expired_cookie_holds();
+        app.release_cookie_hold("t"); // nothing left to run against the new host
     }
 
     #[test]

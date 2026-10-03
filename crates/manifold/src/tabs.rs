@@ -139,10 +139,32 @@ impl App {
         if !pull_pending(&self.jar_pulls, id, now) {
             return Some(held);
         }
-        // A second hold must not drop the first (a sleep then a swap): the earlier one goes ahead now, in order.
-        self.release_cookie_hold(id);
+        // The latest request wins: a second hold (a sleep then a swap) cancels the first, which may be stale.
+        if let Some((_, old)) = self.cookie_holds.remove(id) {
+            self.cancel_held(id, old);
+        }
         self.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
         None
+    }
+
+    /// Drops a held answer without acting on it, leaving no half-started request behind: a cancelled sleep's pending
+    /// entry goes too (else its timeout would sleep the tab anyway). A swap's `swap_target` was already taken when its
+    /// snapshot arrived, so there is nothing to undo.
+    fn cancel_held(&mut self, id: &str, held: Held) {
+        if let Held::PageState(_) = held {
+            self.pending_sleeps.remove(id);
+        }
+    }
+
+    /// Forgets everything cookie-related about tab `id`'s host (it closed, or a new host replaces it): known keys,
+    /// pull bookkeeping and any held answer, which is cancelled, not run against whatever host comes next.
+    pub(crate) fn clear_cookie_state(&mut self, id: &str) {
+        self.jar_known.remove(id);
+        self.jar_pulls.remove(id);
+        self.jar_silent.remove(id);
+        if let Some((_, held)) = self.cookie_holds.remove(id) {
+            self.cancel_held(id, held);
+        }
     }
 
     /// Acts on what `hold_for_cookies` parked for `id`, if anything.
@@ -243,8 +265,8 @@ impl App {
         }
         match result {
             Ok(mut tab) => {
+                self.clear_cookie_state(&id);
                 self.jar_known.insert(id.clone(), seeded);
-                self.jar_silent.remove(&id);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -794,10 +816,7 @@ impl App {
         self.node_order.retain(|t| t != id);
         self.skip_convert.remove(id);
         self.pending_sleeps.remove(id);
-        self.jar_known.remove(id);
-        self.jar_pulls.remove(id);
-        self.jar_silent.remove(id);
-        self.cookie_holds.remove(id);
+        self.clear_cookie_state(id);
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
         // A rectangle-selected tab closed through any path other than
