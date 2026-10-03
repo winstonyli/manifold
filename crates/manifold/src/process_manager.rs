@@ -243,6 +243,8 @@ pub struct EngineTab {
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
     /// (`webview2_profile_dir`).
     cache_dir: Option<PathBuf>,
+    /// A WebView2 host's profile slot (`claim_webview2_slot`), freed once `cache_dir` is gone.
+    profile_slot: Option<usize>,
 }
 
 impl EngineTab {
@@ -298,8 +300,9 @@ impl Drop for EngineTab {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        // The host has exited (killed and waited for above), so its profile slot is freed after the folder's deletion is tried.
         if let Some(dir) = self.cache_dir.take() {
-            remove_cache_dir(dir);
+            remove_cache_dir(dir, self.profile_slot.take());
         }
     }
 }
@@ -322,13 +325,21 @@ static CEF_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// won't delete files they still hold, so this retries for a few seconds
 /// on a background thread. Whatever is left `sweep_cef_cache` removes at
 /// the next startup.
-fn remove_cache_dir(dir: PathBuf) {
+///
+/// The same for an exited WebView2 host's profile folder, and then its
+/// `slot` is freed either way: the shared browser process keeps a closed
+/// profile's folder open while it lives, but its InPrivate cookies went with
+/// the host (`take_webview2_slot`).
+fn remove_cache_dir(dir: PathBuf, slot: Option<usize>) {
     let removal = std::thread::spawn(move || {
         for _ in 0..50 {
             if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
-                return;
+                break;
             }
             std::thread::sleep(Duration::from_millis(100));
+        }
+        if let Some(n) = slot {
+            free_webview2_slot(n);
         }
     });
     CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(removal);
@@ -357,22 +368,101 @@ pub fn sweep_cef_cache() {
     sweep_cache_dirs(&cef_cache_root(), "", Duration::from_secs(60));
 }
 
-/// What a WebView2 host's profile directory is named: the host names its InPrivate profile `manifold_<its pid>`
-/// (manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named profile in
-/// `WV2Profile_<name>` (observed, not documented: runtime 154.0.4258.53, 2026-10-03). InPrivate holds no cookies there, but
-/// caches and empty databases (~2 MB) stay behind for every host.
+/// What a WebView2 host's profile directory is named: manifold hands each host a profile name `manifold_<slot>`
+/// (`ENGINE_WEBVIEW2_PROFILE`; manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named
+/// profile in `WV2Profile_<name>` (observed, not documented: runtime 154.0.4258.53, 2026-10-03). InPrivate holds no
+/// cookies there, but caches and empty databases (~2 MB) stay behind.
 const WEBVIEW2_PROFILE_PREFIX: &str = "WV2Profile_manifold_";
 
-/// Where WebView2 keeps the profiles of hosts run from `host_exe`: its default user-data folder,
-/// `<host exe>.WebView2`, which the host does not override.
-fn webview2_profiles_root(host_exe: &Path) -> PathBuf {
-    let mut udf = host_exe.as_os_str().to_owned();
-    udf.push(".WebView2");
-    PathBuf::from(udf).join("EBWebView")
+/// How many profile names WebView2 hosts take turns with. WebView2 lists every named profile it has seen in its
+/// `Local State` (about 1 KB each) and never forgets one, so names are reused rather than made per host. More
+/// concurrent WebView2 tabs than this still each get their own name, beyond the pool, and the log says so.
+const WEBVIEW2_PROFILE_POOL: usize = 8;
+
+fn webview2_profile_name(slot: usize) -> String {
+    format!("manifold_{slot}")
 }
 
-fn webview2_profile_dir(host_exe: &Path, pid: u32) -> PathBuf {
-    webview2_profiles_root(host_exe).join(format!("{WEBVIEW2_PROFILE_PREFIX}{pid}"))
+/// WebView2's default user-data folder for hosts run from `host_exe`, `<host exe>.WebView2`, which the host does not
+/// override.
+fn webview2_user_data(host_exe: &Path) -> PathBuf {
+    let mut udf = host_exe.as_os_str().to_owned();
+    udf.push(".WebView2");
+    PathBuf::from(udf)
+}
+
+/// Where WebView2 keeps the profiles of hosts run from `host_exe`.
+fn webview2_profiles_root(host_exe: &Path) -> PathBuf {
+    webview2_user_data(host_exe).join("EBWebView")
+}
+
+fn webview2_profile_dir(host_exe: &Path, slot: usize) -> PathBuf {
+    webview2_profiles_root(host_exe).join(format!("{WEBVIEW2_PROFILE_PREFIX}{slot}"))
+}
+
+/// The profile slots this manifold's WebView2 hosts hold, each with its lock file (`take_webview2_slot`).
+static WEBVIEW2_SLOTS: std::sync::Mutex<std::collections::BTreeMap<usize, Option<std::fs::File>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Records and returns the lowest slot not in `busy` that `take` can claim (`None`: in use outside `busy`). Past every
+/// claimable slot it keeps counting, so it always returns one; a result `>= WEBVIEW2_PROFILE_POOL` is beyond the pool.
+fn claim_slot<G>(busy: &mut std::collections::BTreeMap<usize, G>, mut take: impl FnMut(usize) -> Option<G>) -> usize {
+    let mut n = 0;
+    loop {
+        if let std::collections::btree_map::Entry::Vacant(free) = busy.entry(n) {
+            if let Some(guard) = take(n) {
+                free.insert(guard);
+                return n;
+            }
+        }
+        n += 1;
+    }
+}
+
+/// Claims slot `n` of the user-data folder `udf` against everything outside this process: its lock file
+/// (`manifold-profile-<n>.lock`, held open without sharing, so another manifold instance using the same folder skips
+/// it). Its leftover profile folder is deleted if it can be; one that cannot is still open in the browser process
+/// all hosts share, which keeps a profile loaded after its last host exits. That does not block reuse: the cookies
+/// are InPrivate, in memory, and a new host with the name starts with an empty store (shown by `scripts/jar-probe.sh`'s
+/// reuse run, runtime 154.0.4258.53). A lock file that cannot be created at all (not a sharing violation) gives a
+/// claim without a lock.
+fn take_webview2_slot(udf: &Path, n: usize) -> Option<Option<std::fs::File>> {
+    let _ = std::fs::create_dir_all(udf);
+    let mut open = std::fs::OpenOptions::new();
+    open.create(true).truncate(false).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        open.share_mode(0);
+    }
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let lock = match open.open(udf.join(format!("manifold-profile-{n}.lock"))) {
+        Ok(file) => Some(file),
+        Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => return None,
+        Err(_) => None,
+    };
+    let _ = std::fs::remove_dir_all(udf.join("EBWebView").join(format!("{WEBVIEW2_PROFILE_PREFIX}{n}")));
+    Some(lock)
+}
+
+/// The lowest free profile slot for a new WebView2 host run from `host_exe`. Freed by `free_webview2_slot` only once
+/// the host process has exited and its folder's deletion has been tried, so a live host's profile is never handed to
+/// another.
+fn claim_webview2_slot(host_exe: &Path) -> usize {
+    let udf = webview2_user_data(host_exe);
+    let mut slots = WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = claim_slot(&mut slots, |n| take_webview2_slot(&udf, n));
+    if n >= WEBVIEW2_PROFILE_POOL {
+        eprintln!(
+            "webview2: all {WEBVIEW2_PROFILE_POOL} pooled profiles are in use; using {} (adds one Local State entry)",
+            webview2_profile_name(n)
+        );
+    }
+    n
+}
+
+fn free_webview2_slot(n: usize) {
+    WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
 }
 
 /// Deletes WebView2 host profiles `remove_cache_dir` could not (the shared browser process still held them, or
@@ -991,10 +1081,22 @@ pub fn spawn_tab(
     if let Some(dir) = &cache_dir {
         command.env("ENGINE_CACHE_DIR", dir);
     }
-    let mut child = command.spawn()?;
+    // Each WebView2 host gets a profile name of its own among the live hosts, reused once a host is gone.
+    let profile_slot = (kind == EngineKind::Webview2).then(|| claim_webview2_slot(&host_exe));
+    if let Some(n) = profile_slot {
+        command.env("ENGINE_WEBVIEW2_PROFILE", webview2_profile_name(n));
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            if let Some(n) = profile_slot {
+                free_webview2_slot(n);
+            }
+            return Err(e.into());
+        }
+    };
     assign_to_engine_job(&child);
-    let cache_dir =
-        cache_dir.or_else(|| (kind == EngineKind::Webview2).then(|| webview2_profile_dir(&host_exe, child.id())));
+    let cache_dir = cache_dir.or_else(|| profile_slot.map(|n| webview2_profile_dir(&host_exe, n)));
 
     // The child connects to both sockets right after spawning — bounded by
     // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
@@ -1013,14 +1115,15 @@ pub fn spawn_tab(
             Ok(pair) => pair,
             Err(e) => {
                 if let Some(dir) = cache_dir {
-                    remove_cache_dir(dir);
+                    remove_cache_dir(dir, profile_slot);
                 }
                 return Err(e.into());
             }
         };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    let mut tab = EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir };
+    let mut tab =
+        EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir, profile_slot };
     if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));
@@ -1120,6 +1223,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         events_rx,
         child,
         cache_dir: None,
+        profile_slot: None,
     })
 }
 
@@ -1471,7 +1575,63 @@ mod tests {
 
     #[test]
     fn a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder() {
-        let dir = super::webview2_profile_dir(Path::new("bin/manifold-engine-webview2.exe"), 42);
-        assert_eq!(dir, Path::new("bin/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_42"));
+        let dir = super::webview2_profile_dir(Path::new("bin/manifold-engine-webview2.exe"), 3);
+        assert_eq!(dir, Path::new("bin/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_3"));
+    }
+
+    #[test]
+    fn profile_slots_are_the_lowest_free_and_reused_once_freed() {
+        let mut busy = std::collections::BTreeMap::new();
+        let all = |_| Some(());
+        assert_eq!([0, 1, 2].map(|_| super::claim_slot(&mut busy, all)), [0, 1, 2]);
+        busy.remove(&1);
+        assert_eq!(super::claim_slot(&mut busy, all), 1, "a freed slot is reused before a new one");
+        assert_eq!(super::claim_slot(&mut busy, all), 3);
+    }
+
+    #[test]
+    fn a_slot_in_use_elsewhere_is_skipped() {
+        let mut busy = std::collections::BTreeMap::new();
+        // Slots 0 and 2 are held by another manifold instance (their lock files).
+        let free_elsewhere = |n| (n != 0 && n != 2).then_some(());
+        assert_eq!(super::claim_slot(&mut busy, free_elsewhere), 1);
+        assert_eq!(super::claim_slot(&mut busy, free_elsewhere), 3);
+    }
+
+    #[test]
+    fn an_exhausted_pool_hands_out_a_slot_beyond_it() {
+        let mut busy: std::collections::BTreeMap<usize, ()> =
+            (0..super::WEBVIEW2_PROFILE_POOL).map(|n| (n, ())).collect();
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(())), super::WEBVIEW2_PROFILE_POOL);
+        busy.remove(&5);
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(())), 5, "back inside the pool once one frees");
+    }
+
+    /// A slot whose lock another holder has open is not taken. A profile folder the shared browser still holds open
+    /// does not block it (its cookies were in memory); a free slot's leftover folder is deleted when it is taken.
+    #[cfg(windows)]
+    #[test]
+    fn taking_a_slot_respects_its_lock_and_reuses_a_profile_folder_in_use() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let udf = crate::store::testutil::temp_dir("wv2-slots");
+        let lock0 = super::take_webview2_slot(&udf, 0).expect("a fresh slot");
+        assert!(lock0.is_some());
+        assert!(super::take_webview2_slot(&udf, 0).is_none(), "another instance holds slot 0's lock");
+        drop(lock0);
+        assert!(super::take_webview2_slot(&udf, 0).is_some(), "free again once the lock is closed");
+
+        let profile = udf.join("EBWebView").join("WV2Profile_manifold_1");
+        std::fs::create_dir_all(profile.join("Network")).unwrap();
+        std::fs::write(profile.join("Network").join("Cookies"), b"x").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(profile.join("Network").join("Cookies"))
+            .unwrap();
+        assert!(super::take_webview2_slot(&udf, 1).is_some(), "a folder the browser holds does not block the slot");
+        assert!(profile.exists(), "a held folder stays");
+        drop(held);
+        assert!(super::take_webview2_slot(&udf, 1).is_some());
+        assert!(!profile.exists(), "the leftover folder is deleted when the slot is taken");
     }
 }
