@@ -45,9 +45,14 @@ in one engine is present in another, and a swap between engines keeps the user s
 | WebKit | `CookieManager::cookies(uri)` (feature `v2_20`; one URI per call, no whole-jar dump) | `add_cookie` (async) | read in the vendored crates, not run. `soup3::Cookie` has `is_http_only` and `same_site_policy`, so the attributes fit. Both calls are async and need the glib main context |
 | Servo | `SiteDataManager::cookies_for_url(url, CookieSource::HTTP)` (also `_async`) | `set_cookie_for_url(url, cookie, cb)` (always `CookieSource::HTTP`, so HttpOnly can be set) | read in the vendored crates, not run. Uses the `cookie` crate type (http_only, same_site, expires). One URL per call, no whole-jar dump |
 
-WebKit and Servo can only be read per URL, so a sync needs the set of URLs to ask about: the jar's own domains plus the
-origins of the tab's navigations (tracked by manifold from its history). Cookies set by an origin manifold never saw would
-be missed; WebView2 and CEF dump whole jars and do not have this gap.
+WebKit and Servo return cookies per URL, but both also list which domains hold cookies, so a whole-jar dump is a
+two-step read: list domains, then fetch each as a URL. WebKit: raw `webkit_cookie_manager_get_domains_with_cookies`, wrapped
+as `CookieManager::domains_with_cookies`. Servo: `SiteDataManager::site_data(StorageType::Cookies)` (from the net layer's
+`ListCookies`; names are sites, eTLD+1). Both read in the vendored sources, not run. Gap that remains: the per-URL fetch
+filters by the URL's path and scheme, so a cookie scoped to `/admin`, or `Secure` when asked over `http`, is returned only
+if that URL is asked for. Ask `https://<domain>/` and `http://<domain>/`, and add the paths of the tab's history; a
+path-scoped cookie never visited is missed. Neither engine exposes a raw "all cookies" call (checked: no such function in
+`webkit2gtk-sys` or in `servo-net-traits`' `CoreResourceMsg`).
 
 ## Security
 
@@ -69,5 +74,4 @@ browsing data" command. Storage has no verified engine-agnostic read or write pa
 
 - Sync cadence versus cost for the timer, and whether a pull on every navigation commit is cheaper than a timer.
 - InPrivate or per-jar folder for WebView2: needs a check that WebView2 exposes the option this app's wrapper can set.
-- Whether the per-URL enumeration gap for WebKit and Servo is acceptable, or a tab's cookies should be pulled by asking
-  those engines for each URL on its history.
+- Whether missing never-visited path-scoped cookies on WebKit and Servo is acceptable (it is a small gap).
