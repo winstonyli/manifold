@@ -45,6 +45,10 @@ pub type Key = (String, String, String);
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Jar {
     pub cookies: Vec<Cookie>,
+    /// Set when a jar file exists that could not be read or moved aside: the cookies work for this session, but
+    /// `save` writes nothing, so that file is never overwritten.
+    #[serde(skip)]
+    locked: bool,
 }
 
 impl Cookie {
@@ -74,25 +78,43 @@ fn parse(bytes: &[u8]) -> Result<Jar, String> {
     serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON at line {} column {}", e.line(), e.column()))
 }
 
-/// Windows: DPAPI for the current user, no extra entropy.
+/// Windows: DPAPI for the current user, no extra entropy (so any process of the same Windows user can decrypt; the
+/// accepted v1 threat model is other users and offline copies). `CRYPTPROTECT_UI_FORBIDDEN`: never raise UI.
 #[cfg(windows)]
 fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
-    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
-    let input = CRYPT_INTEGER_BLOB { cbData: plain.len() as u32, pbData: plain.as_ptr() as *mut u8 };
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(plain.len()).map_err(std::io::Error::other)?,
+        pbData: plain.as_ptr() as *mut u8,
+    };
     let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: `input` borrows `plain` for the call; DPAPI only reads it.
-    unsafe { CryptProtectData(&input, windows::core::w!("manifold jar"), None, None, None, 0, &mut out) }
-        .map_err(std::io::Error::other)?;
+    unsafe {
+        CryptProtectData(
+            &input,
+            windows::core::w!("manifold jar"),
+            None,
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out,
+        )
+    }
+    .map_err(std::io::Error::other)?;
     Ok(take_blob(out))
 }
 
 #[cfg(windows)]
 fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
-    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
-    let input = CRYPT_INTEGER_BLOB { cbData: blob.len() as u32, pbData: blob.as_ptr() as *mut u8 };
+    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(blob.len()).map_err(std::io::Error::other)?,
+        pbData: blob.as_ptr() as *mut u8,
+    };
     let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: as in `protect`.
-    unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut out) }.map_err(std::io::Error::other)?;
+    unsafe { CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out) }
+        .map_err(std::io::Error::other)?;
     Ok(take_blob(out))
 }
 
@@ -100,10 +122,16 @@ fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
 #[cfg(windows)]
 fn take_blob(blob: windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB) -> Vec<u8> {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
-    // SAFETY: DPAPI returned `cbData` bytes at `pbData`, allocated with LocalAlloc.
+    // SAFETY: on success DPAPI returned `cbData` bytes at `pbData`, allocated with LocalAlloc. A null pointer or
+    // zero length is treated as empty rather than passed to `from_raw_parts`.
     unsafe {
-        let v = std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec();
-        LocalFree(Some(HLOCAL(blob.pbData.cast())));
+        let v = if blob.pbData.is_null() || blob.cbData == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec()
+        };
+        // The result is ignored on purpose: a failed free only leaks this one blob and there is no recovery.
+        let _ = LocalFree(Some(HLOCAL(blob.pbData.cast())));
         v
     }
 }
@@ -119,35 +147,69 @@ fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(blob.to_vec())
 }
 
+/// `default.json.unreadable-<unix seconds>`, with `-<n>` added if that name is taken.
+fn unique_aside(dir: &Path) -> PathBuf {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut aside = dir.join(format!("default.json.unreadable-{secs}"));
+    let mut n = 1;
+    while aside.exists() {
+        aside = dir.join(format!("default.json.unreadable-{secs}-{n}"));
+        n += 1;
+    }
+    aside
+}
+
 impl Jar {
     /// `<dir>\default.json`: v1 has one jar.
     pub fn path(dir: &Path) -> PathBuf {
         dir.join("default.json")
     }
 
-    /// The saved jar, or an empty one when the file is missing or unreadable (a corrupt jar must not stop the app).
-    /// A file that exists but cannot be read (wrong user or machine, tampered, not JSON) is renamed to
-    /// `default.json.unreadable` so the next save cannot overwrite it; only the error is logged, never contents.
+    /// The saved jar, or an empty one when the file is missing. A file that exists but cannot be read (wrong user
+    /// or machine, tampered, truncated, not JSON) is renamed to `default.json.unreadable-<unix seconds>` (never over
+    /// an earlier one). If it cannot be read at all, or cannot be moved aside, the jar is `locked`: usable in
+    /// memory, but `save` writes nothing, so the file is never overwritten. Only reasons are logged, never contents.
     pub fn load(dir: &Path) -> Jar {
         let path = Self::path(dir);
-        let Ok(bytes) = std::fs::read(&path) else { return Jar::default() };
+        // A tmp left by a crash mid-save; harmless, but remove it so it does not linger.
+        let _ = std::fs::remove_file(dir.join("default.json.tmp"));
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Jar::default(),
+            Err(e) => return Self::locked_empty(&format!("cannot read the jar file ({e})")),
+        };
         let parsed = match bytes.strip_prefix(MAGIC) {
             Some(blob) => unprotect(blob).map_err(|e| e.to_string()).and_then(|plain| parse(&plain)),
             None => parse(&bytes),
         };
-        parsed.unwrap_or_else(|why| {
-            let aside = dir.join("default.json.unreadable");
-            match std::fs::rename(&path, &aside) {
-                Ok(()) => eprintln!("jar: cannot read the jar file ({why}); kept it as {}", aside.display()),
-                Err(e) => eprintln!("jar: cannot read the jar file ({why}) and could not move it aside: {e}"),
+        match parsed {
+            Ok(jar) => jar,
+            Err(why) => {
+                let aside = unique_aside(dir);
+                match std::fs::rename(&path, &aside) {
+                    Ok(()) => {
+                        eprintln!("jar: cannot read the jar file ({why}); kept it as {}", aside.display());
+                        Jar::default()
+                    }
+                    Err(e) => {
+                        Self::locked_empty(&format!("cannot read the jar file ({why}) and cannot move it aside ({e})"))
+                    }
+                }
             }
-            Jar::default()
-        })
+        }
+    }
+
+    fn locked_empty(why: &str) -> Jar {
+        eprintln!("jar: {why}; the file is left untouched and cookie changes will not be saved this session");
+        Jar { locked: true, ..Jar::default() }
     }
 
     /// Writes beside the target and renames, so a crash mid-write leaves the old jar. The file is `MJR1` then the
-    /// protected JSON.
+    /// protected JSON. A locked jar writes nothing (`load` already logged why).
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        if self.locked {
+            return Ok(());
+        }
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join("default.json.tmp");
         let mut out = MAGIC.to_vec();
@@ -202,14 +264,14 @@ mod tests {
 
     #[test]
     fn a_pulled_cookie_replaces_the_stored_one_with_the_same_key() {
-        let mut jar = Jar { cookies: vec![c("sid", "old")] };
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "old")] };
         assert!(jar.merge(vec![c("sid", "new")], &jar.keys()));
         assert_eq!(jar.cookies, vec![c("sid", "new")]);
     }
 
     #[test]
     fn a_cookie_missing_from_the_pull_is_deleted_only_if_it_was_known() {
-        let mut jar = Jar { cookies: vec![c("sid", "1"), c("fresh", "2")] };
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1"), c("fresh", "2")] };
         let known: HashSet<Key> = [("sid".into(), "example.com".into(), "/".into())].into();
         assert!(jar.merge(vec![], &known));
         assert_eq!(jar.cookies, vec![c("fresh", "2")], "sid was a logout; fresh was never seen by the engine");
@@ -217,7 +279,7 @@ mod tests {
 
     #[test]
     fn an_expired_pulled_cookie_deletes_the_stored_one_with_its_key() {
-        let mut jar = Jar { cookies: vec![c("sid", "1"), c("other", "2")] };
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1"), c("other", "2")] };
         let mut gone = c("sid", "1");
         gone.expires = Some(1.0);
         assert!(jar.merge(vec![gone], &HashSet::new()), "not even known: the engine's own expiry still wins");
@@ -226,14 +288,14 @@ mod tests {
 
     #[test]
     fn debug_never_prints_a_cookie_value() {
-        let jar = Jar { cookies: vec![c("sid", "TOP-SECRET")] };
+        let jar = Jar { locked: false, cookies: vec![c("sid", "TOP-SECRET")] };
         let text = format!("{jar:?} {:?}", c("sid", "TOP-SECRET"));
         assert!(!text.contains("TOP-SECRET") && text.contains("<redacted>") && text.contains("sid"), "{text}");
     }
 
     #[test]
     fn merging_the_same_cookies_changes_nothing() {
-        let mut jar = Jar { cookies: vec![c("sid", "1")] };
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
         assert!(!jar.merge(vec![c("sid", "1")], &jar.keys()));
     }
 
@@ -249,9 +311,80 @@ mod tests {
     #[test]
     fn the_jar_round_trips_through_its_file() {
         let dir = temp_dir("jar-roundtrip");
-        let jar = Jar { cookies: vec![c("sid", "1")] };
+        let jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
         jar.save(&dir).unwrap();
         assert_eq!(Jar::load(&dir), jar);
+    }
+
+    fn asides(dir: &Path) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("default.json.unreadable-"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_second_failure_keeps_the_first_aside() {
+        let dir = temp_dir("jar-two-asides");
+        std::fs::write(Jar::path(&dir), "first").unwrap();
+        Jar::load(&dir);
+        std::fs::write(Jar::path(&dir), "second").unwrap();
+        Jar::load(&dir);
+        let a = asides(&dir);
+        assert_eq!(a.len(), 2);
+        let mut contents: Vec<_> = a.iter().map(|p| std::fs::read(p).unwrap()).collect();
+        contents.sort();
+        assert_eq!(contents, vec![b"first".to_vec(), b"second".to_vec()]);
+    }
+
+    #[test]
+    fn a_header_only_or_truncated_file_goes_aside() {
+        let dir = temp_dir("jar-header-only");
+        std::fs::write(Jar::path(&dir), b"MJR1").unwrap();
+        assert_eq!(Jar::load(&dir), Jar::default());
+        assert_eq!(asides(&dir).len(), 1);
+        Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
+        let bytes = std::fs::read(Jar::path(&dir)).unwrap();
+        std::fs::write(Jar::path(&dir), &bytes[..bytes.len() / 2]).unwrap();
+        assert_eq!(Jar::load(&dir), Jar::default());
+        assert_eq!(asides(&dir).len(), 2);
+    }
+
+    #[test]
+    fn an_unreadable_path_locks_the_jar_and_save_leaves_it_alone() {
+        let dir = temp_dir("jar-locked");
+        // A directory where the file should be: reading it fails with something other than NotFound.
+        std::fs::create_dir(Jar::path(&dir)).unwrap();
+        let jar = Jar::load(&dir);
+        assert!(jar.locked);
+        Jar { cookies: vec![c("sid", "1")], ..jar }.save(&dir).unwrap();
+        assert!(Jar::path(&dir).is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_aside_rename_locks_the_jar_and_the_file_survives() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir("jar-rename-fails");
+        std::fs::write(Jar::path(&dir), "not json").unwrap();
+        // Opened without FILE_SHARE_DELETE, so the rename fails while it is held (read allowed).
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(Jar::path(&dir)).unwrap();
+        let jar = Jar::load(&dir);
+        assert!(jar.locked);
+        jar.save(&dir).unwrap();
+        drop(held);
+        assert_eq!(std::fs::read(Jar::path(&dir)).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn load_removes_a_stale_tmp() {
+        let dir = temp_dir("jar-stale-tmp");
+        std::fs::write(dir.join("default.json.tmp"), "old").unwrap();
+        Jar::load(&dir);
+        assert!(!dir.join("default.json.tmp").exists());
     }
 
     #[test]
@@ -265,7 +398,7 @@ mod tests {
         std::fs::write(Jar::path(&dir), "not json").unwrap();
         assert_eq!(Jar::load(&dir), Jar::default());
         assert!(!Jar::path(&dir).exists());
-        assert_eq!(std::fs::read(dir.join("default.json.unreadable")).unwrap(), b"not json");
+        assert_eq!(std::fs::read(&asides(&dir)[0]).unwrap(), b"not json");
     }
 
     #[test]
@@ -278,7 +411,7 @@ mod tests {
     #[test]
     fn a_saved_jar_is_protected_on_disk() {
         let dir = temp_dir("jar-protected");
-        let jar = Jar { cookies: vec![c("sid", "SECRET123")] };
+        let jar = Jar { locked: false, cookies: vec![c("sid", "SECRET123")] };
         jar.save(&dir).unwrap();
         let bytes = std::fs::read(Jar::path(&dir)).unwrap();
         assert!(bytes.starts_with(b"MJR1"));
@@ -291,7 +424,7 @@ mod tests {
     #[test]
     fn a_legacy_plaintext_jar_loads_and_the_next_save_protects_it() {
         let dir = temp_dir("jar-legacy");
-        let jar = Jar { cookies: vec![c("sid", "1")] };
+        let jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
         std::fs::write(Jar::path(&dir), serde_json::to_vec(&jar).unwrap()).unwrap();
         assert_eq!(Jar::load(&dir), jar);
         jar.save(&dir).unwrap();
@@ -301,16 +434,16 @@ mod tests {
     #[test]
     fn a_tampered_protected_file_loads_empty_and_is_kept_aside() {
         let dir = temp_dir("jar-tamper");
-        Jar { cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
+        Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
         let mut bytes = std::fs::read(Jar::path(&dir)).unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;
         std::fs::write(Jar::path(&dir), &bytes).unwrap();
         assert_eq!(Jar::load(&dir), Jar::default());
-        assert_eq!(std::fs::read(dir.join("default.json.unreadable")).unwrap(), bytes);
+        assert_eq!(std::fs::read(&asides(&dir)[0]).unwrap(), bytes);
         // A save after the failed load writes a fresh file and leaves the aside copy alone.
         Jar::default().save(&dir).unwrap();
-        assert!(dir.join("default.json.unreadable").exists());
+        assert_eq!(asides(&dir).len(), 1);
     }
 
     #[test]

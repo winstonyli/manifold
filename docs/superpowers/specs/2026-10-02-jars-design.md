@@ -61,7 +61,9 @@ with the OS store (DPAPI on Windows; the platform keyring elsewhere). Never log 
 ones; the host must filter and the debug commands must not exist outside debug builds). A jar can be exported only by an
 explicit user action.
 
-Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, no entropy); a plaintext legacy file still loads and is rewritten protected on the next save. A file that cannot be read is renamed to `default.json.unreadable` at load, so a later save cannot overwrite it. Follow-up, not built: on Linux and macOS the file is still plain JSON behind the `MJR1` header; platform keyring protection is future work.
+Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, `CRYPTPROTECT_UI_FORBIDDEN`, no entropy). Without entropy any process of the same Windows user can decrypt it; the accepted v1 threat model is other users and offline copies. A legacy plaintext file still loads and is rewritten protected on the next save. A file that cannot be read (decrypt failure, truncation, bad JSON) is renamed to `default.json.unreadable-<unix seconds>` at load, never over an earlier one. If it cannot be read at all or cannot be moved aside, the jar is locked for the session: cookies work in memory but nothing is saved, so the file is never overwritten. A stale `default.json.tmp` is deleted at load.
+
+On Linux and macOS `MJR1` names the format only: the content is plain JSON, not protected. A file moved across OSes (or users, or machines) is not readable and is set aside as above. Platform keyring protection is the follow-up, not built.
 
 ## Decided
 
