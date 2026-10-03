@@ -478,12 +478,42 @@ pub(crate) fn engine_availability(
     failed: Option<&str>,
     custom: Option<&Path>,
 ) -> EngineState {
-    availability_with(crate::cef_pin::pin_for_platform(), kind, cef_on_disk, installing, failed, custom)
+    availability_with(
+        std::env::consts::OS,
+        crate::cef_pin::pin_for_platform(),
+        kind,
+        cef_on_disk,
+        installing,
+        failed,
+        custom,
+    )
 }
 
-/// `engine_availability` for a given pin. `None` means this platform has no CEF build, so there is nothing
-/// to download: `Unavailable`, unless a runtime is already there (a dev tree's) or a custom one is set.
+/// Why `kind` cannot run on `os` (a `std::env::consts::OS` value) at all, or `None` when it can. The one
+/// place that knows: availability (every engine list) and the spawn refusal both read it.
+/// WebView2 is Windows-only. WebKit runs through WSL on Windows and is hosted natively on Linux; macOS has
+/// no WebKit host wired yet. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
+fn platform_unavailable_reason(os: &str, kind: EngineKind) -> Option<&'static str> {
+    match kind {
+        EngineKind::Webview2 if os != "windows" => Some("needs Windows"),
+        EngineKind::Webkit if !matches!(os, "windows" | "linux") => Some("needs Windows or Linux"),
+        _ => None,
+    }
+}
+
+/// The engine a fresh profile starts new tabs in on `os`: the first of WebView2, Servo that the platform
+/// can run. CEF is never the default (an opt-in download) and WebKit needs setup.
+pub(crate) fn platform_default_engine(os: &str) -> EngineKind {
+    [EngineKind::Webview2, EngineKind::Servo]
+        .into_iter()
+        .find(|kind| platform_unavailable_reason(os, *kind).is_none())
+        .unwrap_or(EngineKind::Servo)
+}
+
+/// `engine_availability` for a given OS and pin. `None` means this platform has no CEF build, so there is
+/// nothing to download: `Unavailable`, unless a runtime is already there (a dev tree's) or a custom one is set.
 fn availability_with(
+    os: &str,
     pin: Option<&Pin>,
     kind: EngineKind,
     cef_on_disk: RuntimeOnDisk,
@@ -491,6 +521,9 @@ fn availability_with(
     failed: Option<&str>,
     custom: Option<&Path>,
 ) -> EngineState {
+    if let Some(reason) = platform_unavailable_reason(os, kind) {
+        return EngineState::Unavailable(reason.to_string());
+    }
     if kind != EngineKind::Cef {
         return EngineState::Installed;
     }
@@ -627,12 +660,10 @@ fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<
     }
 }
 
-/// Why `kind` cannot run on this platform at all, or `None` when it can. WebView2 is a Windows-only engine,
-/// and WebKit is hosted through `wsl.exe` (a native Linux WebKit host is not built yet); elsewhere a spawn of
-/// either fails with this reason instead of a bare "file not found" or a `wsl.exe` that does not exist.
-fn unsupported_here(kind: EngineKind) -> Option<String> {
-    (cfg!(not(windows)) && matches!(kind, EngineKind::Webview2 | EngineKind::Webkit))
-        .then(|| format!("{} is not supported on this platform yet", crate::engine_info::engine_label(kind)))
+/// The spawn refusal for an engine this OS cannot run, from the same `platform_unavailable_reason` the
+/// engine lists show, so a spawn fails by name instead of a bare "file not found".
+fn unsupported_on(os: &str, kind: EngineKind) -> Option<String> {
+    platform_unavailable_reason(os, kind).map(|reason| crate::engine_info::PickOutcome::unavailable_toast(kind, reason))
 }
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
@@ -796,7 +827,7 @@ pub fn spawn_tab(
     initial_url: &str,
     custom_cef: Option<&Path>,
 ) -> Result<EngineTab, SpawnError> {
-    if let Some(reason) = unsupported_here(kind) {
+    if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
     if kind == EngineKind::Webkit {
@@ -977,13 +1008,58 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn bundled_engines_are_always_installed() {
-        for kind in [EngineKind::Servo, EngineKind::Webview2, EngineKind::Webkit] {
-            assert_eq!(engine_availability(kind, RuntimeOnDisk::Missing, None, None, None), EngineState::Installed);
+    fn bundled_engines_are_always_installed_where_the_os_can_run_them() {
+        let a = |os, kind, disk, installing, failed| availability_with(os, None, kind, disk, installing, failed, None);
+        for (os, kind) in [
+            ("windows", EngineKind::Servo),
+            ("linux", EngineKind::Servo),
+            ("macos", EngineKind::Servo),
+            ("windows", EngineKind::Webview2),
+            ("windows", EngineKind::Webkit),
+            ("linux", EngineKind::Webkit),
+        ] {
+            assert_eq!(a(os, kind, RuntimeOnDisk::Missing, None, None), EngineState::Installed, "{os} {kind:?}");
             assert_eq!(
-                engine_availability(kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x"), None),
-                EngineState::Installed
+                a(os, kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")),
+                EngineState::Installed,
+                "{os} {kind:?}"
             );
+        }
+    }
+
+    /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
+    #[test]
+    fn engines_the_os_cannot_run_are_unavailable_with_a_reason() {
+        let unavailable = |os, kind| availability_with(os, None, kind, RuntimeOnDisk::Ready, None, None, None);
+        let reason = |text: &str| EngineState::Unavailable(text.to_string());
+        for os in ["linux", "macos", "freebsd"] {
+            assert_eq!(unavailable(os, EngineKind::Webview2), reason("needs Windows"), "{os}");
+        }
+        assert_eq!(unavailable("macos", EngineKind::Webkit), reason("needs Windows or Linux"));
+        assert_eq!(unavailable("freebsd", EngineKind::Webkit), reason("needs Windows or Linux"));
+        assert_eq!(unavailable("windows", EngineKind::Webview2), EngineState::Installed);
+        assert_eq!(unavailable("windows", EngineKind::Webkit), EngineState::Installed);
+        assert_eq!(unavailable("linux", EngineKind::Webkit), EngineState::Installed);
+        // Servo runs everywhere; CEF follows its pin, not the OS table.
+        assert_eq!(unavailable("macos", EngineKind::Servo), EngineState::Installed);
+        assert_eq!(unavailable("macos", EngineKind::Cef), EngineState::Installed);
+        // The spawn refusal reads the same table.
+        assert_eq!(unsupported_on("windows", EngineKind::Webview2), None);
+        assert_eq!(unsupported_on("linux", EngineKind::Servo), None);
+        assert_eq!(unsupported_on("linux", EngineKind::Webkit), None);
+        let refusal = unsupported_on("macos", EngineKind::Webview2).unwrap();
+        assert!(refusal.contains("WebView2") && refusal.contains("needs Windows"), "{refusal}");
+        assert!(unsupported_on("macos", EngineKind::Webkit).unwrap().contains("needs Windows or Linux"));
+    }
+
+    #[test]
+    fn the_platform_default_is_the_first_engine_the_os_can_run() {
+        assert_eq!(platform_default_engine("windows"), EngineKind::Webview2);
+        for os in ["linux", "macos", "freebsd"] {
+            assert_eq!(platform_default_engine(os), EngineKind::Servo, "{os}");
+        }
+        for os in ["windows", "linux", "macos"] {
+            assert!(platform_unavailable_reason(os, platform_default_engine(os)).is_none());
         }
     }
 
@@ -1010,7 +1086,7 @@ mod tests {
     #[test]
     fn a_platform_without_a_pin_offers_no_install() {
         let a = |disk, installing, failed, custom| {
-            availability_with(None, EngineKind::Cef, disk, installing, failed, custom)
+            availability_with("windows", None, EngineKind::Cef, disk, installing, failed, custom)
         };
         let unavailable = EngineState::Unavailable(NO_PIN_REASON.to_string());
         for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
@@ -1023,13 +1099,13 @@ mod tests {
         let p = Path::new("C:/my/cef");
         assert_eq!(a(RuntimeOnDisk::Missing, None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
         assert_eq!(
-            availability_with(None, EngineKind::Servo, RuntimeOnDisk::Missing, None, None, None),
+            availability_with("windows", None, EngineKind::Servo, RuntimeOnDisk::Missing, None, None, None),
             EngineState::Installed
         );
         // The pick says so rather than asking to download, and the label gives the reason.
         assert_eq!(
             crate::engine_info::pick_outcome(EngineKind::Cef, &unavailable),
-            crate::engine_info::PickOutcome::Unavailable(EngineKind::Cef)
+            crate::engine_info::PickOutcome::Unavailable(EngineKind::Cef, NO_PIN_REASON.to_string())
         );
         assert!(crate::engine_info::engine_state_label(&unavailable).0.contains(NO_PIN_REASON));
     }
@@ -1138,20 +1214,6 @@ mod tests {
     #[test]
     fn a_missing_engine_error_reads_plainly() {
         assert_eq!(SpawnError::EngineMissing(EngineKind::Cef).to_string(), "Blink (CEF) is not installed");
-    }
-
-    #[test]
-    fn windows_only_engines_are_refused_by_name_elsewhere() {
-        assert_eq!(unsupported_here(EngineKind::Servo), None);
-        assert_eq!(unsupported_here(EngineKind::Cef), None);
-        let refused_here = cfg!(not(windows));
-        for kind in [EngineKind::Webview2, EngineKind::Webkit] {
-            let reason = unsupported_here(kind);
-            assert_eq!(reason.is_some(), refused_here, "{kind:?}");
-            if let Some(reason) = reason {
-                assert!(reason.contains(crate::engine_info::engine_label(kind)), "{reason}");
-            }
-        }
     }
 
     #[test]

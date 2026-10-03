@@ -48,7 +48,7 @@ pub(crate) fn engine_state_label(state: &EngineState) -> (String, Tone) {
 }
 
 /// What choosing an engine in a picker does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickOutcome {
     /// Use it.
     Switch(EngineKind),
@@ -56,15 +56,22 @@ pub(crate) enum PickOutcome {
     AskInstall(EngineKind),
     /// Its install is already running; nothing to switch to yet.
     AlreadyInstalling(EngineKind),
-    /// Nothing to install on this platform (no pin); say so, offer nothing.
-    Unavailable(EngineKind),
+    /// This platform cannot run it (no pin, wrong OS): the click only explains, with the reason.
+    Unavailable(EngineKind, String),
+}
+
+impl PickOutcome {
+    /// The toast an `Unavailable` pick shows: the engine and the same reason its state line gives.
+    pub(crate) fn unavailable_toast(kind: EngineKind, reason: &str) -> String {
+        format!("{} is unavailable: {reason}", engine_label(kind))
+    }
 }
 
 pub(crate) fn pick_outcome(kind: EngineKind, state: &EngineState) -> PickOutcome {
     match state {
         EngineState::Installed | EngineState::Custom(_) => PickOutcome::Switch(kind),
         EngineState::Installing { .. } => PickOutcome::AlreadyInstalling(kind),
-        EngineState::Unavailable(_) => PickOutcome::Unavailable(kind),
+        EngineState::Unavailable(reason) => PickOutcome::Unavailable(kind, reason.clone()),
         EngineState::NotInstalled { .. } | EngineState::UpdateNeeded { .. } | EngineState::Failed(_) => {
             PickOutcome::AskInstall(kind)
         }
@@ -228,6 +235,8 @@ pub(crate) fn draw_engine_card(
     is_selected: bool,
     state: &EngineState,
 ) -> egui::Response {
+    // An engine this platform cannot run is dimmed to weak text and only explains itself when clicked.
+    let dim = matches!(state, EngineState::Unavailable(_));
     let frame_response = egui::Frame::default()
         .fill(if is_selected { SURFACE_HOVER } else { SURFACE_RAISED })
         .corner_radius(2u8)
@@ -237,19 +246,20 @@ pub(crate) fn draw_engine_card(
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 engine_dot(ui, kind, 10.0);
-                ui.label(egui::RichText::new(engine_label(kind)).color(TEXT_PRIMARY));
+                ui.label(egui::RichText::new(engine_label(kind)).color(if dim { TEXT_WEAK } else { TEXT_PRIMARY }));
                 if is_selected {
                     ui.label(egui_phosphor::light::CHECK_CIRCLE);
                 }
                 let tier = engine_tier(kind);
-                ui.label(egui::RichText::new(tier.label()).small().color(tier.color()));
+                ui.label(egui::RichText::new(tier.label()).small().color(if dim { TEXT_WEAK } else { tier.color() }));
             });
             if *state != EngineState::Installed {
                 engine_state_line(ui, state);
             }
             ui.add_space(4.0);
             for pro in engine_pros(kind) {
-                ui.label(egui::RichText::new(format!("+ {pro}")).small());
+                let text = egui::RichText::new(format!("+ {pro}")).small();
+                ui.label(if dim { text.color(TEXT_WEAK) } else { text });
             }
             for con in engine_cons(kind) {
                 ui.label(egui::RichText::new(format!("\u{2212} {con}")).small().color(TEXT_WEAK));
@@ -262,8 +272,13 @@ pub(crate) fn draw_engine_card(
     // live: clicking squarely on a card's own visible pros/cons text did
     // nothing, since only a sliver at the very top was ever actually
     // clickable.
-    ui.interact(frame_response.response.rect, ui.id().with(("engine_card", kind as u8)), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    let id = ui.id().with(("engine_card", kind as u8));
+    if dim {
+        // `Sense::CLICK`, not `click()`: still clickable (to explain), but not focusable, so the keyboard
+        // skips it; the default cursor says it does nothing. (`add_enabled` would swallow the click.)
+        return ui.interact(frame_response.response.rect, id, egui::Sense::CLICK);
+    }
+    ui.interact(frame_response.response.rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The shared engine-picker popup -- see `draw_engine_card`'s own doc
@@ -308,12 +323,19 @@ pub(crate) fn build_engine_picker_popup(
                 // window's bottom edge (confirmed live).
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     let mut cards = Vec::new();
+                    // Unavailable cards are not focusable, so the keyboard skips them: the popup opens on
+                    // the selected card, or the first available one when the selection is not usable.
+                    let usable = |kind: EngineKind| !matches!(state_of(kind), EngineState::Unavailable(_));
+                    let focus_on = selected
+                        .filter(|kind| usable(*kind))
+                        .or_else(|| ENGINE_PICKER_ORDER.into_iter().find(|kind| usable(*kind)))
+                        .unwrap_or(ENGINE_PICKER_ORDER[0]);
                     for (i, kind) in ENGINE_PICKER_ORDER.into_iter().enumerate() {
                         if i > 0 {
                             ui.add_space(6.0);
                         }
                         let card = draw_engine_card(ui, kind, selected == Some(kind), &state_of(kind));
-                        if just_opened && selected.unwrap_or(ENGINE_PICKER_ORDER[0]) == kind {
+                        if just_opened && focus_on == kind {
                             card.request_focus();
                         }
                         if card.has_focus() {
@@ -329,7 +351,9 @@ pub(crate) fn build_engine_picker_popup(
                         if card.clicked() {
                             picked = Some(kind);
                         }
-                        cards.push(card.id);
+                        if usable(kind) {
+                            cards.push(card.id);
+                        }
                         if i > 0 {
                             ui.add_space(2.0);
                         }
@@ -371,6 +395,15 @@ mod tests {
 
     /// Runs one frame of the picker (open, `selected` highlighted) with `events`, returning its pick.
     fn frame(ctx: &egui::Context, selected: EngineKind, events: Vec<egui::Event>) -> Option<EngineKind> {
+        frame_with(ctx, selected, events, &|_| EngineState::Installed)
+    }
+
+    fn frame_with(
+        ctx: &egui::Context,
+        selected: EngineKind,
+        events: Vec<egui::Event>,
+        state_of: &dyn Fn(EngineKind) -> EngineState,
+    ) -> Option<EngineKind> {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 900.0))),
             events,
@@ -379,16 +412,7 @@ mod tests {
         let mut picked = None;
         let mut output = ctx.run_ui(input, |ui| {
             let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-            picked = build_engine_picker_popup(
-                ui.ctx(),
-                "test_picker",
-                anchor,
-                Some(selected),
-                &|_| EngineState::Installed,
-                1.0,
-                true,
-            )
-            .1;
+            picked = build_engine_picker_popup(ui.ctx(), "test_picker", anchor, Some(selected), state_of, 1.0, true).1;
         });
         output.textures_delta.clear(); // nothing uploads the font atlas here
         picked
@@ -450,6 +474,46 @@ mod tests {
         assert_eq!(frame(&ctx, selected, vec![key(egui::Key::ArrowDown)]), None);
         assert_eq!(frame(&ctx, selected, vec![]), None);
         assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(next));
+    }
+
+    /// An unavailable card is skipped by Down (and by the opening focus), so Enter never lands on it.
+    #[test]
+    fn the_keyboard_skips_unavailable_cards() {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        let skipped = ENGINE_PICKER_ORDER[2];
+        let state_of = |kind: EngineKind| {
+            if kind == skipped {
+                EngineState::Unavailable("needs Windows".into())
+            } else {
+                EngineState::Installed
+            }
+        };
+        let (selected, after) = (ENGINE_PICKER_ORDER[1], ENGINE_PICKER_ORDER[3]);
+        for _ in 0..3 {
+            assert_eq!(frame_with(&ctx, selected, vec![], &state_of), None);
+        }
+        assert_eq!(frame_with(&ctx, selected, vec![key(egui::Key::ArrowDown)], &state_of), None);
+        assert_eq!(frame_with(&ctx, selected, vec![], &state_of), None);
+        assert_eq!(frame_with(&ctx, selected, vec![key(egui::Key::Enter)], &state_of), Some(after));
+        // Selection on an unavailable engine: the popup opens on the first usable card instead.
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        for _ in 0..3 {
+            frame_with(&ctx, skipped, vec![], &state_of);
+        }
+        assert_eq!(frame_with(&ctx, skipped, vec![key(egui::Key::Enter)], &state_of), Some(ENGINE_PICKER_ORDER[0]));
+    }
+
+    #[test]
+    fn an_unavailable_pick_carries_its_reason() {
+        let state = EngineState::Unavailable("needs Windows".into());
+        let outcome = pick_outcome(EngineKind::Webview2, &state);
+        assert_eq!(outcome, PickOutcome::Unavailable(EngineKind::Webview2, "needs Windows".into()));
+        assert_eq!(
+            PickOutcome::unavailable_toast(EngineKind::Webview2, "needs Windows"),
+            "WebView2 is unavailable: needs Windows"
+        );
     }
 
     /// Tab must not leave the popup: Enter after it still picks the focused card.

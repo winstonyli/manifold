@@ -674,10 +674,7 @@ impl crate::App {
             return false;
         };
         let Some(pin) = crate::cef_pin::pin_for_platform() else {
-            self.queue_toast(format!(
-                "{} is not available on this platform yet",
-                crate::engine_info::engine_label(kind)
-            ));
+            self.queue_toast(crate::engine_info::PickOutcome::unavailable_toast(kind, NO_PIN_REASON));
             return false;
         };
         self.start_engine_install_at(kind, &data_dir, pin)

@@ -261,12 +261,15 @@ impl App {
         let (area_rect, picked) =
             build_engine_picker_popup(ui.ctx(), &format!("{which:?}_popup"), rect, highlighted, &state_of, fade, open);
         let escape = open && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if picked.is_some() || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
+        let outcome = picked.map(|kind| pick_outcome(kind, &state_of(kind)));
+        // A click on an unavailable engine only explains: the picker stays open.
+        let explains_only = matches!(outcome, Some(PickOutcome::Unavailable(..)));
+        if (picked.is_some() && !explains_only) || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
             close_popup(&mut self.open_popup, which);
         }
         // An engine that isn't installed stays selectable, but choosing it asks to install it: no
         // silent switch, and no silent fallback to another engine.
-        match pick_outcome(picked?, &state_of(picked?)) {
+        match outcome? {
             PickOutcome::Switch(kind) => Some(kind),
             PickOutcome::AskInstall(kind) => {
                 self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
@@ -276,8 +279,8 @@ impl App {
                 self.queue_toast(format!("{} is already installing", engine_label(kind)));
                 None
             }
-            PickOutcome::Unavailable(kind) => {
-                self.queue_toast(format!("{} is not available on this platform yet", engine_label(kind)));
+            PickOutcome::Unavailable(kind, reason) => {
+                self.queue_toast(PickOutcome::unavailable_toast(kind, &reason));
                 None
             }
         }
@@ -367,7 +370,14 @@ impl App {
         let focused = ui
             .data(|d| d.get_temp::<egui::Id>(Self::popup_opener_key(which)))
             .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
-        let color = if focused { BG } else { engine_color(kind) };
+        let unavailable = matches!(self.engine_state(kind), crate::engine_install::EngineState::Unavailable(_));
+        let color = if focused {
+            BG
+        } else if unavailable {
+            TEXT_WEAK
+        } else {
+            engine_color(kind)
+        };
         let response = ui.button(egui::RichText::new(engine_label(kind)).color(color));
         self.popup_opener_clicked(ui, which, &response);
         response
@@ -1508,5 +1518,52 @@ mod engine_picker_tests {
         assert!(opener.is_some_and(|id| ctx.memory(|m| m.has_focus(id))), "focus should return to the opening button");
         frame(&mut app, &ctx, vec![escape()]);
         assert_ne!(app.view_mode, ViewMode::Settings, "a second Escape should leave the page");
+    }
+
+    /// Clicking an unavailable engine in the open picker toasts its reason, switches nothing and leaves the
+    /// picker open.
+    #[test]
+    fn clicking_an_unavailable_engine_explains_and_keeps_the_picker_open() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let mut app = App { view_mode: ViewMode::Settings, ..App::default() };
+        let (first, reason) = (ENGINE_PICKER_ORDER[0], "needs Windows");
+        // `build_ui` clears the per-frame state cache, so seed it inside each frame, past that clear.
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 1000.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let state = crate::engine_install::EngineState::Unavailable(reason.to_string());
+                app.engine_state_cache.borrow_mut().insert(first, state);
+                app.build_ui_inner(ui);
+            });
+            output.textures_delta.clear();
+        };
+        let before = app.settings.default_starting_engine;
+        app.open_popup = Some(AnchoredPopup::DefaultEngine);
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        let area = ctx.memory(|m| m.area_rect(egui::Id::new("DefaultEngine_popup"))).expect("the picker is drawn");
+        let at = area.min + egui::vec2(120.0, 30.0); // inside the first card
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+        let toasted = |text: &str| {
+            app.save_toast.iter().map(|(t, _)| t).chain(app.save_toast_queue.iter()).any(|t| t.contains(text))
+        };
+        assert!(toasted(reason), "the reason should be toasted");
+        assert_eq!(app.open_popup, Some(AnchoredPopup::DefaultEngine), "the picker stays open");
+        assert_eq!(app.settings.default_starting_engine, before, "nothing switched");
     }
 }

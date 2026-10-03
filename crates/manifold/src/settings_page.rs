@@ -121,6 +121,11 @@ impl App {
         let default_engine_response =
             self.engine_opener_button(ui, AnchoredPopup::DefaultEngine, self.settings.default_starting_engine);
         req.default_engine_button_rect = Some(default_engine_response.rect);
+        // A saved default this platform cannot run is kept, not replaced; say why new tabs will fail.
+        let default_state = self.engine_state(self.settings.default_starting_engine);
+        if matches!(default_state, crate::engine_install::EngineState::Unavailable(_)) {
+            engine_state_line(ui, &default_state);
+        }
 
         ui.add_space(8.0);
         ui.label("Zoom (new tabs; also applies to the current tab now)");
@@ -242,7 +247,12 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 engine_dot(ui, kind, 10.0);
-                ui.label(egui::RichText::new(engine_label(kind)).color(TEXT_PRIMARY));
+                let unavailable = matches!(state, EngineState::Unavailable(_));
+                ui.label(egui::RichText::new(engine_label(kind)).color(if unavailable {
+                    TEXT_WEAK
+                } else {
+                    TEXT_PRIMARY
+                }));
             });
             let runtime = crate::process_manager::engine_runtime_dir(kind).filter(|dir| dir.exists());
             match &state {

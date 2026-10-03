@@ -136,7 +136,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
-            default_starting_engine: EngineKind::Webview2,
+            default_starting_engine: crate::process_manager::platform_default_engine(std::env::consts::OS),
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
             window_width: None,
@@ -224,5 +224,14 @@ mod tests {
         let settings = Settings { cef_directory: Some("D:/cef".into()), ..Settings::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(back.cef_directory.as_deref(), Some("D:/cef"));
+    }
+
+    /// A file without the field takes the platform default; a saved engine is kept even where it can't run.
+    #[test]
+    fn the_starting_engine_defaults_per_platform_and_a_saved_one_is_kept() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.default_starting_engine, crate::process_manager::platform_default_engine(std::env::consts::OS));
+        let saved: Settings = serde_json::from_str(r#"{"default_starting_engine":"webview2"}"#).unwrap();
+        assert_eq!(saved.default_starting_engine, EngineKind::Webview2);
     }
 }

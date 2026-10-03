@@ -182,8 +182,8 @@ impl App {
                 PickOutcome::AlreadyInstalling(kind) => {
                     self.queue_toast(format!("{} is already installing", engine_label(kind)))
                 }
-                PickOutcome::Unavailable(kind) => {
-                    self.queue_toast(format!("{} is not available on this platform yet", engine_label(kind)))
+                PickOutcome::Unavailable(kind, reason) => {
+                    self.queue_toast(PickOutcome::unavailable_toast(kind, &reason))
                 }
                 PickOutcome::Switch(kind) => self.wake_tab(id, kind),
             }
