@@ -4,6 +4,7 @@ mod context_menu_handler;
 mod download_handler;
 mod find_handler;
 mod input;
+mod jar_cookies;
 mod life_span_handler;
 mod nav_handler;
 mod render_handler;
@@ -28,6 +29,8 @@ use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
 use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
+/// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
 /// How often to poll for audio-playing state -- see `ipc_protocol::
@@ -60,6 +63,20 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
         AssignProcessToJobObject(job, GetCurrentProcess())?;
         Ok(job)
     }
+}
+
+/// The first control message, waiting up to `timeout` and pumping CEF meanwhile.
+fn wait_for_first_message(rx: &std::sync::mpsc::Receiver<HostToEngine>, timeout: Duration) -> Option<HostToEngine> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        do_message_loop_work();
+        match rx.try_recv() {
+            Ok(msg) => return Some(msg),
+            Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(8)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+        }
+    }
+    None
 }
 
 fn main() {
@@ -177,6 +194,19 @@ fn main() {
         ..Default::default()
     };
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
+    // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
+    // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // Any other first message is kept for the loop below rather than dropped.
+    let mut first_message: Option<HostToEngine> = None;
+    if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
+        match wait_for_first_message(&rx, COOKIE_SEED_WAIT) {
+            Some(HostToEngine::SetCookies(json)) => jar_cookies::seed(&json),
+            Some(other) => first_message = Some(other),
+            None => eprintln!("jar: no seed received"),
+        }
+    }
+    let mut pull: Option<jar_cookies::JarPull> = None;
+
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut ClientBuilder::build(
@@ -215,7 +245,7 @@ fn main() {
     loop {
         do_message_loop_work();
 
-        while let Ok(msg) = rx.try_recv() {
+        while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
                     nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
@@ -277,7 +307,8 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
-                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // Temporary no-op; the cookie-jar plan replaces it (Task 3 WebView2, Task 4 CEF).
+                HostToEngine::SetCookies(json) => jar_cookies::seed(&json),
+                HostToEngine::GetCookies => pull = Some(jar_cookies::start_pull()),
                 HostToEngine::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
                         if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
@@ -368,6 +399,11 @@ fn main() {
                     shutting_down = true;
                 }
             }
+        }
+
+        if let Some(json) = pull.as_ref().and_then(|p| p.take()) {
+            let _ = control.send(&EngineToHost::Cookies(json));
+            pull = None;
         }
 
         {
