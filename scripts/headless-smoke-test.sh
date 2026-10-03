@@ -270,7 +270,12 @@ EOF
 }
 
 check_query() {
-    if [ "$(query "$1" "bool($3)")" = True ]; then pass "$2"; else failed "$2: \`$3\` is false in $1.json"; fi
+    if [ "$(query "$1" "bool($3)")" = True ]; then
+        pass "$2"
+    else
+        # What the state actually was, so a flake explains itself without a rerun (the next run wipes the JSON).
+        failed "$2: \`$3\` is false in $1.json (saw: $(query "$1" '"tab_view=%s group=%s tabs=%s groups=%s" % (s["tab_view"], s["current_group"], tabs, groups)' 2>&1 | tail -1))"
+    fi
 }
 
 # Exports until two exports in a row agree on every card's rect, leaving
