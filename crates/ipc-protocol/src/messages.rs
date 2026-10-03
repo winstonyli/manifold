@@ -231,13 +231,15 @@ pub enum HostToEngine {
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
-    /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
-    /// this message (or `EngineToHost::Cookies`) with `{:?}`.
     /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
     /// hosts started with `ENGINE_AWAIT_COOKIES=1`, which wait for it before their first navigation.
+    ///
+    /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
+    /// this message (or `EngineToHost::Cookies`) with `{:?}`.
     SetCookies(String),
     /// Asks for every cookie in the engine's jar; the engine answers with `EngineToHost::Cookies`.
-    /// An engine that cannot answer stays silent.
+    /// An engine that cannot answer, or whose read failed or may be incomplete, stays silent: an answer is only ever a
+    /// complete read, since a cookie missing from it can be taken as deleted.
     GetCookies,
     /// Scrolls the page to `(x, y)` once, with retries (`restore_scroll_script`).
     /// Sent after a woken tab's first load.
