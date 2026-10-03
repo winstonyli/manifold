@@ -214,6 +214,19 @@ impl FindState {
     }
 }
 
+/// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
+fn download_detail(missing: &[&str]) -> String {
+    let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
+    if !missing.is_empty() {
+        detail.push_str(&format!(
+            "
+Missing system libraries: {}. Install them with your package manager, or CEF will not start.",
+            missing.join(", ")
+        ));
+    }
+    detail
+}
+
 impl App {
     /// `which`'s anchor rect and fade (0.0-1.0), or `None` once it has
     /// faded out or while its button isn't drawn. Call it every frame,
@@ -299,16 +312,7 @@ impl App {
                 } else {
                     "Download"
                 };
-                let mut detail =
-                    "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
-                let missing = crate::cef_platform::PLATFORM.missing_system_libs();
-                if !missing.is_empty() {
-                    detail.push_str(&format!(
-                        "
-Missing system libraries: {}. Install them with your package manager, or CEF will not start.",
-                        missing.join(", ")
-                    ));
-                }
+                let detail = download_detail(&crate::cef_platform::PLATFORM.missing_system_libs());
                 (format!("{verb} {}, {size}?", engine_label(kind)), detail, verb)
             }
             EngineConfirm::Remove(kind)
@@ -1371,6 +1375,13 @@ Missing system libraries: {}. Install them with your package manager, or CEF wil
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn download_detail_warns_only_when_libraries_are_missing() {
+        assert!(!super::download_detail(&[]).contains("Missing"));
+        let d = super::download_detail(&["libnss3.so", "libnspr4.so"]);
+        assert!(d.contains("Missing system libraries: libnss3.so, libnspr4.so."), "{d}");
+    }
+
     use super::*;
 
     #[test]

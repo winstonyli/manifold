@@ -128,4 +128,4 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 CEF on Linux needs `libnss3` and `libnspr4` from the system. `CefPlatform::system_libs` lists them (empty on Windows).
 `missing_system_libs()` reads `ldconfig -p` (cached 10 s) and the Download confirm dialog adds a "Missing system
 libraries: ..." line before the 321 MB download. It is a warning, not a block: if `ldconfig` cannot be run, nothing is
-shown, since unknown is not missing. Not yet exercised on a machine that lacks the libraries.
+shown, since unknown is not missing. Checked in WSL with a stub `ldconfig` that omits `libnspr4.so`: it reports exactly that one; real `ldconfig` reports none. The dialog text is unit-tested; the rendered dialog was not viewed.
