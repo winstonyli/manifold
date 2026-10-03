@@ -143,6 +143,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.was_minimized = minimized;
+        if self.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
+            self.jar_pull_all();
+            self.jar_last_pull = Some(std::time::Instant::now());
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -479,6 +483,9 @@ pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_mil
 const BUSY_FRAMES: u32 = 6;
 
 /// How often a minimized window's loop wakes (see `about_to_wait`).
+/// How often every WebView2 and CEF tab is asked for its cookies (`App::jar_pull_all`).
+const JAR_PULL_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
 const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl App {
@@ -1518,7 +1525,10 @@ impl App {
         match msg {
             EngineToHost::FrameReady { .. } => {}
             EngineToHost::PageState(state) => self.finish_sleep(tab_id, state),
-            EngineToHost::Cookies(_) => {} // Task 5 wires this.
+            EngineToHost::Cookies(json) => {
+                self.jar_pulls.remove(tab_id);
+                self.apply_pulled_cookies(&json);
+            }
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {

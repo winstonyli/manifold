@@ -49,8 +49,6 @@ pub fn content_dir() -> Option<PathBuf> {
 }
 
 /// Where cookie jars live (`jar::Jar`). `None` like `dir()`.
-// Unused until App loads and saves the jar (cookie-jar plan).
-#[allow(dead_code)]
 pub fn jars_dir() -> Option<PathBuf> {
     Some(dir()?.join("jars"))
 }

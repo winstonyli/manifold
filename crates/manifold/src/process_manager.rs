@@ -901,6 +901,7 @@ pub fn spawn_tab(
     tab_id: &str,
     initial_url: &str,
     custom_cef: Option<&Path>,
+    jar_json: Option<&str>,
 ) -> Result<EngineTab, SpawnError> {
     if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
@@ -952,6 +953,10 @@ pub fn spawn_tab(
         .env("ENGINE_INITIAL_URL", initial_url)
         .stdout(stdout_file)
         .stderr(stderr_file);
+    // These hosts wait for the jar (`SetCookies`) before their first navigation.
+    if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
+        command.env("ENGINE_AWAIT_COOKIES", "1");
+    }
     if let Some(dir) = &cache_dir {
         command.env("ENGINE_CACHE_DIR", dir);
     }
@@ -982,7 +987,11 @@ pub fn spawn_tab(
         };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir })
+    let mut tab = EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir };
+    if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
+        tab.send(&HostToEngine::SetCookies(jar_json.unwrap_or("[]").to_owned()));
+    }
+    Ok(tab)
 }
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/

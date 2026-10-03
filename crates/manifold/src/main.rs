@@ -20,8 +20,6 @@ mod history;
 mod idle_sleep;
 mod image_view;
 mod input;
-// Unused until the IPC, host and App wiring tasks of the cookie-jar plan land.
-#[allow(dead_code)]
 mod jar;
 mod json_file;
 mod json_level;
@@ -867,6 +865,15 @@ struct App {
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
+    /// The cookie jar shared by every WebView2 and CEF tab (see `jar`).
+    jar: jar::Jar,
+    /// The jar's keys as of the last merge: a known cookie missing from a pull is a logout.
+    jar_known: HashSet<jar::Key>,
+    /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
+    jar_last_pull: Option<std::time::Instant>,
+    /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
+    /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
+    jar_pulls: HashMap<String, std::time::Instant>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -1330,6 +1337,8 @@ impl Default for App {
         // its own redundant warm-up (or, worse, one racing a real request
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
+        let jar = profile::jars_dir().map(|dir| jar::Jar::load(&dir)).unwrap_or_default();
+        let jar_known = jar.keys();
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
@@ -1357,6 +1366,10 @@ impl Default for App {
             split_tab: None,
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
+            jar,
+            jar_known,
+            jar_last_pull: None,
+            jar_pulls: HashMap::new(),
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,
@@ -2627,6 +2640,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pulled_cookies_reach_the_jar_and_a_logout_removes_them() {
+        let mut app = App::default();
+        let sid = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
+        assert!(app.apply_pulled_cookies(sid));
+        assert_eq!(app.jar.cookies.len(), 1);
+        assert!(app.apply_pulled_cookies("[]"), "sid was known, so its absence is a logout");
+        assert!(app.jar.cookies.is_empty());
+        assert!(!app.apply_pulled_cookies("not json"), "a garbled pull changes nothing");
+    }
 
     #[test]
     fn remove_from_group_moves_up_one_level() {

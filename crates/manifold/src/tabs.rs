@@ -1,6 +1,9 @@
 //! Tab lifecycle on App: spawn, respawn, focus, hide, split, leave to graph, destroy and remove.
 
 use super::*;
+
+/// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
+const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
@@ -34,10 +37,56 @@ impl App {
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let custom_cef = self.custom_cef_dir();
+        let jar_json = serde_json::to_string(&self.jar.cookies).ok();
         std::thread::spawn(move || {
-            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref());
+            let result = process_manager::spawn_tab(
+                spawn.kind,
+                &spawn.id,
+                &spawn.url,
+                custom_cef.as_deref(),
+                jar_json.as_deref(),
+            );
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
         });
+    }
+
+    /// Folds one engine's cookie dump into the jar and saves it when it changed. `false` for a dump that does not parse.
+    pub(crate) fn apply_pulled_cookies(&mut self, json: &str) -> bool {
+        let Some(pulled) = crate::jar::from_json(json) else { return false };
+        let changed = self.jar.merge(pulled, &self.jar_known);
+        self.jar_known = self.jar.keys();
+        if changed {
+            if let Some(dir) = crate::profile::jars_dir() {
+                if let Err(e) = self.jar.save(&dir) {
+                    eprintln!("jar: could not save: {e}");
+                }
+            }
+        }
+        changed
+    }
+
+    /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort: a
+    /// host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not stacked.
+    pub(crate) fn pull_cookies(&mut self, id: &str) {
+        let now = std::time::Instant::now();
+        if self.jar_pulls.get(id).is_some_and(|sent| now.duration_since(*sent) < JAR_PULL_TIMEOUT) {
+            return;
+        }
+        let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
+        if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef) {
+            node.tab.send(&HostToEngine::GetCookies);
+            self.jar_pulls.insert(id.to_string(), now);
+        }
+    }
+
+    /// Asks every live WebView2 and CEF tab for its cookies.
+    pub(crate) fn jar_pull_all(&mut self) {
+        self.jar_pulls.retain(|id, _| self.nodes.contains_key(id));
+        let ids: Vec<String> =
+            self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        for id in ids {
+            self.pull_cookies(&id);
+        }
     }
 
     /// Applies a finished `spawn_tab_async` call — inserts the new tab node
@@ -551,6 +600,7 @@ impl App {
         }
         let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
         tab.tab.send(&HostToEngine::QueryPageState);
+        self.pull_cookies(id);
         self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
         true
     }
