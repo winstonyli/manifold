@@ -666,6 +666,11 @@ impl crate::App {
             self.queue_toast(format!("Close {label} tabs before installing it"));
             return false;
         }
+        if !self.spawning.is_empty() {
+            // A tab still starting may be a CEF host about to load the runtime's DLLs.
+            self.queue_toast(format!("A tab is still starting; try installing {label} again in a moment"));
+            return false;
+        }
         self.engine_failures.remove(&kind);
         self.engine_state_cache.borrow_mut().clear();
         let progress = Arc::new(AtomicU64::new(0));
@@ -685,7 +690,9 @@ impl crate::App {
     pub(crate) fn remove_engine(&mut self, kind: EngineKind) {
         let label = crate::engine_info::engine_label(kind);
         let Some(dir) = crate::process_manager::engine_hosts_dir() else { return };
-        let running = self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
+        // A spawn still in flight may be this engine's host (it isn't a node yet), so it counts too.
+        let running =
+            !self.spawning.is_empty() || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_installs.contains_key(&kind);
         match remove_runtime(&dir, running, installing) {
             Ok(()) => {
@@ -1521,6 +1528,27 @@ Connection: close
         assert_eq!(cef_state(&app, &data, &pin), EngineState::Installed);
         assert_eq!(toasts(&app), ["Blink (CEF) installed"]);
         assert!(app.engine_failures.is_empty());
+    }
+
+    #[test]
+    fn an_install_waits_while_a_tab_is_still_starting() {
+        let dir = temp_dir("ei30b");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        let mut app = App::default();
+        let pending = crate::session_sync::Shared {
+            kind: crate::store::model::Kind::Tab,
+            group: None,
+            fields: Default::default(),
+        };
+        app.spawning.insert("t1".into(), pending);
+        assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        assert!(app.engine_installs.is_empty());
+        assert_eq!(toasts(&app), ["A tab is still starting; try installing Blink (CEF) again in a moment"]);
+        app.spawning.clear();
+        assert!(app.start_engine_install_at(EngineKind::Cef, &data, &pin));
+        settle(&mut app);
     }
 
     #[test]
