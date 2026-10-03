@@ -331,6 +331,7 @@ Since 2026-09-25, day-to-day work goes on `dev`, and `main` moves only at releas
 
 - Commit and push to `dev`. Feature branches and worktrees branch from `dev` and merge back into it.
 - A release merges `dev` into `main` with `git merge --no-ff dev`, then tags it `vX.Y.Z`. Following `main`'s first parents then lists exactly the releases.
+- Packaging: `scripts/package.sh` builds `dist/manifold-v<version>-windows-x64.zip` (`manifold.exe`, the WebView2 host, the small CEF host, README, PACKAGING.md; about 10 MB; no CEF runtime) from a clean tree, and `scripts/package.sh --check` unzips it and checks it (no CEF runtime files, CEF reports Not installed, a WebView2 tab loads a page). `SKIP_BUILD=1` packages an existing `target/release`. Run both after tagging a release. The build strips `depot_tools` from `PATH`; a CMake cache from an earlier failed CEF build (`target/release/build/cef-dll-sys/<hash>/out/build`) must be deleted by hand. Unsigned.
 - Packaging policy: packaged builds offer CEF on demand, opt-in, never as the default engine, and never bundled (spec `2026-10-02-engine-install-design.md`).
 - Release checklist: if the `cef` crate moved, re-pin CEF for every pinned platform (`scripts/cef-pin.sh [--platform <id>] <prefix>`, a download per platform; spec `2026-10-02-engine-install-design.md`, "Platforms") before tagging.
 - A hotfix branches from `main`, merges into `main` (tagged like a release), then merges into `dev`.
