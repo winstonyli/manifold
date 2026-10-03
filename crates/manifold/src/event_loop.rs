@@ -1635,9 +1635,7 @@ impl App {
             // the current view rather than auto-focusing, same as an explicit
             // "+ New Tab" click.
             EngineToHost::OpenTabRequested { url } => {
-                let parent = Some(tab_id.to_string());
-                let group = self.group_of(&parent);
-                self.spawn_new_tab(parent, group, &url);
+                self.spawn_tab_from(tab_id, &url);
             }
             EngineToHost::FindResult { count, active_index } => {
                 // Ignore a result from a tab that isn't the one the find bar

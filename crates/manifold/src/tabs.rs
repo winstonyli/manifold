@@ -502,17 +502,29 @@ impl App {
     /// engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip.
+    /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
             n.payload.saved_tab().map(|(url, kind)| (n.parent.clone(), n.group.clone(), url.to_string(), kind))
         }) else {
             return;
         };
-        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New);
+        let jar = self.tab_jar(id);
+        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar);
     }
 
     pub(crate) fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
-        self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine, SpawnPurpose::New);
+        let kind = self.settings.default_starting_engine;
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None);
+    }
+
+    /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar
+    /// (deviation 3).
+    pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str) -> String {
+        let parent = Some(opener.to_string());
+        let group = self.group_of(&parent);
+        let (kind, jar) = (self.settings.default_starting_engine, self.tab_jar(opener));
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar)
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_engine`),
@@ -524,7 +536,7 @@ impl App {
     /// match). Returns the new tab's id, allocated synchronously even
     /// though the real engine-host process spawn (and thus the node's own
     /// insertion into `self.nodes`) completes asynchronously -- see
-    /// `spawn_tab_async`'s own doc comment.
+    /// `spawn_tab_async`'s own doc comment. `jar` is the opener's choice to copy; `None` inherits from `group`.
     pub(crate) fn spawn_new_tab_with_kind(
         &mut self,
         parent: Option<String>,
@@ -532,6 +544,7 @@ impl App {
         url: &str,
         kind: EngineKind,
         purpose: SpawnPurpose,
+        jar: Option<crate::jar::JarChoice>,
     ) -> String {
         let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
@@ -552,7 +565,10 @@ impl App {
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
-        self.spawn_tab_async(TabSpawn { parent, group, ..spawn });
+        let jar = jar.unwrap_or_else(|| self.new_tab_jar(group.as_deref()));
+        let mut spawn = TabSpawn { parent, group, ..spawn };
+        spawn.carry.jar = jar;
+        self.spawn_tab_async(spawn);
         id
     }
 
@@ -642,7 +658,8 @@ impl App {
             return;
         };
         let group = self.group_of(&Some(focused_id.clone()));
-        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split);
+        let jar = self.tab_jar(&focused_id);
+        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar);
     }
 
     /// Closes split view -- unpairs the secondary pane and stops its
@@ -927,7 +944,8 @@ impl App {
         // Cleared at the start of this spawn attempt too -- see
         // `tab_spawn_error`'s own doc comment.
         self.tab_spawn_error = None;
-        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        let mut spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        spawn.carry.jar = self.new_tab_jar(group.as_deref());
         self.spawn_tab_async(TabSpawn { group, ..spawn });
         id
     }

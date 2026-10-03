@@ -2132,11 +2132,23 @@ impl App {
     /// dissolved (should only actually matter defensively — the close
     /// button that calls this only ever renders one level up from the
     /// group being closed, never on the level currently being viewed).
+    ///
+    /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
     fn dissolve_group(&mut self, id: &str) {
+        for member in self.dissolve_group_quietly(id) {
+            self.refollow(&member);
+        }
+    }
+
+    /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
+    /// ordinary tab edits (spec "Inheritance"). Returns the members moved.
+    fn dissolve_group_quietly(&mut self, id: &str) -> Vec<String> {
         let parent = self.nodes.get(id).and_then(|n| n.group.clone());
-        for node in self.nodes.values_mut() {
+        let mut members = Vec::new();
+        for (member, node) in self.nodes.iter_mut() {
             if node.group.as_deref() == Some(id) {
                 node.group = parent.clone();
+                members.push(member.clone());
             }
         }
         self.nodes.remove(id);
@@ -2145,6 +2157,7 @@ impl App {
             self.switch_group_level(parent);
         }
         self.forget_removed_group(id);
+        members
     }
 
     /// Drops the per-card state still naming a group card that's gone

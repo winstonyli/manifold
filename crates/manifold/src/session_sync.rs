@@ -776,7 +776,7 @@ impl App {
                     *group = up.clone();
                 }
             }
-            self.dissolve_group(id);
+            self.dissolve_group_quietly(id);
         } else if is_tab {
             self.remove_tab(id);
         } else {

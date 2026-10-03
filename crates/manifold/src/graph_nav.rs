@@ -80,6 +80,7 @@ impl App {
     pub(crate) fn eject(&mut self, id: &str) {
         remove_from_group(&mut self.nodes, id);
         self.selected_tabs.remove(id);
+        self.refollow(id);
     }
 
     /// What a drop moves along with `id`: the whole rectangle selection
@@ -104,6 +105,7 @@ impl App {
                     if let Some(node) = self.nodes.get_mut(&member) {
                         node.group = Some(group.clone());
                     }
+                    self.refollow(&member);
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
@@ -115,6 +117,7 @@ impl App {
                     if let Some(node) = self.nodes.get_mut(&member) {
                         node.group = Some(group.clone());
                     }
+                    self.refollow(&member);
                 }
             }
             Some((DropEffect::Reparent, Some(parent))) => {
@@ -152,6 +155,7 @@ impl App {
         self.nodes.remove(source);
         self.node_order.retain(|g| g != source);
         self.forget_removed_group(source);
+        self.refollow(target);
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?

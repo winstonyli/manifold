@@ -3,6 +3,7 @@
 //! `remove_remotely_deleted`.
 
 use crate::jar::{Jar, JarChoice, JarKey};
+use crate::node::NodePayload;
 use crate::session_sync::{color_of, Fields, Shared};
 use crate::store::model::{field, FieldValue, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
@@ -56,9 +57,9 @@ impl App {
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
         for node in self.nodes.values_mut() {
             match &mut node.payload {
-                crate::node::NodePayload::Tab(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                crate::node::NodePayload::Unloaded(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
-                crate::node::NodePayload::Group(g) if g.default_jar == Some(id) => g.default_jar = None,
+                NodePayload::Tab(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
+                NodePayload::Unloaded(t) if t.jar.jar == Some(id) => t.jar = Default::default(),
+                NodePayload::Group(g) if g.default_jar == Some(id) => g.default_jar = None,
                 _ => {}
             }
         }
@@ -97,6 +98,138 @@ impl App {
             None => (JarKey::Default, false),
             Some(id) if self.jar_defs.contains_key(&id) => (JarKey::Named(id), false),
             Some(_) => (JarKey::Default, true),
+        }
+    }
+
+    /// The nearest default jar walking up from `group` (spec "Inheritance").
+    pub(crate) fn inherited_jar(&self, group: Option<&str>) -> Option<NodeId> {
+        let mut at = group.map(str::to_string);
+        for _ in 0..=self.nodes.len() {
+            let node = self.nodes.get(at.as_deref()?)?;
+            if let Some(jar) = node.as_group().and_then(|g| g.default_jar) {
+                return Some(jar);
+            }
+            at = node.group.clone();
+        }
+        None // a group cycle (never built, but the loop must end)
+    }
+
+    /// What a new tab in `group` starts with: the inherited jar, unset, so a later cascade or move updates it.
+    pub(crate) fn new_tab_jar(&self, group: Option<&str>) -> JarChoice {
+        JarChoice { jar: self.inherited_jar(group), set: false }
+    }
+
+    /// Live or unloaded tab `id`'s jar choice; `None` for any other node.
+    pub(crate) fn tab_jar(&self, id: &str) -> Option<JarChoice> {
+        match &self.nodes.get(id)?.payload {
+            NodePayload::Tab(t) => Some(t.jar),
+            NodePayload::Unloaded(t) => Some(t.jar),
+            _ => None,
+        }
+    }
+
+    fn put_tab_jar(&mut self, id: &str, choice: JarChoice) {
+        match self.nodes.get_mut(id).map(|n| &mut n.payload) {
+            Some(NodePayload::Tab(t)) => t.jar = choice,
+            Some(NodePayload::Unloaded(t)) => t.jar = choice,
+            _ => {}
+        }
+    }
+
+    /// The user picked a jar for tab `id` (`None`: the default jar). Cascades and moves leave it alone from now on.
+    #[allow(dead_code)] // The tab's jar menu (a later task) calls it.
+    pub(crate) fn set_tab_jar(&mut self, id: &str, jar: Option<NodeId>) {
+        self.put_tab_jar(id, JarChoice { jar, set: true });
+    }
+
+    /// "Follow group's jar": clears the pick and re-snapshots from where the tab sits.
+    pub(crate) fn follow_group_jar(&mut self, id: &str) {
+        let group = self.nodes.get(id).and_then(|n| n.group.clone());
+        self.put_tab_jar(id, self.new_tab_jar(group.as_deref()));
+    }
+
+    /// Re-snapshots every unset tab at `id` (a tab, or each tab in a group's subtree) from its new place. Called after
+    /// a local move between groups (deviation 12); a remote move's jar edits arrive with it.
+    pub(crate) fn refollow(&mut self, id: &str) {
+        let tabs: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(t, n)| n.payload.saved_tab().is_some() && (t.as_str() == id || self.is_inside(t, id)))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for t in tabs {
+            if self.tab_jar(&t).is_some_and(|c| !c.set) {
+                self.follow_group_jar(&t);
+            }
+        }
+    }
+
+    /// Whether `at` sits somewhere inside group `group`.
+    fn is_inside(&self, at: &str, group: &str) -> bool {
+        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        for _ in 0..=self.nodes.len() {
+            match cur {
+                Some(g) if g == group => return true,
+                Some(g) => cur = self.nodes.get(&g).and_then(|n| n.group.clone()),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Whether `group` governs tab-or-group `at`'s jar: `group` is `at`'s group or an ancestor, and no group between
+    /// them has a default of its own (spec: "nested groups with no default of their own included").
+    fn governed_by(&self, at: &str, group: &str) -> bool {
+        let mut cur = self.nodes.get(at).and_then(|n| n.group.clone());
+        for _ in 0..=self.nodes.len() {
+            let Some(g) = cur else { return false };
+            if g == group {
+                return true;
+            }
+            let node = self.nodes.get(&g);
+            if node.and_then(|n| n.as_group()).is_some_and(|gp| gp.default_jar.is_some()) {
+                return false; // a nearer default wins
+            }
+            cur = node.and_then(|n| n.group.clone());
+        }
+        false
+    }
+
+    /// The unset tabs a change of `group`'s default to `jar` would rewrite.
+    fn cascade_targets(&self, group: &str, jar: NodeId) -> Vec<String> {
+        self.nodes
+            .keys()
+            .filter(|t| self.tab_jar(t).is_some_and(|c| !c.set && c.jar != Some(jar)))
+            .filter(|t| self.governed_by(t, group))
+            .cloned()
+            .collect()
+    }
+
+    /// How many tabs `set_group_default_jar(group, jar)` would change, for the confirmation it asks first.
+    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
+    pub(crate) fn cascade_count(&self, group: &str, jar: NodeId) -> usize {
+        self.cascade_targets(group, jar).len()
+    }
+
+    /// Writes `group`'s default, then the new jar into every unset tab it governs (spec "Changing a group's
+    /// `default_jar`"). Plain field edits; the next save writes them. Returns how many tabs changed.
+    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
+    pub(crate) fn set_group_default_jar(&mut self, group: &str, jar: NodeId) -> usize {
+        let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) else { return 0 };
+        g.default_jar = Some(jar);
+        // After the write, so `governed_by` sees it; harmless, as it stops only at groups strictly between.
+        let targets = self.cascade_targets(group, jar);
+        for t in &targets {
+            self.put_tab_jar(t, JarChoice { jar: Some(jar), set: false });
+        }
+        targets.len()
+    }
+
+    /// "Clear default": new tabs stop inheriting it; existing tabs keep their jar.
+    #[allow(dead_code)] // The group's jar menu (a later task) calls it.
+    pub(crate) fn clear_group_default_jar(&mut self, group: &str) {
+        if let Some(g) = self.nodes.get_mut(group).and_then(|n| n.as_group_mut()) {
+            g.default_jar = None;
         }
     }
 
@@ -171,5 +304,173 @@ impl App {
             let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
             self.set_jar_ephemeral(id, on);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::card::DropEffect;
+    use crate::jar::JarChoice;
+    use crate::node::{GroupPayload, NodePayload};
+    use crate::session_sync::tests::{add, sleeping_tab};
+    use crate::App;
+
+    fn tab_in(app: &mut App, group: Option<&str>) -> String {
+        let id = add(app, sleeping_tab("https://a.com/", "A"));
+        app.nodes.get_mut(&id).unwrap().group = group.map(str::to_string);
+        id
+    }
+    fn group_in(app: &mut App, parent: Option<&str>) -> String {
+        let id = add(app, NodePayload::Group(GroupPayload::named("G")));
+        app.nodes.get_mut(&id).unwrap().group = parent.map(str::to_string);
+        id
+    }
+    fn jar_of(app: &App, tab: &str) -> JarChoice {
+        app.tab_jar(tab).unwrap()
+    }
+
+    #[test]
+    fn a_new_tab_snapshots_the_nearest_group_default() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let outer = group_in(&mut app, None);
+        let inner = group_in(&mut app, Some(&outer));
+        assert_eq!(app.new_tab_jar(Some(&inner)), JarChoice::default(), "no default anywhere: no jar");
+        app.set_group_default_jar(&outer, work);
+        assert_eq!(app.new_tab_jar(Some(&inner)), JarChoice { jar: Some(work), set: false });
+        assert_eq!(app.new_tab_jar(None), JarChoice::default());
+    }
+
+    #[test]
+    fn a_cascade_reaches_unset_tabs_in_nested_groups_without_their_own_default() {
+        let mut app = App::default();
+        let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+        let outer = group_in(&mut app, None);
+        let plain = group_in(&mut app, Some(&outer)); // no default of its own
+        let own = group_in(&mut app, Some(&outer));
+        let a = tab_in(&mut app, Some(&outer));
+        let b = tab_in(&mut app, Some(&plain));
+        let c = tab_in(&mut app, Some(&own));
+        // Set after `c` exists, so the cascade gives `c` its group's own jar.
+        app.set_group_default_jar(&own, home);
+        let picked = tab_in(&mut app, Some(&outer));
+        app.set_tab_jar(&picked, None);
+        assert_eq!(app.cascade_count(&outer, work), 2);
+        assert_eq!(app.set_group_default_jar(&outer, work), 2);
+        assert_eq!(jar_of(&app, &a), JarChoice { jar: Some(work), set: false });
+        assert_eq!(jar_of(&app, &b), JarChoice { jar: Some(work), set: false });
+        assert_eq!(jar_of(&app, &c).jar, Some(home), "a nested group with its own default is skipped");
+        assert_eq!(jar_of(&app, &picked), JarChoice { jar: None, set: true }, "a hand-picked tab is skipped");
+        app.clear_group_default_jar(&outer);
+        assert_eq!(jar_of(&app, &a).jar, Some(work), "clearing the default leaves tabs alone");
+        assert_eq!(app.new_tab_jar(Some(&outer)), JarChoice::default(), "but new tabs no longer inherit it");
+    }
+
+    #[test]
+    fn moving_an_unset_tab_re_snapshots_and_a_set_tab_keeps_its_jar() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let g = group_in(&mut app, None);
+        app.set_group_default_jar(&g, work);
+        let unset = tab_in(&mut app, None);
+        let set = tab_in(&mut app, None);
+        app.set_tab_jar(&set, None);
+        for t in [&unset, &set] {
+            app.nodes.get_mut(t).unwrap().group = Some(g.clone());
+            app.refollow(t);
+        }
+        assert_eq!(jar_of(&app, &unset).jar, Some(work));
+        assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true });
+        app.nodes.get_mut(&unset).unwrap().group = None;
+        app.refollow(&unset);
+        assert_eq!(jar_of(&app, &unset), JarChoice::default(), "moved out: no default, no jar");
+    }
+
+    #[test]
+    fn follow_group_jar_clears_set_and_re_snapshots() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let g = group_in(&mut app, None);
+        app.set_group_default_jar(&g, work);
+        let t = tab_in(&mut app, Some(&g));
+        app.set_tab_jar(&t, None);
+        app.follow_group_jar(&t);
+        assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false });
+    }
+
+    #[test]
+    fn a_new_tab_inherits_and_an_opened_tab_copies_its_opener() {
+        let mut app = App::default();
+        let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+        let g = group_in(&mut app, None);
+        app.set_group_default_jar(&g, work);
+        app.spawn_new_tab(None, Some(g.clone()), "https://new/");
+        let (spawn, _) = app.test_spawns.last().unwrap();
+        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false });
+        let opener = tab_in(&mut app, Some(&g));
+        app.set_tab_jar(&opener, Some(home));
+        app.spawn_tab_from(&opener, "https://opened/");
+        let (spawn, _) = app.test_spawns.last().unwrap();
+        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "deviation 3");
+        assert_eq!(spawn.parent.as_deref(), Some(opener.as_str()));
+        assert_eq!(spawn.group.as_deref(), Some(g.as_str()));
+        app.duplicate_tab(&opener);
+        let (spawn, _) = app.test_spawns.last().unwrap();
+        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
+        app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()));
+        let (spawn, _) = app.test_spawns.last().unwrap();
+        assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
+    }
+
+    /// The real move paths, not `refollow` called by hand: each re-snapshots unset tabs and leaves set ones.
+    #[test]
+    fn every_move_between_groups_re_snapshots_unset_tabs() {
+        let mut app = App::default();
+        let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+        let w = group_in(&mut app, None);
+        app.set_group_default_jar(&w, work);
+        let h = group_in(&mut app, None);
+        app.set_group_default_jar(&h, home);
+        let unset = tab_in(&mut app, None);
+        let set = tab_in(&mut app, None);
+        app.set_tab_jar(&set, None);
+        let unset_jar = |app: &App| jar_of(app, &unset);
+
+        // Join: dropped onto group card `w`.
+        app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
+        app.apply_drop(&set, Some((DropEffect::Join, Some(w.clone()))));
+        assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "join");
+        assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "join leaves a set tab");
+
+        // Eject: out of `w` to the top level, where nothing has a default.
+        app.eject(&unset);
+        assert_eq!(unset_jar(&app), JarChoice::default(), "eject");
+
+        // Merge: `w` (holding the tab again) dropped onto `h`; its members now take `h`'s default.
+        app.apply_drop(&unset, Some((DropEffect::Join, Some(w.clone()))));
+        app.apply_drop(&w, Some((DropEffect::Merge, Some(h.clone()))));
+        assert_eq!(app.nodes[&unset].group.as_deref(), Some(h.as_str()));
+        assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "merge");
+        assert_eq!(jar_of(&app, &set), JarChoice { jar: None, set: true }, "merge leaves a set tab");
+
+        // Dissolve: `inner` (no default) inside `h` is dissolved into `h`, then `h` itself to the top level.
+        let inner = group_in(&mut app, Some(&h));
+        app.nodes.get_mut(&unset).unwrap().group = Some(inner.clone());
+        app.dissolve_group(&inner);
+        assert_eq!(unset_jar(&app), JarChoice { jar: Some(home), set: false }, "dissolve into a defaulted group");
+        app.dissolve_group(&h);
+        assert_eq!(unset_jar(&app), JarChoice::default(), "dissolve to the top level");
+
+        // GroupWith: viewing group `level` (default Work), the tab, moved in by hand, is dropped onto `other`. The
+        // new group has no default of its own, so the tab takes `level`'s.
+        let level = group_in(&mut app, None);
+        app.set_group_default_jar(&level, work);
+        let other = tab_in(&mut app, Some(&level));
+        app.nodes.get_mut(&unset).unwrap().group = Some(level.clone());
+        app.current_group = Some(level.clone());
+        app.apply_drop(&unset, Some((DropEffect::GroupWith, Some(other.clone()))));
+        let made = app.nodes[&unset].group.clone().unwrap();
+        assert_eq!(app.nodes[&made].group.as_deref(), Some(level.as_str()), "the new group sits inside `level`");
+        assert_eq!(unset_jar(&app), JarChoice { jar: Some(work), set: false }, "group with");
     }
 }

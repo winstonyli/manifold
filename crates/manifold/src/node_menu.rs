@@ -416,9 +416,11 @@ impl App {
         }
 
         if open_tab {
-            let parent = self.focused.clone();
-            let group = self.group_of(&parent);
-            self.spawn_new_tab(parent, group, &menu.href);
+            if let Some(opener) = self.focused.clone() {
+                self.spawn_tab_from(&opener, &menu.href);
+            } else {
+                self.spawn_new_tab(None, None, &menu.href);
+            }
         }
         if close {
             self.context_menu = None;
