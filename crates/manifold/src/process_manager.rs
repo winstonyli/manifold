@@ -1081,6 +1081,8 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
+    /// The host copy tests only need a file name; the platform's suffix is not what they check.
+    const HOST: &str = "manifold-engine-cef";
 
     /// A shell command as a child whose stdout and stderr go to `log`, the
     /// way `spawn_tab` starts a host.
@@ -1295,7 +1297,7 @@ mod tests {
         use crate::store::testutil::temp_dir;
         let src_dir = temp_dir("host_src");
         let custom = temp_dir("host_custom");
-        let host = src_dir.join("manifold-engine-cef.exe");
+        let host = src_dir.join(HOST);
         std::fs::write(&host, b"v1").unwrap();
 
         let dest = ensure_host_copy(&custom, &host).unwrap();
@@ -1312,7 +1314,7 @@ mod tests {
         ensure_host_copy(&custom, &host).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"version 2", "replaced when the source changed");
 
-        let err = ensure_host_copy(&custom, &src_dir.join("nope.exe")).unwrap_err();
+        let err = ensure_host_copy(&custom, &src_dir.join("nope")).unwrap_err();
         assert!(err.to_string().contains("not found"), "{err}");
     }
 
@@ -1330,7 +1332,7 @@ mod tests {
         use crate::store::testutil::temp_dir;
         let src_dir = temp_dir("host_race_src");
         let custom = temp_dir("host_race_dest");
-        let host = src_dir.join("manifold-engine-cef.exe");
+        let host = src_dir.join(HOST);
         std::fs::write(&host, vec![7u8; 200_000]).unwrap();
         let handles: Vec<_> = (0..8)
             .map(|_| {
@@ -1339,9 +1341,9 @@ mod tests {
             })
             .collect();
         for h in handles {
-            assert_eq!(h.join().unwrap().unwrap(), custom.join("manifold-engine-cef.exe"));
+            assert_eq!(h.join().unwrap().unwrap(), custom.join(HOST));
         }
-        assert_eq!(std::fs::read(custom.join("manifold-engine-cef.exe")).unwrap(), vec![7u8; 200_000]);
+        assert_eq!(std::fs::read(custom.join(HOST)).unwrap(), vec![7u8; 200_000]);
         let names: Vec<_> = std::fs::read_dir(&custom).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(names.len(), 1, "no temp copies left: {names:?}");
     }
@@ -1351,7 +1353,7 @@ mod tests {
         use crate::store::testutil::temp_dir;
         let src_dir = temp_dir("host_lock_src");
         let custom = temp_dir("host_lock_dest");
-        let host = src_dir.join("manifold-engine-cef.exe");
+        let host = src_dir.join(HOST);
         std::fs::write(&host, b"host").unwrap();
         let dest = ensure_host_copy(&custom, &host).unwrap();
         // Held open without share-delete, as a running host holds its exe: a rename over it would fail.
