@@ -1,6 +1,7 @@
-"""Probe server for jar-probe.sh. /login sets an HttpOnly session cookie and a SameSite=Strict one.
+"""Probe server for jar-probe.sh. /login sets an HttpOnly session cookie, a SameSite=Strict one and a
+__Host- one (Secure; browsers accept it over http only on localhost names, if at all).
 /whoami answers AUTH or ANON by whether the session cookie arrived. Each request is logged as
-"<seconds> <engine> <path> auth=<bool>" (never a cookie value).
+"<seconds> <engine> <path> auth=<bool> names=<cookie names sent>" (never a cookie value).
 Usage: python -P cookie_server.py <port-file> <log-file> <seconds> < /dev/null"""
 import http.server, sys, threading, time
 
@@ -18,13 +19,15 @@ class H(http.server.BaseHTTPRequestHandler):
         engine = "cef" if "Chrome" in ua and "Edg/" not in ua else "webview2"
         cookie = self.headers.get("Cookie") or ""
         authed = SID in cookie
+        names = ",".join(sorted(p.split("=", 1)[0].strip() for p in cookie.split(";") if "=" in p)) or "-"
         with open(log_file, "a") as f:
-            f.write(f"{time.time() - t0:7.2f} {engine} {self.path} auth={authed}\n")
+            f.write(f"{time.time() - t0:7.2f} {engine} {self.path} auth={authed} names={names}\n")
         body, headers = b"", []
         if self.path.startswith("/login"):
             headers = [
                 ("Set-Cookie", f"{SID}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600"),
                 ("Set-Cookie", "pref=dark; Path=/; SameSite=Strict; Max-Age=3600"),
+                ("Set-Cookie", "__Host-hp=1; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600"),
             ]
             body = b"logged in"
         elif self.path.startswith("/whoami"):
