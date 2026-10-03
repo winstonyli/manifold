@@ -405,7 +405,9 @@ fn main() {
 
         match pull.as_ref().map(|p| p.poll(may_hold_cookies)) {
             Some(jar_cookies::PullState::Answer(json)) => {
-                may_hold_cookies |= json != "[]";
+                let n = serde_json::from_str::<Vec<serde_json::Value>>(&json).map_or(0, |v| v.len());
+                eprintln!("jar: reported {n} cookies");
+                may_hold_cookies |= n > 0;
                 let _ = control.send(&EngineToHost::Cookies(json));
                 pull = None;
             }

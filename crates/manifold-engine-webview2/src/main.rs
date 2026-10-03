@@ -338,7 +338,12 @@ fn main() {
                                     .and_then(|_| serde_json::from_str::<serde_json::Value>(&result.to_string()).ok())
                                     .and_then(|parsed| jar_cdp::jar_from_cdp(&parsed));
                                 match json {
-                                    Some(json) => *slot.borrow_mut() = Some(json),
+                                    Some(json) => {
+                                        let n = serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                                            .map_or(0, |v| v.len());
+                                        eprintln!("jar: reported {n} cookies");
+                                        *slot.borrow_mut() = Some(json);
+                                    }
                                     None => eprintln!("jar: Network.getAllCookies failed; not answering"),
                                 }
                                 Ok(())
