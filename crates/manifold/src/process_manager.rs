@@ -240,7 +240,8 @@ pub struct EngineTab {
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
     child: Child,
-    /// CEF's `root_cache_path` for this process, deleted on drop.
+    /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
+    /// (`webview2_profile_dir`).
     cache_dir: Option<PathBuf>,
 }
 
@@ -346,18 +347,48 @@ pub fn finish_cache_removals() {
 }
 
 /// Deletes CEF cache dirs left by engines that `remove_cache_dir` never
-/// finished (manifold killed or crashed). Another manifold on the same
+/// finished (manifold killed or crashed). (`sweep_webview2_profiles` does the
+/// same for WebView2's per-host profiles.) Another manifold on the same
 /// profile may be using some: Windows won't rename a dir while a running
 /// CEF holds files in it, so each is renamed aside first and deleted only
 /// if that works. Dirs touched in the last minute are skipped, since their
 /// CEF may not have opened its files yet.
 pub fn sweep_cef_cache() {
-    sweep_cache_dirs(&cef_cache_root(), Duration::from_secs(60));
+    sweep_cache_dirs(&cef_cache_root(), "", Duration::from_secs(60));
 }
 
-fn sweep_cache_dirs(root: &Path, min_age: Duration) {
+/// What a WebView2 host's profile directory is named: the host names its InPrivate profile `manifold_<its pid>`
+/// (manifold-engine-webview2's `create_composition_controller`), and WebView2 keeps a named profile in
+/// `WV2Profile_<name>` (observed, not documented: runtime 154.0.4258.53, 2026-10-03). InPrivate holds no cookies there, but
+/// caches and empty databases (~2 MB) stay behind for every host.
+const WEBVIEW2_PROFILE_PREFIX: &str = "WV2Profile_manifold_";
+
+/// Where WebView2 keeps the profiles of hosts run from `host_exe`: its default user-data folder,
+/// `<host exe>.WebView2`, which the host does not override.
+fn webview2_profiles_root(host_exe: &Path) -> PathBuf {
+    let mut udf = host_exe.as_os_str().to_owned();
+    udf.push(".WebView2");
+    PathBuf::from(udf).join("EBWebView")
+}
+
+fn webview2_profile_dir(host_exe: &Path, pid: u32) -> PathBuf {
+    webview2_profiles_root(host_exe).join(format!("{WEBVIEW2_PROFILE_PREFIX}{pid}"))
+}
+
+/// Deletes WebView2 host profiles `remove_cache_dir` could not (the shared browser process still held them, or
+/// manifold was killed), as `sweep_cef_cache` does; only `WEBVIEW2_PROFILE_PREFIX` dirs are touched.
+pub fn sweep_webview2_profiles() {
+    let root = webview2_profiles_root(&engine_binary_path(EngineKind::Webview2));
+    sweep_cache_dirs(&root, WEBVIEW2_PROFILE_PREFIX, Duration::from_secs(60));
+}
+
+/// Sweeps the dirs in `root` whose names start with `prefix`.
+fn sweep_cache_dirs(root: &Path, prefix: &str, min_age: Duration) {
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(prefix) || !entry.path().is_dir() {
+            continue;
+        }
         let path = entry.path();
         // Renamed aside by an earlier sweep that then couldn't finish.
         let aside = if path.extension().is_some_and(|ext| ext == "old") {
@@ -946,7 +977,7 @@ pub fn spawn_tab(
         cef_cache_root().join(format!("{}-{n}", std::process::id()))
     });
 
-    let mut command = Command::new(host_exe);
+    let mut command = Command::new(&host_exe);
     command
         .env("ENGINE_TAB_ID", tab_id)
         .env("ENGINE_SOCKET_ID", &socket_id)
@@ -962,6 +993,8 @@ pub fn spawn_tab(
     }
     let mut child = command.spawn()?;
     assign_to_engine_job(&child);
+    let cache_dir =
+        cache_dir.or_else(|| (kind == EngineKind::Webview2).then(|| webview2_profile_dir(&host_exe, child.id())));
 
     // The child connects to both sockets right after spawning — bounded by
     // LOCAL_CONNECT_TIMEOUT rather than an unbounded accept() (see its own
@@ -1413,13 +1446,32 @@ mod tests {
             .open(root.join("1-1").join("Cookies"))
             .unwrap();
 
-        super::sweep_cache_dirs(&root, Duration::from_secs(3600));
+        super::sweep_cache_dirs(&root, "", Duration::from_secs(3600));
         assert!(root.join("1-0").exists(), "a dir touched within min_age is kept");
 
-        super::sweep_cache_dirs(&root, Duration::ZERO);
+        super::sweep_cache_dirs(&root, "", Duration::ZERO);
         let mut left: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
         left.sort();
         assert_eq!(left, ["1-1"]);
         assert!(root.join("1-1").join("Cookies").exists());
+    }
+
+    #[test]
+    fn the_webview2_sweep_touches_only_manifolds_profile_dirs() {
+        let root = crate::store::testutil::temp_dir("wv2-sweep");
+        for dir in ["WV2Profile_manifold_8", "WV2Profile_manifold_9.old", "WV2Profile_other", "Default"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("WV2Profile_manifold_file"), b"x").unwrap();
+        super::sweep_cache_dirs(&root, super::WEBVIEW2_PROFILE_PREFIX, Duration::ZERO);
+        let mut left: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["Default", "WV2Profile_manifold_file", "WV2Profile_other"]);
+    }
+
+    #[test]
+    fn a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder() {
+        let dir = super::webview2_profile_dir(Path::new("bin/manifold-engine-webview2.exe"), 42);
+        assert_eq!(dir, Path::new("bin/manifold-engine-webview2.exe.WebView2/EBWebView/WV2Profile_manifold_42"));
     }
 }

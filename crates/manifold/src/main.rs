@@ -2629,6 +2629,7 @@ fn main() {
     // of scripting an OS-level window capture around it.
     let debug_commands = std::env::args().any(|arg| arg == "--debug-commands");
     std::thread::spawn(process_manager::sweep_cef_cache);
+    std::thread::spawn(process_manager::sweep_webview2_profiles);
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);

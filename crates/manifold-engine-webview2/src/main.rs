@@ -632,7 +632,8 @@ fn set_cookies(webview: &ICoreWebView2, cookies: &[serde_json::Value]) -> bool {
 /// interfaces -- confirmed live this session, not assumed); `webview`
 /// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
 ///
-/// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies). If the runtime
+/// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies) in a profile named
+/// for this host's pid, so no two tabs share a cookie store. If the runtime
 /// lacks `ICoreWebView2Environment10` or the options fail, it falls back to the shared profile and `in_private`
 /// is `false`; callers must then neither seed nor report cookies.
 fn create_composition_controller(
@@ -643,6 +644,11 @@ fn create_composition_controller(
     let private_options = environment.cast::<ICoreWebView2Environment10>().and_then(|env10| unsafe {
         let options = env10.CreateCoreWebView2ControllerOptions()?;
         options.SetIsInPrivateModeEnabled(true)?;
+        // Hosts share one browser process (one user-data folder), and InPrivate controllers of one profile share one
+        // in-memory cookie store. A profile per host gives each tab its own store, as a CEF tab has. The profile
+        // still leaves a directory (caches, empty databases); manifold deletes it (`process_manager`, which builds
+        // the same name).
+        options.SetProfileName(&HSTRING::from(format!("manifold_{}", std::process::id())))?;
         Ok((env10, options))
     });
     let private_options = match private_options {
