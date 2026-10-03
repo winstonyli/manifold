@@ -671,6 +671,8 @@ struct TabSpawnOutcome {
     seeded: jar::TabCookies,
     /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
     jar: jar::JarKey,
+    /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
+    seed_clears: Option<u64>,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
@@ -906,8 +908,9 @@ struct App {
     /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
     /// leaves when its host is replaced or closed (`clear_cookie_state`).
     jar_reseed: HashSet<String>,
-    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts.
-    jar_snapshots: Arc<std::sync::Mutex<BTreeMap<jar::JarKey, jar::Jar>>>,
+    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
+    /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
+    jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
     /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
     /// host is not dropped before its last cookies arrive.
     cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
@@ -1392,7 +1395,7 @@ impl Default for App {
             .map(|dir| (jar::JarKey::Default, jar::Jar::load(&dir, jar::JarKey::Default)))
             .into_iter()
             .collect();
-        let jar_snapshots = Arc::new(std::sync::Mutex::new(jars.clone()));
+        let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
@@ -2861,7 +2864,7 @@ mod tests {
         app.set_jar_ephemeral(work, true);
         assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
         assert_eq!(app.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
-        assert_eq!(app.jar_snapshots.lock().unwrap().get(&key).map(|j| j.cookies.len()), Some(1), "and seed tabs");
+        assert_eq!(app.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
         app.set_jar_ephemeral(work, false);
         assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
     }
@@ -2959,6 +2962,43 @@ mod tests {
         assert!(!app.jar_reseed.contains("b"), "another jar's tab keeps its host");
         app.clear_cookie_state("a");
         assert!(!app.jar_reseed.contains("a"));
+    }
+
+    /// Final review I3: a Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
+    /// honoured: the host holds the old cookies, so it is marked to switch like the hosts running at the clear, even
+    /// though the landing first wipes its id's old cookie state.
+    #[test]
+    fn a_clear_during_a_spawn_marks_the_host_when_it_lands() {
+        let key = jar::JarKey::Default;
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        app.apply_pulled_cookies("a", SID);
+        app.clear_cookie_state("a");
+        let read_seed = |app: &App| {
+            let (cookies, clears) = app.jar_snapshots.lock().unwrap().seed(key);
+            (jar::TabCookies::seeded(&cookies), Some(clears))
+        };
+        let (old_seed, before) = read_seed(&app);
+        assert_eq!(old_seed.baseline.len(), 1);
+        app.clear_jar_cookies(key);
+        app.note_spawned_jar("t", key, old_seed.clone(), before);
+        assert!(app.jar_reseed.contains("t"), "seeded before the clear: it holds the old cookies");
+        assert!(!app.apply_pulled_cookies("t", SID), "so its pulls cannot refill the cleared jar");
+        assert!(default_jar(&app).cookies.is_empty());
+
+        let (empty_seed, after) = read_seed(&app);
+        app.jar_reseed.insert("u".into()); // an earlier host's mark: the landing wipes it
+        app.note_spawned_jar("u", key, empty_seed.clone(), after);
+        assert!(!app.jar_reseed.contains("u"), "seeded after the clear: the empty jar");
+        app.clear_jar_cookies(key);
+        app.note_spawned_jar("v", key, empty_seed, after);
+        assert!(!app.jar_reseed.contains("v"), "an empty seed holds nothing the clear took");
+        app.note_spawned_jar("w", key, old_seed.clone(), None);
+        assert!(!app.jar_reseed.contains("w"), "never seeded (its engine ignores jars)");
+        let work = app.create_jar("Work");
+        app.clear_jar_cookies(jar::JarKey::Named(work));
+        app.note_spawned_jar("x", key, old_seed, after.map(|n| n + 1));
+        assert!(!app.jar_reseed.contains("x"), "only its own jar's clears count");
     }
 
     /// The pull `request_sleep` (or a timed pull, or one already in flight) sends a reseed tab still returns the

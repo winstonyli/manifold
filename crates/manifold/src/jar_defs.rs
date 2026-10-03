@@ -494,7 +494,12 @@ impl App {
         // Cleared in place, so a locked jar stays locked and its unreadable file is still never overwritten.
         let mut jar = jar.clone();
         jar.cookies.clear();
-        self.publish_jar(key, jar);
+        // Counted with the emptied copy, under one lock: a host still spawning whose seed was read before this is
+        // caught when it lands (`note_spawned_jar`), as it has no `jar_tabs` entry to mark below.
+        if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+            snapshots.insert_cleared(key, jar.clone());
+        }
+        self.jars.insert(key, jar);
         self.save_jar(key);
         // Their engines still hold the old cookies: they must be replaced although their key is unchanged.
         let running: Vec<String> =

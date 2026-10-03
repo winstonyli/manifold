@@ -90,7 +90,9 @@ that could not be moved aside) are never touched. Turning it off saves the loade
 Turning it on from Settings for a jar with a saved file asks first ("Make Work ephemeral?": the saved sign-ins are deleted
 from disk now; tabs keep them until Manifold quits). Clearing the cookies of any jar empties it and
 puts the live tabs using it through the switch flow (their engines still hold the old cookies); this signs the user out, so it
-asks for confirmation.
+asks for confirmation. A host still spawning or waking when the clear lands counts too (final review I3): each jar's clears
+are counted beside its seed copy, the spawn records the count when it reads its seed, and a host that lands seeded with
+cookies from before a clear goes through the same switch flow.
 
 ## Manifold state
 

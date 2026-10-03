@@ -2711,6 +2711,7 @@ pub(crate) mod tests {
                 result,
                 seeded: Default::default(),
                 jar: Default::default(),
+                seed_clears: None,
             });
         }
     }

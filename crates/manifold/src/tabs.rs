@@ -87,22 +87,29 @@ impl App {
         let custom_cef = self.custom_cef_dir();
         let snapshots = self.jar_snapshots.clone();
         std::thread::spawn(move || {
-            // Read when the host has connected (the host starts seconds after the spawn), and remember its keys.
-            let seeded = std::cell::RefCell::new(crate::jar::TabCookies::default());
+            // Read when the host has connected (the host starts seconds after the spawn): remember its keys, and the
+            // jar's clear count then, so a clear before it lands is caught (`note_spawned_jar`).
+            let seeded = std::cell::RefCell::new((crate::jar::TabCookies::default(), None));
             let seed = || {
-                let cookies =
-                    snapshots.lock().ok().and_then(|s| s.get(&jar).map(|j| j.cookies.clone())).unwrap_or_default();
-                *seeded.borrow_mut() = crate::jar::TabCookies::seeded(&cookies);
+                let (cookies, clears) = match snapshots.lock() {
+                    Ok(s) => {
+                        let (cookies, clears) = s.seed(jar);
+                        (cookies, Some(clears))
+                    }
+                    Err(_) => (Vec::new(), None),
+                };
+                *seeded.borrow_mut() = (crate::jar::TabCookies::seeded(&cookies), clears);
                 serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
             };
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed);
-            let seeded = seeded.into_inner();
+            let (seeded, seed_clears) = seeded.into_inner();
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
                 spawn,
                 generation,
                 result,
                 seeded,
                 jar,
+                seed_clears,
             })));
         });
     }
@@ -185,6 +192,27 @@ impl App {
         }
     }
 
+    /// A new host for tab `id` landed (`handle_tab_spawn_result`): forgets the old host's cookie state, then records
+    /// the jar this one was spawned with and its seed. `seed_clears` is that jar's clear count when the seed was read
+    /// (`None`: never seeded). A Clear Cookies since then, while the spawn or wake was in flight, found no `jar_tabs`
+    /// entry to mark; a host seeded with cookies it cleared is marked now, like the hosts running at the clear, so it
+    /// switches and its pulls cannot refill the jar (final review I3). Marked after the wipe, which would drop it.
+    pub(crate) fn note_spawned_jar(
+        &mut self,
+        id: &str,
+        jar: crate::jar::JarKey,
+        seeded: crate::jar::TabCookies,
+        seed_clears: Option<u64>,
+    ) {
+        self.clear_cookie_state(id);
+        let clears = self.jar_snapshots.lock().ok().map(|s| s.clears(jar));
+        let stale = seed_clears.is_some() && clears.is_some() && seed_clears != clears;
+        if stale && !seeded.baseline.is_empty() {
+            self.jar_reseed.insert(id.to_string());
+        }
+        self.jar_tabs.insert(id.to_string(), (jar, seeded));
+    }
+
     /// Acts on what `hold_for_cookies` parked for `id`, if anything.
     pub(crate) fn release_cookie_hold(&mut self, id: &str) {
         if let Some((_, held)) = self.cookie_holds.remove(id) {
@@ -259,6 +287,7 @@ impl App {
             result,
             seeded,
             jar,
+            seed_clears,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar } = carry;
         self.spawning.remove(&id);
@@ -311,8 +340,7 @@ impl App {
         }
         match result {
             Ok(mut tab) => {
-                self.clear_cookie_state(&id);
-                self.jar_tabs.insert(id.clone(), (jar, seeded));
+                self.note_spawned_jar(&id, jar, seeded, seed_clears);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,

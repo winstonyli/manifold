@@ -1,7 +1,7 @@
 //! The cookie jar manifold owns. Engines are seeded from it at tab start and pulled back into it, so a login
 //! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it names jars by store `NodeId`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -452,6 +452,45 @@ impl Jar {
         tab.baseline.retain(|k, _| !reported.contains(k));
         tab.baseline.extend(pulled.into_iter().map(|p| (p.key(), p)));
         self.cookies != before
+    }
+}
+
+/// The copy of the loaded jars spawn threads seed new hosts from (`App::jar_snapshots`), with how many times each jar
+/// was cleared. Both sit under one lock, so a seed and the clear count it was read at agree (final review I3).
+#[derive(Debug, Default)]
+pub struct Snapshots {
+    jars: BTreeMap<JarKey, Jar>,
+    clears: HashMap<JarKey, u64>,
+}
+
+impl Snapshots {
+    pub fn new(jars: BTreeMap<JarKey, Jar>) -> Snapshots {
+        Snapshots { jars, clears: HashMap::new() }
+    }
+
+    pub fn insert(&mut self, key: JarKey, jar: Jar) {
+        self.jars.insert(key, jar);
+    }
+
+    /// Drops `key`'s copy. Its clear count stays, so a host seeded from it still compares against it.
+    pub fn remove(&mut self, key: &JarKey) {
+        self.jars.remove(key);
+    }
+
+    /// `key` was just cleared (Clear Cookies): `jar` is the emptied jar, and the clear is counted.
+    pub fn insert_cleared(&mut self, key: JarKey, jar: Jar) {
+        self.jars.insert(key, jar);
+        *self.clears.entry(key).or_default() += 1;
+    }
+
+    /// How many times `key` has been cleared this run.
+    pub fn clears(&self, key: JarKey) -> u64 {
+        self.clears.get(&key).copied().unwrap_or(0)
+    }
+
+    /// A new host's seed: `key`'s cookies, and its clear count as of that read.
+    pub fn seed(&self, key: JarKey) -> (Vec<Cookie>, u64) {
+        (self.jars.get(&key).map(|j| j.cookies.clone()).unwrap_or_default(), self.clears(key))
     }
 }
 
