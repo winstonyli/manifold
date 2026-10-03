@@ -6,8 +6,8 @@ jar**; **cookies only for v1**.
 
 **WebView2 tabs now run InPrivate, so WebView2 no longer persists localStorage, IndexedDB, cache or permissions across
 restarts; only cookies persist, through the jar.** Before v1 they kept all of that in the shared user-data folder. Sites that
-keep a login in localStorage (many single-page apps keep a token there) now sign the user out on every restart, and on a
-WebView2 sleep and wake once no other WebView2 tab is running.
+keep a login in localStorage (many single-page apps keep a token there) now sign the user out on every restart and on
+every WebView2 sleep and wake (each host has its own in-memory profile, so nothing survives its host).
 Background: `2026-10-02-user-data-survey.md` (what each engine does today). Evidence: spike branch `spike/cookie-bridge`
 (commit 7b6666b, throwaway, not for merge).
 
@@ -52,7 +52,8 @@ As built:
    updated by each of its pulls) and the keys it has itself *reported* in a pull (empty at spawn: a seed is not proof the
    engine holds a cookie). A pulled cookie equal to the tab's baseline is unchanged and ignored, so an idle tab's stale copy
    cannot overwrite a value another tab changed since; one that differs or is new replaces the jar's (last change wins per
-   `(name, domain, path)`; an already-expired one deletes it). A key the tab reported before and no longer has is a
+   `(name, domain, path)`; an already-expired one deletes it). Expiries within 1 ms count as equal, against the baseline
+   and against the jar's own copy, so an engine's float conversion of the same expiry is never a change. A key the tab reported before and no longer has is a
    deletion, so a logout propagates; a seeded key the tab never reported is never deleted by it, so a seed the engine
    rejected is not a logout. Both sets are cleared when the tab's host closes or is replaced.
 4. **A host answers only a complete read.** A failed, errored or unparsable read gets no reply (manifold's pull times out
@@ -63,7 +64,9 @@ As built:
 5. **Seeding fidelity.** CEF: a host-only cookie (no leading dot) is set with an empty `domain` and its host in the URL
    (https if `secure`, with the cookie's path), because Chromium prefixes a dot to any non-empty domain and rejects a
    `__Host-` cookie that has one; a dotted domain is passed as is. CEF reads a host-only cookie back by its bare host, the
-   neutral form (checked by `scripts/jar-probe.sh` on `jar.localhost`, 2026-10-03). WebView2: cookies with no name or domain
+   neutral form (checked by `scripts/jar-probe.sh` on `jar.localhost`, 2026-10-03). CEF's expiry (`Basetime`, microseconds
+   since 1601, past 2^53) is shifted to and from Unix time in integer microseconds, so a microsecond-resolution expiry
+   comes back bit for bit (an `f64` shift changed ~90% of `Max-Age` expiries). WebView2: cookies with no name or domain
    are left out of the `Network.setCookies` batch, and a failed batch is retried one cookie at a time.
 
 The design's `about:blank` start page for engines that cannot be seeded before navigation was not needed: both seeded
@@ -90,15 +93,28 @@ path-scoped cookie never visited is missed. Neither engine exposes a raw "all co
 ## Security
 
 Cookie files are credentials. The design: store them under the profile with user-only file permissions and protect them at
-rest with the OS store (DPAPI on Windows; the platform keyring elsewhere). v1 builds the Windows half only (below). Never log values (the spike's dump printed real
-ones; the host must filter and the debug commands must not exist outside debug builds). A jar can be exported only by an
-explicit user action.
+rest with the OS store (DPAPI on Windows; the platform keyring elsewhere). v1 builds the Windows half only (below). Never
+log values (the spike's dump printed real ones; the host must filter and the debug commands must not exist outside debug
+builds). A jar can be exported only by an explicit user action.
 
-Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, `CRYPTPROTECT_UI_FORBIDDEN`, no entropy). Without entropy any process of the same Windows user can decrypt it; the accepted v1 threat model is other users and offline copies. A legacy plaintext file still loads and is rewritten protected on the next save. A file that cannot be read (decrypt failure, truncation, bad JSON) is renamed to `default.json.unreadable-<unix seconds>[-<n>]` at load, never over an earlier one; only the 5 newest are kept, since each holds credentials. If it cannot be read at all or cannot be moved aside, the jar is locked for the session: cookies work in memory but nothing is saved, so the file is never overwritten. A save writes `default.json.<pid>.tmp` and renames it; load leaves temp files alone, since one may be another instance's save in progress.
+Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, `CRYPTPROTECT_UI_FORBIDDEN`, no
+entropy). Without entropy any process of the same Windows user can decrypt it; the accepted v1 threat model is other users
+and offline copies. A legacy plaintext file still loads and is rewritten protected on the next save. A file that cannot be
+read (decrypt failure, truncation, bad JSON) is renamed to `default.json.unreadable-<unix seconds>[-<n>]` at load, never
+over an earlier one; only the 5 newest are kept, since each holds credentials. If it cannot be read at all or cannot be
+moved aside, the jar is locked for the session: cookies work in memory but nothing is saved, so the file is never
+overwritten. A save writes `default.json.<pid>.tmp` and renames it. Load deletes a temp file whose process is gone (a
+crashed save, a full copy of the jar) and leaves a live process's alone, since it may be another instance's save in
+progress.
 
-v1 protects the file for the user only through DPAPI, on Windows; there the file itself gets the profile folder's ACL. On Linux and macOS `MJR1` names the format only: the content is plain JSON, not protected, in a file created with mode 0600. A file moved across OSes (or users, or machines) is not readable and is set aside as above. Platform keyring protection is the follow-up, not built.
+v1 protects the file for the user only through DPAPI, on Windows; there the file itself gets the profile folder's ACL. On
+Linux and macOS `MJR1` names the format only: the content is plain JSON, not protected, in a file created with mode 0600.
+A file moved across OSes (or users, or machines) is not readable and is set aside as above. Platform keyring protection is
+the follow-up, not built.
 
-Two manifold instances on one profile each load the jar once and save their whole jar on every change, so they overwrite each other's jar file (last save wins). That is not supported in v1; a re-read and merge under a lock before each save, as the session store does, is the fix if it is needed.
+Two manifold instances on one profile each load the jar once and save their whole jar on every change, so they overwrite
+each other's jar file (last save wins). That is not supported in v1; a re-read and merge under a lock before each save, as
+the session store does, is the fix if it is needed.
 
 ## Decided
 
@@ -110,8 +126,8 @@ Two manifold instances on one profile each load the jar once and save their whol
 `CreateCoreWebView2CompositionController`. The vendored bindings (`webview2-com-sys` 0.39) offer two ways out:
 
 - **InPrivate (chosen):** `ICoreWebView2ControllerOptions::SetIsInPrivateModeEnabled(true)`, passed through
-  `CreateCoreWebView2CompositionControllerWithOptions` (Environment10). Nothing touches disk and the tab starts with an empty
-  jar, so only the jar's cookies are ever present and the user's real shared folder stops being involved. Manifold seeds
+  `CreateCoreWebView2CompositionControllerWithOptions` (Environment10). No cookie touches disk (a named profile still
+  writes caches; below) and the tab starts with an empty jar, so only the jar's cookies are ever present and the user's real shared folder stops being involved. Manifold seeds
   from the jar and pulls back as in the flow above.
 - Per-jar user-data folder: a path argument to `CreateCoreWebView2EnvironmentWithOptions`. Works on older runtimes but
   puts a second, WebView2-managed store of the same cookies on disk, and one folder cannot be shared by differently
@@ -126,6 +142,22 @@ already degrades when Environment15 is missing, `main.rs:224`; do the same, and 
 Side effect to know: the spike also showed the non-InPrivate path writing to the real shared folder, which is why the
 spike deleted its two test cookies afterwards.
 
+**One profile per host (built, 2026-10-03).** All WebView2 hosts share one browser process (one user-data folder), and
+InPrivate controllers of one profile share one in-memory cookie store: the two-tab run of `scripts/jar-probe.sh` showed a
+second tab, seeded with an empty jar, sending the first tab's login. So each host also calls
+`ICoreWebView2ControllerOptions::SetProfileName("manifold_<host pid>")`, still InPrivate; the same run then reports the
+tabs do not share. Costs seen on runtime 154.0.4258.53:
+- No extra processes (two tabs: one browser process, one more renderer, as before).
+- A named InPrivate profile still writes a directory, `EBWebView\WV2Profile_manifold_<pid>` (~1.8 MB: caches, an empty
+  `Network\Cookies` database; no cookie rows). Manifold deletes it when it drops the host (as it does a CEF cache dir, with
+  retries) and sweeps leftovers older than a minute at startup (`process_manager::sweep_webview2_profiles`, only that
+  prefix). A browser process starting up also recreates the last-used profile's directory, so after a run a few
+  directories remain until the next start.
+- WebView2 registers every named profile in the folder's `Local State` (`profile.info_cache`, ~1.1 KB each, plus
+  `profile.profiles_order`) and never forgets it. `ICoreWebView2Profile8::Delete` on `Shutdown` did not remove the entries
+  (tried: manifold kills the host right after sending `Shutdown`, and the browser dies with it before it writes
+  `Local State`). That file grows by about 1 KB per WebView2 host ever started; see Open questions.
+
 ## Out of scope for v1
 
 localStorage, sessionStorage, IndexedDB, cache, permissions, a jar picker UI, jar nodes drawn in the graph, a "clear
@@ -138,17 +170,17 @@ What was built answers some of these; each says so.
 - Sync cadence versus cost: built as a 30 s timer plus a pull before sleep and swap (2 s wait) and at quit (1 s wait). Whether
   a pull on every navigation commit is cheaper than a timer is still open.
 - Whether missing never-visited path-scoped cookies on WebKit and Servo is acceptable (it is a small gap).
-- No delta broadcast in v1: a running CEF tab does not receive cookies another tab added later; it gets them when it is next
-  respawned. **WebView2 differs:** all WebView2 tabs run InPrivate in one browser process and share one in-memory cookie
-  store across host processes while any of them runs (`scripts/jar-probe.sh` two-tab run, 2026-10-03: a second tab seeded
-  with an empty jar sent the first tab's login on its first request). So WebView2 tabs see each other's changes at once,
-  and seeding a new WebView2 tab writes the jar snapshot (up to 30 s old) into the store the running WebView2 tabs use: it
-  can put back an older value or a cookie a running tab just logged out of, and that tab's next pull then reports it as its
-  own change, which wins in the jar. Undecided: give each host its own profile, or treat all WebView2 tabs as one
-  participant (seed only the first, pull once for all).
+- No delta broadcast in v1: a running tab, CEF or WebView2, does not receive cookies another tab added later; it gets them
+  when it is next respawned. Each tab has its own cookie store: WebView2 tabs did share one until each host got its own
+  profile (WebView2 isolation, above; decided 2026-10-03 over treating all WebView2 tabs as one participant).
 - With no delta broadcast, a logout in one tab is undone by another tab that still holds the cookie only if that tab
-  changes it again; an unchanged copy no longer overwrites the jar (the per-tab baseline). A rotation in one tab likewise
-  survives an idle tab's stale copy.
+  changes it again; an unchanged copy (expiries within 1 ms) does not overwrite the jar (the per-tab baseline). A rotation
+  in one tab likewise survives an idle tab's stale copy.
+- WebView2's `Local State` grows by about 1 KB per WebView2 host ever started (one named profile each, never
+  unregistered). Unbounded but slow; fixes if it matters: reuse a small pool of profile names (only once a name's old
+  browser process is gone, or its in-memory cookies come back), let hosts exit on their own after `Shutdown` so a profile
+  `Delete` can land, or give each host its own user-data folder (deleted whole, like a CEF cache dir; one browser
+  process per tab).
 - A tab closed within 30 s of its last cookie change loses that change: there is no pull on close (only every 30 s, before a
   sleep or swap, and at quit), and never from a host that is gone.
 - Pulls are best effort. An unanswered `GetCookies` times out after 10 s and blocks nothing, but a reply that arrives late
@@ -157,6 +189,12 @@ What was built answers some of these; each says so.
   unavailable) never answers `GetCookies` and is not seeded, so the jar never absorbs the user's real shared-profile cookies.
 - A CEF host that was seeded but whose store has since emptied (every cookie deleted) never reports the deletions: CEF does
   not call the visitor for an empty store, and a seeded host stays silent rather than answer `[]` (Flow 4).
+- **Known gap: such a silent CEF tab can be retired for good.** A host counts as seeded whenever the jar was non-empty,
+  even if every cookie was rejected or already expired (load keeps expired cookies and the seed sends them). Its store is
+  then empty, every pull is silent, and after 3 silent pulls (about 90 s) it is never asked again: not on the timer,
+  before a sleep or swap, or at quit. A login the user makes later in that tab never reaches the jar. Fixes: keep asking a
+  retired tab at a low rate and always at sleep, swap and quit, or do not count silence from a host that has never
+  reported anything.
 - Session cookies (`expires: null`) are saved and re-seeded on every restart until a tab reports them gone, unlike a
   browser, which drops them when it closes. A design choice for v1, not yet reviewed with the user.
 - Manifold and its hosts ship together: the IPC messages are not versioned, and a host built from another commit (such as
