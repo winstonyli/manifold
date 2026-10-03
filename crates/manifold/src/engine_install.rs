@@ -85,6 +85,12 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
 ///
 /// `archive.json` wins when present (an invalid one is an error, not a fall-through); with neither, it
 /// is refused.
+/// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
+pub(crate) type DirCheck = (String, std::time::Instant, Result<(), String>);
+
+/// How long a bring-your-own CEF directory's verdict is trusted before the disk is read again.
+const CEF_DIR_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn custom_version(dir: &Path) -> Result<String, String> {
     match std::fs::read_to_string(dir.join("archive.json")) {
         Ok(text) => {
@@ -411,13 +417,15 @@ fn unpack_with(
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
     std::fs::create_dir_all(into).map_err(io)?;
     let mut files = 0usize;
-    for entry in tar.entries().map_err(bad)? {
+    // Reading the tar itself failing (a bad header checksum is `ErrorKind::Other`) is a bad archive whatever the kind.
+    let corrupt = |e: std::io::Error| InstallError::Unpack(e.to_string());
+    for entry in tar.entries().map_err(corrupt)? {
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
         on_entry();
-        let mut entry = entry.map_err(bad)?;
-        let path = entry.path().map_err(bad)?.into_owned();
+        let mut entry = entry.map_err(corrupt)?;
+        let path = entry.path().map_err(corrupt)?.into_owned();
         // Check every entry, even ones that will be skipped.
         let dest = target(&path, into)?;
         match entry.header().entry_type() {
@@ -637,18 +645,19 @@ impl crate::App {
     }
 
     /// The configured directory and whether it validates; `None` when none is set. The verdict is cached
-    /// with the path (`cef_dir_check`): the disk is read when the path changes, not every frame.
+    /// with the path (`cef_dir_check`): the disk is read when the path changes or every `CEF_DIR_CHECK_TTL`,
+    /// not every frame, so a folder deleted or replaced behind the app's back is noticed.
     pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
         let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
         let mut cache = self.cef_dir_check.borrow_mut();
-        if cache.as_ref().is_none_or(|(path, _)| path != configured) {
+        if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
             let verdict = match crate::cef_pin::pin_for_platform() {
                 Some(pin) => validate_custom(Path::new(configured), pin),
                 None => Err(NO_PIN_REASON.to_string()),
             };
-            *cache = Some((configured.to_string(), verdict));
+            *cache = Some((configured.to_string(), std::time::Instant::now(), verdict));
         }
-        let verdict = cache.as_ref().map(|(_, v)| v.clone())?;
+        let verdict = cache.as_ref().map(|(_, _, v)| v.clone())?;
         Some((PathBuf::from(configured), verdict))
     }
 
@@ -932,6 +941,22 @@ mod tests {
         // An invalid archive.json is an error even with a good marker beside it.
         std::fs::write(dir.join("archive.json"), "{}").unwrap();
         assert!(validate_custom(&dir, pin).unwrap_err().contains("archive.json"));
+    }
+
+    #[test]
+    fn a_custom_directory_deleted_later_stops_being_custom() {
+        let pin = cef_pin();
+        let dir = custom_dir("vc9", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
+        let mut app = App::default();
+        app.set_cef_directory(dir.to_str().unwrap());
+        assert!(app.cef_dir_verdict().unwrap().1.is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(app.cef_dir_verdict().unwrap().1.is_ok(), "still inside the TTL: the cached verdict stands");
+        // Age the cached verdict past the TTL, as waiting would.
+        let aged = std::time::Instant::now().checked_sub(CEF_DIR_CHECK_TTL * 2).unwrap();
+        app.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
+        assert!(app.cef_dir_verdict().unwrap().1.is_err());
+        assert_eq!(app.custom_cef_dir(), None);
     }
 
     #[test]
@@ -1255,6 +1280,15 @@ Connection: close
         // An import library is a Windows build leftover; elsewhere `.lib` is not special.
         assert_eq!(!out.join("libcef.lib").exists(), !crate::cef_platform::PLATFORM.skip_suffixes.is_empty());
         assert_eq!(std::fs::read_to_string(out.join(MARKER)).unwrap(), "9.9");
+    }
+
+    #[test]
+    fn a_corrupt_tar_header_is_a_bad_archive_not_a_file_error() {
+        let dir = temp_dir("ei22");
+        // 512 bytes of junk: not a valid header, and its checksum cannot match.
+        let a = bz(&dir, "junk.tar.bz2", &[b'x'; 1024]);
+        let err = unpack(&a, &dir.join("out"), &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(err, InstallError::Unpack(_)), "{err:?}");
     }
 
     #[test]

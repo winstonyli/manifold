@@ -135,3 +135,11 @@ shown, since unknown is not missing. Checked in WSL with a stub `ldconfig` that 
 From the unzipped `manifold-v0.1.0-windows-x64.zip` with a temp `APPDATA`: `INSTALLENGINE cef` went Installing 0% to Installed in 63 s
 (405 MB on disk, `libcef.dll`, `ready` and a host copy in `data/engine-hosts/cef-runtime`). A restart with a CEF tab on a local
 page then loaded it (the page reported `load y=0`) and exited cleanly with no manifold process left. The temp profile was deleted.
+
+## Two parked defects fixed (2026-10-02)
+
+- The bring-your-own CEF directory's verdict was cached until the path changed, so deleting or replacing the folder left
+  CEF reading as Custom. It now expires after `CEF_DIR_CHECK_TTL` (5 s) and the disk is read again.
+- A corrupt tar header (`ErrorKind::Other`, e.g. a bad checksum) was classified as `Io`, which `install` retries without
+  downloading again, so a bad archive would loop. Errors from reading the tar itself (`entries`, `entry`, `path`) are now
+  always `Unpack`; only the copy into a file still sorts by error kind.

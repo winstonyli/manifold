@@ -1196,7 +1196,7 @@ struct App {
     /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
     engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
     /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
-    cef_dir_check: std::cell::RefCell<Option<(String, Result<(), String>)>>,
+    cef_dir_check: std::cell::RefCell<Option<engine_install::DirCheck>>,
     /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
     cef_dir_draft: Option<String>,
 
