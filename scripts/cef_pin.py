@@ -11,7 +11,8 @@ with "<prefix>+", downloads it ONCE (about 172 MB for windows64; running the scr
 the notice goes to stderr first) to a temp file, checks it against the index's size and sha1, computes the
 SHA-256 (the index has none), deletes the temp file, and replaces that platform's `// BEGIN <id>` block in
 cef_pin.rs (adding it, and its arm in `pin_for`, when it is new). Other platforms' blocks are kept as they are.
-If the check fails the temp file is deleted too and cef_pin.rs is left alone.
+If the check fails the temp file is deleted too and cef_pin.rs is left alone. Set CEF_PIN_KEEP=1 to keep the
+temp file (for inspecting the archive layout); the script then logs its path and you delete it.
 
 Re-pinning after a `cef` crate bump: look up the CEF build the new crate wraps (the part after the `+` in its
 Cargo.lock version, e.g. `152.1.0+152.0.6` wraps CEF 152.0.6), update CEF_CRATE_VERSION and CEF_BUILD_PREFIX
@@ -133,7 +134,10 @@ def main():
             sys.exit(f"download does not match the index: {got} bytes sha1 {sha1.hexdigest()}, "
                      f"index says {size} bytes sha1 {f['sha1']}")
     finally:
-        os.remove(tmp)
+        if os.environ.get("CEF_PIN_KEEP"):
+            log(f"CEF_PIN_KEEP set: keeping {tmp} (delete it yourself).")
+        else:
+            os.remove(tmp)
 
     try:
         with open(OUT, encoding="utf-8", newline="") as fh:

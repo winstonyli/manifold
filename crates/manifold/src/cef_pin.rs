@@ -13,10 +13,21 @@ pub(crate) const PIN_WINDOWS64: Pin = Pin {
 };
 // END windows64
 
+// BEGIN linux64
+pub(crate) const PIN_LINUX64: Pin = Pin {
+    version: "152.0.6+g708dc14+chromium-152.0.7977.83",
+    url: "https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linux64_minimal.tar.bz2",
+    size: 321_503_907,
+    sha1: "9711b86c105fb590da576fe5a829802f1a79d520",
+    sha256: "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd",
+};
+// END linux64
+
 /// The pin for CDN platform `id` (`CefPlatform::id`), or `None` while that platform has none.
 pub(crate) fn pin_for(id: &str) -> Option<&'static Pin> {
     match id {
         "windows64" => Some(&PIN_WINDOWS64),
+        "linux64" => Some(&PIN_LINUX64),
         _ => None,
     }
 }

@@ -1,6 +1,6 @@
 //! What differs per OS about installing and launching CEF, in one place (spec "Platforms",
-//! `docs/superpowers/specs/2026-10-02-engine-install-design.md`). Only Windows has a pin and a tested
-//! install today; the Linux entry is the next platform's starting point, untested.
+//! `docs/superpowers/specs/2026-10-02-engine-install-design.md`). Windows has a pin and a tested
+//! install; Linux has a pin and a layout checked against the real archive, but its install is unrun.
 //!
 //! CEF CDN platform ids: `windows64`, `linux64`, `macosx64`, `macosarm64` (see `cef_pin::pin_for`).
 
@@ -46,7 +46,7 @@ pub(crate) const PLATFORM: CefPlatform = CefPlatform {
     skip_suffixes: &[".lib"],
 };
 
-/// Every other OS reads as Linux for now; macOS (`macosx64`/`macosarm64`) needs its own entry (an app
+/// Every other OS reads as Linux for now (layout checked against the linux64 archive, install never run on Linux); macOS (`macosx64`/`macosarm64`) needs its own entry (an app
 /// bundle layout, see the spec) and has no pin, so nothing is offered there either.
 #[cfg(not(windows))]
 pub(crate) const PLATFORM: CefPlatform = CefPlatform {
@@ -86,6 +86,7 @@ mod tests {
     #[test]
     fn pin_lookup_is_none_for_a_platform_without_a_pin() {
         assert!(crate::cef_pin::pin_for("windows64").is_some());
+        assert!(crate::cef_pin::pin_for("linux64").is_some());
         for id in ["macosx64", "macosarm64", "", "nonsense"] {
             assert!(crate::cef_pin::pin_for(id).is_none(), "{id}");
         }
