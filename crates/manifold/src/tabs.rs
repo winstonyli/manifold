@@ -82,10 +82,10 @@ impl App {
         let snapshot = self.jar_snapshot.clone();
         std::thread::spawn(move || {
             // Read when the host has connected (the host starts seconds after the spawn), and remember its keys.
-            let seeded = std::cell::RefCell::new(HashSet::new());
+            let seeded = std::cell::RefCell::new(crate::jar::TabCookies::default());
             let seed = || {
                 let jar = snapshot.lock().map(|j| j.clone()).unwrap_or_default();
-                *seeded.borrow_mut() = jar.keys();
+                *seeded.borrow_mut() = crate::jar::TabCookies::seeded(&jar.cookies);
                 serde_json::to_string(&jar.cookies).unwrap_or_else(|_| "[]".to_owned())
             };
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed);
@@ -100,14 +100,12 @@ impl App {
     }
 
     /// Folds tab `tab_id`'s cookie dump into the jar and saves it when it changed. `false` for a dump that does not parse.
-    /// Only that tab's own `jar_known` cookies can be deleted by its absence.
+    /// Merged against that tab's own `jar_tabs` entry (`jar::Jar::merge`). A reply from a tab with no entry (closed or
+    /// replaced since it was asked) starts one empty, so it can add cookies but delete none.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         let Some(pulled) = crate::jar::from_json(json) else { return false };
-        let reported: HashSet<crate::jar::Key> =
-            pulled.iter().map(|c| (c.name.clone(), c.domain.clone(), c.path.clone())).collect();
-        let known = self.jar_known.entry(tab_id.to_string()).or_default();
-        let changed = self.jar.merge(pulled, known);
-        *known = reported;
+        let tab = self.jar_tabs.entry(tab_id.to_string()).or_default();
+        let changed = self.jar.merge(pulled, tab);
         if changed {
             if let Ok(mut snapshot) = self.jar_snapshot.lock() {
                 *snapshot = self.jar.clone();
@@ -156,10 +154,10 @@ impl App {
         }
     }
 
-    /// Forgets everything cookie-related about tab `id`'s host (it closed, or a new host replaces it): known keys,
-    /// pull bookkeeping and any held answer, which is cancelled, not run against whatever host comes next.
+    /// Forgets everything cookie-related about tab `id`'s host (it closed, or a new host replaces it): its `jar_tabs`
+    /// entry, pull bookkeeping and any held answer, which is cancelled, not run against whatever host comes next.
     pub(crate) fn clear_cookie_state(&mut self, id: &str) {
-        self.jar_known.remove(id);
+        self.jar_tabs.remove(id);
         self.jar_pulls.remove(id);
         self.jar_silent.remove(id);
         if let Some((_, held)) = self.cookie_holds.remove(id) {
@@ -266,7 +264,7 @@ impl App {
         match result {
             Ok(mut tab) => {
                 self.clear_cookie_state(&id);
-                self.jar_known.insert(id.clone(), seeded);
+                self.jar_tabs.insert(id.clone(), seeded);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,

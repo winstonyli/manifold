@@ -1,7 +1,7 @@
 //! The cookie jar manifold owns. Engines are seeded from it at tab start and pulled back into it, so a login
 //! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -218,29 +218,54 @@ impl Jar {
         std::fs::rename(&tmp, Self::path(dir))
     }
 
-    pub fn keys(&self) -> HashSet<Key> {
-        self.cookies.iter().map(Cookie::key).collect()
-    }
-
-    /// Folds an engine's dump into the jar (rule in the plan's Task 1). Returns whether the jar changed.
-    pub fn merge(&mut self, pulled: Vec<Cookie>, known: &HashSet<Key>) -> bool {
+    /// Folds tab `tab`'s cookie dump into the jar and updates what the tab is believed to hold. Returns whether the
+    /// jar changed. Only what the tab itself changed is applied, so the last change wins, not the last pull:
+    /// - a pulled cookie equal to the tab's `baseline` entry is unchanged there and is ignored (an idle tab's stale
+    ///   copy cannot overwrite a newer value another tab wrote);
+    /// - a pulled cookie that differs or is new is a change: it replaces the jar's (an already-expired one deletes it);
+    /// - a key the tab reported before (`reported`) and is now missing is a deletion. A seeded key the tab never
+    ///   reported is not: the seed may have failed, which is not a logout.
+    pub fn merge(&mut self, pulled: Vec<Cookie>, tab: &mut TabCookies) -> bool {
         let before = self.cookies.clone();
         let t = now();
         let pulled_keys: HashSet<Key> = pulled.iter().map(Cookie::key).collect();
-        // A pulled cookie that is already expired is the engine deleting it: it removes the stored one too.
-        let expired_keys: HashSet<Key> = pulled.iter().filter(|p| p.expired(t)).map(Cookie::key).collect();
-        self.cookies.retain(|c| {
-            let k = c.key();
-            !expired_keys.contains(&k) && (pulled_keys.contains(&k) || !known.contains(&k))
-        });
-        for p in pulled.into_iter().filter(|p| !p.expired(t)) {
-            match self.cookies.iter_mut().find(|c| c.key() == p.key()) {
-                Some(slot) => *slot = p,
-                None => self.cookies.push(p),
+        for gone in tab.reported.difference(&pulled_keys) {
+            self.cookies.retain(|c| c.key() != *gone);
+        }
+        for p in &pulled {
+            let k = p.key();
+            if tab.baseline.get(&k) == Some(p) {
+                continue;
+            }
+            match self.cookies.iter_mut().position(|c| c.key() == k) {
+                _ if p.expired(t) => self.cookies.retain(|c| c.key() != k),
+                Some(i) => self.cookies[i] = p.clone(),
+                None => self.cookies.push(p.clone()),
             }
         }
         self.cookies.retain(|c| !c.expired(t));
+        // Seeded keys the tab has not reported yet stay in the baseline; reported keys now missing leave it.
+        let reported = std::mem::replace(&mut tab.reported, pulled_keys);
+        tab.baseline.retain(|k, _| !reported.contains(k));
+        tab.baseline.extend(pulled.into_iter().map(|p| (p.key(), p)));
         self.cookies != before
+    }
+}
+
+/// What manifold believes one tab's engine holds, for `Jar::merge`. Per tab, reset when its host closes or is
+/// replaced.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TabCookies {
+    /// The tab's cookies as last seen: its seed, updated by each of its pulls.
+    pub baseline: HashMap<Key, Cookie>,
+    /// Keys the tab itself returned in its last pull. Starts empty: a seed is not proof the engine holds a cookie.
+    pub reported: HashSet<Key>,
+}
+
+impl TabCookies {
+    /// A tab just seeded with `cookies`, before it has reported anything.
+    pub fn seeded(cookies: &[Cookie]) -> TabCookies {
+        TabCookies { baseline: cookies.iter().map(|c| (c.key(), c.clone())).collect(), reported: HashSet::new() }
     }
 }
 
@@ -262,18 +287,23 @@ mod tests {
         }
     }
 
+    fn key(name: &str) -> Key {
+        (name.into(), "example.com".into(), "/".into())
+    }
+
     #[test]
     fn a_pulled_cookie_replaces_the_stored_one_with_the_same_key() {
         let mut jar = Jar { locked: false, cookies: vec![c("sid", "old")] };
-        assert!(jar.merge(vec![c("sid", "new")], &jar.keys()));
+        let mut tab = TabCookies::seeded(&jar.cookies);
+        assert!(jar.merge(vec![c("sid", "new")], &mut tab));
         assert_eq!(jar.cookies, vec![c("sid", "new")]);
     }
 
     #[test]
-    fn a_cookie_missing_from_the_pull_is_deleted_only_if_it_was_known() {
+    fn a_cookie_missing_from_the_pull_is_deleted_only_if_the_tab_reported_it() {
         let mut jar = Jar { locked: false, cookies: vec![c("sid", "1"), c("fresh", "2")] };
-        let known: HashSet<Key> = [("sid".into(), "example.com".into(), "/".into())].into();
-        assert!(jar.merge(vec![], &known));
+        let mut tab = TabCookies { reported: [key("sid")].into(), ..TabCookies::default() };
+        assert!(jar.merge(vec![], &mut tab));
         assert_eq!(jar.cookies, vec![c("fresh", "2")], "sid was a logout; fresh was never seen by the engine");
     }
 
@@ -282,8 +312,49 @@ mod tests {
         let mut jar = Jar { locked: false, cookies: vec![c("sid", "1"), c("other", "2")] };
         let mut gone = c("sid", "1");
         gone.expires = Some(1.0);
-        assert!(jar.merge(vec![gone], &HashSet::new()), "not even known: the engine's own expiry still wins");
+        assert!(jar.merge(vec![gone], &mut TabCookies::default()), "the engine's own expiry wins");
         assert_eq!(jar.cookies, vec![c("other", "2")]);
+    }
+
+    #[test]
+    fn a_stale_idle_tab_does_not_overwrite_a_rotated_token() {
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "v1")] };
+        let mut active = TabCookies::seeded(&jar.cookies);
+        let mut idle = TabCookies::seeded(&jar.cookies);
+        assert!(jar.merge(vec![c("sid", "v2")], &mut active), "the site rotated sid in the active tab");
+        assert!(!jar.merge(vec![c("sid", "v1")], &mut idle), "the idle tab's v1 is what it was seeded with");
+        assert_eq!(jar.cookies, vec![c("sid", "v2")]);
+        assert!(!jar.merge(vec![c("sid", "v1")], &mut idle), "nor on its later pulls");
+        assert_eq!(jar.cookies, vec![c("sid", "v2")]);
+    }
+
+    #[test]
+    fn a_seeded_cookie_the_tab_never_reported_survives_a_pull_without_it() {
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1"), c("pref", "2")] };
+        let mut tab = TabCookies::seeded(&jar.cookies);
+        // The engine rejected sid's seed: its first pull has only pref.
+        assert!(!jar.merge(vec![c("pref", "2")], &mut tab));
+        assert_eq!(jar.cookies, vec![c("sid", "1"), c("pref", "2")]);
+        assert!(!jar.merge(vec![c("pref", "2")], &mut tab), "still not a logout on the next pull");
+        assert_eq!(jar.cookies.len(), 2);
+    }
+
+    #[test]
+    fn a_cookie_one_pull_confirmed_and_the_next_lacks_is_deleted() {
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
+        let mut tab = TabCookies::seeded(&jar.cookies);
+        assert!(!jar.merge(vec![c("sid", "1")], &mut tab));
+        assert!(jar.merge(vec![], &mut tab), "the tab held sid and now does not: a logout");
+        assert!(jar.cookies.is_empty());
+        assert!(tab.baseline.is_empty() && tab.reported.is_empty());
+    }
+
+    #[test]
+    fn an_empty_pull_from_a_tab_that_never_reported_deletes_nothing() {
+        let mut jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
+        let mut tab = TabCookies::seeded(&jar.cookies);
+        assert!(!jar.merge(vec![], &mut tab));
+        assert_eq!(jar.cookies, vec![c("sid", "1")]);
     }
 
     #[test]
@@ -296,7 +367,8 @@ mod tests {
     #[test]
     fn merging_the_same_cookies_changes_nothing() {
         let mut jar = Jar { locked: false, cookies: vec![c("sid", "1")] };
-        assert!(!jar.merge(vec![c("sid", "1")], &jar.keys()));
+        let mut tab = TabCookies::seeded(&jar.cookies);
+        assert!(!jar.merge(vec![c("sid", "1")], &mut tab));
     }
 
     #[test]
@@ -304,7 +376,7 @@ mod tests {
         let mut gone = c("old", "x");
         gone.expires = Some(1.0);
         let mut jar = Jar::default();
-        assert!(!jar.merge(vec![gone], &HashSet::new()), "nothing was added, so nothing changed");
+        assert!(!jar.merge(vec![gone], &mut TabCookies::default()), "nothing was added, so nothing changed");
         assert!(jar.cookies.is_empty());
     }
 

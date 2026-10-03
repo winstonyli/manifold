@@ -664,8 +664,8 @@ struct TabSpawnOutcome {
     /// `App::session_generation` when the spawn started -- see that field.
     generation: u64,
     result: Result<EngineTab, process_manager::SpawnError>,
-    /// The keys of the jar the host was seeded with (empty for hosts that are not).
-    seeded: HashSet<jar::Key>,
+    /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
+    seeded: jar::TabCookies,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
@@ -869,9 +869,9 @@ struct App {
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
     /// The cookie jar shared by every WebView2 and CEF tab (see `jar`).
     jar: jar::Jar,
-    /// Per tab, the cookies it was seeded with plus those it reported in its last pull. A cookie missing from a tab's
-    /// pull is a logout only if that tab knew it, so a tab that never saw a login cannot delete it.
-    jar_known: HashMap<String, HashSet<jar::Key>>,
+    /// Per tab, what its engine is believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches
+    /// the jar, and only a cookie the tab itself reported can be deleted by its absence.
+    jar_tabs: HashMap<String, jar::TabCookies>,
     /// A copy of `jar` for spawn threads: the seed is read when the host connects, not when the spawn starts.
     jar_snapshot: Arc<std::sync::Mutex<jar::Jar>>,
     /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
@@ -1377,7 +1377,7 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             jar,
-            jar_known: HashMap::new(),
+            jar_tabs: HashMap::new(),
             jar_snapshot,
             cookie_holds: HashMap::new(),
             jar_last_pull: None,
@@ -2674,7 +2674,7 @@ mod tests {
     fn a_tab_that_never_saw_a_cookie_cannot_delete_it() {
         let mut app = App::default();
         // Tab b was opened before a logged in, so it was seeded with nothing.
-        app.jar_known.insert("b".into(), HashSet::new());
+        app.jar_tabs.insert("b".into(), jar::TabCookies::default());
         assert!(app.apply_pulled_cookies("a", SID));
         assert!(!app.apply_pulled_cookies("b", "[]"), "b never saw sid: its pull must not delete it");
         assert_eq!(app.jar.cookies.len(), 1);
@@ -2683,11 +2683,15 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_seeded_with_a_cookie_can_delete_it() {
+    fn a_seeded_tab_deletes_a_cookie_only_once_it_has_reported_it() {
         let mut app = App::default();
         app.apply_pulled_cookies("a", SID);
-        app.jar_known.insert("b".into(), [sid_key()].into());
-        assert!(app.apply_pulled_cookies("b", "[]"));
+        app.jar_tabs.insert("b".into(), jar::TabCookies::seeded(&app.jar.cookies));
+        assert!(!app.apply_pulled_cookies("b", "[]"), "the seed may have failed: an empty first pull is no logout");
+        assert_eq!(app.jar.cookies.len(), 1);
+        assert!(!app.apply_pulled_cookies("b", SID), "b now holds sid, unchanged from its seed");
+        assert!(app.jar_tabs["b"].reported.contains(&sid_key()));
+        assert!(app.apply_pulled_cookies("b", "[]"), "b held sid and lost it: a logout");
         assert!(app.jar.cookies.is_empty());
     }
 
@@ -2748,7 +2752,7 @@ mod tests {
         use crate::session_sync::tests::{add, sleeping_tab};
         let mut app = App::default();
         let tab = add(&mut app, sleeping_tab("https://x.test/", "A"));
-        app.jar_known.insert(tab.clone(), HashSet::new());
+        app.jar_tabs.insert(tab.clone(), jar::TabCookies::default());
         app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
         app.jar_silent.insert(tab.clone(), 2);
         app.cookie_holds.insert(
@@ -2757,7 +2761,7 @@ mod tests {
         );
         app.remove_tab(&tab);
         assert!(
-            !app.jar_known.contains_key(&tab)
+            !app.jar_tabs.contains_key(&tab)
                 && !app.jar_pulls.contains_key(&tab)
                 && !app.jar_silent.contains_key(&tab)
                 && !app.cookie_holds.contains_key(&tab)
