@@ -330,9 +330,16 @@ fn main() {
                     if in_private {
                         let slot = pending_cookies.clone();
                         let handler =
-                            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |_error, result| {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result.to_string()) {
-                                    *slot.borrow_mut() = Some(jar_cdp::jar_from_cdp(&parsed));
+                            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+                                // A failed or unreadable read sends nothing: an answer of `[]` would read as a
+                                // logout of every cookie this tab held. Manifold's pull just times out.
+                                let json = error
+                                    .ok()
+                                    .and_then(|_| serde_json::from_str::<serde_json::Value>(&result.to_string()).ok())
+                                    .and_then(|parsed| jar_cdp::jar_from_cdp(&parsed));
+                                match json {
+                                    Some(json) => *slot.borrow_mut() = Some(json),
+                                    None => eprintln!("jar: Network.getAllCookies failed; not answering"),
                                 }
                                 Ok(())
                             }));
@@ -573,8 +580,26 @@ fn seed_cookies(webview: &ICoreWebView2, in_private: bool, jar_json: &str) {
         eprintln!("jar: not seeding the shared profile");
         return;
     }
-    let params = jar_cdp::cdp_cookies_from_jar(jar_json).to_string();
+    let cookies = jar_cdp::cdp_cookies_from_jar(jar_json);
+    if cookies.is_empty() {
+        return;
+    }
+    if set_cookies(webview, &cookies) {
+        eprintln!("jar: seeded {} cookies", cookies.len());
+        return;
+    }
+    // One cookie CDP rejects may fail the whole batch: set them one at a time so the rest still go in.
+    let ok = cookies.iter().filter(|c| set_cookies(webview, std::slice::from_ref(c))).count();
+    eprintln!("jar: batch seed failed; seeded {ok} of {} one at a time", cookies.len());
+}
+
+/// `Network.setCookies` with `cookies`, awaited. Whether it succeeded. Logs nothing (the params hold cookie values;
+/// the caller logs counts).
+fn set_cookies(webview: &ICoreWebView2, cookies: &[serde_json::Value]) -> bool {
+    let params = jar_cdp::set_cookies_params(cookies);
     let webview = webview.clone();
+    let ok = Rc::new(std::cell::Cell::new(false));
+    let done = ok.clone();
     let res = CallDevToolsProtocolMethodCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
             webview
@@ -585,16 +610,12 @@ fn seed_cookies(webview: &ICoreWebView2, in_private: bool, jar_json: &str) {
                 )
                 .map_err(webview2_com::Error::WindowsError)
         }),
-        Box::new(|error_code, _result| {
-            if error_code.is_err() {
-                eprintln!("jar: Network.setCookies failed: {error_code:?}");
-            }
+        Box::new(move |error_code, _result| {
+            done.set(error_code.is_ok());
             Ok(())
         }),
     );
-    if res.is_err() {
-        eprintln!("jar: seeding did not complete");
-    }
+    res.is_ok() && ok.get()
 }
 
 /// Returns `(comp_controller, controller, webview, in_private)` -- `comp_controller`
