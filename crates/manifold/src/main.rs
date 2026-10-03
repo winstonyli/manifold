@@ -89,6 +89,7 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode as WinitKeyCode, ModifiersState, PhysicalKey};
+#[cfg(windows)]
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Icon, Window, WindowId};
 
@@ -1946,6 +1947,10 @@ impl App {
     /// engine-host. Used by `node_file_path`.
     fn windows_path_for_download(&self, id: &str) -> Option<String> {
         let download = self.nodes.get(id)?.as_download()?;
+        // Off Windows a download's path is already native (WebKit is not run through WSL there).
+        if cfg!(not(windows)) {
+            return Some(download.path.clone());
+        }
         Some(if let Some(posix) = download.path.strip_prefix('/') {
             format!("\\\\wsl.localhost\\Ubuntu\\{}", posix.replace('/', "\\"))
         } else {
@@ -1955,8 +1960,15 @@ impl App {
 
     /// Opens `path`'s containing folder with the file itself pre-selected --
     /// the mechanism behind `reveal_node`.
-    fn reveal_in_explorer(path: &str) {
+    #[cfg(windows)]
+    fn reveal_in_explorer(path: &str) -> Result<(), String> {
         let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
+        Ok(())
+    }
+    /// Not built for other platforms yet: says so instead of doing nothing.
+    #[cfg(not(windows))]
+    fn reveal_in_explorer(_path: &str) -> Result<(), String> {
+        Err("Open Containing Folder is not supported on this platform yet".to_string())
     }
 
     /// The real file behind a Download/Image/Pdf/Json node, in the form
@@ -1981,9 +1993,11 @@ impl App {
     /// the obvious thing, no custom UI" posture as the download itself, see
     /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
     /// with no file.
-    fn reveal_node(&self, id: &str) {
+    fn reveal_node(&mut self, id: &str) {
         if let Some(path) = self.node_file_path(id) {
-            Self::reveal_in_explorer(&path);
+            if let Err(e) = Self::reveal_in_explorer(&path) {
+                self.queue_toast(e);
+            }
         }
     }
 
@@ -2549,7 +2563,9 @@ fn main() {
     // the whole app runs on virtualized, bitmap-stretched coordinates:
     // `content_size_px()` (and so every engine's rendered surface) comes out
     // at the wrong real size, and the cursor positions winit reports don't
-    // line up with where the content actually is on screen.
+    // line up with where the content actually is on screen. Windows-only:
+    // winit already reports the real scale factor on X11/Wayland.
+    #[cfg(windows)]
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,

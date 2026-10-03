@@ -26,10 +26,12 @@ impl ApplicationHandler<UserEvent> for App {
             // contention with the user's own desktop use) without hitting
             // this platform limitation. `with_skip_taskbar` keeps it out of
             // the taskbar/alt-tab list since there's nothing to switch to.
-            attrs = attrs
-                .with_position(winit::dpi::PhysicalPosition::new(-32000, -32000))
-                .with_decorations(false)
-                .with_skip_taskbar(true);
+            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(-32000, -32000)).with_decorations(false);
+            // A Windows-only window attribute; elsewhere the headless window shows in the task list.
+            #[cfg(windows)]
+            {
+                attrs = attrs.with_skip_taskbar(true);
+            }
         } else {
             // Restore the window to where the user last left it -- see
             // `Settings::window_width`'s own doc comment for why this is

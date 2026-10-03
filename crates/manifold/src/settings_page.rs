@@ -302,8 +302,11 @@ impl App {
         let configured = self.settings.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
             let draft = self.cef_dir_draft.get_or_insert_with(|| configured.clone());
-            let response =
-                ui.add(egui::TextEdit::singleline(draft).desired_width(220.0).hint_text("Folder with libcef.dll"));
+            let response = ui.add(
+                egui::TextEdit::singleline(draft)
+                    .desired_width(220.0)
+                    .hint_text(format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib)),
+            );
             if response.lost_focus() {
                 // Escape gives up the edit instead of committing it.
                 commit = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {

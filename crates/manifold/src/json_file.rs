@@ -107,6 +107,11 @@ mod tests {
         save(&[1, 2], &path, "thing");
         save(&[3], &path, "thing");
         assert_eq!(load::<Vec<u32>>(&path, "thing"), Ok(vec![3]));
+        // The failed-save half needs a rename that fails: the Windows read-only attribute does that, while a
+        // Unix rename replaces a read-only file regardless of its mode (only the directory's mode counts).
+        if cfg!(not(windows)) {
+            return;
+        }
         let set_readonly = |readonly: bool| {
             let mut perms = std::fs::metadata(&path).unwrap().permissions();
             // The Windows read-only attribute makes the rename over it

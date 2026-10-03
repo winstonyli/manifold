@@ -344,14 +344,17 @@ fn hex(bytes: &[u8]) -> String {
 /// Where the runtime entry `path` goes under `into`, or None to skip it. The path is `<top>/Release/..`
 /// or `<top>/Resources/..`; both folders flatten into `into`. Errors on any component that could escape:
 /// `..`, a root or prefix, and any name containing `:` (on Windows `C:evil.dll` is a drive-relative name
-/// that `join` would let replace the whole destination, and `a:b` names an NTFS stream).
+/// that `join` would let replace the whole destination, and `a:b` names an NTFS stream) or `\`. A backslash
+/// is a separator on Windows, so no component holds one there; on Linux it is an ordinary character, so
+/// `Release/..\evil` is one odd name rather than an escape, refused anyway so an archive unpacks the same
+/// (or fails the same) on every platform. CEF's archives use neither character.
 // Task 6 calls `install`.
 #[allow(dead_code)]
 fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
     let mut names = Vec::new();
     for c in path.components() {
         match c {
-            Component::Normal(n) if n.to_string_lossy().contains(':') => {
+            Component::Normal(n) if n.to_string_lossy().contains([':', '\\']) => {
                 return Err(InstallError::Unpack(format!("unsafe path in archive: {}", path.display())));
             }
             Component::Normal(n) => names.push(n),

@@ -108,8 +108,16 @@ fn assign_to_engine_job(child: &Child) {
         let _ = AssignProcessToJobObject(job, process_handle);
     }
 }
+/// No kill-on-exit job on other platforms yet (Linux would use `PR_SET_PDEATHSIG` or a process group): an
+/// engine-host outlives a manifold that is force-killed, until its reader thread sees the socket drop and
+/// shuts it down (`ipc_protocol::transport::spawn_host_reader`). Said once on stderr rather than silently.
 #[cfg(not(target_os = "windows"))]
-fn assign_to_engine_job(_child: &Child) {}
+fn assign_to_engine_job(_child: &Child) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!("manifold: engine hosts are not tied to manifold's lifetime on this platform yet (no job object)")
+    });
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineKind {
@@ -619,6 +627,14 @@ fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<
     }
 }
 
+/// Why `kind` cannot run on this platform at all, or `None` when it can. WebView2 is a Windows-only engine,
+/// and WebKit is hosted through `wsl.exe` (a native Linux WebKit host is not built yet); elsewhere a spawn of
+/// either fails with this reason instead of a bare "file not found" or a `wsl.exe` that does not exist.
+fn unsupported_here(kind: EngineKind) -> Option<String> {
+    (cfg!(not(windows)) && matches!(kind, EngineKind::Webview2 | EngineKind::Webkit))
+        .then(|| format!("{} is not supported on this platform yet", crate::engine_info::engine_label(kind)))
+}
+
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
 /// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
 /// hand `wsl.exe` a path to the manifold-engine-webkit binary it built.
@@ -780,6 +796,9 @@ pub fn spawn_tab(
     initial_url: &str,
     custom_cef: Option<&Path>,
 ) -> Result<EngineTab, SpawnError> {
+    if let Some(reason) = unsupported_here(kind) {
+        return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
+    }
     if kind == EngineKind::Webkit {
         return Ok(spawn_webkit_tab(tab_id, initial_url)?);
     }
@@ -956,7 +975,6 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::time::Duration;
 
     #[test]
     fn bundled_engines_are_always_installed() {
@@ -1120,6 +1138,20 @@ mod tests {
     #[test]
     fn a_missing_engine_error_reads_plainly() {
         assert_eq!(SpawnError::EngineMissing(EngineKind::Cef).to_string(), "Blink (CEF) is not installed");
+    }
+
+    #[test]
+    fn windows_only_engines_are_refused_by_name_elsewhere() {
+        assert_eq!(unsupported_here(EngineKind::Servo), None);
+        assert_eq!(unsupported_here(EngineKind::Cef), None);
+        let refused_here = cfg!(not(windows));
+        for kind in [EngineKind::Webview2, EngineKind::Webkit] {
+            let reason = unsupported_here(kind);
+            assert_eq!(reason.is_some(), refused_here, "{kind:?}");
+            if let Some(reason) = reason {
+                assert!(reason.contains(crate::engine_info::engine_label(kind)), "{reason}");
+            }
+        }
     }
 
     #[test]

@@ -2016,7 +2016,8 @@ mod tests {
 
     #[test]
     fn file_header_text_prefers_the_url_over_the_path() {
-        let path = r"C:\pics\a.jpg";
+        // A path in this platform's own form (a backslash is not a separator off Windows).
+        let path = if cfg!(windows) { r"C:\pics\a.jpg" } else { "/pics/a.jpg" };
         assert_eq!(file_header_text(path, None), ("a.jpg".to_owned(), path.to_owned(), true));
         let url = "https://x.test/a.jpg";
         assert_eq!(file_header_text(path, Some(url)), ("a.jpg".to_owned(), url.to_owned(), false));
