@@ -7,6 +7,8 @@ description.workspace = true
 [dependencies]
 cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+
+[target.'cfg(windows)'.dependencies]
 # Only for the browser-process Job Object setup in main.rs (kills orphaned
 # CEF renderer/GPU subprocesses on exit) -- same crate/features
 # engine-host-webview2 already uses for the identical purpose.

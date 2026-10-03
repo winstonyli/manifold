@@ -666,6 +666,13 @@ fn unsupported_on(os: &str, kind: EngineKind) -> Option<String> {
     platform_unavailable_reason(os, kind).map(|reason| crate::engine_info::PickOutcome::unavailable_toast(kind, reason))
 }
 
+/// Why a WebKit spawn cannot start on `os` although WebKit counts as available there, or `None`. The only
+/// WebKit host is reached through `wsl.exe` (`spawn_webkit_tab`); on Linux, where it would run natively,
+/// that launch is not wired yet, so the spawn says so instead of failing on a missing `wsl.exe`.
+fn webkit_host_missing(os: &str) -> Option<&'static str> {
+    (os == "linux").then_some("WebKit can't start yet: a native Linux WebKit host is not wired up")
+}
+
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
 /// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
 /// hand `wsl.exe` a path to the manifold-engine-webkit binary it built.
@@ -831,6 +838,9 @@ pub fn spawn_tab(
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
     if kind == EngineKind::Webkit {
+        if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
+            return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
+        }
         return Ok(spawn_webkit_tab(tab_id, initial_url)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
@@ -1050,6 +1060,14 @@ mod tests {
         let refusal = unsupported_on("macos", EngineKind::Webview2).unwrap();
         assert!(refusal.contains("WebView2") && refusal.contains("needs Windows"), "{refusal}");
         assert!(unsupported_on("macos", EngineKind::Webkit).unwrap().contains("needs Windows or Linux"));
+    }
+
+    #[test]
+    fn a_linux_webkit_spawn_names_the_missing_native_host() {
+        // Available on Linux, but the only host is reached through wsl.exe: refused by name, not by a
+        // raw "No such file or directory" from a wsl.exe that isn't there.
+        assert!(webkit_host_missing("linux").unwrap().contains("native Linux WebKit host"));
+        assert_eq!(webkit_host_missing("windows"), None);
     }
 
     #[test]

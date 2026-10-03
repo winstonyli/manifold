@@ -1730,4 +1730,23 @@ Connection: close
         let pinned = cef_pin().version;
         assert_eq!(pinned.split('+').next(), Some(build), "the pin is not the CEF build the crate wraps: {pinned}");
     }
+
+    /// Verifies and unpacks a real downloaded archive for this platform's pin, timing both:
+    /// `MANIFOLD_CEF_ARCHIVE=<archive> MANIFOLD_CEF_UNPACK_TO=<new dir> cargo test -p manifold
+    /// unpack_a_real_archive -- --ignored --nocapture`. Ignored: it needs the 172 MB (Windows) or 321 MB
+    /// (Linux) download, which no test makes.
+    #[test]
+    #[ignore]
+    fn unpack_a_real_archive() {
+        let archive = PathBuf::from(std::env::var_os("MANIFOLD_CEF_ARCHIVE").expect("MANIFOLD_CEF_ARCHIVE"));
+        let into = PathBuf::from(std::env::var_os("MANIFOLD_CEF_UNPACK_TO").expect("MANIFOLD_CEF_UNPACK_TO"));
+        let pin = cef_pin();
+        let start = std::time::Instant::now();
+        verify(&archive, pin).unwrap();
+        println!("verify: {:.1} s", start.elapsed().as_secs_f64());
+        let start = std::time::Instant::now();
+        unpack(&archive, &into, pin, &AtomicBool::new(false)).unwrap();
+        println!("unpack: {:.1} s", start.elapsed().as_secs_f64());
+        assert_eq!(runtime_state(&into, pin), RuntimeOnDisk::Ready);
+    }
 }
