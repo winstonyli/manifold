@@ -770,10 +770,75 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // does not reliably propagate to a grandchild process spawned from
     // inside it, so an inherited engine-host produces no visible output at
     // all even though it runs fine.
-    let log_path = std::env::temp_dir().join(format!("manifold-{tab_id}.log"));
-    let stdout_file = std::fs::File::create(&log_path)?;
+    let stdout_file = std::fs::File::create(per_tab_log_path(tab_id))?;
     let stderr_file = stdout_file.try_clone()?;
     Ok((stdout_file, stderr_file))
+}
+
+fn per_tab_log_path(tab_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("manifold-{tab_id}.log"))
+}
+
+/// Waits for a just-spawned same-machine host to connect, giving up early if
+/// it exits. On failure the child is killed and reaped, and the error says
+/// which way it failed: "exited with code N before connecting: <the last
+/// lines of its log>", or "still running but did not connect within ...".
+/// The log is the per-tab file the child writes its stdout and stderr to.
+fn connect_host(
+    listeners: &transport::LocalListenerPair,
+    child: &mut Child,
+    log_path: &Path,
+    timeout: Duration,
+) -> std::io::Result<(LocalTransport, LocalTransport)> {
+    let mut exited = None;
+    let result = transport::accept_local_pair_while(listeners, timeout, &mut || match child.try_wait() {
+        Ok(Some(status)) => {
+            exited = Some(status);
+            false
+        }
+        _ => true,
+    });
+    let err = match result {
+        Ok(pair) => return Ok(pair),
+        Err(err) => err,
+    };
+    // It may have exited during the final poll interval, after the last check.
+    let exited = exited.or_else(|| child.try_wait().ok().flatten());
+    let _ = child.kill();
+    let _ = child.wait();
+    let message = match exited {
+        Some(status) => {
+            let how = match status.code() {
+                Some(code) if code < 0 => format!("with code {:#x}", code as u32),
+                Some(code) => format!("with code {code}"),
+                None => format!("({status})"),
+            };
+            let tail = log_tail(log_path, 5);
+            let tail = if tail.is_empty() { String::from(" (its log is empty)") } else { format!(": {tail}") };
+            format!("engine-host exited {how} before connecting{tail}")
+        }
+        None if err.kind() == std::io::ErrorKind::TimedOut => {
+            format!("engine-host is still running but did not connect within {timeout:?} (log: {})", log_path.display())
+        }
+        None => return Err(err),
+    };
+    Err(std::io::Error::new(err.kind(), message))
+}
+
+/// The last `lines` non-empty lines of a log, joined with " | ", read from at
+/// most its last 16 KiB. Empty when there is no such file.
+fn log_tail(path: &Path, lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(path) {
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = file.seek(SeekFrom::Start(len.saturating_sub(16 * 1024)));
+        let _ = file.read_to_end(&mut bytes);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(lines).collect();
+    tail.reverse();
+    tail.join(" | ")
 }
 
 /// Synthesizes `EngineToHost::Crashed` when the connection to an
@@ -900,18 +965,18 @@ pub fn spawn_tab(
     // would leak the process, exactly the kind of leftover
     // `listen_local_pair_with_retry`'s own error message above warns
     // about. Same cleanup `spawn_webkit_tab`'s own accept-timeout path
-    // already does.
-    let (to_engine, from_engine) = match transport::accept_local_pair(&listeners, LOCAL_CONNECT_TIMEOUT) {
-        Ok(pair) => pair,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Some(dir) = cache_dir {
-                remove_cache_dir(dir);
+    // already does. `connect_host` does the kill, stops waiting as soon as
+    // the child exits, and names its exit code and last log lines.
+    let (to_engine, from_engine) =
+        match connect_host(&listeners, &mut child, &per_tab_log_path(tab_id), LOCAL_CONNECT_TIMEOUT) {
+            Ok(pair) => pair,
+            Err(e) => {
+                if let Some(dir) = cache_dir {
+                    remove_cache_dir(dir);
+                }
+                return Err(e.into());
             }
-            return Err(e.into());
-        }
-    };
+        };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
     Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir })
@@ -1016,6 +1081,78 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A shell command as a child whose stdout and stderr go to `log`, the
+    /// way `spawn_tab` starts a host.
+    fn fake_host(script_windows: &str, script_unix: &str, log: &Path) -> Child {
+        let out = std::fs::File::create(log).unwrap();
+        let err = out.try_clone().unwrap();
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut c = Command::new("cmd");
+            c.raw_arg(format!("/c {script_windows}"));
+            let _ = script_unix;
+            c
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut c = Command::new("sh");
+            c.args(["-c", script_unix]);
+            let _ = script_windows;
+            c
+        };
+        command.stdout(out).stderr(err).spawn().unwrap()
+    }
+
+    #[test]
+    fn a_host_that_exits_on_start_is_reported_with_its_code_and_log() {
+        let dir = crate::store::testutil::temp_dir("host_exits_on_start");
+        let log = dir.join("host.log");
+        let listeners = transport::listen_local_pair(&format!("test-exit-{}", std::process::id())).unwrap();
+        let mut child = fake_host(
+            "echo starting & echo libfake.so: cannot open shared object file 1>&2 & exit /b 3",
+            "echo starting; echo 'libfake.so: cannot open shared object file' >&2; exit 3",
+            &log,
+        );
+        let started = std::time::Instant::now();
+        let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
+        let message = err.to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "gave up when the child exited, took {:?}",
+            started.elapsed()
+        );
+        assert!(message.starts_with("engine-host exited with code 3 before connecting: "), "{message}");
+        assert!(message.contains("starting"), "{message}");
+        assert!(message.contains("libfake.so: cannot open shared object file"), "{message}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_host_that_never_connects_is_reported_as_still_running_and_killed() {
+        let dir = crate::store::testutil::temp_dir("host_never_connects");
+        let log = dir.join("host.log");
+        let listeners = transport::listen_local_pair(&format!("test-silent-{}", std::process::id())).unwrap();
+        let mut child = fake_host("ping -n 30 127.0.0.1", "sleep 30", &log);
+        let err =
+            connect_host(&listeners, &mut child, &log, Duration::from_millis(300)).err().expect("no host connected");
+        let message = err.to_string();
+        assert!(message.starts_with("engine-host is still running but did not connect within 300ms"), "{message}");
+        assert!(matches!(child.try_wait(), Ok(Some(_))), "the child was killed and reaped");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn log_tail_keeps_the_last_non_empty_lines() {
+        let dir = crate::store::testutil::temp_dir("log_tail");
+        let log = dir.join("a.log");
+        std::fs::write(&log, "one\n\ntwo\r\nthree\n  \nfour\n").unwrap();
+        assert_eq!(log_tail(&log, 2), "three | four");
+        assert_eq!(log_tail(&log, 9), "one | two | three | four");
+        assert_eq!(log_tail(&dir.join("missing.log"), 3), "");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn bundled_engines_are_always_installed_where_the_os_can_run_them() {

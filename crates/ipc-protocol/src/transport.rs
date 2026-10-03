@@ -85,7 +85,7 @@ pub fn listen_local_pair(socket_id: &str) -> io::Result<LocalListenerPair> {
 /// would otherwise hang manifold's main/event-loop thread just the same,
 /// just without the "it can take literal hours" cold-boot severity that
 /// made the remote case the first one actually hit in practice).
-fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream> {
+fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() -> bool) -> io::Result<LocalStream> {
     listener.set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -97,6 +97,9 @@ fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream>
                         io::ErrorKind::TimedOut,
                         format!("timed out after {timeout:?} waiting for engine-host to connect"),
                     ));
+                }
+                if !waiting() {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped waiting for engine-host"));
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -114,8 +117,20 @@ fn accept_one(listener: &Listener, timeout: Duration) -> io::Result<LocalStream>
 /// each other), so this favors giving each one its own full budget over
 /// the bookkeeping of a single shared deadline.
 pub fn accept_local_pair(pair: &LocalListenerPair, timeout: Duration) -> io::Result<(LocalTransport, LocalTransport)> {
-    let sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout)?);
-    let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout)?);
+    accept_local_pair_while(pair, timeout, &mut || true)
+}
+
+/// `accept_local_pair` that also gives up, with `ErrorKind::Interrupted`, as
+/// soon as `waiting` returns false (checked between accept polls): manifold
+/// passes "the child is still running", so a host that dies on start is
+/// reported at once rather than after the whole timeout.
+pub fn accept_local_pair_while(
+    pair: &LocalListenerPair,
+    timeout: Duration,
+    waiting: &mut dyn FnMut() -> bool,
+) -> io::Result<(LocalTransport, LocalTransport)> {
+    let sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout, waiting)?);
+    let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout, waiting)?);
     Ok((sender, receiver))
 }
 
