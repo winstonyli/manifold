@@ -65,7 +65,7 @@ explicit user action.
 
 - The default jar starts empty. The old WebView2 folder is not imported (decided 2026-10-02).
 
-## WebView2 isolation (read, not run)
+## WebView2 isolation (spiked 2026-10-02)
 
 `create_environment` passes a null user-data folder (the shared one next to the exe) and creates tabs with
 `CreateCoreWebView2CompositionController`. The vendored bindings (`webview2-com-sys` 0.39) offer two ways out:
@@ -78,9 +78,14 @@ explicit user action.
   puts a second, WebView2-managed store of the same cookies on disk, and one folder cannot be shared by differently
   configured environments.
 
-To verify before building: the minimum WebView2 runtime that supports the controller options (the existing code already
-degrades when Environment15 is missing, `main.rs:224`; do the same, and fall back to the per-jar folder), and that
-InPrivate controllers accept `Network.setCookies` before the first navigation.
+Spiked on `spike/cookie-bridge` (7b6666b and its successor; `scripts/spike/inprivate-seed.sh`): an InPrivate
+controller created with `CreateCoreWebView2CompositionControllerWithOptions` held 2 cookies in total (the seeded ones)
+where the shared-folder controller held 20 real ones. `Network.setCookies`, awaited before the first `Navigate`, made the
+very first request carry `sid` (HttpOnly, SameSite=Lax) and `pref` (Strict, session), and `Network.getAllCookies` read them
+back with attributes. Still unverified: the minimum WebView2 runtime that has the controller options (the existing code
+already degrades when Environment15 is missing, `main.rs:224`; do the same, and fall back to the per-jar folder).
+Side effect to know: the spike also showed the non-InPrivate path writing to the real shared folder, which is why the
+spike deleted its two test cookies afterwards.
 
 ## Out of scope for v1
 
