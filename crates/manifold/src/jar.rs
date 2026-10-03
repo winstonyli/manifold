@@ -161,6 +161,49 @@ fn unprotect(blob: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(blob.to_vec())
 }
 
+/// Whether process `pid` is running. When unsure, yes: a live instance's save in progress must not be deleted.
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // SAFETY: plain Win32 calls on a handle this function opens and closes.
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if h.is_null() {
+            // No such process is ERROR_INVALID_PARAMETER; a process we may not open still exists.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        CloseHandle(h);
+        running
+    }
+}
+
+#[cfg(not(windows))]
+fn process_alive(pid: u32) -> bool {
+    let proc = Path::new("/proc");
+    !proc.is_dir() || proc.join(pid.to_string()).exists()
+}
+
+/// Deletes the `default.json.<pid>.tmp` files in `dir` whose process is gone: a save interrupted by a crash, each a
+/// full copy of the jar. A live process's file is its save in progress and is left alone.
+fn remove_dead_tmps(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("default.json.")?.strip_suffix(".tmp")?.parse().ok())
+        else {
+            continue;
+        };
+        if !process_alive(pid) {
+            match std::fs::remove_file(e.path()) {
+                Ok(()) => eprintln!("jar: deleted a temp file left by a crashed save (pid {pid})"),
+                Err(e) => eprintln!("jar: could not delete a crashed save's temp file (pid {pid}): {e}"),
+            }
+        }
+    }
+}
+
 /// How many `default.json.unreadable-*` files are kept. Each holds credentials, so older ones are deleted.
 const KEEP_ASIDES: usize = 5;
 
@@ -236,9 +279,10 @@ impl Jar {
     /// or machine, tampered, truncated, not JSON) is renamed to `default.json.unreadable-<unix seconds>` (never over
     /// an earlier one; only the `KEEP_ASIDES` newest are kept). If it cannot be read at all, or cannot be moved
     /// aside, the jar is `locked`: usable in memory, but `save` writes nothing, so the file is never overwritten.
-    /// Only reasons are logged, never contents. A `default.json.<pid>.tmp` is left alone: it may be another running
-    /// instance's save in progress.
+    /// Only reasons are logged, never contents. A `default.json.<pid>.tmp` is deleted only when process `pid` is gone:
+    /// a live one may be another running instance's save in progress.
     pub fn load(dir: &Path) -> Jar {
+        remove_dead_tmps(dir);
         let path = Self::path(dir);
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
@@ -562,15 +606,30 @@ mod tests {
     }
 
     #[test]
-    fn load_leaves_another_instances_tmp_alone_and_save_leaves_no_tmp() {
+    fn load_leaves_a_live_instances_tmp_alone_and_save_leaves_no_tmp() {
         let dir = temp_dir("jar-tmp");
-        let theirs = dir.join("default.json.4294967295.tmp");
-        std::fs::write(&theirs, "theirs").unwrap();
+        // This test's own process stands in for another running instance mid-save.
+        let live = dir.join(format!("default.json.{}.tmp", std::process::id()));
+        std::fs::write(&live, "theirs").unwrap();
         Jar::load(&dir);
-        assert!(theirs.exists(), "another instance may be mid-save");
+        assert_eq!(std::fs::read(&live).unwrap(), b"theirs", "a live instance may be mid-save");
+        std::fs::remove_file(&live).unwrap();
         Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir).unwrap();
-        assert!(!dir.join(format!("default.json.{}.tmp", std::process::id())).exists());
-        assert_eq!(std::fs::read(&theirs).unwrap(), b"theirs");
+        assert!(!live.exists());
+    }
+
+    #[test]
+    fn load_deletes_a_tmp_whose_process_is_gone() {
+        let dir = temp_dir("jar-dead-tmp");
+        // A pid no process has (Windows pids are multiples of 4; Linux caps them far below this).
+        let dead = dir.join("default.json.4294967295.tmp");
+        let other = dir.join("default.json.notapid.tmp");
+        std::fs::write(&dead, "crashed save").unwrap();
+        std::fs::write(&other, "x").unwrap();
+        Jar::load(&dir);
+        assert!(!dead.exists(), "a crashed save's copy of the jar");
+        assert!(other.exists(), "only default.json.<pid>.tmp files are touched");
+        assert!(process_alive(std::process::id()) && !process_alive(4_294_967_295));
     }
 
     #[test]
