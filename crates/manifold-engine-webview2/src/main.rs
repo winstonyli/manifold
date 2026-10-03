@@ -587,6 +587,7 @@ fn seed_cookies(webview: &ICoreWebView2, in_private: bool, jar_json: &str) {
     }
     let cookies = jar_cdp::cdp_cookies_from_jar(jar_json);
     if cookies.is_empty() {
+        eprintln!("jar: seeded 0 cookies");
         return;
     }
     if set_cookies(webview, &cookies) {
