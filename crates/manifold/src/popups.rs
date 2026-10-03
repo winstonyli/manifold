@@ -383,8 +383,9 @@ impl App {
         }
     }
 
-    /// The confirm before a Settings jar action that signs tabs out or loses a jar: "Clear cookies in Work?" or
-    /// "Delete jar Work?" (`jar_confirm_text`). A jar deleted on another device meanwhile just drops the question.
+    /// The confirm before a Settings jar action that signs tabs out or loses a jar or its saved logins: "Clear cookies
+    /// in Work?", "Delete jar Work?" or "Make Work ephemeral?" (`jar_confirm_text`). A jar deleted (or made
+    /// ephemeral) on another device meanwhile just drops the question.
     pub(crate) fn build_jar_confirm_popup(&mut self, ui: &mut egui::Ui) {
         let Some(confirm) = self.pending_jar_confirm else { return };
         let Some((title, detail, button)) = self.jar_confirm_text(confirm) else {
@@ -398,6 +399,10 @@ impl App {
                     crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
                     crate::jar_defs::JarConfirm::Delete(id) => {
                         self.delete_jar(id);
+                        self.save_session();
+                    }
+                    crate::jar_defs::JarConfirm::Ephemeral(id) => {
+                        self.set_jar_ephemeral(id, true);
                         self.save_session();
                     }
                 }

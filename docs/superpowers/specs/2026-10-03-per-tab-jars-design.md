@@ -81,7 +81,14 @@ while the tab runs, its pulls are dropped and the tab goes through the switch fl
 ## Ephemeral jars
 
 A jar node with `ephemeral` true has no file. Its `Jar` lives in the in-memory map, is never loaded or saved, and is dropped
-when manifold quits (per session). Switching into one is the ordinary flow. Clearing the cookies of any jar empties it and
+when manifold quits (per session). Switching into one is the ordinary flow.
+
+Toggling the flag, whether here or on another device (final review I1): the jar is first loaded from its file, while it
+still counts as saved, so nothing on disk is dropped unread. Turning it on then deletes the file (with its unreadable
+copies and crashed saves' temp files), and its cookies stay in memory until quit; a locked jar's files (an unreadable file
+that could not be moved aside) are never touched. Turning it off saves the loaded jar (a locked one writes nothing).
+Turning it on from Settings for a jar with a saved file asks first ("Make Work ephemeral?": the saved sign-ins are deleted
+from disk now; tabs keep them until Manifold quits). Clearing the cookies of any jar empties it and
 puts the live tabs using it through the switch flow (their engines still hold the old cookies); this signs the user out, so it
 asks for confirmation.
 

@@ -37,6 +37,8 @@ pub(crate) struct JarChip {
 pub(crate) enum JarConfirm {
     Clear(JarKey),
     Delete(NodeId),
+    /// Ephemeral turned on for a jar with a saved file (`App::request_jar_ephemeral`).
+    Ephemeral(NodeId),
 }
 
 /// How the card's chip tooltip says to switch now; Tab view's dot, which is clicked instead, swaps it out.
@@ -149,6 +151,13 @@ impl App {
                     "Delete",
                 ))
             }
+            JarConfirm::Ephemeral(id) if self.jar_defs.get(&id).is_some_and(|d| !d.ephemeral) => Some((
+                format!("Make {} ephemeral?", self.jar_label(JarKey::Named(id))),
+                "Its saved sign-ins are deleted from disk now. Tabs keep them until Manifold quits; after that this \
+                 jar starts empty each time."
+                    .to_string(),
+                "Make Ephemeral",
+            )),
             _ => None,
         }
     }
@@ -186,24 +195,45 @@ impl App {
         }
     }
 
-    /// Turns jar `id`'s ephemeral flag on or off (deviation 10): on deletes its file, keeping its cookies in memory
-    /// until quit; off saves what it holds now, if it is loaded.
+    /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), the same for a local toggle (after
+    /// `request_jar_ephemeral`'s confirm) and a remote one (`materialize_jar`). The jar is loaded from its file first,
+    /// while it still counts as saved, so nothing on disk is dropped unread:
+    /// - on: its cookies stay in memory until quit, then its files go (`Jar::delete_files`). Not a locked jar's: an
+    ///   unreadable file is never touched, and a locked jar saves nothing anyway.
+    /// - off: the loaded jar is saved (a locked one writes nothing).
     pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
-        let Some(def) = self.jar_defs.get_mut(&id) else { return };
-        if def.ephemeral == on {
+        if self.jar_defs.get(&id).is_none_or(|d| d.ephemeral == on) {
             return;
         }
-        def.ephemeral = on;
         let key = JarKey::Named(id);
         if on {
-            if let Some(dir) = self.jars_dir() {
-                if let Err(e) = Jar::delete_files(&dir, key) {
-                    eprintln!("jar: could not delete {}: {e}", key.file_stem());
-                }
-            }
-        } else if self.jars.contains_key(&key) {
-            self.save_jar(key);
+            self.ensure_jar_loaded(key);
         }
+        if let Some(def) = self.jar_defs.get_mut(&id) {
+            def.ephemeral = on;
+        }
+        if !on {
+            self.ensure_jar_loaded(key);
+            self.save_jar(key);
+        } else if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&key).map(Jar::is_locked)) {
+            if let Err(e) = Jar::delete_files(&dir, key) {
+                eprintln!("jar: could not delete {}: {e}", key.file_stem());
+            }
+        }
+    }
+
+    /// Settings' Ephemeral checkbox. Turning it on for a jar with a saved file asks first (`JarConfirm::Ephemeral`):
+    /// that file, its saved logins, is deleted. Anything else acts at once.
+    pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
+        if on && self.has_saved_file(JarKey::Named(id)) {
+            self.pending_jar_confirm = Some(JarConfirm::Ephemeral(id));
+        } else {
+            self.set_jar_ephemeral(id, on);
+        }
+    }
+
+    fn has_saved_file(&self, key: JarKey) -> bool {
+        self.jars_dir().is_some_and(|dir| Jar::path(&dir, key).exists())
     }
 
     /// The user deleted jar `id`: tabs and groups that named it fall back to the default jar (deviation 9), then it is

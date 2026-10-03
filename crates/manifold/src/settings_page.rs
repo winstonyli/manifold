@@ -37,6 +37,7 @@ pub(crate) struct SettingsRequests {
     pub(crate) current_engine_button_rect: Option<egui::Rect>,
     /// `settings_jars_section`: a jar's name field committed a new name.
     pub(crate) rename_jar: Option<(NodeId, String)>,
+    /// The Ephemeral checkbox changed; on, for a jar with a saved file, asks first (`App::request_jar_ephemeral`).
     pub(crate) jar_ephemeral: Option<(NodeId, bool)>,
     /// "Clear Cookies" or "Delete": asks first (`build_jar_confirm_popup`).
     pub(crate) jar_confirm: Option<JarConfirm>,
@@ -532,7 +533,7 @@ impl App {
             self.rename_jar(*id, name);
         }
         if let Some((id, on)) = req.jar_ephemeral {
-            self.set_jar_ephemeral(id, on);
+            self.request_jar_ephemeral(id, on); // may ask first instead (`JarConfirm::Ephemeral`)
         }
         if req.jar_confirm.is_some() {
             self.pending_jar_confirm = req.jar_confirm;

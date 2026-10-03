@@ -362,6 +362,11 @@ impl Jar {
         }
     }
 
+    /// Whether this jar's file exists but could not be read or moved aside (`load`): it is never saved over.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
     fn locked_empty(why: &str) -> Jar {
         eprintln!("jar: {why}; the file is left untouched and cookie changes will not be saved this session");
         Jar { locked: true, ..Jar::default() }

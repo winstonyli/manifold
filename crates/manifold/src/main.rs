@@ -2841,6 +2841,71 @@ mod tests {
         assert!(!app.jars.contains_key(&key));
     }
 
+    /// A jar `Work` whose file holds one cookie, saved by an earlier run: this run has not loaded it.
+    fn jar_saved_earlier(name: &str) -> (std::path::PathBuf, App, store::model::NodeId) {
+        let dir = store::testutil::temp_dir(name);
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let mut jar = jar::Jar::default();
+        jar.cookies = jar::from_json(SID).unwrap();
+        jar.save(&dir, jar::JarKey::Named(work)).unwrap();
+        (dir, app, work)
+    }
+
+    /// Final review I1: ephemeral on, then off, for a jar not loaded this run must not lose its saved logins: on
+    /// loads them first (they stay in memory until quit), off saves them back.
+    #[test]
+    fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
+        let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-unloaded");
+        let key = jar::JarKey::Named(work);
+        app.set_jar_ephemeral(work, true);
+        assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
+        assert_eq!(app.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
+        assert_eq!(app.jar_snapshots.lock().unwrap().get(&key).map(|j| j.cookies.len()), Some(1), "and seed tabs");
+        app.set_jar_ephemeral(work, false);
+        assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
+    }
+
+    /// Final review I1: a locked jar's unreadable file (and its earlier copies) is never touched, ephemeral or not.
+    #[test]
+    fn ephemeral_on_leaves_a_locked_jars_files_alone() {
+        let dir = store::testutil::temp_dir("jar-ephemeral-locked");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let key = jar::JarKey::Named(work);
+        // A directory where the file should be: reading it fails, so the jar loads locked.
+        std::fs::create_dir(jar::Jar::path(&dir, key)).unwrap();
+        let aside = dir.join(format!("{}.json.unreadable-100", key.file_stem()));
+        std::fs::write(&aside, "x").unwrap();
+        app.set_jar_ephemeral(work, true);
+        assert!(app.jar_defs[&work].ephemeral);
+        assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists());
+        app.set_jar_ephemeral(work, false);
+        assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists(), "off saves nothing over it");
+    }
+
+    /// Final review I1: Settings asks before making a jar with saved logins ephemeral; one without, or turning it
+    /// off, acts at once.
+    #[test]
+    fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
+        let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
+        app.request_jar_ephemeral(work, true);
+        assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
+        assert!(!app.jar_defs[&work].ephemeral, "nothing happens until confirmed");
+        assert!(jar::Jar::path(&dir, jar::JarKey::Named(work)).exists());
+        let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
+        assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
+        assert!(detail.contains("deleted from disk now") && detail.contains("until Manifold quits"), "{detail}");
+        app.pending_jar_confirm = None;
+        let home = app.create_jar("Home");
+        app.request_jar_ephemeral(home, true);
+        assert!(app.pending_jar_confirm.is_none() && app.jar_defs[&home].ephemeral, "no file: nothing to lose");
+        app.request_jar_ephemeral(home, false);
+        assert!(!app.jar_defs[&home].ephemeral);
+        app.set_jar_ephemeral(work, true);
+        assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
+    }
+
     /// Final review I2: an unreadable copy or a crashed save's temp file is a full copy of the jar's credentials, so
     /// deleting the jar takes them too. A live process's temp file and other jars' files stay.
     #[test]
