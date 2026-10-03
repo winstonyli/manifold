@@ -277,6 +277,7 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // Temporary no-op; the cookie-jar plan replaces it (Task 3 WebView2, Task 4 CEF).
                 HostToEngine::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
                         if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {

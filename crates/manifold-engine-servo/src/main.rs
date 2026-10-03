@@ -290,6 +290,7 @@ fn main() {
                         zoom: 1.0,
                     }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {

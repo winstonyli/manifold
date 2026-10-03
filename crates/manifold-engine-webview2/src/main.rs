@@ -305,6 +305,7 @@ fn main() {
                     let url = nav_state.borrow().url.clone();
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // Temporary no-op; the cookie-jar plan replaces it (Task 3 WebView2, Task 4 CEF).
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {

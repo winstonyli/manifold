@@ -1518,6 +1518,7 @@ impl App {
         match msg {
             EngineToHost::FrameReady { .. } => {}
             EngineToHost::PageState(state) => self.finish_sleep(tab_id, state),
+            EngineToHost::Cookies(_) => {} // Task 5 wires this.
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {

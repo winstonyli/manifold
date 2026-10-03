@@ -336,6 +336,7 @@ fn main() {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
                     let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.run_javascript(

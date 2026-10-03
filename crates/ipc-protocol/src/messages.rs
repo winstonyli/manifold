@@ -231,6 +231,12 @@ pub enum HostToEngine {
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
+    /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
+    /// hosts started with `ENGINE_AWAIT_COOKIES=1`, which wait for it before their first navigation.
+    SetCookies(String),
+    /// Asks for every cookie in the engine's jar; the engine answers with `EngineToHost::Cookies`.
+    /// An engine that cannot answer stays silent.
+    GetCookies,
     /// Scrolls the page to `(x, y)` once, with retries (`restore_scroll_script`).
     /// Sent after a woken tab's first load.
     RestoreScroll { x: f64, y: f64 },
@@ -385,6 +391,9 @@ pub enum EngineToHost {
     },
     StateSnapshot(TabState),
     PageState(PageState),
+    /// The engine's whole cookie jar as a JSON array of `jar::Cookie` (name, value, domain, path, expires,
+    /// secure, http_only, same_site), the answer to `HostToEngine::GetCookies`.
+    Cookies(String),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
@@ -548,6 +557,27 @@ mod key_code_tests {
         assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
         assert_eq!(KeyCode::Space.dom_key(), " ");
         assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
+}
+
+#[cfg(test)]
+mod cookie_message_tests {
+    use super::*;
+    use crate::channel::MessageChannel;
+    use std::io::Cursor;
+
+    /// Sends `msg` through the real postcard framing and reads it back.
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned>(msg: &T) -> T {
+        let mut out = MessageChannel::new(Cursor::new(Vec::new()));
+        out.send(msg).unwrap();
+        MessageChannel::new(Cursor::new(out.into_inner().into_inner())).recv().unwrap()
+    }
+
+    #[test]
+    fn the_cookie_messages_round_trip() {
+        assert!(matches!(round_trip(&HostToEngine::GetCookies), HostToEngine::GetCookies));
+        assert!(matches!(round_trip(&HostToEngine::SetCookies("[]".into())), HostToEngine::SetCookies(s) if s == "[]"));
+        assert!(matches!(round_trip(&EngineToHost::Cookies("[]".into())), EngineToHost::Cookies(s) if s == "[]"));
     }
 }
 
