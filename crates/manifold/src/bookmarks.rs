@@ -21,8 +21,7 @@ pub struct Bookmark {
 }
 
 fn bookmarks_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join("bookmarks.json"))
+    Some(crate::profile::dir()?.join("bookmarks.json"))
 }
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
@@ -38,8 +37,7 @@ pub fn load() -> (Vec<Bookmark>, Option<String>) {
 
 /// Same read as `load`, just from an arbitrary path — the "Import
 /// Bookmarks..." settings-popup button reads back whatever "Export
-/// Bookmarks..." wrote, same shape `Session::load_from`/`save_to` already
-/// have for named sessions.
+/// Bookmarks..." wrote.
 pub fn load_from(path: &Path) -> Result<Vec<Bookmark>, String> {
     crate::json_file::load(path, "bookmarks")
 }
@@ -51,18 +49,5 @@ pub fn save(bookmarks: &[Bookmark]) {
 
 /// Same write as `save`, just to an arbitrary path.
 pub fn save_to(bookmarks: &[Bookmark], path: &Path) {
-    if let Some(dir) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            eprintln!("bookmarks: failed to create {}: {err}", dir.display());
-            return;
-        }
-    }
-    match serde_json::to_string_pretty(bookmarks) {
-        Ok(json) => {
-            if let Err(err) = std::fs::write(path, json) {
-                eprintln!("bookmarks: failed to write {}: {err}", path.display());
-            }
-        }
-        Err(err) => eprintln!("bookmarks: failed to serialize: {err}"),
-    }
+    crate::json_file::save(bookmarks, path, "bookmarks");
 }

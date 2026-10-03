@@ -1,0 +1,11 @@
+# The workspace-wide rustfmt reformat.
+db79f32bc9f7ea325d7beec7df821cb2cce37f37
+# main.rs split into concern modules (spec 2026-09-30-main-split-and-engine-table-design.md): pure moves.
+6f8f5fd04fe9f8fa9206cce2143d4e8c6461fbf3
+69835cc9dd2f18ed5613fccc2b3c155f6c05b013
+592a1876340a5c49e8206ed02b355078584b7042
+4055eb1d25e89fcfb6f702fddf3acaf0853b93f2
+03badbdd3c63ea15ecbebc7f15968dd76ec3a42d
+0ec92abd1282c022ca37a2a63c11926c2f7905ce
+4d4ae5af3904c6f01bf0d87bf7179f034e08d014
+b392b7ce429adb5ed0005abd43b64ab38962a318

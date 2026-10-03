@@ -26,23 +26,124 @@ pub enum MouseButton {
 /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
 /// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
 /// winit's key into this; each engine-host translates this into whatever
-/// its own embedding API wants — see each engine-host's own translation
-/// table, kept local to that crate the same way `MouseButton` translation
-/// already is.
+/// its own embedding API wants. Two encodings are standards rather than one
+/// engine's own, so they live here with the table (`key_codes!`): the DOM
+/// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
+/// Servo's `Code`/`Key` stay in their engine crates.
 ///
 /// Deliberately not exhaustive — common keys only (letters, digits,
 /// navigation, the usual modifiers and editing keys) covers real usage
 /// (typing into a page's form fields, basic shortcuts) without trying to
 /// enumerate every key on every keyboard layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KeyCode {
-    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
-    KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
-    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
-    Enter, Backspace, Tab, Space, Escape, Delete,
-    ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
-    Home, End, PageUp, PageDown,
-    ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight,
+/// One row per key: the variant (which is also its DOM `KeyboardEvent.code`),
+/// its Windows virtual-key code, and its DOM `KeyboardEvent.key`. Generates
+/// the enum, `KeyCode::ALL` and the accessors, so the table exists once.
+macro_rules! key_codes {
+    ($($name:ident $vk:literal $key:literal;)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub enum KeyCode {
+            $($name,)*
+        }
+
+        impl KeyCode {
+            /// Every key, in declaration order.
+            pub const ALL: &'static [KeyCode] = &[$(KeyCode::$name,)*];
+
+            /// The DOM `KeyboardEvent.code` (`"KeyA"`, `"ShiftLeft"`), which is the variant's own name.
+            pub fn dom_code(self) -> &'static str {
+                match self {
+                    $(KeyCode::$name => stringify!($name),)*
+                }
+            }
+
+            /// The DOM `KeyboardEvent.key` (`"a"`, `"Enter"`, `" "`). Left and right modifiers share one.
+            pub fn dom_key(self) -> &'static str {
+                match self {
+                    $(KeyCode::$name => $key,)*
+                }
+            }
+
+            /// The Windows virtual-key code (`VK_*`). Modifiers use the side-specific codes
+            /// (`VK_LSHIFT`, ...); `windows_vk_generic` folds them to `VK_SHIFT` and friends.
+            pub fn windows_vk(self) -> u32 {
+                match self {
+                    $(KeyCode::$name => $vk,)*
+                }
+            }
+        }
+    };
+}
+
+key_codes! {
+    KeyA 0x41 "a";
+    KeyB 0x42 "b";
+    KeyC 0x43 "c";
+    KeyD 0x44 "d";
+    KeyE 0x45 "e";
+    KeyF 0x46 "f";
+    KeyG 0x47 "g";
+    KeyH 0x48 "h";
+    KeyI 0x49 "i";
+    KeyJ 0x4A "j";
+    KeyK 0x4B "k";
+    KeyL 0x4C "l";
+    KeyM 0x4D "m";
+    KeyN 0x4E "n";
+    KeyO 0x4F "o";
+    KeyP 0x50 "p";
+    KeyQ 0x51 "q";
+    KeyR 0x52 "r";
+    KeyS 0x53 "s";
+    KeyT 0x54 "t";
+    KeyU 0x55 "u";
+    KeyV 0x56 "v";
+    KeyW 0x57 "w";
+    KeyX 0x58 "x";
+    KeyY 0x59 "y";
+    KeyZ 0x5A "z";
+    Digit0 0x30 "0";
+    Digit1 0x31 "1";
+    Digit2 0x32 "2";
+    Digit3 0x33 "3";
+    Digit4 0x34 "4";
+    Digit5 0x35 "5";
+    Digit6 0x36 "6";
+    Digit7 0x37 "7";
+    Digit8 0x38 "8";
+    Digit9 0x39 "9";
+    Enter 0x0D "Enter";
+    Backspace 0x08 "Backspace";
+    Tab 0x09 "Tab";
+    Space 0x20 " ";
+    Escape 0x1B "Escape";
+    Delete 0x2E "Delete";
+    ArrowLeft 0x25 "ArrowLeft";
+    ArrowRight 0x27 "ArrowRight";
+    ArrowUp 0x26 "ArrowUp";
+    ArrowDown 0x28 "ArrowDown";
+    Home 0x24 "Home";
+    End 0x23 "End";
+    PageUp 0x21 "PageUp";
+    PageDown 0x22 "PageDown";
+    ShiftLeft 0xA0 "Shift";
+    ShiftRight 0xA1 "Shift";
+    ControlLeft 0xA2 "Control";
+    ControlRight 0xA3 "Control";
+    AltLeft 0xA4 "Alt";
+    AltRight 0xA5 "Alt";
+}
+
+impl KeyCode {
+    /// `windows_vk` with left/right modifiers folded to the generic `VK_SHIFT` (0x10),
+    /// `VK_CONTROL` (0x11) and `VK_MENU` (0x12), as real Windows key messages and CDP carry them.
+    pub fn windows_vk_generic(self) -> u32 {
+        match self.windows_vk() {
+            0xA0 | 0xA1 => 0x10,
+            0xA2 | 0xA3 => 0x11,
+            0xA4 | 0xA5 => 0x12,
+            vk => vk,
+        }
+    }
 }
 
 /// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
@@ -80,6 +181,7 @@ pub mod modifiers {
 /// click land at 80% of the intended distance from the content's top-left
 /// corner.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum InputEvent {
     /// `modifiers` (see the `modifiers` module) are the modifier keys held
     /// *at the time of* this mouse event — added so a native-input-
@@ -103,6 +205,7 @@ pub enum InputEvent {
 
 /// Messages sent from the manifold process manager to an engine-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum HostToEngine {
     Navigate { url: String, referrer: Option<String> },
     GoBack,
@@ -123,6 +226,14 @@ pub enum HostToEngine {
     /// capture-and-send step is gated on this.
     SetVisible(bool),
     GetState,
+    /// Asks for the page's scroll position and dirty-form flag
+    /// (`PAGE_STATE_SCRIPT`); the engine answers with `EngineToHost::PageState`.
+    /// Sent before a tab sleeps. An engine that cannot answer stays silent
+    /// and the host gives up after a few seconds.
+    QueryPageState,
+    /// Scrolls the page to `(x, y)` once, with retries (`restore_scroll_script`).
+    /// Sent after a woken tab's first load.
+    RestoreScroll { x: f64, y: f64 },
     /// Begin (or replace) a find-in-page search for `text` in this tab,
     /// jumping to the nearest match. Sent when the find bar's text changes,
     /// or the bar opens with existing text. Supported by CEF, WebKit, and
@@ -170,6 +281,76 @@ pub enum HostToEngine {
     Shutdown,
 }
 
+/// The script every engine that reports `JsonBody`/`RedirectableContent` (all but CEF, which
+/// evals the two properties itself) runs once a load finishes. It returns `"json\n<body>"` for a
+/// JSON response, `"type\n<content type>"` for any other, and null when the page has none.
+pub const PAGE_KIND_SCRIPT: &str = "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();";
+
+/// What `PAGE_KIND_SCRIPT` returned, split by its prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageKindReply {
+    /// A JSON response: its `document.body.innerText`.
+    Json(String),
+    /// Any other response: its content type.
+    Other(String),
+}
+
+impl PageKindReply {
+    /// Parses the script's string result; `None` for any other text.
+    pub fn parse(text: &str) -> Option<PageKindReply> {
+        if let Some(body) = text.strip_prefix("json\n") {
+            Some(PageKindReply::Json(body.to_string()))
+        } else {
+            text.strip_prefix("type\n").map(|t| PageKindReply::Other(t.to_string()))
+        }
+    }
+}
+
+/// Returns `"<scrollX> <scrollY> <1|0>"`: where the page is scrolled and
+/// whether any form field differs from its default (the dirty-form check
+/// of idle sleep). A text/number input, textarea or select counts when its
+/// value differs from its default; a checkbox or radio when `checked` does;
+/// a `contenteditable` element when it has any text. Button-like inputs are
+/// ignored. Pages that keep state outside form elements are not detected.
+pub const PAGE_STATE_SCRIPT: &str = "(function(){var d=false;var els=document.querySelectorAll('input,textarea,select,[contenteditable]');for(var i=0;i<els.length&&!d;i++){var e=els[i];var t=(e.type||'').toLowerCase();if(e.tagName==='INPUT'){if(t==='button'||t==='submit'||t==='reset'||t==='image'||t==='hidden'||t==='file'){continue;}if(t==='checkbox'||t==='radio'){d=e.checked!==e.defaultChecked;}else{d=e.value!==e.defaultValue;}}else if(e.tagName==='TEXTAREA'){d=e.value!==e.defaultValue;}else if(e.tagName==='SELECT'){for(var j=0;j<e.options.length;j++){if(e.options[j].selected!==e.options[j].defaultSelected){d=true;break;}}}else if(e.isContentEditable){d=(e.textContent||'')!=='';}}return (window.scrollX||0)+' '+(window.scrollY||0)+' '+(d?1:0);})();";
+
+/// A tab's page state at the moment of `HostToEngine::QueryPageState`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageState {
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub dirty_form: bool,
+}
+
+impl PageState {
+    /// Parses `PAGE_STATE_SCRIPT`'s result; `None` for any other text.
+    pub fn parse(text: &str) -> Option<PageState> {
+        let mut parts = text.split_whitespace();
+        let scroll_x: f64 = parts.next()?.parse().ok().filter(|v: &f64| v.is_finite())?;
+        let scroll_y: f64 = parts.next()?.parse().ok().filter(|v: &f64| v.is_finite())?;
+        let dirty_form = match parts.next()? {
+            "1" => true,
+            "0" => false,
+            _ => return None,
+        };
+        parts.next().is_none().then_some(PageState { scroll_x, scroll_y, dirty_form })
+    }
+}
+
+/// Scrolls to `(x, y)`, retrying on animation frames for up to 3 s until the
+/// page is tall (wide) enough to reach it, then to the nearest reachable
+/// point. Gives up at once if the user scrolls first (wheel, key, touch).
+/// A non-finite coordinate is replaced by 0, so no `NaN`/`inf` reaches the
+/// page as source.
+pub fn restore_scroll_script(x: f64, y: f64) -> String {
+    let f = |v: f64| if v.is_finite() { v } else { 0.0 };
+    format!(
+        "(function(x,y){{var stop=false;var end=Date.now()+3000;['wheel','keydown','touchstart'].forEach(function(n){{addEventListener(n,function(){{stop=true;}},{{once:true,passive:true}});}});function go(){{if(stop){{return;}}var de=document.documentElement;var reach=de.scrollHeight-innerHeight>=y&&de.scrollWidth-innerWidth>=x;if(reach||Date.now()>=end){{scrollTo(x,y);return;}}scrollTo(x,y);requestAnimationFrame(go);}}go();}})({},{});",
+        f(x),
+        f(y)
+    )
+}
+
 /// Messages sent from an engine-host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
@@ -179,6 +360,7 @@ pub enum HostToEngine {
 /// over `RemoteTransport`) has no shared memory with the Windows host
 /// process, so it sends the raw pixel bytes inline here instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[rustfmt::skip]
 pub enum EngineToHost {
     FrameReady {
         frame_id: u64,
@@ -193,8 +375,16 @@ pub enum EngineToHost {
         can_go_back: bool,
         can_go_forward: bool,
         loading: bool,
+        /// How the current navigation started, so the host shares only the
+        /// url changes a person made (spec "Fields", `url`). `Some(true)`:
+        /// a link click, a form submit, back/forward. `Some(false)`: a page
+        /// script without a gesture, or the host's own `Navigate`. Redirects
+        /// keep the label of the navigation they continue. `None`: the
+        /// engine can't tell (Servo, WebKit), or no navigation is under way.
+        user_started: Option<bool>,
     },
     StateSnapshot(TabState),
+    PageState(PageState),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
@@ -279,7 +469,8 @@ pub enum EngineToHost {
     /// never needs to re-derive it. WebView2, CEF, and WebKit all have a
     /// real native download-progress API; Servo's embedding surface has no
     /// download hook of any kind, so it never sends any `Download*` message.
-    DownloadStarted { path: String, total_bytes: Option<u64> },
+    /// `url` is what the engine is fetching, when it can say (shown as the card's source line).
+    DownloadStarted { path: String, total_bytes: Option<u64>, url: Option<String> },
     /// Bytes received so far for an in-progress download, keyed by the same
     /// `path` its own `DownloadStarted` reported.
     DownloadProgress { path: String, bytes_received: u64 },
@@ -288,6 +479,9 @@ pub enum EngineToHost {
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
+    /// A download ended without finishing (cancelled, interrupted, network error) -- `path` is the one its
+    /// `DownloadStarted` reported. `manifold` marks the card failed and stops treating it as in flight.
+    DownloadFailed { path: String },
     /// The page that just finished loading is a raw JSON response --
     /// `body` is its full text, so `manifold` can parse and show a real
     /// tree view instead of whatever a given engine's own default
@@ -307,9 +501,10 @@ pub enum EngineToHost {
     /// back to the browser process over a `ProcessMessage` -- no V8
     /// extension needed, just CEF's own real mechanism for a renderer to
     /// return a value at all (see `manifold-engine-cef`'s `render_process_
-    /// handler.rs`). Cleared (an empty page) whenever the same tab's own
-    /// URL changes for real, same as any other per-navigation state — see
-    /// `App::json_body`'s own doc comment.
+    /// handler.rs`). The host converts the tab to a `Json` node from this
+    /// same body, right away -- see
+    /// `RedirectableContent`'s own doc comment for why JSON takes this
+    /// separate route instead of that message's own refetch-and-check path.
     JsonBody { body: String },
     /// The page that just finished loading is a raw, non-JSON response --
     /// detected the exact same way as `JsonBody` (once the load finishes, a
@@ -319,28 +514,82 @@ pub enum EngineToHost {
     /// out of the engine for this message -- it does its own independent
     /// `GET` of the tab's current url (same "manifold does its own
     /// uniform HTTP fetch, engine-agnostic" posture `favicon_fetch` already
-    /// established for favicons), classifies `content_type` against a
-    /// small, explicit allowlist (`redirect_fetch::classify` -- currently
-    /// just an `image/` prefix), and, once that fetch succeeds, replaces
-    /// the tab with a real graph node of the matching kind at the same
-    /// position -- turning "navigated straight to a picture" into the same
-    /// outcome a user picking that same file by hand would get, rather than
-    /// leaving it sitting there as an ordinary tab showing whichever native
-    /// viewer page each engine happens to render for it. Generalized from
-    /// an image-only, payload-less version specifically so a future
-    /// redirectable kind only ever means widening that one allowlist
-    /// function -- no engine-host needs to change, since every engine
-    /// already forwards the real content-type string regardless of what it
-    /// says. Sent by all four engines (the same detection path `JsonBody`
-    /// uses on each) for any content-type that isn't `application/json` --
-    /// `manifold`'s own allowlist is what actually decides whether it
-    /// means anything; an ordinary `text/html` page just gets classified as
-    /// "nothing to do" and ignored. JSON deliberately isn't classified into
-    /// this same automatic path despite being detected identically -- a
-    /// JSON response is often a live, refetchable API call worth keeping as
-    /// an ordinary tab, unlike an image or similar, which has nothing left
-    /// to offer once redirected; converting one into a permanent node is a
-    /// user-initiated action instead (`build_json_viewer`'s own "Save as
-    /// Node" button), not something a plain navigation should silently do.
+    /// established for favicons), classifies `content_type` with
+    /// `content::kind_of` (the host's one MIME table), refetches the url,
+    /// checks the bytes and, when they pass, replaces the tab with the node
+    /// the table names at the same position. Sent by all four engines for
+    /// any content type but `application/json`, which comes as `JsonBody`
+    /// instead and converts from that body.
     RedirectableContent { content_type: String },
+}
+
+#[cfg(test)]
+mod key_code_tests {
+    use super::*;
+
+    #[test]
+    fn dom_code_is_the_variant_name_and_vk_codes_are_distinct_per_key() {
+        for &key in KeyCode::ALL {
+            assert_eq!(key.dom_code(), format!("{key:?}"));
+        }
+        let mut vks: Vec<u32> = KeyCode::ALL.iter().map(|k| k.windows_vk()).collect();
+        vks.sort();
+        vks.dedup();
+        assert_eq!(vks.len(), KeyCode::ALL.len());
+    }
+
+    #[test]
+    fn spot_checks_against_the_old_per_engine_tables() {
+        assert_eq!(KeyCode::KeyA.windows_vk(), 0x41);
+        assert_eq!(KeyCode::Digit9.windows_vk(), 0x39);
+        assert_eq!(KeyCode::PageUp.windows_vk(), 0x21);
+        assert_eq!(KeyCode::AltRight.windows_vk(), 0xA5);
+        assert_eq!(KeyCode::AltRight.windows_vk_generic(), 0x12);
+        assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
+        assert_eq!(KeyCode::Space.dom_key(), " ");
+        assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
+}
+
+#[cfg(test)]
+mod page_kind_tests {
+    use super::*;
+
+    #[test]
+    fn page_kind_reply_splits_on_the_scripts_prefixes() {
+        assert_eq!(PageKindReply::parse("json\n{\"a\":1}"), Some(PageKindReply::Json("{\"a\":1}".into())));
+        assert_eq!(PageKindReply::parse("type\nimage/png"), Some(PageKindReply::Other("image/png".into())));
+        assert_eq!(PageKindReply::parse("text/html"), None);
+        assert_eq!(PageKindReply::parse(""), None);
+    }
+}
+
+#[cfg(test)]
+mod page_state_tests {
+    use super::*;
+
+    #[test]
+    fn page_state_parses_the_scripts_three_numbers() {
+        assert_eq!(
+            PageState::parse("12.5 340 1"),
+            Some(PageState { scroll_x: 12.5, scroll_y: 340.0, dirty_form: true })
+        );
+        assert_eq!(PageState::parse("0 0 0"), Some(PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false }));
+    }
+
+    #[test]
+    fn page_state_rejects_anything_else() {
+        for bad in ["", "1 2", "a b c", "1 2 3 4", "1 2 2", "NaN 0 0", "inf 0 0"] {
+            assert_eq!(PageState::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn restore_scroll_script_embeds_only_finite_numbers() {
+        let s = restore_scroll_script(1.5, 2400.0);
+        assert!(s.contains("1.5") && s.contains("2400"), "{s}");
+        // A non-finite value must not reach the page as JS source.
+        assert_eq!(restore_scroll_script(f64::NAN, 5.0), restore_scroll_script(0.0, 5.0));
+        assert_eq!(restore_scroll_script(1.0, f64::INFINITY), restore_scroll_script(1.0, 0.0));
+    }
 }

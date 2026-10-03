@@ -7,11 +7,7 @@ use crate::settings::SearchEngine;
 #[derive(Debug, Clone)]
 pub enum Suggestion {
     /// Jump to (focus) an already-open tab instead of navigating anywhere.
-    OpenTab {
-        tab_id: String,
-        url: String,
-        title: String,
-    },
+    OpenTab { tab_id: String, url: String, title: String },
     /// Run `query` as a search — only ever the address bar's own typed
     /// text as a whole, not a per-word thing, matching how every real
     /// browser's omnibox treats non-URL input.
@@ -140,14 +136,7 @@ pub fn warm_up_https_client() {
 impl SuggestionFetcher {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self {
-            tx,
-            rx,
-            generation: 0,
-            pending_query: None,
-            pending_since: None,
-            last_fetched: None,
-        }
+        Self { tx, rx, generation: 0, pending_query: None, pending_since: None, last_fetched: None }
     }
 
     /// Call whenever the address bar's text actually changes (not every
@@ -164,6 +153,17 @@ impl SuggestionFetcher {
             self.pending_query = Some(text.trim().to_string());
             self.pending_since = Some(Instant::now());
         }
+    }
+
+    /// Drops the pending query and any fetch in flight, for when the
+    /// dropdown is dismissed: a response landing after that would otherwise
+    /// reopen it. Forgets `last_fetched` too, so typing the same query again
+    /// fetches it again.
+    pub fn cancel(&mut self) {
+        self.generation += 1;
+        self.pending_query = None;
+        self.pending_since = None;
+        self.last_fetched = None;
     }
 
     /// Call once per frame. Fires the debounced HTTP fetch if it's due,
@@ -206,23 +206,27 @@ fn spawn_fetch(query: String, generation: u64, tx: mpsc::Sender<(u64, Vec<String
 /// `SuggestionFetcher`'s doc comment — this is cosmetic, never
 /// load-bearing).
 fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
-    let url = format!(
-        "https://duckduckgo.com/ac/?q={}&type=list",
-        urlencoding_light(query)
-    );
-    let response = ureq::get(&url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(3)))
-        .build()
-        .call()
-        .ok()?;
+    let url = format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding_light(query));
+    let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let body = response.into_body().with_config().limit(200_000).read_to_vec().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
     let phrases = value.as_array()?.get(1)?.as_array()?;
-    Some(
-        phrases
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect(),
-    )
+    Some(phrases.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancelled_fetch_cannot_deliver() {
+        let mut fetcher = SuggestionFetcher::new();
+        fetcher.note_text_changed("rust lang");
+        let in_flight = fetcher.generation;
+        fetcher.cancel();
+        // The response to the fetch that was in flight lands after the cancel.
+        fetcher.tx.send((in_flight, vec!["rust language".into()])).unwrap();
+        assert_eq!(fetcher.tick(), None);
+        assert_eq!(fetcher.pending_query, None);
+    }
 }

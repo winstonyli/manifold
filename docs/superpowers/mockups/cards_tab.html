@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tab card designs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Literata:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#0e0d0a; --graph:#000; --bg:#1d1a14; --chip:#2e2a20; --line:rgba(255,255,255,.14);
+  --accent:#d7a24a; --on-accent:#2b1c05; --text:#e8e2d4; --dim:#9b9585; --hover:rgba(255,255,255,.09);
+  --f:'Familjen Grotesk',system-ui,sans-serif; --serif:'Literata',Georgia,serif;
+  --blue:#2d7be0; --green:#3fb27f; --red:#e0584b; --amber:#e8a13a;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 24px 64px;background:var(--page);color:var(--text);font:14px/1.45 var(--f)}
+h1{font:600 18px var(--f);margin:0 0 4px}
+p.lede{margin:0 0 20px;color:var(--dim);max-width:76ch}
+h2{font:600 12px var(--f);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:34px 0 4px}
+h2 b{color:var(--text);font-weight:600}
+.note{color:var(--dim);font-size:13px;margin:0 0 12px;max-width:80ch}
+.note b{color:var(--text);font-weight:600}
+.ctl{position:sticky;top:0;z-index:5;background:var(--page);padding:8px 0;margin:0 0 8px;display:flex;gap:6px;align-items:center;color:var(--dim);font-size:13px}
+.ctl button{font:inherit;color:var(--text);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:3px 10px;cursor:pointer}
+.ctl button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.stage{background:var(--graph);border-radius:8px;padding:22px;display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--w,250px),max-content));gap:26px 22px;
+  background-image:radial-gradient(rgba(255,255,255,.12) 1px,transparent 1px);background-size:28px 28px}
+.cell{display:flex;flex-direction:column;gap:6px}
+.cell>small{font:500 11px var(--f);color:var(--dim);letter-spacing:.04em}
+
+/* ---- the card: 232x156 content box, 8px radius, like the app's default ---- */
+.card{--cw:232px;--ch:156px;position:relative;width:var(--cw);height:var(--ch);border-radius:8px;background:#121212;color:var(--text);font-family:var(--f);font-size:13px}
+.card .shell{position:absolute;inset:0;border-radius:8px;overflow:hidden;background:#161410;border:1px solid rgba(255,255,255,.1)}
+.thumb{position:absolute;inset:0;background:#f4f1ea}
+.thumb i{position:absolute;display:block;border-radius:2px;background:#d9d4c7}
+.thumb i.h{left:12%;top:16%;width:46%;height:9%;background:#2a2a2a}
+.thumb i.a{left:12%;top:34%;width:76%;height:5%}
+.thumb i.b{left:12%;top:44%;width:70%;height:5%}
+.thumb i.c{left:12%;top:54%;width:76%;height:5%}
+.thumb i.d{left:12%;top:68%;width:30%;height:16%;background:#c7d9f0}
+.thumb i.e{left:48%;top:68%;width:40%;height:16%;background:#e8d9c0}
+/* hover / selected / tag rings */
+.card::before{content:"";position:absolute;inset:-5px;border-radius:12px;pointer-events:none;opacity:0;transition:opacity .15s;box-shadow:0 0 0 1px var(--ring,var(--accent)),0 0 14px 2px color-mix(in srgb,var(--ring,var(--accent)) 45%,transparent)}
+.card.sel::before{opacity:1}
+.card.hov .shell,.card:hover .shell{border-color:rgba(255,255,255,.34)}
+.card.tag{--ring:#2fa37a}
+.card.tag::before{opacity:1}
+/* corner controls: close (top right), connector (bottom right) */
+.x{position:absolute;right:-9px;top:-9px;width:22px;height:22px;border-radius:5px;background:#1d1a14;border:1px solid var(--line);color:var(--text);display:none;align-items:center;justify-content:center;z-index:3}
+.card.hov .x,.card:hover .x,.card.sel .x{display:flex}
+.conn{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border-radius:50%;border:2px solid #555;background:#111;z-index:3}
+.card.sel .conn{border-color:var(--accent)}
+svg.ic{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--blue);flex:none}
+.fav{width:14px;height:14px;border-radius:3px;background:linear-gradient(135deg,#ef8f2e,#e0584b);flex:none}
+.ttl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ttl span{color:var(--dim)}
+.badges{display:flex;gap:4px;align-items:center;flex:none;color:var(--dim)}
+.badges .on{color:var(--accent)}
+.badges .rec{color:var(--green)}
+/* state overlays on the thumbnail */
+.state{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;font-size:12px;color:var(--text)}
+.sleeping .thumb{filter:grayscale(1) brightness(.55)}
+.loading .thumb{visibility:hidden}
+.loading .shell{background:#121212}
+.error .thumb{filter:grayscale(1) brightness(.4)}
+.spin{width:22px;height:22px;border:2px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---- A. current: black 18px scrim strip at the bottom, engine dot, label ---- */
+.vA .strip{position:absolute;left:4px;right:4px;bottom:4px;height:18px;background:rgba(0,0,0,.63);display:flex;align-items:center;gap:6px;padding:0 6px;font-family:var(--serif);font-size:14px;line-height:1}
+.vA .shell{padding:4px}.vA .thumb{inset:4px}
+.vA .strip{left:4px;right:4px;bottom:4px}
+.vA .ttl{font-size:12px}
+
+/* ---- B. header bar: 28px header above the page ---- */
+.vB .shell{display:flex;flex-direction:column;background:#1d1a14}
+.vB .hd{height:28px;display:flex;align-items:center;gap:7px;padding:0 8px;flex:none}
+.vB .thumb{position:relative;flex:1;inset:auto;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.vB .ttl{font-weight:500}
+.vB .state{top:28px}
+.vB.sel .shell{background:#26211a}
+
+/* ---- F. header with a second host line ---- */
+.vF .shell{display:flex;flex-direction:column;background:#1d1a14}
+.vF .hd{height:40px;display:grid;grid-template-columns:auto 1fr auto;column-gap:8px;align-items:center;padding:0 9px 2px;flex:none}
+.vF .hd .fav{grid-row:1/3}
+.vF .t1{font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:end}
+.vF .t2{color:var(--dim);font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:start}
+.vF .badges{grid-row:1/3;grid-column:3}
+.vF .thumb{position:relative;flex:1;inset:auto;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.vF .state{top:40px}
+.vF.sel .shell{background:#26211a}
+/* ---- G. header, host inline after the title ---- */
+.vG .shell{display:flex;flex-direction:column;background:#1d1a14}
+.vG .hd{height:28px;display:flex;align-items:center;gap:7px;padding:0 8px;flex:none}
+.vG .ttl{font-weight:500}
+.vG .ttl span{font-weight:400;margin-left:6px}
+.vG .thumb{position:relative;flex:1;inset:auto;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.vG .state{top:28px}
+.vG.sel .shell{background:#26211a}
+
+/* ---- C. floating footer pill over a full-bleed page ---- */
+.vC .shell{border-color:transparent}
+.vC .pill{position:absolute;left:8px;right:8px;bottom:8px;height:30px;display:flex;align-items:center;gap:7px;padding:0 9px;border-radius:8px;background:rgba(29,26,20,.86);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.1)}
+.vC .ttl{font-weight:500}
+
+/* ---- D. quiet frame: no chrome until hover; title sits in the corner ---- */
+.vD .shell{border-color:rgba(255,255,255,.06)}
+.vD .tl{position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);display:flex;align-items:center;gap:6px;padding:3px 8px 3px 6px;border-radius:999px;background:rgba(0,0,0,.6);font-size:12px;opacity:.0;transition:opacity .12s}
+.vD:hover .tl,.vD.hov .tl,.vD.sel .tl,.vD.always .tl{opacity:1}
+.vD .corner{position:absolute;right:8px;top:8px;display:flex;gap:5px;align-items:center;padding:2px 5px;border-radius:999px;background:rgba(0,0,0,.55)}
+
+/* ---- E. dense: favicon + two-line title beside a smaller page ---- */
+.vE .shell{display:grid;grid-template-columns:1fr;grid-template-rows:1fr auto;background:#1d1a14}
+.vE .thumb{position:relative;inset:auto;margin:5px 5px 0;border-radius:5px;overflow:hidden}
+.vE .meta{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;align-items:center;padding:6px 9px 7px}
+.vE .meta .fav{grid-row:1/3}
+.vE .t1{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.vE .t2{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.vE .badges{grid-row:1/3;grid-column:3}
+.vE .state{bottom:44px}
+
+/* zoom-out: the card at 0.35 scale; text is unreadable so identity must survive */
+.zoomed{transform:scale(.35);transform-origin:top left;margin-right:calc(var(--cw) * -.65);margin-bottom:calc(var(--ch) * -.65)}
+.zrow{display:flex;gap:18px;flex-wrap:wrap}
+code{font:12px ui-monospace,Consolas,monospace;color:var(--accent)}
+</style></head><body>
+<h1>Tab card designs</h1>
+<p class="lede">Today's tab card (A) against four redesigns. Every card shows the same page, drawn as a thumbnail, in the states the app has: rest, hover, selected, tagged, loading, sleeping, audio, muted, pinned, error. Title text is Familjen Grotesk in B to E (a control-style label); A keeps the app's current Literata. The thumbnail is always the page itself.</p>
+<div class="ctl">Show:
+ <button data-v="all" class="on">All</button><button data-v="A">A Current</button><button data-v="B">B Header</button><button data-v="F">F B+host</button><button data-v="G">G B+inline</button><button data-v="C">C Pill</button><button data-v="D">D Quiet</button><button data-v="E">E Dense</button>
+ <span style="margin-left:12px">Title:</span><button data-t="short" class="on">Short</button><button data-t="long">Long</button>
+</div>
+<div id="root"></div>
+<script>
+const I={
+ x:'<svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+ moon:'<svg class="ic" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
+ audio:'<svg class="ic" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>',
+ mute:'<svg class="ic" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM17 9l5 6M22 9l-5 6"/></svg>',
+ pin:'<svg class="ic" viewBox="0 0 24 24"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3zM12 14v7"/></svg>',
+ warn:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></svg>'
+};
+const STATES=[
+ ['rest',''],['hover','hov'],['selected','sel'],['tagged','tag'],['loading','loading'],['sleeping','sleeping'],
+ ['audio playing','audio'],['muted','muted'],['pinned','pinned'],['error','error']
+];
+const PAGE='<div class="thumb"><i class="h"></i><i class="a"></i><i class="b"></i><i class="c"></i><i class="d"></i><i class="e"></i></div>';
+function badges(s){
+  let b='';
+  if(s.includes('audio'))b+='<span class="rec">'+I.audio+'</span>';
+  if(s.includes('muted'))b+='<span class="on">'+I.mute+'</span>';
+  if(s.includes('pinned'))b+='<span class="on">'+I.pin+'</span>';
+  if(s.includes('sleeping'))b+='<span>'+I.moon+'</span>';
+  if(s.includes('error'))b+='<span style="color:var(--red)">'+I.warn+'</span>';
+  return b;
+}
+function overlay(s){
+  if(s.includes('loading'))return '<div class="state"><div class="spin"></div>Loading…</div>';
+  if(s.includes('sleeping'))return '<div class="state">'+I.moon.replace('class="ic"','class="ic" style="width:26px;height:26px"')+'Asleep · click to wake</div>';
+  if(s.includes('error'))return '<div class="state" style="color:#f2a79f">'+I.warn.replace('class="ic"','class="ic" style="width:26px;height:26px"')+'This page crashed</div>';
+  return '';
+}
+function title(long){return long?'How to build a calm, legible interface for a spatial browser':'Field notes'}
+function host(){return 'notes.example.com'}
+function card(v,s,long){
+  const cls=['card','v'+v,...s.split(' ').filter(Boolean)].join(' ');
+  const t=title(long), b=badges(s), o=overlay(s);
+  let inner='';
+  if(v==='A') inner=`<div class="shell">${PAGE}${o}<div class="strip"><span class="dot"></span><span class="ttl">${t}</span>${b?'<span class="badges">'+b+'</span>':''}</div></div>`;
+  if(v==='B') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="ttl">${t}</span><span class="badges">${b}</span></div>${PAGE}${o}</div>`;
+  if(v==='F') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="t1">${t}</span><span class="badges">${b}</span><span class="t2">${host()}</span></div>${PAGE}${o}</div>`;
+  if(v==='G') inner=`<div class="shell"><div class="hd"><span class="fav"></span><span class="ttl">${t}<span>${host()}</span></span><span class="badges">${b}</span></div>${PAGE}${o}</div>`;
+  if(v==='C') inner=`<div class="shell">${PAGE.replace('class="thumb"','class="thumb" style="inset:0"')}${o}<div class="pill"><span class="fav"></span><span class="ttl">${t}</span><span class="badges">${b}</span></div></div>`;
+  if(v==='D') inner=`<div class="shell">${PAGE.replace('class="thumb"','class="thumb" style="inset:0"')}${o}<div class="tl"><span class="fav"></span><span class="ttl">${t}</span></div><div class="corner"><span class="badges">${b}</span><span class="dot"></span></div></div>`;
+  if(v==='E') inner=`<div class="shell">${PAGE}${o}<div class="meta"><span class="fav"></span><span class="t1">${t}</span><span class="badges">${b}</span><span class="t2">${host()}</span></div></div>`;
+  const dot='';
+  return `<div class="${cls}">${inner}<div class="x">${I.x}</div><div class="conn"></div></div>`;
+}
+const NAMES={A:'A · Current (scrim strip, Literata)',B:'B · Header bar',C:'C · Floating pill',D:'D · Quiet frame (title on hover/select)',E:'E · Dense (favicon, title, host)',F:'F · B with the host on a second header line',G:'G · B with the host inline after the title'};
+const BLURB={
+ A:'Thumbnail with a 18 px black scrim strip: engine dot, title. Status shows only as a corner dot elsewhere.',
+ B:'A 28 px header carries favicon, title and state icons, so the page is never covered. Reads like a window.',
+ C:'The page fills the card; a blurred 30 px pill floats at the bottom with favicon, title, state icons.',
+ D:'Nothing but the page until hover or selection, then a small title capsule. Calmest at graph scale; state shows as small icons in the top-right corner plus the ring.',
+ F:'B with a 40 px header: title on the first line, host dimmed on the second. The page loses 12 px of height.',
+ G:'B with a 28 px header: title then the host in dim text on the same line. The host is the first thing cut when the title is long.',
+ E:'Page above, then favicon, a title line and the host beneath it. Most information per card.'
+};
+let VIEW='all',LONG=false;
+function render(){
+  const root=document.getElementById('root');root.innerHTML='';
+  for(const v of ['A','B','F','G','C','D','E']){
+    if(VIEW!=='all'&&VIEW!==v)continue;
+    const sec=document.createElement('section');
+    sec.innerHTML=`<h2><b>${NAMES[v]}</b></h2><p class="note">${BLURB[v]}</p><div class="stage">${STATES.map(([n,s])=>`<div class="cell">${card(v,s,LONG)}<small>${n}</small></div>`).join('')}</div>
+    <p class="note" style="margin-top:14px">At zoom 0.35 (title unreadable): rest, selected, sleeping, error</p>
+    <div class="stage" style="display:block;padding:16px"><div class="zrow">${['','sel','sleeping','error'].map(s=>`<div class="zoomed">${card(v,s,LONG)}</div>`).join('')}</div></div>`;
+    root.appendChild(sec);
+  }
+}
+document.querySelectorAll('.ctl button').forEach(b=>b.onclick=()=>{
+  if(b.dataset.v){VIEW=b.dataset.v;document.querySelectorAll('[data-v]').forEach(x=>x.classList.toggle('on',x===b))}
+  if(b.dataset.t){LONG=b.dataset.t==='long';document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b))}
+  render();
+});
+render();
+</script></body></html>

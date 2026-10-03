@@ -9,22 +9,24 @@ mod nav_handler;
 mod render_handler;
 mod render_process_handler;
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 use cef::args::Args;
 use cef::*;
-use ipc_protocol::{EngineToHost, HostToEngine, TabState};
+use ipc_protocol::{EngineToHost, HostToEngine, InputEvent, TabState};
 
 use app::{AppBuilder, EngineApp};
-use client::{ClientBuilder, new_shared_audio_playing, new_shared_json_body, new_shared_redirect_content_type};
+use client::{
+    new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_redirect_content_type,
+    ClientBuilder,
+};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
 use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
-use render_process_handler::CHECK_AUDIO_PLAYING;
+use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
@@ -37,11 +39,11 @@ const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Same job-object setup `engine-host-webview2` already uses for its own
 /// multi-process tree -- see this function's own call site for why.
+#[cfg(windows)]
 fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -101,7 +103,11 @@ fn main() {
     // created by a process already in a job join the same job
     // automatically. Same fix `engine-host-webview2` already applies for
     // its own equivalent multi-process tree; `_job`'s only purpose is to
-    // stay alive for the whole process lifetime.
+    // stay alive for the whole process lifetime. Elsewhere there is no job;
+    // on Linux CEF's subprocesses exited by themselves within 5 s of a
+    // `kill -9` of this process (WSL2, 2026-10-02; the engine-install spec's
+    // Platforms section).
+    #[cfg(windows)]
     let _job = setup_kill_on_exit_job();
 
     // Read via env vars, not argv: this process's argv is CEF's own command
@@ -114,10 +120,17 @@ fn main() {
     // pipes (see process_manager::spawn_tab's fallback). Only this id
     // matters here; we never need ENGINE_TAB_ID itself.
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL")
-        .unwrap_or_else(|_| "https://example.com".to_string());
+    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
+    // ENGINE_CACHE_DIR is this process's own `root_cache_path`, fresh per
+    // spawn and deleted afterwards (see process_manager::spawn_tab).
+    // Chromium's process singleton lets one browser process at a time use a
+    // given root, so CEF's machine-wide default would allow one CEF tab at
+    // a time. `cache_path` stays empty: browsing data lives in memory, since
+    // the directory doesn't outlive the tab anyway.
+    let cache_dir = std::env::var("ENGINE_CACHE_DIR").expect("ENGINE_CACHE_DIR env var required");
 
     let settings = Settings {
+        root_cache_path: cache_dir.as_str().into(),
         windowless_rendering_enabled: true as _,
         external_message_pump: true as _,
         // We disabled the `sandbox` cargo feature (it needs a separate
@@ -128,36 +141,18 @@ fn main() {
         ..Default::default()
     };
     assert_eq!(
-        initialize(
-            Some(args.as_main_args()),
-            Some(&settings),
-            Some(&mut cef_app),
-            std::ptr::null_mut(),
-        ),
+        initialize(Some(args.as_main_args()), Some(&settings), Some(&mut cef_app), std::ptr::null_mut(),),
         1,
         "cef initialize failed"
     );
 
     // Two one-directional control sockets back to manifold — same
     // convention as manifold-engine-servo (see ipc_protocol::transport).
-    let (mut host_to_engine, mut control) =
-        ipc_protocol::transport::connect_local_pair(&socket_id)
-            .expect("connect to manifold control sockets");
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match host_to_engine.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    });
+    let (host_to_engine, mut control) =
+        ipc_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
+    let rx = ipc_protocol::transport::spawn_host_reader(host_to_engine);
 
-    let (render_handler, size, latest_frame) =
-        EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    let (render_handler, size, latest_frame) = EngineRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let nav_state = new_shared_nav_state(initial_url.clone());
     let muted_state = new_shared_muted();
     let pending_open_tab = new_shared_pending_open_tab();
@@ -168,6 +163,7 @@ fn main() {
     let json_body = new_shared_json_body();
     let redirect_content_type = new_shared_redirect_content_type();
     let audio_playing = new_shared_audio_playing();
+    let page_state = new_shared_page_state();
     let mut last_reported_audio_playing = false;
     let mut last_audio_poll = std::time::Instant::now();
     // Remembers the most recent `FindStart`'s term/case-sensitivity —
@@ -180,10 +176,7 @@ fn main() {
         shared_texture_enabled: false as _,
         ..Default::default()
     };
-    let browser_settings = BrowserSettings {
-        windowless_frame_rate: 60,
-        ..Default::default()
-    };
+    let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut ClientBuilder::build(
@@ -198,6 +191,7 @@ fn main() {
             json_body.clone(),
             redirect_content_type.clone(),
             audio_playing.clone(),
+            page_state.clone(),
         )),
         Some(&initial_url.as_str().into()),
         Some(&browser_settings),
@@ -207,9 +201,8 @@ fn main() {
     .expect("create CEF browser");
 
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    let mut frame_buffer =
-        ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-            .expect("create shared frame buffer");
+    let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        .expect("create shared frame buffer");
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
@@ -225,28 +218,27 @@ fn main() {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
+                    nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
                     }
                 }
                 HostToEngine::GoBack => {
                     if browser.can_go_back() != 0 {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         browser.go_back();
                     }
                 }
                 HostToEngine::GoForward => {
                     if browser.can_go_forward() != 0 {
+                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
                         browser.go_forward();
                     }
                 }
                 HostToEngine::Reload => {
                     browser.reload();
                 }
-                HostToEngine::Resize {
-                    width: w,
-                    height: h,
-                    ..
-                } => {
+                HostToEngine::Resize { width: w, height: h, .. } => {
                     *size.borrow_mut() = (w as f32, h as f32);
                     if let Some(host) = browser.host() {
                         host.was_resized();
@@ -260,6 +252,9 @@ fn main() {
                     // only way to avoid writing/reporting mismatched sizes.
                 }
                 HostToEngine::Input(event) => {
+                    if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
+                        nav_state.borrow_mut().last_input = Some(std::time::Instant::now());
+                    }
                     input::send_input(&browser, event);
                 }
                 HostToEngine::SetZoom { factor } => {
@@ -281,6 +276,22 @@ fn main() {
                         url: nav_state.borrow().url.clone(),
                         zoom: 1.0,
                     }));
+                }
+                HostToEngine::QueryPageState => {
+                    if let Some(frame) = browser.main_frame() {
+                        if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
+                            frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+                        }
+                    }
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    if let Some(frame) = browser.main_frame() {
+                        frame.execute_java_script(
+                            Some(&ipc_protocol::restore_scroll_script(x, y).as_str().into()),
+                            None,
+                            0,
+                        );
+                    }
                 }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(host) = browser.host() {
@@ -368,7 +379,11 @@ fn main() {
                     can_go_back: nav.can_go_back,
                     can_go_forward: nav.can_go_forward,
                     loading: nav.loading,
+                    user_started: nav.user_started,
                 });
+                if std::mem::take(&mut nav.finished) {
+                    nav.user_started = None;
+                }
             }
         }
 
@@ -390,6 +405,12 @@ fn main() {
 
         if let Some(content_type) = redirect_content_type.borrow_mut().take() {
             let _ = control.send(&EngineToHost::RedirectableContent { content_type });
+        }
+
+        if let Some(text) = page_state.borrow_mut().take() {
+            if let Some(state) = ipc_protocol::PageState::parse(&text) {
+                let _ = control.send(&EngineToHost::PageState(state));
+            }
         }
 
         // See `AUDIO_PLAYING_POLL_INTERVAL`'s own doc comment for why this
@@ -418,13 +439,14 @@ fn main() {
 
         for event in download_path.borrow_mut().queue.drain(..) {
             let msg = match event {
-                download_handler::DownloadEvent::Started { path, total_bytes } => {
-                    EngineToHost::DownloadStarted { path, total_bytes }
+                download_handler::DownloadEvent::Started { path, total_bytes, url } => {
+                    EngineToHost::DownloadStarted { path, total_bytes, url }
                 }
                 download_handler::DownloadEvent::Progress { path, bytes_received } => {
                     EngineToHost::DownloadProgress { path, bytes_received }
                 }
                 download_handler::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+                download_handler::DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
             };
             let _ = control.send(&msg);
         }
@@ -433,12 +455,8 @@ fn main() {
             if let Some(frame) = latest_frame.borrow_mut().take() {
                 if buffer_size != (frame.width, frame.height) {
                     drop(frame_buffer);
-                    frame_buffer = ipc_protocol::SharedFrameBuffer::create(
-                        &socket_id,
-                        frame.width,
-                        frame.height,
-                    )
-                    .expect("recreate shared frame buffer to match painted frame size");
+                    frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
+                        .expect("recreate shared frame buffer to match painted frame size");
                     buffer_size = (frame.width, frame.height);
                 }
                 frame_buffer.write_frame(&frame.bgra);

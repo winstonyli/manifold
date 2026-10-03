@@ -10,6 +10,11 @@ pub struct PaintedFrame {
     pub height: u32,
 }
 
+/// The view size in pixels, shared between the handler and the main loop.
+pub type SharedSize = std::rc::Rc<RefCell<(f32, f32)>>;
+/// The newest frame from `on_paint`, taken by the main loop.
+pub type SharedLatestFrame = std::rc::Rc<RefCell<Option<PaintedFrame>>>;
+
 /// Headless OSR render handler. No window, no wgpu — CEF's classic
 /// software OSR path, matching manifold-engine-servo's shared-memory frame
 /// hand-off instead of the accelerated/shared-texture path (which only
@@ -17,29 +22,15 @@ pub struct PaintedFrame {
 /// engine-host architecture).
 #[derive(Clone)]
 pub struct EngineRenderHandler {
-    size: std::rc::Rc<RefCell<(f32, f32)>>,
-    latest_frame: std::rc::Rc<RefCell<Option<PaintedFrame>>>,
+    size: SharedSize,
+    latest_frame: SharedLatestFrame,
 }
 
 impl EngineRenderHandler {
-    pub fn new(
-        initial_width: u32,
-        initial_height: u32,
-    ) -> (
-        Self,
-        std::rc::Rc<RefCell<(f32, f32)>>,
-        std::rc::Rc<RefCell<Option<PaintedFrame>>>,
-    ) {
+    pub fn new(initial_width: u32, initial_height: u32) -> (Self, SharedSize, SharedLatestFrame) {
         let size = std::rc::Rc::new(RefCell::new((initial_width as f32, initial_height as f32)));
         let latest_frame = std::rc::Rc::new(RefCell::new(None));
-        (
-            Self {
-                size: size.clone(),
-                latest_frame: latest_frame.clone(),
-            },
-            size,
-            latest_frame,
-        )
+        (Self { size: size.clone(), latest_frame: latest_frame.clone() }, size, latest_frame)
     }
 }
 

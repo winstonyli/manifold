@@ -10,15 +10,20 @@
 # node to enter Tab view, type a query, screenshot the suggestion dropdown,
 # click a suggestion, screenshot the result; arrow-key highlight +
 # Enter-accept; Escape dismissing the dropdown without leaving Tab view;
-# quit.
+# entering and leaving a group in Graph view; tab drops inside a group
+# (reparent, the cycle refusal) and ejecting a rectangle-selected tab;
+# the overloaded and empty groups' border colors (needs Pillow);
+# closing a group holding an image and a nested group, then reopening
+# it (REOPENTAB) nested as it was; `ADDFILE` for each content kind; a tab
+# at a local JSON or PDF converting into its node; entering a dropped
+# JSON's level via JSONSELECT/JSONSEARCH and leaving it, NEWNOTE from that level; quit. The drop checks
+# click cards where EXPORTSTATE's `cards` says they are, after the layout
+# stops moving (`settle`), not at fixed coordinates.
 #
 # Deliberately NOT covered: clicking an open-tab suggestion (accepting it
-# focuses another tab). That needs a second tab, which needs clicking a
-# graph-view node — and a node's on-screen position depends on the
-# force-directed layout's physics settling, not a fixed coordinate the way
-# chrome buttons are. There's no position-query debug command yet to make
-# that click reliable, so it's left to manual verification for now (see
-# project memory for the one-off manual pass that confirmed it works).
+# focuses another tab), left to manual verification (see project memory
+# for the one-off manual pass that confirmed it works). EXPORTSTATE's
+# `cards` could now find the second tab's node to click.
 #
 # Run after `cargo build -p manifold`. Exits 0 if every check passed.
 set -uo pipefail # not -e: a failed check should still let later checks run
@@ -31,6 +36,8 @@ if [ ! -x "$exe" ]; then
     echo "headless-smoke-test: $exe not found — build first (cargo build -p manifold)" >&2
     exit 1
 fi
+. "$repo_root/scripts/fresh-exe.sh"
+require_fresh_exe "$exe" || exit 1
 
 mkdir -p "$out_dir"
 rm -f "$out_dir"/*.png "$out_dir"/*.json
@@ -222,6 +229,360 @@ send "SCREENSHOT $out_dir_win\\escape_dismiss.png"
 check_screenshot "$out_dir/escape_dismiss.png" "Escape dismiss"
 ROW="$second_row" check_state escape_dismiss "Escape closes the dropdown, stays in Tab view, navigates nowhere" \
     's["tab_view"] and not s["suggestions"] and q == row'
+
+# Card helpers. `query NAME EXPR` evaluates EXPR over an
+# already-exported NAME.json without exporting again: `s` (the state),
+# `cards` (by id), `tabs` (live or asleep) and `groups` (sorted ids),
+# `xy(id)` and `lt(id)` (a card's center and top-left corner, where its
+# eject button sits, as "x y") and `bbox` (every tab's rects' bounds grown
+# by 20 and kept inside the window, as "x0 y0 x1 y1"). `xy` and `lt` say
+# on stderr when the point is off the graph canvas (under the toolbar or
+# outside the window), where a click can't reach the card.
+query() {
+    python - "$out_dir/$1.json" "$2" <<'EOF'
+import json, os, sys
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+cards = {c["id"]: c for c in s["cards"]}
+tabs = sorted(i for i, c in cards.items() if c["kind"] in ("Tab", "Unloaded"))
+groups = sorted(i for i, c in cards.items() if c["kind"] == "Group")
+W, H, TOP = 816, 639, 40  # RESIZE below; the graph toolbar's height, rounded up
+
+def pt(i, x, y):
+    if not (0 <= x < W and TOP <= y < H):
+        sys.stderr.write(f"query: {x:.0f},{y:.0f} ({cards[i]['kind']} {i}) is off the graph canvas\n")
+    return "%.0f %.0f" % (x, y)
+
+xy = lambda i: pt(i, *cards[i]["screen"])
+lt = lambda i: pt(i, cards[i]["rect"][0] + 3, cards[i]["rect"][1] + 3)
+r = [cards[i]["rect"] for i in tabs]
+bbox = "%.0f %.0f %.0f %.0f" % (max(0, min(x[0] for x in r) - 20), max(TOP, min(x[1] for x in r) - 20),
+                                min(W - 1, max(x[2] for x in r) + 20), min(H - 1, max(x[3] for x in r) + 20)) if r else ""
+env = os.environ
+print(eval(sys.argv[2]))
+EOF
+}
+
+check_query() {
+    if [ "$(query "$1" "bool($3)")" = True ]; then pass "$2"; else failed "$2: \`$3\` is false in $1.json"; fi
+}
+
+# Exports until two exports in a row agree on every card's rect, leaving
+# the last as NAME.json. After entering a group the camera eases, and
+# SLEEP draws no frames (each command draws one), so a fixed sleep can
+# read positions mid-ease; a drag there lands on empty canvas.
+settle() {
+    local prev="" now i
+    for i in $(seq 1 40); do
+        state "$1" 1 >/dev/null
+        now=$(query "$1" 'sorted((i, [round(v, 1) for v in c["rect"]]) for i, c in cards.items())')
+        [ "$now" = "$prev" ] && return 0
+        prev=$now
+        sleep 0.3
+    done
+    failed "$1: the layout never stopped moving"
+}
+
+# Group drill-in: a second Escape (no dropdown now) leaves to Graph view,
+# NEWGROUP adds a group card, DOUBLECLICK enters it and the toolbar's back
+# button leaves it. The card is found by its reported position: spawn
+# jitter comes from the id, and ids are random per launch, so it can
+# land at the window's edge or under the minimap: Reset View (the
+# toolbar's fit button) first brings every card into view, which also
+# hides the minimap. DOUBLECLICK rather than two CLICKs, which a slow
+# frame can push past egui's double-click delay.
+send "ESCAPE"
+send "NEWGROUP"
+sleep 1 # Tab-to-Graph transition, layout settle
+send "SCREENSHOT $out_dir_win\group_card.png"
+check_screenshot "$out_dir/group_card.png" "group card"
+# A "Saved <path>" toast would cover the bottom-left of the window, and a
+# card placed there would take the next click on the toast instead.
+check_state group_card "a headless screenshot shows no toast" 's["toast"] is None'
+send "CLICK 326 17"
+settle group_card
+first_group=$(query group_card 'groups[0]')
+send "DOUBLECLICK $(query group_card "xy('$first_group')")"
+check_state group_in "double-clicking the group card enters the group" 'not s["tab_view"] and s["current_group"]'
+send "CLICK 22 17"
+check_state group_out "the back button leaves the group" 's["current_group"] is None'
+
+# Tab drops inside a group.
+
+# `drag X0 Y0 X1 Y1 [button]`: a press, six moves and a release with no
+# sleep between them (see debug_control.rs's advice on drags).
+drag() {
+    local i
+    send "MOUSEDOWN $1 $2${5:+ $5}"
+    for i in 1 2 3 4 5 6; do send "MOUSEMOVE $(($1 + ($3 - $1) * i / 6)) $(($2 + ($4 - $2) * i / 6))"; done
+    send "MOUSEUP $3 $4${5:+ $5}"
+}
+
+# A two-tab group from a file, entered by double-clicking its card.
+cat >"$out_dir/pair.group.json" <<'EOF'
+{"nodes": [
+ {"id": "g", "kind": "group", "name": "Pair"},
+ {"id": "a", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
+EOF
+before=$(query group_out 'groups')
+send "IMPORTGROUP $out_dir_win\pair.group.json"
+send "WAITTABS"
+# The imported card lands wherever the jitter puts it, which can be off
+# screen at this zoom: the toolbar's Reset View (fit all) button brings
+# every card into view (its spot at 816 wide, as measured from a
+# SCREENSHOT; re-measure if the Graph toolbar changes).
+send "CLICK 326 17"
+settle pair_top
+pair=$(BEFORE="$before" query pair_top '[g for g in groups if g not in eval(env["BEFORE"])][0]')
+send "DOUBLECLICK $(query pair_top "xy('$pair')")"
+settle pair_in
+check_query pair_in "double-clicking the imported group's card enters it" "s['current_group'] == '$pair' and len(tabs) == 2"
+read -r m1 m2 <<<"$(query pair_in '" ".join(tabs)')"
+
+drag $(query pair_in "xy('$m1')") $(query pair_in "xy('$m2')")
+settle reparented
+check_query reparented "a tab dropped on a sibling tab inside a group is reparented under it" \
+    "cards['$m1']['parent'] == '$m2'"
+# The pair now overlaps exactly, and which is on top follows spawn order,
+# so move whichever the press picks up onto empty canvas first, toward
+# the window's middle so it stays in view.
+read -r x y <<<"$(query reparented "xy('$m1')")"
+drag "$x" "$y" $((x > 408 ? x - 250 : x + 250)) $((y > 340 ? y - 150 : y + 150))
+settle apart
+drag $(query apart "xy('$m2')") $(query apart "xy('$m1')")
+settle cycle
+PREV="$(query apart "cards['$m2']['screen']")" check_query cycle "dropping a tab onto its own child is refused" \
+    "cards['$m2']['screen'] != eval(env['PREV']) and cards['$m2']['parent'] is None and cards['$m1']['parent'] == '$m2'"
+
+# A right-drag marquee selects both; ejecting one through its button
+# takes it out of the selection too (the pair overlaps again, so either
+# may be the one ejected).
+drag $(query cycle 'bbox') right
+settle selected
+check_query selected "a right-drag marquee selects both tabs" "s['selected_tabs'] == tabs"
+read -r x y <<<"$(query selected "xy('$m1')")"
+read -r ex ey <<<"$(query selected "lt('$m1')")"
+send "MOUSEMOVE $x $y"
+send "MOUSEMOVE $ex $ey"
+send "CLICK $ex $ey"
+settle ejected
+check_query ejected "ejecting a selected tab also drops it from the selection" \
+    "len(tabs) == 1 and s['selected_tabs'] == tabs"
+
+# Border colors, read off a screenshot: a group of more than 8 members
+# rests on DANGER_COLOR (196, 87, 58), and the empty group from above on
+# ACCENT (215, 162, 74). `card_border`'s unit test covers which color
+# wins; this checks the member count reaches it and the frame paints it.
+# The mouse waits in an empty corner so no card eases toward its hover
+# color.
+send "CLICK 22 17"
+python - "$out_dir/nine.group.json" <<'EOF'
+import json, sys
+tab = lambda i: {"id": f"t{i}", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "group": "g"}
+json.dump({"nodes": [{"id": "g", "kind": "group", "name": "Nine"}] + [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
+EOF
+settle top
+before_nine=$(query top 'groups')
+send "IMPORTGROUP $out_dir_win\nine.group.json"
+send "WAITTABS"
+send "CLICK 326 17"
+send "MOUSEMOVE 806 629"
+settle nine
+nine=$(BEFORE="$before_nine" query nine '[g for g in groups if g not in eval(env["BEFORE"])][0]')
+empty=$(BEFORE="$before" query nine 'eval(env["BEFORE"])[0]')
+send "SCREENSHOT $out_dir_win\borders.png"
+check_screenshot "$out_dir/borders.png" "group borders"
+# `border NAME ID RGB` succeeds if a pixel on ID's left edge, at
+# mid-height, is within 40 of RGB (the stroke is about 1 px wide).
+border() {
+    python - "$out_dir/$1.json" "$out_dir/borders.png" "$2" "$3" <<'EOF'
+import json, sys
+from PIL import Image
+cards = {c["id"]: c for c in json.load(open(sys.argv[1], encoding="utf-8"))["cards"]}
+img = Image.open(sys.argv[2]).convert("RGB")
+left, top, _, bottom = cards[sys.argv[3]]["rect"]
+y = round((top + bottom) / 2)
+want = eval(sys.argv[4])
+near = min(sum((a - b) ** 2 for a, b in zip(img.getpixel((x, y)), want)) ** 0.5 for x in range(round(left) - 1, round(left) + 3))
+sys.exit(0 if near < 40 else 1)
+EOF
+}
+if ! python -c "import PIL" 2>/dev/null; then
+    echo "SKIP: group border colors (needs Pillow: pip install pillow)"
+else
+    if border nine "$nine" "(196, 87, 58)"; then pass "a group of 9 has a DANGER_COLOR border"
+    else failed "the 9-member group $nine's border isn't DANGER_COLOR (see borders.png)"; fi
+    if border nine "$empty" "(215, 162, 74)" && ! border nine "$empty" "(196, 87, 58)"; then pass "an empty group has an ACCENT border"
+    else failed "the empty group $empty's border isn't ACCENT (see borders.png)"; fi
+fi
+
+# Recently Closed keeps nesting: fill the empty group with an image and
+# the Pair group (so `$empty { image, group { tab, tab } }`), close it
+# from the top level, and REOPENTAB (Ctrl+Shift+T) brings the whole
+# subtree back as one entry, still nested.
+send "DOUBLECLICK $(query nine "xy('$empty')")"
+settle outer_in
+send "ADDFILE $(cygpath -w "$repo_root")\crates\manifold\assets\icon\icon-64.png"
+send "IMPORTGROUP $out_dir_win\pair.group.json"
+send "WAITTABS"
+settle outer_built
+check_query outer_built "a group can hold an image and a nested group" \
+    "s['current_group'] == '$empty' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+send "CLICK 22 17"
+settle outer_back
+send "CLOSEGROUP $empty"
+settle outer_closed
+check_query outer_closed "closing the outer group removes it" "'$empty' not in groups"
+send "REOPENTAB"
+send "WAITTABS"
+settle reopened
+outer=$(BEFORE="$(query outer_closed 'groups')" query reopened '([g for g in groups if g not in eval(env["BEFORE"])] or ["none"])[0]')
+if [ "$outer" = none ]; then
+    failed "REOPENTAB brought no group back"
+else
+    send "DOUBLECLICK $(query reopened "xy('$outer')")"
+    settle reopened_in
+    check_query reopened_in "the reopened group has its image and nested group back" \
+        "s['current_group'] == '$outer' and len(groups) == 1 and [c['kind'] for c in cards.values()].count('Image') == 1"
+    inner=$(query reopened_in '(groups or ["none"])[0]')
+    send "DOUBLECLICK $(query reopened_in "xy('$inner')")"
+    settle reopened_inner
+    check_query reopened_inner "the nested group comes back with both tabs" \
+        "s['current_group'] == '$inner' and len(tabs) == 2"
+fi
+
+# Drag and drop: `ADDFILE <path> X Y` places a file the way a real drop
+# does (`drop_file`), in Graph view here, so each card lands near X Y.
+# Same-frame fan-out is left to the unit tests.
+printf 'a dropped note\n' >"$out_dir/drop.txt"
+printf '{"a": 1}\n' >"$out_dir/drop.json"
+state before_drop 1 >/dev/null
+before_drop_ids=$(query before_drop 'sorted(cards)')
+send "ADDFILE $out_dir_win\\drop.txt 400 300"
+send "ADDFILE $out_dir_win\\drop.json 400 300"
+settle after_drop
+note_id=$(BEFORE="$before_drop_ids" query after_drop \
+    '([i for i, c in cards.items() if c["kind"] == "Note" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+json_id=$(BEFORE="$before_drop_ids" query after_drop \
+    '([i for i, c in cards.items() if c["kind"] == "Json" and i not in eval(env["BEFORE"])] or ["none"])[0]')
+check_query after_drop "a dropped .txt becomes a Note card" "'$note_id' != 'none'"
+check_query after_drop "a dropped .json becomes a Json card" "'$json_id' != 'none'"
+check_query after_drop "the dropped note's screen center is within 60px of (400, 300)" \
+    "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
+check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
+    "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
+
+# Entering the dropped JSON file: its level, driven by the JSON commands,
+# then back out. `{"a": 1}` is one root card with one row.
+send "DOUBLECLICK $(query after_drop "xy('$json_id')")"
+settle json_in
+check_query json_in "double-clicking a Json card enters its level" \
+    "s['json_level'] and s['json_level']['root'] == '$json_id' and s['current_group'] == '$json_id'"
+check_query json_in "the JSON level shows the root card" \
+    "[c['pointer'] for c in s['json_level']['cards']] == [''] and cards['$json_id#']['kind'] == 'JsonCard'"
+send "JSONSELECT /a"
+send "JSONSEARCH a"
+check_state json_search "JSONSELECT and JSONSEARCH reach the level" \
+    "s['json_level']['selected'] == '/a' and s['json_level']['matches'] == ['/a']"
+send "CLICK 22 17"
+check_state json_out "the back button leaves the JSON level" \
+    "s['json_level'] is None and s['current_group'] != '$json_id'"
+
+# Creating from a JSON level leaves it first (spec place-node-design): a new
+# note lands in the level the user then sees, not out of sight beside the
+# Json node.
+settle json_out2
+send "DOUBLECLICK $(query json_out2 "xy('$json_id')")"
+settle json_in2
+check_query json_in2 "re-entering the JSON level" "s['json_level'] and s['current_group'] == '$json_id'"
+notes_before=$(query json_out2 'sorted(i for i, c in cards.items() if c["kind"] == "Note")')
+send "NEWNOTE"
+settle json_note
+check_query json_note "NEWNOTE from a JSON level leaves it" "s['json_level'] is None and s['current_group'] != '$json_id'"
+check_query json_note "the new note is a card on the level now shown" \
+    "len([i for i, c in cards.items() if c['kind'] == 'Note']) == len(eval('''$notes_before''')) + 1"
+
+# The remaining `ADDFILE` kinds (the image and the .txt/.json are above),
+# each checked by the new card's kind: a PDF, a `.bin` (a Download card)
+# and a `.md` (a Note by its bytes, not its extension). `.html` becomes a
+# Tab, which is clicked into Tab view to check its `file://` url.
+printf '%%PDF-1.4\n' >"$out_dir/doc.pdf"
+printf '# a markdown note\n' >"$out_dir/note.md"
+printf '\xffbinary\xfedata' >"$out_dir/data.bin"
+printf '<!doctype html><html><body>hi</body></html>' >"$out_dir/page.html"
+state before_kinds 1 >/dev/null
+before_kinds_ids=$(query before_kinds 'sorted(cards)')
+send "ADDFILE $out_dir_win\\doc.pdf 600 500"
+send "ADDFILE $out_dir_win\\note.md 600 500"
+send "ADDFILE $out_dir_win\\data.bin 600 500"
+send "ADDFILE $out_dir_win\\page.html 600 500"
+send "WAITTABS"
+settle after_kinds
+new_card() {
+    BEFORE="$before_kinds_ids" query after_kinds \
+        "([i for i, c in cards.items() if c[\"kind\"] == \"$1\" and i not in eval(env[\"BEFORE\"])] or [\"none\"])[0]"
+}
+pdf_id=$(new_card Pdf)
+md_id=$(new_card Note)
+bin_id=$(new_card Download)
+html_id=$(new_card Tab)
+check_query after_kinds "a dropped .pdf becomes a Pdf card" "'$pdf_id' != 'none'"
+check_query after_kinds "a dropped .md becomes a Note card" "'$md_id' != 'none'"
+check_query after_kinds "a dropped .bin becomes a Download card" "'$bin_id' != 'none'"
+check_query after_kinds "a dropped .html becomes a Tab card" "'$html_id' != 'none'"
+if [ "$html_id" != none ]; then
+    send "CLICK $(query after_kinds "xy('$html_id')")"
+    sleep 1
+    check_state html_tab "the dropped .html tab's url is a file:// URL" 'url.startswith("file://")'
+fi
+
+# Engine-side conversion, no network: a tab typed to a local JSON or
+# PDF file goes, and a node of that kind takes its place, keeping the
+# file:// url. Checked on EXPORTSESSION, which carries each node's url.
+printf '{"converted": [1, 2]}\n' >"$out_dir/conv.json"
+printf '%%PDF-1.4\n' >"$out_dir/conv.pdf"
+# `converted NAME FILE KIND` succeeds once NAME.json (a session export) has
+# a KIND node whose url is a file:// one ending in /FILE, and no tab there.
+converted() {
+    python - "$out_dir/$1.json" "$2" "$3" <<'EOF'
+import json, sys
+nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
+at = lambda n: n.get("url", "").startswith("file://") and n.get("url", "").endswith("/" + sys.argv[2])
+sys.exit(0 if any(n["kind"] == sys.argv[3] and at(n) for n in nodes) and not any(n["kind"] == "tab" and at(n) for n in nodes) else 1)
+EOF
+}
+# NEWTAB doesn't focus the tab it opens, and a conversion drops to Graph
+# view with nothing focused, so this types into whichever tab NEXTTAB
+# lands on.
+convert_focused_tab() { # $1=file $2=kind (as EXPORTSESSION names it)
+    local url name="conv_$2" i
+    url="file:///$(cygpath -m "$out_dir/$1" | sed 's/ /%20/g')"
+    send "WAITTABS"
+    state "focus_$2" 's["tab_view"]' >/dev/null || send "NEXTTAB"
+    # Let the tab's own load settle, or its address-bar update overwrites
+    # the typed url before ENTER.
+    send "SLEEP 3"
+    if ! state "focus_$2" 's["tab_view"] and url' >/dev/null; then
+        failed "no tab focused to type $1 into (see focus_$2.json)"
+        return
+    fi
+    send "ADDRESSBAR $url"
+    send "SLEEP 1"
+    send "ENTER"
+    for i in $(seq 1 50); do
+        rm -f "$out_dir/$name.json"
+        send "EXPORTSESSION $out_dir_win\\$name.json"
+        wait_for_file "$out_dir/$name.json"
+        if converted "$name" "$1" "$2"; then
+            pass "a tab at a local $1 becomes a $2 node with its file:// url"
+            return
+        fi
+        sleep 0.3
+    done
+    failed "a tab at a local $1 never became a $2 node (see $name.json)"
+}
+convert_focused_tab conv.json json
+convert_focused_tab conv.pdf pdf
 
 send "QUIT"
 if wait "$browser_pid"; then

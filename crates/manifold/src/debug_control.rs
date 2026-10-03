@@ -22,25 +22,26 @@ use crate::UserEvent;
 /// logic-bypassing shortcut — since that's the only way to actually exercise
 /// egui's real hit-testing/rendering-timing, which is exactly the code path
 /// that had the click-swallowing dropdown bug fixed in the autocomplete
-/// feature. Keyboard/text commands are the one exception: `winit::event::
-/// KeyEvent` has no public constructor outside the winit crate itself (its
-/// `platform_specific` field is `pub(crate)`), so there is no way to
-/// synthesize a real `WindowEvent::KeyboardInput` from application code at
-/// all. Those commands instead call the exact equivalent effect directly
-/// (send the same `InputEvent`s to a tab, or run the same address-bar
-/// update/navigate logic) — this still exercises all of *this project's*
-/// logic, just not winit/egui's own keyboard event plumbing (which was never
-/// the source of a bug here).
+/// feature. Keyboard commands can't go through winit the same way:
+/// `winit::event::KeyEvent` has no public constructor outside the winit
+/// crate (its `platform_specific` field is `pub(crate)`). The address-bar
+/// keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`) are
+/// instead injected one level down, as `egui::Event::Key`/`Text` in the
+/// next frame's `RawInput`, so the UI's own `key_pressed` checks and the
+/// real `TextEdit` see them. Headless mode also marks the window as focused
+/// for egui, since egui reports no widget focus in an unfocused window. The
+/// remaining keyboard commands (shortcuts, page input) call the exact
+/// equivalent effect directly (send the same `InputEvent`s to a tab, or run
+/// the same shortcut method).
 ///
 /// Driving egui through these, learned the hard way: use `CLICK`, not a
 /// `MOUSEDOWN`/`MOUSEUP` pair spaced by a `sleep` -- egui drops a press
 /// held past its max click duration (~0.8 s) as a long press, not a click.
 /// A drag needs several `MOUSEMOVE`s between the down and the up, not one.
-/// Hover state lands a frame late, so `MOUSEMOVE` the same spot twice
-/// before a `SCREENSHOT` meant to show it, and before a `MOUSEDOWN` on a
-/// card (without it, a right-click there opens the canvas menu; untested
-/// since pointer commands got a frame before them too, which may make one
-/// enough). Each command renders its own frame in headless mode, and a
+/// One `MOUSEMOVE` is enough for a `SCREENSHOT` to show hover (checked
+/// headless on a tab card: ✕ and peek preview both up), and a right-click
+/// needs none, since the graph finds the card under the press itself
+/// rather than going by hover. Each command renders its own frame in headless mode, and a
 /// pointer command also one before it, so it's hit-tested against the
 /// current state (see `UserEvent::Debug`'s handler); mouse commands need
 /// no `sleep` between them. Animations (menu fades, group drill-in) still take real
@@ -52,6 +53,7 @@ use crate::UserEvent;
 /// them, since until the focused tab has spawned, commands that need it
 /// (e.g. `ADDDOWNLOAD`) do nothing.
 #[derive(Debug, Clone)]
+#[rustfmt::skip]
 pub enum DebugCommand {
     MouseMove { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: MouseButton },
@@ -59,27 +61,37 @@ pub enum DebugCommand {
     /// A full click (move + press + release) in one command — the common
     /// case, and avoids needing three round-trips through stdin for it.
     Click { x: f64, y: f64, button: MouseButton },
+    /// A left double-click, both clicks in one frame. Two `CLICK`s only
+    /// count as one when their frames fall within egui's 0.3 s
+    /// double-click delay, which a slow headless frame can break.
+    DoubleClick { x: f64, y: f64 },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64 },
-    /// Sets the address bar's text and focus state directly, then recomputes
-    /// suggestions exactly as `response.changed()` would — see this module's
-    /// doc comment for why address-bar *text entry* is a direct call rather
-    /// than a synthetic `KeyboardInput` event.
+    /// Focuses the address bar (Tab view only), then, once it has focus,
+    /// types the text over its contents as egui `Ctrl+A` + `Text` events,
+    /// so suggestions update through the real `response.changed()` path.
     AddressBar(String),
-    /// Simulates pressing Enter in the address bar (navigates using its
-    /// current text), regardless of whether it has "real" egui focus —
-    /// headless address-bar focus is set directly by `AddressBar`, not
-    /// through a real click-driven egui focus transfer.
+    /// An egui Enter key press: in the focused address bar, navigates using
+    /// its text or the highlighted suggestion.
     Enter,
-    /// Simulates pressing Escape — dismisses the suggestion dropdown if one
-    /// is showing, otherwise leaves Tab view for Graph view (same behavior
-    /// as a real Escape keypress).
+    /// An egui Escape key press: dismisses the suggestion dropdown if one
+    /// is showing, otherwise leaves Tab view for Graph view.
     Escape,
-    /// Simulates pressing Down/Up in the address bar — moves the
-    /// highlighted suggestion row (wrapping at both ends) the same way a
-    /// real arrow-key press would; `Enter` afterward accepts whichever row
-    /// ends up highlighted.
+    /// egui Down/Up key presses: in the address bar, move the highlighted
+    /// suggestion row (wrapping at both ends); `Enter` afterward accepts
+    /// whichever row ends up highlighted.
     ArrowDown,
     ArrowUp,
+    /// Real Right/Left key presses (a JSON level's outline open/close).
+    ArrowRight,
+    ArrowLeft,
+    /// A real Space key press (a focused tab card toggles its selection).
+    SpaceKey,
+    DigitKey(u8),
+    /// An egui Tab key press (Shift+Tab with `true`): moves egui's keyboard focus
+    /// between widgets, for checking how focus looks and that it moves nothing.
+    TabKey(bool),
+    /// Shift+F10: opens the context menu of the keyboard-focused graph card.
+    ShiftF10,
     /// Graph-view keyboard navigation equivalents -- see
     /// `App::move_graph_focus`/`open_focused_graph_node`. Separate from
     /// `ArrowDown`/`ArrowUp` above (those are address-bar-dropdown-specific)
@@ -95,8 +107,12 @@ pub enum DebugCommand {
     TypeIntoPage(String),
     /// Sends a KeyDown+KeyUp pair of the named key to the focused tab's page.
     KeyPage(KeyCode),
-    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_tab_shortcut`.
+    /// `Ctrl+Shift+T` equivalent — see `App::reopen_closed_shortcut`.
     ReopenTab,
+    /// Starts `App::start_engine_install` for the engine, as the picker's Download does.
+    InstallEngine(EngineKind),
+    /// Prints the engine's `EngineState` to stderr as `engine-state <name>: <label>`.
+    EngineState(EngineKind),
     /// `Ctrl+=`/`Ctrl++` equivalent — see `App::zoom_in_shortcut`.
     ZoomIn,
     /// `Ctrl+-` equivalent — see `App::zoom_out_shortcut`.
@@ -122,8 +138,8 @@ pub enum DebugCommand {
     /// `Ctrl+F` equivalent — see `App::open_find_bar_shortcut`.
     OpenFindBar,
     /// Sets the find bar's search text directly and sends `FindStart` to
-    /// the focused tab — same "direct call, not a synthetic key event"
-    /// reason as `AddressBar`.
+    /// the focused tab — a direct call, not a synthetic key event (see this
+    /// module's doc comment).
     FindText(String),
     /// Sets the find bar's case-sensitivity toggle directly, re-sending
     /// `FindStart` if a search is already in progress — headless equivalent
@@ -161,8 +177,8 @@ pub enum DebugCommand {
     Quit,
     /// `Ctrl+K` equivalent — see `App::handle_global_shortcuts`.
     QuickSwitchOpen,
-    /// Sets the quick-switcher's search text directly, same "direct call,
-    /// not a synthetic key event" reason as `AddressBar`/`FindText`.
+    /// Sets the quick-switcher's search text directly, a direct call like
+    /// `FindText`.
     QuickSwitchText(String),
     /// Up/Down/Enter in the quick-switcher — see `App::quick_switcher_
     /// move`/`quick_switcher_confirm`.
@@ -172,10 +188,17 @@ pub enum DebugCommand {
     QuickSwitchEscape,
     /// Sets the settings popup's "Save Session As..." name field directly,
     /// same "direct call, not a synthetic key event" reason as
-    /// `AddressBar`/`FindText`.
+    /// `FindText`.
     SessionNameText(String),
+    /// "Save Session As..." with an explicit name instead of reading the
+    /// name field a real click would use, same "bypass the dialog/UI
+    /// entirely" reason as `ExportSession`. See `App::save_named_session`.
+    SaveSessionAs(String),
+    /// A saved name's "Open" button with an explicit name, same reason as
+    /// `SaveSessionAs`. See `App::load_named_session`.
+    OpenSession(String),
     /// Sets the Graph view toolbar's filter box directly, same "direct
-    /// call, not a synthetic key event" reason as `AddressBar`/`FindText`.
+    /// call, not a synthetic key event" reason as `FindText`.
     GraphFilterText(String),
     /// `Ctrl+G` equivalent — see `App::toggle_view_mode_shortcut`.
     ToggleView,
@@ -189,12 +212,19 @@ pub enum DebugCommand {
     /// headless mode has no OS/human to answer one, so this bypasses it
     /// entirely and calls the same underlying save directly.
     ExportSession(String),
-    /// `EXPORTSTATE path` -- writes UI state that `session.json` doesn't
+    /// `EXPORTSTATE path` -- writes UI state that the session store doesn't
     /// hold (and shouldn't: it's the user's saved session) as JSON, for a
     /// test to check: `tab_view`, `transition`, `focused_url`,
     /// `address_bar_text`, `suggestions` (the dropdown's rows: a search's
-    /// query, or `tab:<id>` for an open tab) and `highlighted` (a row
-    /// index, or null). Suggestions arriving from the network show up
+    /// query, or `tab:<id>` for an open tab), `highlighted` (a row
+    /// index, or null) and `current_group` (the Graph view level's group
+    /// id, or null at the top). `cards` lists the current level's cards in
+    /// draw order, each as `id`, `kind` (`"Tab"`, `"Note"`, ...), `group`,
+    /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
+    /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
+    /// which are pixels headless. `selected_tabs` is the rectangle
+    /// selection's ids, sorted. `toast` is the bottom-left toast's text
+    /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
     ExportState(String),
@@ -208,22 +238,20 @@ pub enum DebugCommand {
     TogglePin,
     /// `Ctrl+R`/`F5` equivalent — see `App::reload_focused_tab_shortcut`.
     Reload,
+    /// The toolbar's Back / Forward buttons, on the focused tab.
+    GoBack,
+    GoForward,
     /// `Ctrl+Shift+G` equivalent — see `App::new_group_shortcut`.
     NewGroup,
     /// The Graph toolbar's "+ Note" button — see `App::new_note_shortcut`.
     NewNote,
-    /// The Graph toolbar's "+ Image" button with an explicit path instead
-    /// of a real file dialog — same "bypass the dialog entirely" reason as
-    /// `ExportSession`/`PrintToPdf`. See `App::insert_image_node`.
-    AddImage(String),
-    /// The Graph toolbar's "+ PDF" button with an explicit path instead of
-    /// a real file dialog — same reasoning as `AddImage`. See
-    /// `App::insert_pdf_node`.
-    AddPdf(String),
-    /// The Graph toolbar's "+ JSON" button with an explicit path instead of
-    /// a real file dialog — same reasoning as `AddImage`. See
-    /// `App::insert_json_node`.
-    AddJson(String),
+    /// The Graph toolbar's "+ File" button with an explicit path instead of
+    /// a real file dialog — same "bypass the dialog entirely" reason as
+    /// `ExportSession`/`PrintToPdf`. The point, if given, is a window point
+    /// like a drop there; with none, the file is jittered around
+    /// world center at the current level, the same as the picker. See
+    /// `App::add_file_at`.
+    AddFile(String, Option<(f32, f32)>),
     /// A download node for `path`, as if the focused tab had just started
     /// downloading it (no bytes, unknown total) -- downloads otherwise only
     /// come from a real engine download. Nothing is fetched or written.
@@ -254,7 +282,7 @@ pub enum DebugCommand {
     /// `F2` equivalent — see `App::rename_current_group_shortcut`.
     RenameGroup,
     /// Sets the bookmarks popup's own folder-rename draft directly, same
-    /// "direct call, not a synthetic key event" reason as `AddressBar`/
+    /// "direct call, not a synthetic key event" reason as
     /// `GraphFilterText` — a no-op if nothing is currently being renamed.
     BookmarkFolderText(String),
     /// Graph view's `Escape`-dismisses-peek equivalent — see
@@ -276,16 +304,29 @@ pub enum DebugCommand {
     Split(EngineKind),
     /// The Tab-view toolbar's "Close Split" button — see `App::close_split`.
     CloseSplit,
-    /// The JSON node context menu's "Expand as Graph" button, targeting an
-    /// explicit node id instead of `self.focused` (a plain `ADDJSON` doesn't
-    /// focus the node it creates, so a headless test can't rely on focus
-    /// here) — see `App::expand_json_as_graph`.
-    ExpandJsonAsGraph(String),
+    /// Select the entry at this JSON Pointer on the current JSON level
+    /// (empty: the root).
+    JsonSelect(String),
+    /// Collapse or expand the card at this pointer.
+    JsonToggle(String),
+    /// Reveal the next page of the card at this pointer.
+    JsonMore(String),
+    /// Clear every saved card position (the bar's Relayout).
+    JsonRelayout,
+    /// Search the current JSON level.
+    JsonSearch(String),
     /// A group card's own "Close" context-menu action, targeting an
-    /// explicit group id instead of `self.focused` -- same "deterministic
-    /// headless test" reasoning as `ExpandJsonAsGraph`. No-ops if `id`
-    /// isn't actually a group. See `App::close_group`.
+    /// explicit group id instead of `self.focused`, since a headless test
+    /// can't rely on focus. No-ops if `id` isn't actually a group. See
+    /// `App::close_group`.
     CloseGroup(String),
+    /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
+    /// action, targeting an explicit id for the same reason as `CloseGroup`.
+    /// See `App::request_sleep`.
+    SleepNode(String),
+    /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
+    /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
+    IdleSweep(u64),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -332,12 +373,19 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("MOUSEDOWN x y [button]", "Press a mouse button at (x, y) -- button defaults to left"),
     ("MOUSEUP x y [button]", "Release a mouse button at (x, y)"),
     ("CLICK x y [button]", "Full click (move+press+release) at (x, y)"),
+    ("DOUBLECLICK x y", "Left double-click at (x, y), both clicks in one frame"),
     ("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)"),
     ("ADDRESSBAR text", "Set the address bar's text and focus"),
     ("ENTER", "Accept the address bar / confirm a dropdown row"),
     ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
+    ("ARROWRIGHT", "A Right arrow key press (JSON level: open the selected outline row)"),
+    ("ARROWLEFT", "A Left arrow key press (JSON level: close it, or select its parent)"),
+    ("DIGITKEY n", "A plain digit key press (0-9): in the Graph view, jumps to the card with that number"),
+    ("SPACEKEY", "A Space key press (a focused tab card toggles in the selection)"),
     ("ARROWDOWN", "Move the address-bar suggestion highlight down"),
     ("ARROWUP", "Move the address-bar suggestion highlight up"),
+    ("SHIFTF10", "Shift+F10 -- open the focused graph card's menu"),
+    ("TABKEY [shift]", "Tab (or Shift+Tab) -- move egui keyboard focus to the next (previous) widget"),
     ("GRAPHLEFT", "Graph view: move focus left"),
     ("GRAPHRIGHT", "Graph view: move focus right"),
     ("GRAPHUP", "Graph view: move focus up"),
@@ -345,7 +393,9 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("GRAPHOPEN", "Open whichever Graph-view node is currently focused"),
     ("TYPE text", "Send each character to the focused tab's own page (not the address bar)"),
     ("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page"),
-    ("REOPENTAB", "Ctrl+Shift+T -- reopen the last closed tab"),
+    ("INSTALLENGINE kind", "Start downloading and installing the engine's runtime (CEF only)"),
+    ("ENGINESTATE kind", "Print the engine's state (Installed, Installing n%, Failed: ..) to stderr"),
+    ("REOPENTAB", "Ctrl+Shift+T -- reopen the newest Recently Closed entry"),
     ("ZOOMIN", "Ctrl+=/Ctrl++ -- zoom in"),
     ("ZOOMOUT", "Ctrl+- -- zoom out"),
     ("ZOOMRESET", "Ctrl+0 -- reset zoom"),
@@ -361,7 +411,10 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("FINDNEXT", "Find bar: next match"),
     ("FINDPREVIOUS", "Find bar: previous match"),
     ("CLOSEFINDBAR", "Close the find bar"),
-    ("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)"),
+    (
+        "SETVISIBLE true|false",
+        "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)",
+    ),
     ("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)"),
     ("RESIZE w h", "Resize the window to (w, h)"),
     ("QUIT", "Exit the app"),
@@ -372,6 +425,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("QUICKSWITCHENTER", "Quick switcher: confirm the highlighted row"),
     ("QUICKSWITCHESCAPE", "Close the quick switcher"),
     ("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field"),
+    ("SAVESESSIONAS name", "Save the running session as `name` (sessions/<name>.mnf)"),
+    ("OPENSESSION name", "Open the named save `name`, replacing the running session"),
     ("GRAPHFILTERTEXT text", "Set the Graph toolbar's own filter box"),
     ("HISTORYFILTERTEXT text", "Set the History popup's own filter box"),
     ("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box"),
@@ -394,34 +449,37 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("PRINTTOPDF path", "Print the focused tab to a PDF at `path`"),
     ("TOGGLEPIN", "Ctrl+P -- pin/unpin the focused tab"),
     ("RELOAD", "Ctrl+R/F5 -- reload the focused tab"),
+    ("GOBACK", "Back button on the focused tab"),
+    ("GOFORWARD", "Forward button on the focused tab"),
     ("NEWGROUP", "Ctrl+Shift+G -- new group"),
     ("NEWNOTE", "Graph toolbar's \"+ Note\" button"),
-    ("ADDIMAGE path", "Add an image node from `path`"),
-    ("ADDPDF path", "Add a PDF node from `path`"),
-    ("ADDJSON path", "Add a JSON node from `path`"),
+    (
+        "ADDFILE path [x y]",
+        "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there",
+    ),
     ("ADDDOWNLOAD path", "Add a download node for `path`, as if the focused tab started it"),
     ("WAITTABS [secs]", "Hold later commands until no tab spawn is in flight (default 60 s max)"),
     ("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)"),
     ("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup"),
     ("SPLIT engine", "Open a Split pane running `engine` (servo|cef|webkit|webview2)"),
     ("CLOSESPLIT", "Close the Split pane"),
-    ("EXPANDJSONASGRAPH id", "\"Expand as Graph\" on the JSON node `id`"),
+    ("JSONSELECT [pointer]", "Select an entry on the current JSON level (no pointer: the root)"),
+    ("JSONTOGGLE [pointer]", "Collapse or expand a card on the current JSON level"),
+    ("JSONMORE [pointer]", "Reveal the next page of a card on the current JSON level"),
+    ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
+    ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
+    ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
+    ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
 
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
-/// convention (`settings.json`/`session.json` use the same strings) --
+/// convention (`settings.json` and session exports use the same strings) --
 /// `SPLIT`'s one argument.
 fn parse_engine_kind(name: &str) -> Option<EngineKind> {
-    match name.to_ascii_lowercase().as_str() {
-        "servo" => Some(EngineKind::Servo),
-        "cef" => Some(EngineKind::Cef),
-        "webkit" => Some(EngineKind::Webkit),
-        "webview2" => Some(EngineKind::Webview2),
-        _ => None,
-    }
+    EngineKind::from_name(name)
 }
 
 fn parse_mouse_button(name: &str) -> MouseButton {
@@ -432,63 +490,34 @@ fn parse_mouse_button(name: &str) -> MouseButton {
     }
 }
 
-/// Maps a debug command's key name to `ipc_protocol::KeyCode` — the same
-/// engine-agnostic key set every real engine-host translation table already
-/// covers (see that type's own doc comment), not winit's own `KeyCode`.
+/// Maps a debug command's key name (`Enter`, `ShiftLeft`, `KeyA`, ...: the DOM
+/// code, `KeyCode::dom_code`) to `ipc_protocol::KeyCode`. A bare letter or
+/// digit (`"a"`, `"5"`) is accepted too, for convenience.
 fn parse_key_code(name: &str) -> Option<KeyCode> {
-    Some(match name {
-        "Enter" => KeyCode::Enter,
-        "Backspace" => KeyCode::Backspace,
-        "Tab" => KeyCode::Tab,
-        "Space" => KeyCode::Space,
-        "Escape" => KeyCode::Escape,
-        "Delete" => KeyCode::Delete,
-        "ArrowLeft" => KeyCode::ArrowLeft,
-        "ArrowRight" => KeyCode::ArrowRight,
-        "ArrowUp" => KeyCode::ArrowUp,
-        "ArrowDown" => KeyCode::ArrowDown,
-        "Home" => KeyCode::Home,
-        "End" => KeyCode::End,
-        "PageUp" => KeyCode::PageUp,
-        "PageDown" => KeyCode::PageDown,
-        "ShiftLeft" => KeyCode::ShiftLeft,
-        "ShiftRight" => KeyCode::ShiftRight,
-        "ControlLeft" => KeyCode::ControlLeft,
-        "ControlRight" => KeyCode::ControlRight,
-        "AltLeft" => KeyCode::AltLeft,
-        "AltRight" => KeyCode::AltRight,
-        _ => return parse_single_char_key(name),
-    })
-}
-
-/// `KeyA`..`KeyZ` and `Digit0`..`Digit9` follow a regular naming scheme, so
-/// generate the match from the single character instead of spelling out 36
-/// arms — also accepts a bare letter/digit (`"a"`, `"5"`) for convenience.
-fn parse_single_char_key(name: &str) -> Option<KeyCode> {
+    if let Some(key) = KeyCode::ALL.iter().copied().find(|k| k.dom_code() == name) {
+        return Some(key);
+    }
     let mut chars = name.chars();
-    let ch = chars.next()?;
+    let ch = chars.next().filter(char::is_ascii_alphanumeric)?;
     if chars.next().is_some() {
         return None;
     }
-    match ch.to_ascii_uppercase() {
-        c @ 'A'..='Z' => Some(match c {
-            'A' => KeyCode::KeyA, 'B' => KeyCode::KeyB, 'C' => KeyCode::KeyC, 'D' => KeyCode::KeyD,
-            'E' => KeyCode::KeyE, 'F' => KeyCode::KeyF, 'G' => KeyCode::KeyG, 'H' => KeyCode::KeyH,
-            'I' => KeyCode::KeyI, 'J' => KeyCode::KeyJ, 'K' => KeyCode::KeyK, 'L' => KeyCode::KeyL,
-            'M' => KeyCode::KeyM, 'N' => KeyCode::KeyN, 'O' => KeyCode::KeyO, 'P' => KeyCode::KeyP,
-            'Q' => KeyCode::KeyQ, 'R' => KeyCode::KeyR, 'S' => KeyCode::KeyS, 'T' => KeyCode::KeyT,
-            'U' => KeyCode::KeyU, 'V' => KeyCode::KeyV, 'W' => KeyCode::KeyW, 'X' => KeyCode::KeyX,
-            'Y' => KeyCode::KeyY, 'Z' => KeyCode::KeyZ,
-            _ => unreachable!(),
-        }),
-        c @ '0'..='9' => Some(match c {
-            '0' => KeyCode::Digit0, '1' => KeyCode::Digit1, '2' => KeyCode::Digit2, '3' => KeyCode::Digit3,
-            '4' => KeyCode::Digit4, '5' => KeyCode::Digit5, '6' => KeyCode::Digit6, '7' => KeyCode::Digit7,
-            '8' => KeyCode::Digit8, '9' => KeyCode::Digit9,
-            _ => unreachable!(),
-        }),
-        _ => None,
+    let code = if ch.is_ascii_digit() { format!("Digit{ch}") } else { format!("Key{}", ch.to_ascii_uppercase()) };
+    KeyCode::ALL.iter().copied().find(|k| k.dom_code() == code)
+}
+
+/// `ADDFILE <path>` or `ADDFILE <path> <x> <y>` -- `rest` is non-empty. The
+/// path may itself contain spaces, so the trailing `x y` is only peeled off
+/// when the last two whitespace-separated words both parse as `f32`;
+/// otherwise the whole of `rest` is the path.
+fn parse_add_file(rest: &str) -> Option<DebugCommand> {
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    if words.len() >= 3 {
+        if let (Ok(x), Ok(y)) = (words[words.len() - 2].parse::<f32>(), words[words.len() - 1].parse::<f32>()) {
+            return Some(DebugCommand::AddFile(words[..words.len() - 2].join(" "), Some((x, y))));
+        }
     }
+    Some(DebugCommand::AddFile(rest.to_string(), None))
 }
 
 /// Parses one line of the headless debug-command text protocol. Unknown
@@ -507,11 +536,10 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
     let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
     let mut parts = rest.split_whitespace();
+    // Commands whose whole argument is a path or text, which must not be empty.
+    let non_empty = |command: fn(String) -> DebugCommand| (!rest.is_empty()).then(|| command(rest.to_string()));
     match cmd.to_ascii_uppercase().as_str() {
-        "MOUSEMOVE" => Some(DebugCommand::MouseMove {
-            x: parts.next()?.parse().ok()?,
-            y: parts.next()?.parse().ok()?,
-        }),
+        "MOUSEMOVE" => Some(DebugCommand::MouseMove { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? }),
         "MOUSEDOWN" => Some(DebugCommand::MouseDown {
             x: parts.next()?.parse().ok()?,
             y: parts.next()?.parse().ok()?,
@@ -527,6 +555,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             y: parts.next()?.parse().ok()?,
             button: parts.next().map(parse_mouse_button).unwrap_or(MouseButton::Left),
         }),
+        "DOUBLECLICK" => {
+            Some(DebugCommand::DoubleClick { x: parts.next()?.parse().ok()?, y: parts.next()?.parse().ok()? })
+        }
         "SCROLL" => Some(DebugCommand::Scroll {
             x: parts.next()?.parse().ok()?,
             y: parts.next()?.parse().ok()?,
@@ -536,8 +567,14 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDRESSBAR" => Some(DebugCommand::AddressBar(rest.to_string())),
         "ENTER" => Some(DebugCommand::Enter),
         "ESCAPE" => Some(DebugCommand::Escape),
+        "ARROWRIGHT" => Some(DebugCommand::ArrowRight),
+        "ARROWLEFT" => Some(DebugCommand::ArrowLeft),
+        "SPACEKEY" => Some(DebugCommand::SpaceKey),
+        "DIGITKEY" => rest.trim().parse().ok().filter(|d| *d <= 9).map(DebugCommand::DigitKey),
         "ARROWDOWN" => Some(DebugCommand::ArrowDown),
         "ARROWUP" => Some(DebugCommand::ArrowUp),
+        "SHIFTF10" => Some(DebugCommand::ShiftF10),
+        "TABKEY" => Some(DebugCommand::TabKey(rest.trim() == "shift")),
         "GRAPHLEFT" => Some(DebugCommand::GraphFocusLeft),
         "GRAPHRIGHT" => Some(DebugCommand::GraphFocusRight),
         "GRAPHUP" => Some(DebugCommand::GraphFocusUp),
@@ -546,6 +583,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "TYPE" => Some(DebugCommand::TypeIntoPage(rest.to_string())),
         "KEYPAGE" => Some(DebugCommand::KeyPage(parse_key_code(parts.next()?)?)),
         "REOPENTAB" => Some(DebugCommand::ReopenTab),
+        "INSTALLENGINE" => parse_engine_kind(rest).map(DebugCommand::InstallEngine),
+        "ENGINESTATE" => parse_engine_kind(rest).map(DebugCommand::EngineState),
         "ZOOMIN" => Some(DebugCommand::ZoomIn),
         "ZOOMOUT" => Some(DebugCommand::ZoomOut),
         "ZOOMRESET" => Some(DebugCommand::ZoomReset),
@@ -570,7 +609,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
             "false" => false,
             _ => return None,
         })),
-        "SCREENSHOT" => Some(DebugCommand::Screenshot(rest.to_string())).filter(|_| !rest.is_empty()),
+        "SCREENSHOT" => non_empty(DebugCommand::Screenshot),
         "RESIZE" => Some(DebugCommand::Resize(parts.next()?.parse().ok()?, parts.next()?.parse().ok()?)),
         "QUIT" => Some(DebugCommand::Quit),
         "QUICKSWITCHOPEN" => Some(DebugCommand::QuickSwitchOpen),
@@ -580,47 +619,55 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "QUICKSWITCHENTER" => Some(DebugCommand::QuickSwitchEnter),
         "QUICKSWITCHESCAPE" => Some(DebugCommand::QuickSwitchEscape),
         "SESSIONNAMETEXT" => Some(DebugCommand::SessionNameText(rest.to_string())),
+        "SAVESESSIONAS" => non_empty(DebugCommand::SaveSessionAs),
+        "OPENSESSION" => non_empty(DebugCommand::OpenSession),
         "GRAPHFILTERTEXT" => Some(DebugCommand::GraphFilterText(rest.to_string())),
         "HISTORYFILTERTEXT" => Some(DebugCommand::HistoryFilterText(rest.to_string())),
         "BOOKMARKSFILTERTEXT" => Some(DebugCommand::BookmarksFilterText(rest.to_string())),
         "TOGGLEVIEW" => Some(DebugCommand::ToggleView),
         "TOGGLESETTINGSPAGE" => Some(DebugCommand::ToggleSettingsPage),
-        "EXPORTSESSION" => Some(DebugCommand::ExportSession(rest.to_string())).filter(|_| !rest.is_empty()),
-        "EXPORTSTATE" => Some(DebugCommand::ExportState(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTSESSION" => Some(DebugCommand::ImportSession(rest.to_string())).filter(|_| !rest.is_empty()),
-        "EXPORTBOOKMARKS" => Some(DebugCommand::ExportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTBOOKMARKS" => Some(DebugCommand::ImportBookmarks(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTSESSION" => non_empty(DebugCommand::ExportSession),
+        "EXPORTSTATE" => non_empty(DebugCommand::ExportState),
+        "IMPORTSESSION" => non_empty(DebugCommand::ImportSession),
+        "EXPORTBOOKMARKS" => non_empty(DebugCommand::ExportBookmarks),
+        "IMPORTBOOKMARKS" => non_empty(DebugCommand::ImportBookmarks),
         "CLOSEALLLEVEL" => Some(DebugCommand::CloseAllLevel),
         "CONFIRMIMPORT" => Some(DebugCommand::ConfirmImport),
         "CANCELIMPORT" => Some(DebugCommand::CancelImport),
         "RENAMEGROUP" => Some(DebugCommand::RenameGroup),
         "BOOKMARKFOLDERTEXT" => Some(DebugCommand::BookmarkFolderText(rest.to_string())),
         "DISMISSPEEK" => Some(DebugCommand::DismissPeek),
-        "EXPORTGROUP" => Some(DebugCommand::ExportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
-        "IMPORTGROUP" => Some(DebugCommand::ImportGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "EXPORTGROUP" => non_empty(DebugCommand::ExportGroup),
+        "IMPORTGROUP" => non_empty(DebugCommand::ImportGroup),
         "DUPLICATETAB" => Some(DebugCommand::DuplicateTab),
-        "PRINTTOPDF" => Some(DebugCommand::PrintToPdf(rest.to_string())).filter(|_| !rest.is_empty()),
+        "PRINTTOPDF" => non_empty(DebugCommand::PrintToPdf),
         "TOGGLEPIN" => Some(DebugCommand::TogglePin),
         "RELOAD" => Some(DebugCommand::Reload),
+        "GOBACK" => Some(DebugCommand::GoBack),
+        "GOFORWARD" => Some(DebugCommand::GoForward),
         "NEWGROUP" => Some(DebugCommand::NewGroup),
         "NEWNOTE" => Some(DebugCommand::NewNote),
-        "ADDIMAGE" => Some(DebugCommand::AddImage(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDPDF" => Some(DebugCommand::AddPdf(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDJSON" => Some(DebugCommand::AddJson(rest.to_string())).filter(|_| !rest.is_empty()),
-        "ADDDOWNLOAD" => Some(DebugCommand::AddDownload(rest.to_string())).filter(|_| !rest.is_empty()),
-        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(
-            if rest.is_empty() { 60.0 } else { rest.parse().ok().filter(|s: &f64| *s >= 0.0)? },
-        ))),
+        "ADDFILE" => (!rest.is_empty()).then(|| parse_add_file(rest)).flatten(),
+        "ADDDOWNLOAD" => non_empty(DebugCommand::AddDownload),
+        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(if rest.is_empty() {
+            60.0
+        } else {
+            rest.parse().ok().filter(|s: &f64| *s >= 0.0)?
+        }))),
         "SLEEP" => Some(DebugCommand::Sleep(std::time::Duration::from_secs_f64(
             rest.parse().ok().filter(|s: &f64| *s >= 0.0)?,
         ))),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
-        "EXPANDJSONASGRAPH" => {
-            Some(DebugCommand::ExpandJsonAsGraph(rest.to_string())).filter(|_| !rest.is_empty())
-        }
-        "CLOSEGROUP" => Some(DebugCommand::CloseGroup(rest.to_string())).filter(|_| !rest.is_empty()),
+        "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
+        "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
+        "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
+        "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
+        "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
+        "JSONRELAYOUT" => Some(DebugCommand::JsonRelayout),
+        "JSONSEARCH" => Some(DebugCommand::JsonSearch(rest.to_string())),
         "TRIGGERFIRSTLAUNCHDEMO" => Some(DebugCommand::TriggerFirstLaunchDemo),
         "HELP" | "?" => Some(DebugCommand::Help),
         _ => None,
@@ -646,8 +693,22 @@ pub fn print_help() {
 /// piped script exits cleanly instead of hanging forever.
 pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
+        // `--script <file>` reads the commands from a file instead of stdin,
+        // for a run that has no stdin to pipe (the elevated `Samply` task).
+        let args: Vec<String> = std::env::args().collect();
+        let script = args.iter().position(|a| a == "--script").and_then(|i| args.get(i + 1));
+        let input: Box<dyn std::io::BufRead> = match script {
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => Box::new(std::io::BufReader::new(file)),
+                Err(e) => {
+                    eprintln!("--script {path}: {e}");
+                    let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
+                    return;
+                }
+            },
+            None => Box::new(std::io::stdin().lock()),
+        };
+        for line in input.lines() {
             let Ok(line) = line else { break };
             match parse_line(&line) {
                 Some(DebugCommand::WaitTabs(timeout)) => {
@@ -688,4 +749,35 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         }
         let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_json_level_commands_with_an_optional_pointer() {
+        assert!(matches!(parse_line("JSONSELECT /users/0"), Some(DebugCommand::JsonSelect(p)) if p == "/users/0"));
+        assert!(matches!(parse_line("JSONTOGGLE"), Some(DebugCommand::JsonToggle(p)) if p.is_empty()));
+        assert!(matches!(parse_line("JSONSEARCH two words"), Some(DebugCommand::JsonSearch(q)) if q == "two words"));
+        assert!(matches!(parse_line("JSONRELAYOUT"), Some(DebugCommand::JsonRelayout)));
+    }
+
+    #[test]
+    fn parses_engine_install_commands() {
+        assert!(matches!(parse_line("INSTALLENGINE cef"), Some(DebugCommand::InstallEngine(EngineKind::Cef))));
+        assert!(matches!(parse_line("ENGINESTATE CEF"), Some(DebugCommand::EngineState(EngineKind::Cef))));
+        assert!(parse_line("INSTALLENGINE nope").is_none());
+    }
+
+    #[test]
+    fn parses_addfile_with_an_optional_trailing_point() {
+        assert!(
+            matches!(parse_line("ADDFILE C:\\a b\\c.png"), Some(DebugCommand::AddFile(p, None)) if p == "C:\\a b\\c.png")
+        );
+        assert!(matches!(
+            parse_line("ADDFILE C:\\a b\\c.png 10 20.5"),
+            Some(DebugCommand::AddFile(p, Some((x, y)))) if p == "C:\\a b\\c.png" && x == 10.0 && y == 20.5
+        ));
+    }
 }

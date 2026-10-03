@@ -19,7 +19,7 @@ pub const JSON_BODY_RESULT: &str = "json-body-result";
 /// -- same request/`document.contentType` check as `JSON_BODY_RESULT`, just
 /// the other branch; carries the raw content-type string as its one
 /// argument, same as every other engine forwards it, so `manifold`'s own
-/// allowlist (not this handler) decides what it means.
+/// `content::kind_of` (not this handler) decides what it means.
 pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// See `ipc_protocol::EngineToHost::AudioPlayingChanged`'s own doc comment
 /// for why CEF never sent this before -- a real native read would need the
@@ -31,6 +31,11 @@ pub const REDIRECT_RESULT: &str = "redirect-content-result";
 /// the reply is a real boolean argument, not a string.
 pub const CHECK_AUDIO_PLAYING: &str = "check-audio-playing";
 pub const AUDIO_PLAYING_RESULT: &str = "audio-playing-result";
+/// See `ipc_protocol::EngineToHost::PageState`: the renderer evals
+/// `ipc_protocol::PAGE_STATE_SCRIPT` and replies with its raw text, which
+/// `main.rs` parses with `ipc_protocol::PageState::parse`.
+pub const CHECK_PAGE_STATE: &str = "check-page-state";
+pub const PAGE_STATE_RESULT: &str = "page-state-result";
 
 #[derive(Clone)]
 pub struct EngineRenderProcessHandler {}
@@ -68,20 +73,36 @@ wrap_render_process_handler! {
                 }
                 return 1;
             }
+            if name == CHECK_PAGE_STATE {
+                // Only reply when the eval produced text: silence means "could not tell".
+                let text = frame.v8_context().and_then(|context| {
+                    context.enter();
+                    let text = eval_string(&context, ipc_protocol::PAGE_STATE_SCRIPT);
+                    context.exit();
+                    text
+                });
+                if let Some(text) = text {
+                    if let Some(mut reply) = process_message_create(Some(&PAGE_STATE_RESULT.into())) {
+                        if let Some(args) = reply.argument_list() {
+                            args.set_string(0, Some(&text.as_str().into()));
+                        }
+                        frame.send_process_message(ProcessId::BROWSER, Some(&mut reply));
+                    }
+                }
+                return 1;
+            }
             if name != CHECK_JSON_BODY {
                 return 0;
             }
 
-            // Only reply for an actual outcome -- `manifold` already
-            // clears a tab's `json_body` on any real URL change regardless
-            // of which engine it's on (see `EngineToHost::JsonBody`'s own
-            // doc comment), and a missing/unreadable `document.contentType`
-            // needs no reply at all (unlike the other three engines, which
-            // always forward whatever content-type string they got -- CEF's
-            // own `eval` can genuinely come back empty if the V8 context
-            // isn't in a state to run it, which isn't "this page has no
-            // content-type", so treating that as silence rather than an
-            // empty-string report is deliberate here).
+            // Only reply for an actual outcome -- a missing/unreadable
+            // `document.contentType` needs no reply at all (unlike the
+            // other three engines, which always forward whatever
+            // content-type string they got -- CEF's own `eval` can
+            // genuinely come back empty if the V8 context isn't in a state
+            // to run it, which isn't "this page has no content-type", so
+            // treating that as silence rather than an empty-string report
+            // is deliberate here).
             match frame.v8_context().map(|context| eval_page_kind(&context)) {
                 Some(Some(PageKind::Json(body))) => {
                     if let Some(mut reply) = process_message_create(Some(&JSON_BODY_RESULT.into())) {
@@ -115,7 +136,7 @@ impl RenderProcessHandlerBuilder {
 enum PageKind {
     Json(String),
     /// Any other (non-JSON) content-type, carried through verbatim --
-    /// `manifold`'s own `redirect_fetch::classify` allowlist is what
+    /// `manifold`'s own `content::kind_of` is what
     /// actually decides whether it means anything.
     Other(String),
 }
@@ -130,9 +151,7 @@ fn eval_page_kind(context: &V8Context) -> Option<PageKind> {
     context.enter();
     let content_type = eval_string(context, "document.contentType");
     let kind = match content_type {
-        Some(t) if t == "application/json" => {
-            eval_string(context, "document.body.innerText").map(PageKind::Json)
-        }
+        Some(t) if t == "application/json" => eval_string(context, "document.body.innerText").map(PageKind::Json),
         Some(t) => Some(PageKind::Other(t)),
         None => None,
     };
@@ -154,7 +173,10 @@ fn eval_audio_playing(context: &V8Context) -> bool {
     let mut retval: Option<V8Value> = None;
     let mut exception: Option<V8Exception> = None;
     let ok = context.eval(
-        Some(&"Array.from(document.querySelectorAll('video,audio')).some(function(el){return !el.paused&&!el.muted;});".into()),
+        Some(
+            &"Array.from(document.querySelectorAll('video,audio')).some(function(el){return !el.paused&&!el.muted;});"
+                .into(),
+        ),
         None,
         0,
         Some(&mut retval),

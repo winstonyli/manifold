@@ -17,15 +17,15 @@
 //! so it never overlaps anything the user can see or click while still
 //! being something the compositor treats as a normal paintable window.
 
-use windows::core::{w, GUID, Result, PCWSTR};
+use windows::core::{w, Result, GUID, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::ITaskbarList;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos,
-    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos, ShowWindow,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 const CLASS_NAME: PCWSTR = w!("ManifoldWebView2Host");
@@ -34,12 +34,7 @@ const CLASS_NAME: PCWSTR = w!("ManifoldWebView2Host");
 // directly from the well-known GUID rather than guessed.
 const CLSID_TASKBAR_LIST: GUID = GUID::from_u128(0x56FDF344_FD6D_11D0_958A_006097C9A090);
 
-unsafe extern "system" fn wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // WebView2's own window-subclassing handles everything it cares about;
     // this process never needs custom message handling of its own.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -156,12 +151,9 @@ pub fn hide_from_taskbar(hwnd: HWND) {
     let hwnd_value = hwnd.0 as isize;
     std::thread::spawn(move || unsafe {
         let hwnd = HWND(hwnd_value as *mut core::ffi::c_void);
-        let _ = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-        );
-        let Ok(taskbar_list) =
-            CoCreateInstance::<_, ITaskbarList>(&CLSID_TASKBAR_LIST, None, CLSCTX_INPROC_SERVER)
+        let _ =
+            windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+        let Ok(taskbar_list) = CoCreateInstance::<_, ITaskbarList>(&CLSID_TASKBAR_LIST, None, CLSCTX_INPROC_SERVER)
         else {
             return;
         };
@@ -189,15 +181,7 @@ pub fn hide_from_taskbar(hwnd: HWND) {
 /// upside, so the window tracks `HostToEngine::Resize` too.
 pub fn resize(hwnd: HWND, width: u32, height: u32) {
     unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            width as i32,
-            height as i32,
-            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        let _ = SetWindowPos(hwnd, None, 0, 0, width as i32, height as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 

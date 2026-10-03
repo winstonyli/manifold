@@ -2,15 +2,13 @@ mod input;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
 use javascriptcore::ValueExt;
 use webkit2gtk::{
-    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView,
-    WebViewExt,
+    DownloadExt, FindControllerExt, FindOptions, URIRequestExt, URIResponseExt, WebContextExt, WebView, WebViewExt,
 };
 
 const DEFAULT_WIDTH: i32 = 1024;
@@ -24,9 +22,10 @@ const DEFAULT_HEIGHT: i32 = 768;
 /// DownloadEvent`/`manifold-engine-cef`'s own `download_handler::DownloadEvent`
 /// use.
 enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64> },
+    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
+    Failed { path: String },
 }
 
 fn main() {
@@ -36,8 +35,7 @@ fn main() {
     // RemoteTransport is keyed by TCP port, not by tab_id (there's no
     // shared memory path here to name a file after).
     let _tab_id = std::env::var("ENGINE_TAB_ID").expect("ENGINE_TAB_ID env var required");
-    let initial_url = std::env::var("ENGINE_INITIAL_URL")
-        .unwrap_or_else(|_| "https://example.com".to_string());
+    let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
     let port: u16 = std::env::var("ENGINE_TCP_PORT")
         .expect("ENGINE_TCP_PORT env var required")
         .parse()
@@ -47,8 +45,7 @@ fn main() {
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
     // ipc_protocol::transport::listen_remote's doc comment.
-    let host_ip =
-        std::env::var("ENGINE_HOST_IP").expect("ENGINE_HOST_IP env var required");
+    let host_ip = std::env::var("ENGINE_HOST_IP").expect("ENGINE_HOST_IP env var required");
 
     // Single TCP connection back to manifold, used for both directions
     // via a cloned handle — mirrors process_manager.rs's spawn_webkit_tab
@@ -56,44 +53,17 @@ fn main() {
     // shared memory with the Windows host process, so this engine-host
     // uses RemoteTransport, not the SharedFrameBuffer the other engines
     // use).
-    let control =
-        transport::connect_remote(&host_ip, port).expect("connect to manifold");
+    // The secret process_manager.rs generated for this spawn; manifold drops any
+    // connection that doesn't send it first.
+    let token = transport::token_from_hex(&std::env::var("ENGINE_TOKEN").expect("ENGINE_TOKEN env var required"))
+        .expect("ENGINE_TOKEN must be 32 hex digits");
+    let control = transport::connect_remote(&host_ip, port, &token).expect("connect to manifold");
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");
     let mut to_host = MessageChannel::new(stream);
-    let mut from_host = MessageChannel::new(read_stream);
+    let from_host = MessageChannel::new(read_stream);
 
-    let (tx, rx) = mpsc::channel::<HostToEngine>();
-    std::thread::spawn(move || loop {
-        match from_host.recv::<HostToEngine>() {
-            Ok(msg) => {
-                let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-                if tx.send(msg).is_err() || is_shutdown {
-                    break;
-                }
-            }
-            Err(_) => {
-                // The control socket dropped without a graceful `Shutdown`
-                // message — manifold.exe exited abnormally (force-killed,
-                // crashed) rather than running `Drop for EngineTab`'s normal
-                // teardown, which is the only other place `Shutdown` would
-                // have come from. Windows still closes the TCP socket on
-                // process death regardless of whether any Rust destructor
-                // ran, so this `recv` reliably observes it (as an
-                // `UnexpectedEof` from `read_exact`) — but before this fix,
-                // nothing told the main loop, which kept polling GTK,
-                // capturing frames nobody could receive, and re-attempting
-                // now-dead sends forever: confirmed live via `taskkill /F
-                // /IM manifold.exe`, the orphaned manifold-engine-webkit (and
-                // the wsl.exe relay above it) pegged at ~45% CPU
-                // indefinitely. Synthesizing `Shutdown` here reuses the
-                // existing clean-exit path below for this case too, so a
-                // dead parent is torn down exactly like a graceful one.
-                let _ = tx.send(HostToEngine::Shutdown);
-                break;
-            }
-        }
-    });
+    let rx = ipc_protocol::transport::spawn_host_reader(from_host);
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
 
@@ -139,10 +109,7 @@ fn main() {
         context.connect_download_started(move |_context, download| {
             let pending_for_destination = pending_for_started.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = std::env::var_os("HOME")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_default()
-                    .join("Downloads");
+                let dir = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join("Downloads");
                 let _ = std::fs::create_dir_all(&dir);
                 // Server-controlled -- only its final path component is
                 // ever used, same `..`/absolute-path guard as CEF's
@@ -156,9 +123,8 @@ fn main() {
                 download.set_destination(&format!("file://{}", dest.display()));
                 let path = dest.to_string_lossy().to_string();
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
-                pending_for_destination
-                    .borrow_mut()
-                    .push(DownloadEvent::Started { path, total_bytes });
+                let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
+                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes, url });
                 true
             });
 
@@ -167,14 +133,27 @@ fn main() {
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
                     let bytes_received = download.received_data_length();
-                    pending_for_progress
-                        .borrow_mut()
-                        .push(DownloadEvent::Progress { path, bytes_received });
+                    pending_for_progress.borrow_mut().push(DownloadEvent::Progress { path, bytes_received });
+                }
+            });
+
+            // `failed` fires before `finished` (which follows either outcome), so it marks the download for it.
+            let failed = Rc::new(std::cell::Cell::new(false));
+            let pending_for_failed = pending_for_started.clone();
+            let failed_for_handler = failed.clone();
+            download.connect_failed(move |download, _error| {
+                failed_for_handler.set(true);
+                if let Some(uri) = download.destination() {
+                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                    pending_for_failed.borrow_mut().push(DownloadEvent::Failed { path });
                 }
             });
 
             let pending_for_finished = pending_for_started.clone();
             download.connect_finished(move |download| {
+                if failed.get() {
+                    return;
+                }
                 if let Some(uri) = download.destination() {
                     let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
                     pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
@@ -241,6 +220,8 @@ fn main() {
     // script-eval check every engine that sends either message uses.
     let pending_json_body: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_redirect_content_type: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Filled by the `QueryPageState` script callback, drained and sent each tick.
+    let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
 
     // Minimal context menu: a right-click already dispatches a genuine
     // native `ButtonRelease` (input.rs, unchanged), which makes WebKitGTK
@@ -332,11 +313,7 @@ fn main() {
                 HostToEngine::Reload => {
                     webview.reload();
                 }
-                HostToEngine::Resize {
-                    width: w,
-                    height: h,
-                    ..
-                } => {
+                HostToEngine::Resize { width: w, height: h, .. } => {
                     webview.set_size_request(w as i32, h as i32);
                     offscreen.resize(w as i32, h as i32);
                 }
@@ -356,14 +333,33 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    let url = webview
-                        .uri()
-                        .map(|u| u.to_string())
-                        .unwrap_or_else(|| last_nav.0.clone());
-                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState {
-                        url,
-                        zoom: webview.zoom_level(),
-                    }));
+                    let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
+                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
+                }
+                HostToEngine::QueryPageState => {
+                    let pending = pending_page_state.clone();
+                    webview.run_javascript(
+                        ipc_protocol::PAGE_STATE_SCRIPT,
+                        gtk::gio::Cancellable::NONE,
+                        move |result| {
+                            if let Ok(js_result) = result {
+                                if let Some(value) = js_result.js_value() {
+                                    if value.is_string() {
+                                        if let Some(state) = ipc_protocol::PageState::parse(&value.to_str()) {
+                                            *pending.borrow_mut() = Some(state);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                }
+                HostToEngine::RestoreScroll { x, y } => {
+                    webview.run_javascript(
+                        &ipc_protocol::restore_scroll_script(x, y),
+                        gtk::gio::Cancellable::NONE,
+                        |_| {},
+                    );
                 }
                 HostToEngine::FindStart { text, match_case } => {
                     if let Some(controller) = &find_controller {
@@ -415,10 +411,7 @@ fn main() {
         }
 
         let nav_now = (
-            webview
-                .uri()
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| last_nav.0.clone()),
+            webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
             webview.title().map(|t| t.to_string()).unwrap_or_default(),
             webview.can_go_back(),
             webview.can_go_forward(),
@@ -433,6 +426,10 @@ fn main() {
                 can_go_back: nav_now.2,
                 can_go_forward: nav_now.3,
                 loading: nav_now.4,
+                // Polled state carries no cause; `decide-policy`'s
+                // `NavigationAction` (is_user_gesture, navigation_type)
+                // would.
+                user_started: None,
             });
             // Loading just finished -- check once whether the page that
             // loaded is a raw JSON response, or anything else non-HTML (see
@@ -446,24 +443,23 @@ fn main() {
             if was_loading && !nav_now.4 {
                 let pending_json = pending_json_body.clone();
                 let pending_redirect = pending_redirect_content_type.clone();
-                webview.run_javascript(
-                    "(function(){var t=document.contentType;if(t==='application/json'){return 'json\\n'+document.body.innerText;}if(t){return 'type\\n'+t;}return null;})();",
-                    gtk::gio::Cancellable::NONE,
-                    move |result| {
-                        if let Ok(js_result) = result {
-                            if let Some(value) = js_result.js_value() {
-                                if value.is_string() {
-                                    let text = value.to_str().to_string();
-                                    if let Some(body) = text.strip_prefix("json\n") {
-                                        *pending_json.borrow_mut() = Some(body.to_string());
-                                    } else if let Some(content_type) = text.strip_prefix("type\n") {
-                                        *pending_redirect.borrow_mut() = Some(content_type.to_string());
+                webview.run_javascript(ipc_protocol::PAGE_KIND_SCRIPT, gtk::gio::Cancellable::NONE, move |result| {
+                    if let Ok(js_result) = result {
+                        if let Some(value) = js_result.js_value() {
+                            if value.is_string() {
+                                match ipc_protocol::PageKindReply::parse(&value.to_str()) {
+                                    Some(ipc_protocol::PageKindReply::Json(body)) => {
+                                        *pending_json.borrow_mut() = Some(body)
                                     }
+                                    Some(ipc_protocol::PageKindReply::Other(t)) => {
+                                        *pending_redirect.borrow_mut() = Some(t)
+                                    }
+                                    None => {}
                                 }
                             }
                         }
-                    },
-                );
+                    }
+                });
             }
         }
 
@@ -477,6 +473,10 @@ fn main() {
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
             let _ = to_host.send(&EngineToHost::JsonBody { body });
+        }
+
+        if let Some(state) = pending_page_state.borrow_mut().take() {
+            let _ = to_host.send(&EngineToHost::PageState(state));
         }
 
         if let Some(content_type) = pending_redirect_content_type.borrow_mut().take() {
@@ -493,13 +493,14 @@ fn main() {
 
         for event in pending_download.borrow_mut().drain(..) {
             let msg = match event {
-                DownloadEvent::Started { path, total_bytes } => {
-                    EngineToHost::DownloadStarted { path, total_bytes }
+                DownloadEvent::Started { path, total_bytes, url } => {
+                    EngineToHost::DownloadStarted { path, total_bytes, url }
                 }
                 DownloadEvent::Progress { path, bytes_received } => {
                     EngineToHost::DownloadProgress { path, bytes_received }
                 }
                 DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
+                DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
             };
             let _ = to_host.send(&msg);
         }
@@ -544,8 +545,8 @@ fn main() {
 }
 
 /// `GdkPixbuf` rows can be padded to a stride wider than `width * 4` for
-/// alignment; our IPC contract assumes tightly-packed rows (`width * height
-/// * 4` bytes, no padding — see `ipc_protocol::frame_buffer`'s doc comment
+/// alignment; our IPC contract assumes tightly-packed rows
+/// (`width * height * 4` bytes, no padding — see `ipc_protocol::frame_buffer`'s doc comment
 /// and `manifold`'s texture upload), so copy row-by-row rather than
 /// sending the raw buffer as-is.
 fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {

@@ -271,14 +271,7 @@ fn send_button_or_motion_event(
 /// coarser fallback for old discrete-notch mice that WebKitGTK also still
 /// understands, but smooth is the better match for
 /// `InputEvent::Scroll`'s own already-continuous `delta_x`/`delta_y`.
-fn send_scroll_event(
-    window: &gdk::Window,
-    device: Option<&gdk::Device>,
-    x: f64,
-    y: f64,
-    delta_x: f64,
-    delta_y: f64,
-) {
+fn send_scroll_event(window: &gdk::Window, device: Option<&gdk::Device>, x: f64, y: f64, delta_x: f64, delta_y: f64) {
     use gdk::glib::translate::{IntoGlib, ToGlibPtr, ToGlibPtrMut};
 
     let mut ev = gdk::Event::new(gdk::EventType::Scroll);
@@ -302,13 +295,7 @@ fn send_scroll_event(
     ev.put();
 }
 
-fn send_key_event(
-    window: &gdk::Window,
-    device: Option<&gdk::Device>,
-    type_: gdk::EventType,
-    key: KeyCode,
-    mods: u8,
-) {
+fn send_key_event(window: &gdk::Window, device: Option<&gdk::Device>, type_: gdk::EventType, key: KeyCode, mods: u8) {
     use gdk::glib::translate::{IntoGlib, ToGlibPtr, ToGlibPtrMut};
 
     let Some(keyval) = key_to_gdk_keyval(key) else {
@@ -365,4 +352,3 @@ fn send_char_event(window: &gdk::Window, device: Option<&gdk::Device>, codepoint
         ev.put();
     }
 }
-

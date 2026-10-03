@@ -8,8 +8,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_8};
 use webview2_com::IsDocumentPlayingAudioChangedEventHandler;
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_8};
 use windows::core::BOOL;
 
 pub type PendingAudioPlaying = Rc<RefCell<Option<bool>>>;
@@ -26,8 +26,7 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingAudioPl
     let pending_for_handler = pending.clone();
     let handler = IsDocumentPlayingAudioChangedEventHandler::create(Box::new(move |sender, _args| {
         if let Some(sender) = &sender {
-            let webview8_for_read: windows::core::Result<ICoreWebView2_8> =
-                windows::core::Interface::cast(sender);
+            let webview8_for_read: windows::core::Result<ICoreWebView2_8> = windows::core::Interface::cast(sender);
             if let Ok(sender8) = webview8_for_read {
                 let mut playing = BOOL(0);
                 if unsafe { sender8.IsDocumentPlayingAudio(&mut playing) }.is_ok() {

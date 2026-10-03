@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Card family</title>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Literata:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#0e0d0a; --graph:#000; --bg:#1d1a14; --chip:#2e2a20; --line:rgba(255,255,255,.14);
+  --accent:#d7a24a; --on-accent:#2b1c05; --text:#e8e2d4; --dim:#9b9585;
+  --f:'Familjen Grotesk',system-ui,sans-serif; --serif:'Literata',Georgia,serif; --red:#e0584b; --green:#3fb27f;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 24px 64px;background:var(--page);color:var(--text);font:14px/1.45 var(--f)}
+h1{font:600 18px var(--f);margin:0 0 4px}
+p.lede{margin:0 0 20px;color:var(--dim);max-width:80ch}
+.ctl{position:sticky;top:0;z-index:5;background:var(--page);padding:8px 0;margin:0 0 8px;display:flex;gap:6px;align-items:center;color:var(--dim);font-size:13px}
+.ctl button{font:inherit;color:var(--text);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:3px 10px;cursor:pointer}
+.ctl button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.stage{background:var(--graph);border-radius:8px;padding:22px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,max-content));gap:30px 22px;
+  background-image:radial-gradient(rgba(255,255,255,.12) 1px,transparent 1px);background-size:28px 28px}
+.cell{display:flex;flex-direction:column;gap:8px}
+.cell>small{font:500 11px var(--f);color:var(--dim);letter-spacing:.04em}
+.card{position:relative;width:232px;height:156px;border-radius:8px;color:var(--text);font-family:var(--f);font-size:13px}
+.shell{position:absolute;inset:0;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;background:#1d1a14}
+.card.sel .shell{background:#26211a}
+.card::before{content:"";position:absolute;inset:-5px;border-radius:12px;pointer-events:none;opacity:0;box-shadow:0 0 0 1px var(--ring,var(--accent)),0 0 14px 2px color-mix(in srgb,var(--ring,var(--accent)) 45%,transparent)}
+.card.sel::before,.card.tag::before{opacity:1}
+.card.tag{--ring:#2fa37a}
+.x{position:absolute;right:-9px;top:-9px;width:22px;height:22px;border-radius:5px;background:#1d1a14;border:1px solid var(--line);display:none;align-items:center;justify-content:center;z-index:3}
+.card.sel .x,.card:hover .x{display:flex}
+.conn{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border-radius:50%;border:2px solid #555;background:#111;z-index:3}
+.card.sel .conn{border-color:var(--accent)}
+svg.ic{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.fav{width:14px;height:14px;border-radius:3px;background:linear-gradient(135deg,#ef8f2e,#e0584b);flex:none;grid-row:1/3}
+.badges{display:flex;gap:4px;align-items:center;color:var(--dim);grid-row:1/3;grid-column:3}
+.hd{height:40px;display:grid;grid-template-columns:auto 1fr auto;column-gap:8px;align-items:center;padding:0 9px 2px;flex:none}
+.gl{grid-row:1/3;width:16px;height:16px;color:var(--dim);display:flex;align-items:center;justify-content:center}
+.gl svg{width:16px;height:16px}
+.t1{font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:end}
+.t2.path{direction:rtl;text-align:left}
+.t2{color:var(--dim);font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;align-self:start}
+.body{position:relative;flex:1;margin:0 4px 4px;border-radius:5px;overflow:hidden}
+.thumb{position:absolute;inset:0;background:#f4f1ea}
+.thumb i{position:absolute;display:block;border-radius:2px}
+.b-img{background:linear-gradient(135deg,#5b86b8,#2f4d73 55%,#e0a05a)}
+.b-pdf{background:#e9e6df;display:flex;align-items:center;justify-content:center}
+.b-pdf .pg{width:46%;height:82%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);padding:8px;display:flex;flex-direction:column;gap:5px}
+.b-pdf .pg i{display:block;height:4px;background:#cfcabd;border-radius:2px}.b-pdf .pg i:first-child{width:60%;background:#444;height:6px}
+.b-note{background:#ffea91;color:#5a4c1c;padding:10px;font-family:var(--serif);font-size:14px;line-height:1.4}
+.body.b-json{margin:0;border-radius:0;background:none;padding:0 8px;font-size:12px;color:#cfc7b2}
+.b-json div{display:flex;justify-content:space-between;line-height:22px}
+.b-json b{color:#8fd0ff;font-weight:400}.b-json u{text-decoration:none;color:#d7a2e0}.b-json s{text-decoration:none;color:#e0a98a}
+.b-grp{background:#12100c;border:1px dashed rgba(255,255,255,.18);display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px;align-content:start}
+.b-grp i{display:block;aspect-ratio:4/3;border-radius:3px;background:#3a3427}.b-grp i:nth-child(2n){background:#2d3a4a}.b-grp i:nth-child(3n){background:#40503a}
+.b-dl{background:#14110d;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.b-dl svg{width:30px;height:30px;color:var(--dim)}
+.bar{width:70%;height:6px;border-radius:3px;background:#2e2a20;overflow:hidden}.bar i{display:block;height:100%;width:35%;background:var(--accent)}
+.b-miss,.b-sleep{background:#14110d;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:12px;text-align:center}
+.b-miss{color:#f2a79f}.b-sleep{color:var(--dim)}
+.b-miss svg,.b-sleep svg{width:26px;height:26px}
+</style></head><body>
+<h1>Card family in design F</h1>
+<p class="lede">Every card kind with the approved tab-card layout: a 40 px header (glyph or favicon, name, a dim second line chosen by one rule: the web address if the card has one, else the file path, else other data (a group's item count, a note's word count); state icons) above its content. The second line is data the app already holds for every kind except Group: tabs have a URL; images, PDFs, JSON and notes have an optional web `url` and always a local `path`; downloads have a `path`. A long local path is cut at its start, so the file name stays visible; a web address is cut at its end. Content stays what each kind shows today (page thumbnail, image, PDF page, note text, JSON preview, child tiles, progress); only the header is new and shared. The note keeps its yellow paper.</p>
+<div class="ctl">State: <button data-s="rest" class="on">Rest</button><button data-s="sel">Selected</button><button data-s="tag">Tagged</button> Name: <button data-n="short" class="on">Short</button><button data-n="long">Long</button></div>
+<div class="stage" id="root"></div>
+<script>
+const P=d=>`<svg class="ic" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+const I={
+ x:P('M6 6l12 12M18 6L6 18'),
+ img:P('M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15 9.5h.01'),
+ pdf:P('M7 3h7l5 5v13H7zM14 3v5h5'),
+ note:P('M5 4h14v11l-5 5H5zM14 20v-5h5'),
+ json:P('M9 4c-2 0-3 1-3 3v3c0 1-1 2-2 2 1 0 2 1 2 2v3c0 2 1 3 3 3M15 4c2 0 3 1 3 3v3c0 1 1 2 2 2-1 0-2 1-2 2v3c0 2-1 3-3 3'),
+ grp:P('M3 6h7l2 2h9v11H3z'),
+ dl:P('M12 4v11M7 11l5 5 5-5M5 20h14'),
+ warn:P('M12 3l10 18H2zM12 10v5M12 18v.5'),
+ moon:P('M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z'),
+ edit:P('M4 20h4L19 9l-4-4L4 16zM13 7l4 4')
+};
+let ST='',LONG=false;
+const L=(a,b)=>LONG?b:a;
+const gl=i=>`<span class="gl">${i}</span>`;
+const PAGE='<div class="body"><div class="thumb"><i style="left:12%;top:16%;width:46%;height:9%;background:#2a2a2a"></i><i style="left:12%;top:34%;width:76%;height:5%;background:#d9d4c7"></i><i style="left:12%;top:44%;width:70%;height:5%;background:#d9d4c7"></i><i style="left:12%;top:68%;width:30%;height:16%;background:#c7d9f0"></i><i style="left:48%;top:68%;width:40%;height:16%;background:#e8d9c0"></i></div></div>';
+function kinds(){return [
+ ['Tab','<span class="fav"></span>',L('Field notes','How to build a calm, legible interface for a spatial browser'),L('notes.example.com/field-notes','notes.example.com/2026/10/building-a-calm-legible-interface-for-a-spatial-browser'),PAGE,''],
+ ['Image',gl(I.img),L('harbour.png','harbour-at-dusk-final-edit-v3-for-print.png'),L('images.example.com/harbour.png','C:/Users/winston/Pictures/Harbour/Prints/2026/harbour-at-dusk-final-edit-v3-for-print.png'),'<div class="body b-img"></div>',''],
+ ['PDF',gl(I.pdf),L('paper.pdf','attention-is-all-you-need-annotated-copy.pdf'),L('arxiv.org/pdf/1706.03762','C:/Users/winston/Documents/Papers/Reading/attention-is-all-you-need-annotated-copy.pdf'),'<div class="body b-pdf"><div class="pg"><i></i><i></i><i></i><i></i><i></i></div></div>',''],
+ ['Note',gl(I.note),'Note','12 words','<div class="body b-note">Ideas for the card header: keep it quiet, let the page lead.</div>',I.edit],
+ ['JSON',gl(I.json),'data.json',L('C:/Users/winston/Downloads','C:/Users/winston/Documents/exports/2026-10-01/raw'),'<div class="body b-json"><div><b>name</b><s>"demo"</s></div><div><b>items</b><u>[3]</u></div><div><b>nested</b><u>{2}</u></div></div>','{3}'],
+ ['Group',gl(I.grp),L('Research','Research for the spring reading list'),'6 items','<div class="body b-grp"><i></i><i></i><i></i><i></i><i></i><i></i></div>',''],
+ ['Download',gl(I.dl),L('report.zip','quarterly-financial-report-2026-q3-final.zip'),L('C:/Users/winston/Downloads/report.zip','C:/Users/winston/Downloads/quarterly-financial-report-2026-q3-final.zip'),'<div class="body b-dl">'+I.dl+'<div class="bar"><i></i></div></div>',''],
+ ['Sleeping tab','<span class="fav"></span>',L('Field notes','How to build a calm, legible interface for a spatial browser'),L('notes.example.com/field-notes','notes.example.com/2026/10/building-a-calm-legible-interface-for-a-spatial-browser'),'<div class="body b-sleep">'+I.moon+'Asleep · click to wake</div>',I.moon],
+ ['Missing file',gl(I.warn).replace('class="gl"','class="gl" style="color:#f2a79f"'),L('harbour.png','harbour-at-dusk-final-edit-v3-for-print.png'),L('C:/Users/winston/Pictures/harbour.png','C:/Users/winston/Pictures/Harbour/Prints/2026/harbour-at-dusk-final-edit-v3-for-print.png'),'<div class="body b-miss">'+I.warn+'The file was moved or deleted</div>','<span style="color:var(--red)">'+I.warn+'</span>']
+]}
+function render(){
+  document.getElementById('root').innerHTML=kinds().map(([k,g,n,m,b,bd])=>`<div class="cell"><div class="card ${ST}"><div class="shell"><div class="hd">${g}<span class="t1">${n}</span><span class="badges">${bd}</span><span class="t2 ${m.startsWith('C:')?'path':''}"><bdi>${m}</bdi></span></div>${b}</div><div class="x">${I.x}</div><div class="conn"></div></div><small>${k}</small></div>`).join('');
+}
+document.querySelectorAll('.ctl button').forEach(b=>b.onclick=()=>{
+  if(b.dataset.s){ST=b.dataset.s==='rest'?'':b.dataset.s;document.querySelectorAll('[data-s]').forEach(x=>x.classList.toggle('on',x===b))}
+  if(b.dataset.n){LONG=b.dataset.n==='long';document.querySelectorAll('[data-n]').forEach(x=>x.classList.toggle('on',x===b))}
+  render();
+});
+render();
+</script></body></html>

@@ -19,6 +19,7 @@
 
 use std::time::Duration;
 
+use windows::core::{w, PCWSTR};
 use windows::core::{Interface, Result};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
@@ -26,23 +27,18 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, FillRect, GetDC, ReleaseDC, HBRUSH, HDC,
-};
+use windows::Win32::Graphics::Gdi::{CreateSolidBrush, FillRect, GetDC, ReleaseDC, HBRUSH, HDC};
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_SINGLETHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, PeekMessageW,
-    RegisterClassW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE,
-    SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, PeekMessageW, RegisterClassW, ShowWindow,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SW_SHOWNOACTIVATE, WNDCLASSW,
 };
-use windows::core::{w, PCWSTR};
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -117,19 +113,14 @@ fn main() -> Result<()> {
     let (d3d_device, d3d_context) = create_d3d11_device()?;
     let dxgi_device: IDXGIDevice = d3d_device.cast()?;
     let winrt_device = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device)? };
-    let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice =
-        winrt_device.cast()?;
+    let winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice = winrt_device.cast()?;
 
     let interop: IGraphicsCaptureItemInterop =
         windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd)? };
 
-    let frame_pool = Direct3D11CaptureFramePool::Create(
-        &winrt_device,
-        DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        1,
-        item.Size()?,
-    )?;
+    let frame_pool =
+        Direct3D11CaptureFramePool::Create(&winrt_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 1, item.Size()?)?;
     let session = frame_pool.CreateCaptureSession(&item)?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -158,8 +149,7 @@ fn main() -> Result<()> {
     };
 
     let surface = frame.Surface()?;
-    let access: windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess =
-        surface.cast()?;
+    let access: windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess = surface.cast()?;
     let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
 
     let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -193,15 +183,12 @@ fn main() -> Result<()> {
     }
 
     // Captured surface is BGRA -- swap to RGBA for `image`'s encoder.
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
 
-    let out_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "capture_spike_output.png".to_string());
-    image::save_buffer(&out_path, &pixels, desc.Width, desc.Height, image::ColorType::Rgba8)
-        .expect("save PNG");
+    let out_path = std::env::args().nth(1).unwrap_or_else(|| "capture_spike_output.png".to_string());
+    image::save_buffer(&out_path, &pixels, desc.Width, desc.Height, image::ColorType::Rgba8).expect("save PNG");
     println!("wrote {out_path} ({}x{})", desc.Width, desc.Height);
 
     session.Close().ok();

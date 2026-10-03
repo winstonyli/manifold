@@ -5,9 +5,13 @@
 # or README.md's "Headless mode" section), in a fresh isolated APPDATA so
 # the real %APPDATA%\manifold is never read or written.
 #
-#   SEED=<dir>      copy <dir>/*.json (session.json, settings.json, ...) into
-#                   the isolated profile first; without it the first-launch
-#                   demo scene loads
+#   SEED=<dir>      copy <dir>/*.json (settings.json, bookmarks.json, …)
+#                   into the isolated profile. <dir>/session.json, a JSON
+#                   snapshot ({"nodes": […]}, see store/json.rs), becomes the
+#                   profile's session.mnf.
+#   APPDATA_DIR=<dir>  use <dir> as the profile instead of a fresh one, and
+#                   keep it: a second run on the same <dir> restores the
+#                   session the first saved (<dir>/appdata/manifold/session.mnf)
 #   VISIBLE=1       a real window (--debug-commands) instead of --headless
 #   KEEP_APPDATA=1  keep the isolated profile afterwards (e.g. to inspect a
 #                   moved-aside file); otherwise it's deleted on exit
@@ -25,18 +29,43 @@
 #     once). To act after some command has run, wait for a file it writes,
 #     e.g. `!(while [ ! -f x ]; do sleep 0.2; done; cp a b) &` after an
 #     `EXPORTSESSION` to x.
+#   - a `!` line runs in the writer loop itself, so without `&` it blocks
+#     the writer, and whatever it prints goes to the app as commands. A
+#     probe can wait for an EXPORTSTATE file, then print gestures computed
+#     from the live layout. Poll until two exports agree before trusting
+#     positions: after entering a group the camera eases, and SLEEP draws
+#     no frames (each command draws one), so a fixed sleep can export
+#     mid-ease.
 #   - blank lines are skipped.
 #
-# Build first: cargo build -p manifold
+# Exit status: a failed command's own status, or the app's. Git Bash
+# reports a death by signal N as N<<8 to a Windows parent, so 3840
+# means this script got SIGTERM from outside (README, Known limitations).
+#
+# Build first: cargo build -p manifold (a stale exe is refused; see
+# fresh-exe.sh).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+. scripts/fresh-exe.sh
+require_fresh_exe target/debug/manifold.exe
 CMDS="$1"
 REPO_WIN=$(cygpath -w "$PWD")
-D="target/drive-appdata-$$"
-rm -rf "$D"; mkdir -p "$D/appdata/manifold"
-[ -n "${KEEP_APPDATA:-}" ] || trap 'rm -rf "$D"' EXIT
-export APPDATA="$(cygpath -w "$PWD/$D")\\appdata"
-[ -z "${SEED:-}" ] || cp "$SEED"/*.json "$D/appdata/manifold/"
+if [ -n "${APPDATA_DIR:-}" ]; then
+  D="$APPDATA_DIR"; mkdir -p "$D/appdata/manifold"
+else
+  D="target/drive-appdata-$$"
+  rm -rf "$D"; mkdir -p "$D/appdata/manifold"
+  [ -n "${KEEP_APPDATA:-}" ] || trap 'rm -rf "$D"' EXIT
+fi
+export APPDATA="$(cygpath -w "$(cd "$D" && pwd)")\\appdata"
+if [ -n "${SEED:-}" ]; then
+  for f in "$SEED"/*.json; do
+    [ "$(basename "$f")" = "session.json" ] || cp "$f" "$D/appdata/manifold/"
+  done
+  if [ -f "$SEED/session.json" ]; then
+    target/debug/manifold.exe --import-json "$(cygpath -w "$SEED/session.json")" --out "$(cygpath -w "$D/appdata/manifold/session.mnf")"
+  fi
+fi
 MODE=--headless; [ -z "${VISIBLE:-}" ] || MODE=--debug-commands
 while IFS= read -r line; do
   line=${line//\{repo\}/"$REPO_WIN"}

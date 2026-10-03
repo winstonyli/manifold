@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::engine_install::{runtime_state, EngineState, Pin, RuntimeOnDisk, NO_PIN_REASON};
 use ipc_protocol::transport::{self, LocalTransport, RemoteTransport};
 use ipc_protocol::{EngineToHost, HostToEngine};
 
@@ -107,10 +108,21 @@ fn assign_to_engine_job(child: &Child) {
         let _ = AssignProcessToJobObject(job, process_handle);
     }
 }
+/// No kill-on-exit job off Windows: an engine-host sees the socket drop when manifold dies and shuts itself down
+/// (`ipc_protocol::transport::spawn_host_reader`). Measured on Linux (WSL2, 2026-10-02): `kill -9` of manifold with a
+/// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
+/// on stderr rather than silently, since other hosts (WebKit in WSL) are not covered by that measurement.
 #[cfg(not(target_os = "windows"))]
-fn assign_to_engine_job(_child: &Child) {}
+fn assign_to_engine_job(_child: &Child) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "manifold: no kill-on-exit job on this platform; engine hosts exit when their socket to manifold drops"
+        )
+    });
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineKind {
     Servo,
     Cef,
@@ -122,14 +134,53 @@ pub enum EngineKind {
     Webview2,
 }
 
+/// What each engine is: the one place its name, store code, binary, label and
+/// pixel order live. `desc` is an exhaustive `match`, so a new `EngineKind`
+/// fails to compile until it has a row here.
+pub(crate) struct EngineDesc {
+    /// The string `settings.json`, session exports and the `engine` store field hold.
+    pub(crate) name: &'static str,
+    /// The store's `engine` field code: `store::model::ENGINES[code - 1]` is `name`.
+    pub(crate) code: u64,
+    pub(crate) binary: &'static str,
+    pub(crate) label: &'static str,
+    /// Frames arrive as BGRA (CEF, WebView2) rather than RGBA (Servo, WebKit).
+    pub(crate) bgra: bool,
+}
+
 impl EngineKind {
-    fn binary_name(self) -> &'static str {
+    pub(crate) const ALL: [EngineKind; 4] =
+        [EngineKind::Servo, EngineKind::Cef, EngineKind::Webkit, EngineKind::Webview2];
+
+    pub(crate) fn desc(self) -> EngineDesc {
         match self {
-            EngineKind::Servo => "manifold-engine-servo",
-            EngineKind::Cef => "manifold-engine-cef",
-            EngineKind::Webkit => "manifold-engine-webkit",
-            EngineKind::Webview2 => "manifold-engine-webview2",
+            EngineKind::Servo => {
+                EngineDesc { name: "servo", code: 1, binary: "manifold-engine-servo", label: "Servo", bgra: false }
+            }
+            EngineKind::Cef => {
+                EngineDesc { name: "cef", code: 2, binary: "manifold-engine-cef", label: "Blink (CEF)", bgra: true }
+            }
+            EngineKind::Webkit => {
+                EngineDesc { name: "webkit", code: 3, binary: "manifold-engine-webkit", label: "WebKit", bgra: false }
+            }
+            EngineKind::Webview2 => EngineDesc {
+                name: "webview2",
+                code: 4,
+                binary: "manifold-engine-webview2",
+                label: "WebView2",
+                bgra: true,
+            },
         }
+    }
+
+    /// Case-insensitive, so the headless `SPLIT` argument and the stored
+    /// lowercase names share one parser.
+    pub(crate) fn from_name(name: &str) -> Option<EngineKind> {
+        Self::ALL.into_iter().find(|k| k.desc().name.eq_ignore_ascii_case(name))
+    }
+
+    pub(crate) fn from_code(code: u64) -> Option<EngineKind> {
+        Self::ALL.into_iter().find(|k| k.desc().code == code)
     }
 }
 
@@ -142,23 +193,12 @@ pub(crate) mod engine_kind_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(kind: &EngineKind, s: S) -> Result<S::Ok, S::Error> {
-        let name = match kind {
-            EngineKind::Servo => "servo",
-            EngineKind::Cef => "cef",
-            EngineKind::Webkit => "webkit",
-            EngineKind::Webview2 => "webview2",
-        };
-        name.serialize(s)
+        kind.desc().name.serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<EngineKind, D::Error> {
         let name = String::deserialize(d)?;
-        Ok(match name.as_str() {
-            "cef" => EngineKind::Cef,
-            "webkit" => EngineKind::Webkit,
-            "webview2" => EngineKind::Webview2,
-            _ => EngineKind::Servo,
-        })
+        EngineKind::from_name(&name).ok_or_else(|| serde::de::Error::custom(format!("unknown engine {name:?}")))
     }
 }
 
@@ -200,6 +240,8 @@ pub struct EngineTab {
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
     child: Child,
+    /// CEF's `root_cache_path` for this process, deleted on drop.
+    cache_dir: Option<PathBuf>,
 }
 
 impl EngineTab {
@@ -255,6 +297,83 @@ impl Drop for EngineTab {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        if let Some(dir) = self.cache_dir.take() {
+            remove_cache_dir(dir);
+        }
+    }
+}
+
+/// Parent of every CEF engine-host's own `root_cache_path`. Temp when
+/// there's no profile (always under `cargo test`), so CEF never falls back
+/// to its machine-wide default, which only one CEF process can use at once.
+fn cef_cache_root() -> PathBuf {
+    crate::profile::cef_cache_dir().unwrap_or_else(|| std::env::temp_dir().join("manifold-cef-cache"))
+}
+
+/// Names each CEF engine's cache dir `<manifold pid>-<n>`: unique across
+/// manifold instances sharing a profile, and across respawns of one tab,
+/// so a swap's new engine never shares a dir the old one's
+/// `remove_cache_dir` is still deleting.
+static CEF_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Deletes an exited CEF engine's cache dir. Its renderer/GPU subprocesses
+/// die with it (its own kill-on-close job) but not instantly, and Windows
+/// won't delete files they still hold, so this retries for a few seconds
+/// on a background thread. Whatever is left `sweep_cef_cache` removes at
+/// the next startup.
+fn remove_cache_dir(dir: PathBuf) {
+    let removal = std::thread::spawn(move || {
+        for _ in 0..50 {
+            if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(removal);
+}
+
+static CACHE_REMOVALS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
+
+/// Waits for every `remove_cache_dir` so far, at most its few seconds of
+/// retries: `main` calls this after dropping the app's tabs, since the
+/// process exiting would otherwise cut the deletes short.
+pub fn finish_cache_removals() {
+    let removals = std::mem::take(&mut *CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()));
+    for removal in removals {
+        let _ = removal.join();
+    }
+}
+
+/// Deletes CEF cache dirs left by engines that `remove_cache_dir` never
+/// finished (manifold killed or crashed). Another manifold on the same
+/// profile may be using some: Windows won't rename a dir while a running
+/// CEF holds files in it, so each is renamed aside first and deleted only
+/// if that works. Dirs touched in the last minute are skipped, since their
+/// CEF may not have opened its files yet.
+pub fn sweep_cef_cache() {
+    sweep_cache_dirs(&cef_cache_root(), Duration::from_secs(60));
+}
+
+fn sweep_cache_dirs(root: &Path, min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Renamed aside by an earlier sweep that then couldn't finish.
+        let aside = if path.extension().is_some_and(|ext| ext == "old") {
+            path
+        } else {
+            let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+            if age.is_none_or(|age| age < min_age) {
+                continue;
+            }
+            let aside = path.with_extension("old");
+            if std::fs::rename(&path, &aside).is_err() {
+                continue;
+            }
+            aside
+        };
+        let _ = std::fs::remove_dir_all(&aside);
     }
 }
 
@@ -263,11 +382,7 @@ impl Drop for EngineTab {
 /// Cargo workspace layout, no separate install/discovery step needed.
 fn sibling_binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe");
-    path.set_file_name(if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    });
+    path.set_file_name(crate::cef_platform::PLATFORM.host_exe(name));
     path
 }
 
@@ -287,59 +402,278 @@ fn sibling_binary(name: &str) -> PathBuf {
 /// manual post-build step (see project memory), not automated — a real
 /// install/packaging step should do this, not a person running `cp`.
 ///
-/// Falls back to `engine_data_dir()` when the sibling binary isn't there —
-/// for an engine fetched on demand after install rather than bundled next
-/// to `manifold.exe`. No download step writes there yet; the fallback
-/// just means adding one later won't require touching this lookup.
+/// Falls back to `engine_runtime_dir` (under `profile::engine_data_dir()`)
+/// when the sibling binary isn't there — for an engine fetched on demand
+/// after install rather than bundled next to `manifold.exe`.
 fn engine_binary_path(kind: EngineKind) -> PathBuf {
-    let file_name = if cfg!(windows) {
-        format!("{}.exe", kind.binary_name())
-    } else {
-        kind.binary_name().to_string()
-    };
+    let file_name = crate::cef_platform::PLATFORM.host_exe(kind.desc().binary);
     let sibling = match kind {
-        EngineKind::Servo => sibling_binary(kind.binary_name()),
-        EngineKind::Cef => {
-            let mut path = sibling_binary(kind.binary_name());
-            path.pop();
-            path.push("cef-runtime");
-            path.push(&file_name);
-            path
-        }
+        EngineKind::Servo => sibling_binary(kind.desc().binary),
+        EngineKind::Cef => cef_sibling_exe(),
         // WebView2Loader is a single small loader (statically linked by
         // the `webview2-com` crate, or a lone DLL at worst) — no ANGLE-style
         // filename collision with Servo/CEF's runtime files, so no isolation
         // directory needed like CEF's `cef-runtime/` above.
-        EngineKind::Webview2 => sibling_binary(kind.binary_name()),
+        EngineKind::Webview2 => sibling_binary(kind.desc().binary),
         EngineKind::Webkit => unreachable!("Webkit is spawned via wsl.exe, not a local path"),
     };
     if sibling.exists() {
         return sibling;
     }
-    let mut fallback = engine_data_dir();
-    fallback.push("engine-hosts");
+    let Some(mut fallback) = engine_hosts_dir() else { return sibling };
     // Same isolation as the sibling-dir case above: CEF's own ANGLE DLLs
     // would collide with Servo's if both engines' fallback files ever
     // landed flat in the same `engine-hosts/` directory.
-    if matches!(kind, EngineKind::Cef) {
-        fallback.push("cef-runtime");
+    if let Some(runtime) = engine_runtime_dir(kind) {
+        fallback = runtime;
     }
     fallback.push(file_name);
     fallback
 }
 
-/// Cross-platform per-user data directory (XDG on Linux, Known Folders on
-/// Windows, Application Support on macOS) via `etcetera` — see
-/// `engine_binary_path`'s own doc comment for what this is for.
-fn engine_data_dir() -> PathBuf {
-    use etcetera::{app_strategy::AppStrategyArgs, choose_app_strategy, AppStrategy};
-    choose_app_strategy(AppStrategyArgs {
-        top_level_domain: "io".into(),
-        author: "manifold".into(),
-        app_name: "manifold".into(),
+pub(crate) fn engine_hosts_dir() -> Option<PathBuf> {
+    crate::profile::engine_data_dir().map(|mut dir| {
+        dir.push("engine-hosts");
+        dir
     })
-    .expect("home directory")
-    .data_dir()
+}
+
+/// `cef-runtime/<exe>` next to `manifold.exe`: where `scripts/sync-runtime-deps.sh` puts it for dev builds.
+fn cef_sibling_exe() -> PathBuf {
+    let mut path = sibling_binary(EngineKind::Cef.desc().binary);
+    let file_name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
+    path.pop();
+    path.push("cef-runtime");
+    path.push(file_name);
+    path
+}
+
+/// The directory a downloaded runtime unpacks into (and whose `ready` marker
+/// `runtime_state` reads); `None` for engines that download nothing, or
+/// without a data directory.
+pub(crate) fn engine_runtime_dir(kind: EngineKind) -> Option<PathBuf> {
+    match kind {
+        EngineKind::Cef => engine_hosts_dir().map(|dir| dir.join("cef-runtime")),
+        _ => None,
+    }
+}
+
+/// What CEF's runtime looks like on disk right now: a bundled sibling
+/// `cef-runtime/` (dev builds) is Ready; otherwise the data-dir runtime is
+/// judged by its marker.
+pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
+    if cef_sibling_exe().exists() {
+        return RuntimeOnDisk::Ready;
+    }
+    match (engine_runtime_dir(EngineKind::Cef), crate::cef_pin::pin_for_platform()) {
+        (Some(dir), Some(pin)) => runtime_state(&dir, pin),
+        _ => RuntimeOnDisk::Missing,
+    }
+}
+
+/// How `kind` is available, in one place. Engines that ship with the app are
+/// always Installed; CEF follows the disk (`cef_on_disk`). A custom path and a running install
+/// override it; a failed install overrides Missing and Stale but not a current runtime.
+pub(crate) fn engine_availability(
+    kind: EngineKind,
+    cef_on_disk: RuntimeOnDisk,
+    installing: Option<(u64, u64)>,
+    failed: Option<&str>,
+    custom: Option<&Path>,
+) -> EngineState {
+    availability_with(
+        std::env::consts::OS,
+        crate::cef_pin::pin_for_platform(),
+        kind,
+        cef_on_disk,
+        installing,
+        failed,
+        custom,
+    )
+}
+
+/// Why `kind` cannot run on `os` (a `std::env::consts::OS` value) at all, or `None` when it can. The one
+/// place that knows: availability (every engine list) and the spawn refusal both read it.
+/// WebView2 is Windows-only. WebKit runs through WSL on Windows and is hosted natively on Linux; macOS has
+/// no WebKit host wired yet. (WSL is not probed: on Windows it is only found missing when a tab spawns.)
+fn platform_unavailable_reason(os: &str, kind: EngineKind) -> Option<&'static str> {
+    match kind {
+        EngineKind::Webview2 if os != "windows" => Some("needs Windows"),
+        EngineKind::Webkit if !matches!(os, "windows" | "linux") => Some("needs Windows or Linux"),
+        _ => None,
+    }
+}
+
+/// The engine a fresh profile starts new tabs in on `os`: the first of WebView2, Servo that the platform
+/// can run. CEF is never the default (an opt-in download) and WebKit needs setup.
+pub(crate) fn platform_default_engine(os: &str) -> EngineKind {
+    [EngineKind::Webview2, EngineKind::Servo]
+        .into_iter()
+        .find(|kind| platform_unavailable_reason(os, *kind).is_none())
+        .unwrap_or(EngineKind::Servo)
+}
+
+/// `engine_availability` for a given OS and pin. `None` means this platform has no CEF build, so there is
+/// nothing to download: `Unavailable`, unless a runtime is already there (a dev tree's) or a custom one is set.
+fn availability_with(
+    os: &str,
+    pin: Option<&Pin>,
+    kind: EngineKind,
+    cef_on_disk: RuntimeOnDisk,
+    installing: Option<(u64, u64)>,
+    failed: Option<&str>,
+    custom: Option<&Path>,
+) -> EngineState {
+    if let Some(reason) = platform_unavailable_reason(os, kind) {
+        return EngineState::Unavailable(reason.to_string());
+    }
+    if kind != EngineKind::Cef {
+        return EngineState::Installed;
+    }
+    if let Some(path) = custom {
+        return EngineState::Custom(path.to_path_buf());
+    }
+    if let Some((received, total)) = installing {
+        return EngineState::Installing { received, total };
+    }
+    // A runtime that is there and current outranks a recorded failure (the failure was an update or a
+    // retry that did not matter in the end); a failure outranks Missing and Stale.
+    if cef_on_disk == RuntimeOnDisk::Ready {
+        return EngineState::Installed;
+    }
+    let Some(pin) = pin else { return EngineState::Unavailable(NO_PIN_REASON.to_string()) };
+    if let Some(message) = failed {
+        return EngineState::Failed(message.to_string());
+    }
+    match cef_on_disk {
+        RuntimeOnDisk::Ready => EngineState::Installed,
+        RuntimeOnDisk::Missing => EngineState::NotInstalled { size: pin.size },
+        RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: pin.size },
+    }
+}
+
+/// Why `spawn_tab` failed.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// The engine's runtime isn't on disk (or is out of date); nothing was launched.
+    EngineMissing(EngineKind),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpawnError::EngineMissing(kind) => {
+                write!(f, "{} is not installed", crate::engine_info::engine_label(*kind))
+            }
+            SpawnError::Io(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for SpawnError {}
+
+impl From<std::io::Error> for SpawnError {
+    fn from(e: std::io::Error) -> Self {
+        SpawnError::Io(e)
+    }
+}
+
+/// Where the host runs from when a custom CEF directory is in use: a copy of the host exe inside it.
+///
+/// Windows resolves the host's implicit `libcef.dll` from the exe's own directory before `PATH`, so the
+/// only way to make the host load the custom runtime is for the host to live there. (A PATH entry would
+/// lose to any `libcef.dll` beside the original host, and a clean machine has no host beside a bring-your-own
+/// runtime at all.)
+fn custom_host_path(custom_dir: &Path, host_exe: &Path) -> PathBuf {
+    custom_dir.join(host_exe.file_name().unwrap_or_default())
+}
+
+/// Spawns run on their own threads, so two can reach `ensure_host_copy` at once; one copy at a time.
+static HOST_COPY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Makes `custom_host_path` hold the current host exe: copied when missing, replaced when the source's
+/// size or modification time differs, left alone otherwise. Returns the path to launch.
+///
+/// The copy goes to a uniquely named file in the same directory and is renamed into place, under a
+/// process-wide lock, so a launching host never sees a half-written exe and concurrent spawns copy once.
+/// A destination that already matches is current even when a running host has it locked.
+fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathBuf> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let _guard = HOST_COPY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let source = std::fs::metadata(host_exe).map_err(|e| {
+        std::io::Error::new(e.kind(), format!("the CEF host {} was not found: {e}", host_exe.display()))
+    })?;
+    let dest = custom_host_path(custom_dir, host_exe);
+    let same = std::fs::metadata(&dest)
+        .map(|m| m.len() == source.len() && m.modified().ok() == source.modified().ok())
+        .unwrap_or(false);
+    if !same {
+        let wrap = |e: std::io::Error| {
+            std::io::Error::new(e.kind(), format!("could not copy the CEF host into {}: {e}", custom_dir.display()))
+        };
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = custom_dir.join(format!(
+            "{}.{}-{n}.tmp",
+            dest.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id()
+        ));
+        std::fs::copy(host_exe, &temp).map_err(wrap)?;
+        // `fs::copy` carries no mtime on every platform; set it so the next launch can skip.
+        if let Ok(modified) = source.modified() {
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&temp) {
+                let _ = file.set_modified(modified);
+            }
+        }
+        if let Err(e) = std::fs::rename(&temp, &dest) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(wrap(e));
+        }
+    }
+    Ok(dest)
+}
+
+/// The CEF host exe that ships with the app: beside `manifold.exe` in a packaged build, else the
+/// `cef-runtime/` copy a dev build keeps. This is what gets copied next to a runtime that has no host.
+fn shipped_cef_host() -> PathBuf {
+    let flat = sibling_binary(EngineKind::Cef.desc().binary);
+    if flat.exists() {
+        flat
+    } else {
+        cef_sibling_exe()
+    }
+}
+
+/// The directory a CEF host copy must live in (see `custom_host_path`), or None to run the host as
+/// `engine_binary_path` finds it. A custom directory wins; a dev build's own `cef-runtime/` already holds
+/// its host; otherwise the downloaded runtime, which holds libcef but never a host, so it gets a copy too.
+fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Option<PathBuf>) -> Option<PathBuf> {
+    match custom {
+        Some(dir) => Some(dir.to_path_buf()),
+        None if dev_runtime_has_host => None,
+        None => downloaded,
+    }
+}
+
+/// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
+fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
+    match engine_availability(kind, cef_on_disk, None, None, custom) {
+        EngineState::Installed | EngineState::Custom(_) => Ok(()),
+        _ => Err(SpawnError::EngineMissing(kind)),
+    }
+}
+
+/// The spawn refusal for an engine this OS cannot run, from the same `platform_unavailable_reason` the
+/// engine lists show, so a spawn fails by name instead of a bare "file not found".
+fn unsupported_on(os: &str, kind: EngineKind) -> Option<String> {
+    platform_unavailable_reason(os, kind).map(|reason| crate::engine_info::PickOutcome::unavailable_toast(kind, reason))
+}
+
+/// Why a WebKit spawn cannot start on `os` although WebKit counts as available there, or `None`. The only
+/// WebKit host is reached through `wsl.exe` (`spawn_webkit_tab`); on Linux, where it would run natively,
+/// that launch is not wired yet, so the spawn says so instead of failing on a missing `wsl.exe`.
+fn webkit_host_missing(os: &str) -> Option<&'static str> {
+    (os == "linux").then_some("WebKit can't start yet: a native Linux WebKit host is not wired up")
 }
 
 /// Converts this repo's Windows path (wherever manifold.exe actually is)
@@ -439,10 +773,75 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // does not reliably propagate to a grandchild process spawned from
     // inside it, so an inherited engine-host produces no visible output at
     // all even though it runs fine.
-    let log_path = std::env::temp_dir().join(format!("manifold-{tab_id}.log"));
-    let stdout_file = std::fs::File::create(&log_path)?;
+    let stdout_file = std::fs::File::create(per_tab_log_path(tab_id))?;
     let stderr_file = stdout_file.try_clone()?;
     Ok((stdout_file, stderr_file))
+}
+
+fn per_tab_log_path(tab_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("manifold-{tab_id}.log"))
+}
+
+/// Waits for a just-spawned same-machine host to connect, giving up early if
+/// it exits. On failure the child is killed and reaped, and the error says
+/// which way it failed: "exited with code N before connecting: <the last
+/// lines of its log>", or "still running but did not connect within ...".
+/// The log is the per-tab file the child writes its stdout and stderr to.
+fn connect_host(
+    listeners: &transport::LocalListenerPair,
+    child: &mut Child,
+    log_path: &Path,
+    timeout: Duration,
+) -> std::io::Result<(LocalTransport, LocalTransport)> {
+    let mut exited = None;
+    let result = transport::accept_local_pair_while(listeners, timeout, &mut || match child.try_wait() {
+        Ok(Some(status)) => {
+            exited = Some(status);
+            false
+        }
+        _ => true,
+    });
+    let err = match result {
+        Ok(pair) => return Ok(pair),
+        Err(err) => err,
+    };
+    // It may have exited during the final poll interval, after the last check.
+    let exited = exited.or_else(|| child.try_wait().ok().flatten());
+    let _ = child.kill();
+    let _ = child.wait();
+    let message = match exited {
+        Some(status) => {
+            let how = match status.code() {
+                Some(code) if code < 0 => format!("with code {:#x}", code as u32),
+                Some(code) => format!("with code {code}"),
+                None => format!("({status})"),
+            };
+            let tail = log_tail(log_path, 5);
+            let tail = if tail.is_empty() { String::from(" (its log is empty)") } else { format!(": {tail}") };
+            format!("engine-host exited {how} before connecting{tail}")
+        }
+        None if err.kind() == std::io::ErrorKind::TimedOut => {
+            format!("engine-host is still running but did not connect within {timeout:?} (log: {})", log_path.display())
+        }
+        None => return Err(err),
+    };
+    Err(std::io::Error::new(err.kind(), message))
+}
+
+/// The last `lines` non-empty lines of a log, joined with " | ", read from at
+/// most its last 16 KiB. Empty when there is no such file.
+fn log_tail(path: &Path, lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(path) {
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = file.seek(SeekFrom::Start(len.saturating_sub(16 * 1024)));
+        let _ = file.read_to_end(&mut bytes);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(lines).collect();
+    tail.reverse();
+    tail.join(" | ")
 }
 
 /// Synthesizes `EngineToHost::Crashed` when the connection to an
@@ -470,9 +869,7 @@ fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver
                 Err(_) => break,
             }
         }
-        let _ = tx.send(EngineToHost::Crashed {
-            reason: "engine-host connection lost".to_string(),
-        });
+        let _ = tx.send(EngineToHost::Crashed { reason: "engine-host connection lost".to_string() });
     });
     rx
 }
@@ -496,10 +893,26 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// manifold-engine-cef specifically — see that crate's main.rs for why (CEF
 /// parses this process's own argv as its own command line). We do the same
 /// for the other engines too, for one consistent spawn path.
-pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::Result<EngineTab> {
-    if kind == EngineKind::Webkit {
-        return spawn_webkit_tab(tab_id, initial_url);
+///
+/// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check, and the
+/// host runs from a copy inside it so Windows loads that directory's `libcef.dll` (`ensure_host_copy`).
+pub fn spawn_tab(
+    kind: EngineKind,
+    tab_id: &str,
+    initial_url: &str,
+    custom_cef: Option<&Path>,
+) -> Result<EngineTab, SpawnError> {
+    if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
+        return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
+    if kind == EngineKind::Webkit {
+        if let Some(reason) = webkit_host_missing(std::env::consts::OS) {
+            return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
+        }
+        return Ok(spawn_webkit_tab(tab_id, initial_url)?);
+    }
+    let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
+    check_spawnable(kind, if kind == EngineKind::Cef { cef_on_disk() } else { RuntimeOnDisk::Ready }, custom_cef)?;
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -514,19 +927,35 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
             let fallback_id = fresh_fallback_socket_id(tab_id);
             match listen_local_pair_with_retry(&fallback_id) {
                 Ok(listeners) => (fallback_id, listeners),
-                Err(_) => return Err(primary_err),
+                Err(_) => return Err(primary_err.into()),
             }
         }
     };
     let (stdout_file, stderr_file) = per_tab_log_files(tab_id)?;
+    let host_exe = match (kind, host_home(custom_cef, cef_sibling_exe().exists(), engine_runtime_dir(kind))) {
+        (EngineKind::Cef, Some(dir)) => ensure_host_copy(&dir, &shipped_cef_host())?,
+        _ => engine_binary_path(kind),
+    };
 
-    let mut child = Command::new(engine_binary_path(kind))
+    // Each CEF engine-host gets its own throwaway cache dir, so CEF tabs
+    // don't share cookies or logins and keep none across a restart (see
+    // manifold-engine-cef's main.rs for why they can't share one).
+    let cache_dir = (kind == EngineKind::Cef).then(|| {
+        let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        cef_cache_root().join(format!("{}-{n}", std::process::id()))
+    });
+
+    let mut command = Command::new(host_exe);
+    command
         .env("ENGINE_TAB_ID", tab_id)
         .env("ENGINE_SOCKET_ID", &socket_id)
         .env("ENGINE_INITIAL_URL", initial_url)
         .stdout(stdout_file)
-        .stderr(stderr_file)
-        .spawn()?;
+        .stderr(stderr_file);
+    if let Some(dir) = &cache_dir {
+        command.env("ENGINE_CACHE_DIR", dir);
+    }
+    let mut child = command.spawn()?;
     assign_to_engine_job(&child);
 
     // The child connects to both sockets right after spawning — bounded by
@@ -539,24 +968,21 @@ pub fn spawn_tab(kind: EngineKind, tab_id: &str, initial_url: &str) -> std::io::
     // would leak the process, exactly the kind of leftover
     // `listen_local_pair_with_retry`'s own error message above warns
     // about. Same cleanup `spawn_webkit_tab`'s own accept-timeout path
-    // already does.
-    let (to_engine, from_engine) = match transport::accept_local_pair(&listeners, LOCAL_CONNECT_TIMEOUT) {
-        Ok(pair) => pair,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
-        }
-    };
+    // already does. `connect_host` does the kill, stops waiting as soon as
+    // the child exits, and names its exit code and last log lines.
+    let (to_engine, from_engine) =
+        match connect_host(&listeners, &mut child, &per_tab_log_path(tab_id), LOCAL_CONNECT_TIMEOUT) {
+            Ok(pair) => pair,
+            Err(e) => {
+                if let Some(dir) = cache_dir {
+                    remove_cache_dir(dir);
+                }
+                return Err(e.into());
+            }
+        };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    Ok(EngineTab {
-        kind,
-        socket_id,
-        to_engine: ToEngine::Local(to_engine),
-        events_rx,
-        child,
-    })
+    Ok(EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir })
 }
 
 /// Generous upper bound for a cold WSL2 VM boot + Xvfb readiness + GTK/
@@ -590,11 +1016,17 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     // listen_remote's doc comment) — only at its default-gateway IP, which
     // changes across WSL2 restarts, so it's discovered fresh here rather
     // than hardcoded.
+    // A random secret the engine must send before it is accepted: the listener is on
+    // every interface (`listen_remote`). It sits in this command line, visible to the
+    // same user's processes only.
+    let mut token = [0u8; transport::TOKEN_LEN];
+    getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
     let command = format!(
-        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "ENGINE_TAB_ID={} ENGINE_INITIAL_URL={} ENGINE_TCP_PORT={} ENGINE_TOKEN={} ENGINE_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(tab_id),
         shell_quote(initial_url),
         port,
+        transport::token_to_hex(&token),
         shell_quote(&binary_path),
     );
     let mut child = Command::new("wsl.exe")
@@ -620,7 +1052,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
     // half-started `wsl.exe` launcher before surfacing the error — leaving
     // it running would just orphan a second attempt at the same port/tab
     // the next time this is retried.
-    let control = match transport::accept_remote(&listener, WEBKIT_CONNECT_TIMEOUT) {
+    let control = match transport::accept_remote(&listener, WEBKIT_CONNECT_TIMEOUT, &token) {
         Ok(control) => control,
         Err(e) => {
             let _ = child.kill();
@@ -644,5 +1076,340 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         to_engine: ToEngine::Remote(to_engine),
         events_rx,
         child,
+        cache_dir: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    /// The host copy tests only need a file name; the platform's suffix is not what they check.
+    const HOST: &str = "manifold-engine-cef";
+
+    /// A shell command as a child whose stdout and stderr go to `log`, the
+    /// way `spawn_tab` starts a host.
+    fn fake_host(script_windows: &str, script_unix: &str, log: &Path) -> Child {
+        let out = std::fs::File::create(log).unwrap();
+        let err = out.try_clone().unwrap();
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut c = Command::new("cmd");
+            c.raw_arg(format!("/c {script_windows}"));
+            let _ = script_unix;
+            c
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut c = Command::new("sh");
+            c.args(["-c", script_unix]);
+            let _ = script_windows;
+            c
+        };
+        command.stdout(out).stderr(err).spawn().unwrap()
+    }
+
+    #[test]
+    fn a_host_that_exits_on_start_is_reported_with_its_code_and_log() {
+        let dir = crate::store::testutil::temp_dir("host_exits_on_start");
+        let log = dir.join("host.log");
+        let listeners = transport::listen_local_pair(&format!("test-exit-{}", std::process::id())).unwrap();
+        let mut child = fake_host(
+            "echo starting & echo libfake.so: cannot open shared object file 1>&2 & exit /b 3",
+            "echo starting; echo 'libfake.so: cannot open shared object file' >&2; exit 3",
+            &log,
+        );
+        let started = std::time::Instant::now();
+        let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
+        let message = err.to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "gave up when the child exited, took {:?}",
+            started.elapsed()
+        );
+        assert!(message.starts_with("engine-host exited with code 3 before connecting: "), "{message}");
+        assert!(message.contains("starting"), "{message}");
+        assert!(message.contains("libfake.so: cannot open shared object file"), "{message}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_host_that_never_connects_is_reported_as_still_running_and_killed() {
+        let dir = crate::store::testutil::temp_dir("host_never_connects");
+        let log = dir.join("host.log");
+        let listeners = transport::listen_local_pair(&format!("test-silent-{}", std::process::id())).unwrap();
+        let mut child = fake_host("ping -n 30 127.0.0.1", "sleep 30", &log);
+        let err =
+            connect_host(&listeners, &mut child, &log, Duration::from_millis(300)).err().expect("no host connected");
+        let message = err.to_string();
+        assert!(message.starts_with("engine-host is still running but did not connect within 300ms"), "{message}");
+        assert!(matches!(child.try_wait(), Ok(Some(_))), "the child was killed and reaped");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn log_tail_keeps_the_last_non_empty_lines() {
+        let dir = crate::store::testutil::temp_dir("log_tail");
+        let log = dir.join("a.log");
+        std::fs::write(&log, "one\n\ntwo\r\nthree\n  \nfour\n").unwrap();
+        assert_eq!(log_tail(&log, 2), "three | four");
+        assert_eq!(log_tail(&log, 9), "one | two | three | four");
+        assert_eq!(log_tail(&dir.join("missing.log"), 3), "");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bundled_engines_are_always_installed_where_the_os_can_run_them() {
+        let a = |os, kind, disk, installing, failed| availability_with(os, None, kind, disk, installing, failed, None);
+        for (os, kind) in [
+            ("windows", EngineKind::Servo),
+            ("linux", EngineKind::Servo),
+            ("macos", EngineKind::Servo),
+            ("windows", EngineKind::Webview2),
+            ("windows", EngineKind::Webkit),
+            ("linux", EngineKind::Webkit),
+        ] {
+            assert_eq!(a(os, kind, RuntimeOnDisk::Missing, None, None), EngineState::Installed, "{os} {kind:?}");
+            assert_eq!(
+                a(os, kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")),
+                EngineState::Installed,
+                "{os} {kind:?}"
+            );
+        }
+    }
+
+    /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
+    #[test]
+    fn engines_the_os_cannot_run_are_unavailable_with_a_reason() {
+        let unavailable = |os, kind| availability_with(os, None, kind, RuntimeOnDisk::Ready, None, None, None);
+        let reason = |text: &str| EngineState::Unavailable(text.to_string());
+        for os in ["linux", "macos", "freebsd"] {
+            assert_eq!(unavailable(os, EngineKind::Webview2), reason("needs Windows"), "{os}");
+        }
+        assert_eq!(unavailable("macos", EngineKind::Webkit), reason("needs Windows or Linux"));
+        assert_eq!(unavailable("freebsd", EngineKind::Webkit), reason("needs Windows or Linux"));
+        assert_eq!(unavailable("windows", EngineKind::Webview2), EngineState::Installed);
+        assert_eq!(unavailable("windows", EngineKind::Webkit), EngineState::Installed);
+        assert_eq!(unavailable("linux", EngineKind::Webkit), EngineState::Installed);
+        // Servo runs everywhere; CEF follows its pin, not the OS table.
+        assert_eq!(unavailable("macos", EngineKind::Servo), EngineState::Installed);
+        assert_eq!(unavailable("macos", EngineKind::Cef), EngineState::Installed);
+        // The spawn refusal reads the same table.
+        assert_eq!(unsupported_on("windows", EngineKind::Webview2), None);
+        assert_eq!(unsupported_on("linux", EngineKind::Servo), None);
+        assert_eq!(unsupported_on("linux", EngineKind::Webkit), None);
+        let refusal = unsupported_on("macos", EngineKind::Webview2).unwrap();
+        assert!(refusal.contains("WebView2") && refusal.contains("needs Windows"), "{refusal}");
+        assert!(unsupported_on("macos", EngineKind::Webkit).unwrap().contains("needs Windows or Linux"));
+    }
+
+    #[test]
+    fn a_linux_webkit_spawn_names_the_missing_native_host() {
+        // Available on Linux, but the only host is reached through wsl.exe: refused by name, not by a
+        // raw "No such file or directory" from a wsl.exe that isn't there.
+        assert!(webkit_host_missing("linux").unwrap().contains("native Linux WebKit host"));
+        assert_eq!(webkit_host_missing("windows"), None);
+    }
+
+    #[test]
+    fn the_platform_default_is_the_first_engine_the_os_can_run() {
+        assert_eq!(platform_default_engine("windows"), EngineKind::Webview2);
+        for os in ["linux", "macos", "freebsd"] {
+            assert_eq!(platform_default_engine(os), EngineKind::Servo, "{os}");
+        }
+        for os in ["windows", "linux", "macos"] {
+            assert!(platform_unavailable_reason(os, platform_default_engine(os)).is_none());
+        }
+    }
+
+    #[test]
+    fn cef_state_follows_disk_then_overrides() {
+        let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+        let a =
+            |disk, installing, failed, custom| engine_availability(EngineKind::Cef, disk, installing, failed, custom);
+        assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
+        assert_eq!(a(RuntimeOnDisk::Missing, None, None, None), EngineState::NotInstalled { size: pin.size });
+        assert_eq!(a(RuntimeOnDisk::Stale, None, None, None), EngineState::UpdateNeeded { size: pin.size });
+        assert_eq!(
+            a(RuntimeOnDisk::Missing, Some((5, 9)), Some("old"), None),
+            EngineState::Installing { received: 5, total: 9 }
+        );
+        assert_eq!(a(RuntimeOnDisk::Missing, None, Some("boom"), None), EngineState::Failed("boom".into()));
+        assert_eq!(a(RuntimeOnDisk::Stale, None, Some("boom"), None), EngineState::Failed("boom".into()));
+        // A current runtime outranks a recorded failure, so the list agrees with what a spawn would do.
+        assert_eq!(a(RuntimeOnDisk::Ready, None, Some("boom"), None), EngineState::Installed);
+        let p = Path::new("C:/my/cef");
+        assert_eq!(a(RuntimeOnDisk::Missing, Some((1, 2)), Some("x"), Some(p)), EngineState::Custom(p.to_path_buf()));
+    }
+
+    #[test]
+    fn a_platform_without_a_pin_offers_no_install() {
+        let a = |disk, installing, failed, custom| {
+            availability_with("windows", None, EngineKind::Cef, disk, installing, failed, custom)
+        };
+        let unavailable = EngineState::Unavailable(NO_PIN_REASON.to_string());
+        for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
+            assert_eq!(a(disk, None, None, None), unavailable);
+            // A recorded failure cannot exist without a pin, and would not change the answer.
+            assert_eq!(a(disk, None, Some("boom"), None), unavailable);
+        }
+        // What is already on disk (a dev tree) or configured still works, and other engines are untouched.
+        assert_eq!(a(RuntimeOnDisk::Ready, None, None, None), EngineState::Installed);
+        let p = Path::new("C:/my/cef");
+        assert_eq!(a(RuntimeOnDisk::Missing, None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
+        assert_eq!(
+            availability_with("windows", None, EngineKind::Servo, RuntimeOnDisk::Missing, None, None, None),
+            EngineState::Installed
+        );
+        // The pick says so rather than asking to download, and the label gives the reason.
+        assert_eq!(
+            crate::engine_info::pick_outcome(EngineKind::Cef, &unavailable),
+            crate::engine_info::PickOutcome::Unavailable(EngineKind::Cef, NO_PIN_REASON.to_string())
+        );
+        assert!(crate::engine_info::engine_state_label(&unavailable).0.contains(NO_PIN_REASON));
+    }
+
+    #[test]
+    fn a_stale_marker_is_update_needed_not_a_spawn() {
+        let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+        let state = engine_availability(EngineKind::Cef, RuntimeOnDisk::Stale, None, None, None);
+        assert_eq!(state, EngineState::UpdateNeeded { size: pin.size });
+        assert!(matches!(
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale, None),
+            Err(SpawnError::EngineMissing(EngineKind::Cef))
+        ));
+        assert!(matches!(
+            check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing, None),
+            Err(SpawnError::EngineMissing(EngineKind::Cef))
+        ));
+        assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready, None).is_ok());
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, None).is_ok());
+    }
+
+    #[test]
+    fn a_custom_directory_allows_a_spawn_the_disk_would_refuse() {
+        let custom = Path::new("D:/cef");
+        for disk in [RuntimeOnDisk::Missing, RuntimeOnDisk::Stale] {
+            assert!(check_spawnable(EngineKind::Cef, disk, Some(custom)).is_ok());
+        }
+    }
+
+    #[test]
+    fn the_host_copy_is_made_when_missing_skipped_when_unchanged_and_replaced_when_the_source_changes() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_src");
+        let custom = temp_dir("host_custom");
+        let host = src_dir.join(HOST);
+        std::fs::write(&host, b"v1").unwrap();
+
+        let dest = ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(dest, custom_host_path(&custom, &host));
+        assert_eq!(dest.parent().unwrap(), custom);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"v1", "copied when missing");
+
+        // Unchanged: a marker written into the copy survives only if it was not recopied.
+        let stamp = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().modified().unwrap(), stamp);
+
+        std::fs::write(&host, b"version 2").unwrap();
+        ensure_host_copy(&custom, &host).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"version 2", "replaced when the source changed");
+
+        let err = ensure_host_copy(&custom, &src_dir.join("nope")).unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn the_cef_host_is_copied_beside_a_runtime_that_lacks_one() {
+        let (custom, runtime) = (Path::new("D:/mine"), PathBuf::from("D:/data/cef-runtime"));
+        assert_eq!(host_home(Some(custom), true, Some(runtime.clone())), Some(custom.to_path_buf()));
+        assert_eq!(host_home(None, true, Some(runtime.clone())), None, "a dev tree runs its own host");
+        assert_eq!(host_home(None, false, Some(runtime.clone())), Some(runtime), "a downloaded runtime has none");
+        assert_eq!(host_home(None, false, None), None);
+    }
+
+    #[test]
+    fn concurrent_spawns_copy_the_host_once_and_leave_no_temp_files() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_race_src");
+        let custom = temp_dir("host_race_dest");
+        let host = src_dir.join(HOST);
+        std::fs::write(&host, vec![7u8; 200_000]).unwrap();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (custom, host) = (custom.clone(), host.clone());
+                std::thread::spawn(move || ensure_host_copy(&custom, &host))
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().unwrap(), custom.join(HOST));
+        }
+        assert_eq!(std::fs::read(custom.join(HOST)).unwrap(), vec![7u8; 200_000]);
+        let names: Vec<_> = std::fs::read_dir(&custom).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "no temp copies left: {names:?}");
+    }
+
+    #[test]
+    fn a_matching_host_copy_is_current_even_when_it_is_locked() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_lock_src");
+        let custom = temp_dir("host_lock_dest");
+        let host = src_dir.join(HOST);
+        std::fs::write(&host, b"host").unwrap();
+        let dest = ensure_host_copy(&custom, &host).unwrap();
+        // Held open without share-delete, as a running host holds its exe: a rename over it would fail.
+        let mut held = std::fs::OpenOptions::new();
+        held.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            held.share_mode(1);
+        }
+        let _held = held.open(&dest).unwrap();
+        assert_eq!(ensure_host_copy(&custom, &host).unwrap(), dest);
+    }
+
+    #[test]
+    fn a_missing_engine_error_reads_plainly() {
+        assert_eq!(SpawnError::EngineMissing(EngineKind::Cef).to_string(), "Blink (CEF) is not installed");
+    }
+
+    #[test]
+    fn only_cef_has_a_downloaded_runtime_dir() {
+        // `engine_data_dir()` is None under cfg(test), so no real profile is touched.
+        assert_eq!(engine_runtime_dir(EngineKind::Cef), None);
+        assert_eq!(engine_runtime_dir(EngineKind::Servo), None);
+    }
+
+    /// A dir whose files a live CEF holds (opened without share-delete, as
+    /// Chromium's SQLite does) survives the sweep untouched; a dead one and
+    /// one an earlier sweep renamed aside are deleted.
+    #[cfg(windows)]
+    #[test]
+    fn sweep_skips_dirs_still_in_use() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+        let root = crate::store::testutil::temp_dir("cef-sweep");
+        for name in ["1-0", "1-1", "1-2.old"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("Cookies"), b"x").unwrap();
+        }
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ_WRITE)
+            .open(root.join("1-1").join("Cookies"))
+            .unwrap();
+
+        super::sweep_cache_dirs(&root, Duration::from_secs(3600));
+        assert!(root.join("1-0").exists(), "a dir touched within min_age is kept");
+
+        super::sweep_cache_dirs(&root, Duration::ZERO);
+        let mut left: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["1-1"]);
+        assert!(root.join("1-1").join("Cookies").exists());
+    }
 }

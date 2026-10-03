@@ -33,16 +33,22 @@ fi
 # directory's own mtime, which a `cargo build` touches for its own
 # bookkeeping on every invocation regardless of whether that candidate's
 # code actually re-ran (see README.md/project memory on this).
+# Takes one or more globs: newer cargo nightlies put build-script output
+# under build/<crate>/<hash>/, older ones under build/<crate>-<hash>/, and
+# a target dir built by both has each.
 find_newest() {
-    local base="$1" glob="$2"
+    local base="$1" glob
     local f newest="" newest_time=0 t
-    for f in "$base"/$glob; do
-        [ -e "$f" ] || continue
-        t=$(stat -c '%Y' "$f")
-        if [ "$t" -gt "$newest_time" ]; then
-            newest_time="$t"
-            newest="$f"
-        fi
+    shift
+    for glob in "$@"; do
+        for f in "$base"/$glob; do
+            [ -e "$f" ] || continue
+            t=$(stat -c '%Y' "$f")
+            if [ "$t" -gt "$newest_time" ]; then
+                newest_time="$t"
+                newest="$f"
+            fi
+        done
     done
     printf '%s' "$newest"
 }
@@ -65,14 +71,14 @@ sync_file() {
 }
 
 # --- Servo's ANGLE DLLs ---
-mozangle_egl=$(find_newest "$target_debug/build" "mozangle-*/out/libEGL.dll")
-mozangle_glesv2=$(find_newest "$target_debug/build" "mozangle-*/out/libGLESv2.dll")
+mozangle_egl=$(find_newest "$target_debug/build" "mozangle-*/out/libEGL.dll" "mozangle/*/out/libEGL.dll")
+mozangle_glesv2=$(find_newest "$target_debug/build" "mozangle-*/out/libGLESv2.dll" "mozangle/*/out/libGLESv2.dll")
 sync_file "$mozangle_egl" "$target_debug/libEGL.dll" "libEGL.dll"
 sync_file "$mozangle_glesv2" "$target_debug/libGLESv2.dll" "libGLESv2.dll"
 
 # --- CEF's full runtime, isolated in its own subdirectory (see
 # process_manager.rs's engine_binary_path doc comment for why) ---
-cef_out_dir=$(find_newest "$target_debug/build" "cef-dll-sys-*/out/cef_windows_x86_64")
+cef_out_dir=$(find_newest "$target_debug/build" "cef-dll-sys-*/out/cef_windows_x86_64" "cef-dll-sys/*/out/cef_windows_x86_64")
 cef_runtime_dir="$target_debug/cef-runtime"
 if [ -n "$cef_out_dir" ]; then
     mkdir -p "$cef_runtime_dir"

@@ -54,10 +54,7 @@ pub fn step(
     }
 
     let ids: Vec<String> = positions.keys().cloned().collect();
-    let mut forces: HashMap<String, egui::Vec2> = ids
-        .iter()
-        .map(|id| (id.clone(), egui::Vec2::ZERO))
-        .collect();
+    let mut forces: HashMap<String, egui::Vec2> = ids.iter().map(|id| (id.clone(), egui::Vec2::ZERO)).collect();
 
     // Pairwise repulsion — O(n^2), fine for the tens-of-tabs scale this UI
     // is meant for.
@@ -159,21 +156,11 @@ mod tests {
         let pinned = HashSet::new();
 
         for _ in 0..2000 {
-            step(
-                &mut positions,
-                &mut velocities,
-                &edges,
-                &pinned,
-                egui::Vec2::ZERO,
-                1.0 / 60.0,
-            );
+            step(&mut positions, &mut velocities, &edges, &pinned, egui::Vec2::ZERO, 1.0 / 60.0);
         }
 
         let dist = (positions["a"] - positions["b"]).length();
-        assert!(
-            (dist - REST_LENGTH).abs() < 20.0,
-            "expected settling near rest length {REST_LENGTH}, got {dist}"
-        );
+        assert!((dist - REST_LENGTH).abs() < 20.0, "expected settling near rest length {REST_LENGTH}, got {dist}");
     }
 
     #[test]
@@ -188,14 +175,7 @@ mod tests {
         let pinned = HashSet::new();
 
         for _ in 0..5000 {
-            step(
-                &mut positions,
-                &mut velocities,
-                &edges,
-                &pinned,
-                egui::Vec2::ZERO,
-                1.0 / 60.0,
-            );
+            step(&mut positions, &mut velocities, &edges, &pinned, egui::Vec2::ZERO, 1.0 / 60.0);
         }
 
         assert_eq!(velocities["a"], egui::Vec2::ZERO);
@@ -214,14 +194,7 @@ mod tests {
         let mut pinned = HashSet::new();
         pinned.insert("a".to_string());
 
-        step(
-            &mut positions,
-            &mut velocities,
-            &edges,
-            &pinned,
-            egui::Vec2::ZERO,
-            1.0 / 60.0,
-        );
+        step(&mut positions, &mut velocities, &edges, &pinned, egui::Vec2::ZERO, 1.0 / 60.0);
 
         assert_eq!(positions["a"], egui::Vec2::new(0.0, 0.0));
     }

@@ -1,6 +1,4 @@
-use cef::{
-    self, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, rc::Rc, *,
-};
+use cef::{self, rc::Rc, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, *};
 use std::cell::RefCell;
 
 use crate::render_process_handler::{EngineRenderProcessHandler, RenderProcessHandlerBuilder};
@@ -37,6 +35,11 @@ wrap_app! {
             command_line.append_switch(Some(&"noerrdialogs".into()));
             command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
             command_line.append_switch(Some(&"use-mock-keychain".into()));
+            // Chromium 151 made a first-run EULA required on Linux; with no
+            // dialog to show, initialize fails with exit code 28
+            // (CHROME_RESULT_CODE_EULA_REFUSED). An embedded engine has no
+            // first run at all.
+            command_line.append_switch(Some(&"no-first-run".into()));
             command_line.append_switch_with_value(
                 Some(&"enable-logging".into()),
                 Some(&"stderr".into()),
@@ -75,9 +78,7 @@ pub struct EngineBrowserProcessHandler {
 
 impl EngineBrowserProcessHandler {
     pub fn new() -> Self {
-        Self {
-            is_cef_ready: RefCell::new(false),
-        }
+        Self { is_cef_ready: RefCell::new(false) }
     }
 }
 

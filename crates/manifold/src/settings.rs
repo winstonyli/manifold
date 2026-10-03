@@ -84,7 +84,7 @@ pub struct Settings {
     /// posture `Settings::load` already has for the whole file); an older
     /// file whose values were saved as *physical* pixels before this fix
     /// restores those numbers as if they were logical points, which on a
-    /// >100%-scaled monitor makes the window come back *larger* than it was
+    /// monitor scaled past 100% makes the window come back *larger* than it was
     /// (e.g. 2744 saved physical pixels reopen as 2744 points = 3430
     /// physical at 125%). That doesn't self-correct: the next save records
     /// the new, inflated size in points, so the window simply stays at it
@@ -110,12 +110,22 @@ pub struct Settings {
     /// settings.json at all) -- so upgrading from a build that predates
     /// this field never replays the demo for an existing user, only a
     /// brand-new one. Deliberately a `Settings` field rather than living in
-    /// `session.json`: it needs to survive exactly the case `session.json`
+    /// the session store: it needs to survive exactly the case the session
     /// doesn't (a user with zero saved tabs), and `Settings` is the one
     /// file already guaranteed to persist across an empty session the same
     /// way `home_page`/`default_starting_engine` do.
     #[serde(default = "default_already_shown")]
     pub has_shown_first_launch_demo: bool,
+    /// Minutes a background tab may sit out of sight before it goes back to
+    /// sleep (`App::request_sleep`); `None` (the default) never does. Applies to
+    /// tabs already open, unlike the new-tab defaults above. See
+    /// `idle_sleep`.
+    #[serde(default)]
+    pub idle_sleep_minutes: Option<u32>,
+    /// A CEF runtime directory the user supplied instead of downloading one (`engine_install::
+    /// validate_custom`); used for launches only while it validates.
+    #[serde(default)]
+    pub cef_directory: Option<String>,
 }
 
 fn default_already_shown() -> bool {
@@ -126,7 +136,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
-            default_starting_engine: EngineKind::Webview2,
+            default_starting_engine: crate::process_manager::platform_default_engine(std::env::consts::OS),
             zoom_factor: 1.0,
             home_page: "https://example.com".to_string(),
             window_width: None,
@@ -134,20 +144,20 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             has_shown_first_launch_demo: false,
+            idle_sleep_minutes: None,
+            cef_directory: None,
         }
     }
 }
 
 fn settings_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join("settings.json"))
+    Some(crate::profile::dir()?.join("settings.json"))
 }
 
-/// Cheap, process-local "did this file's bytes change" check -- see
-/// `session::content_fingerprint`'s own doc comment (this is the same
-/// idea, kept as its own small copy per that module's own doc comment
-/// rather than shared, since `session.rs`/`settings.rs` are otherwise
-/// already fully independent of each other).
+/// Cheap, process-local "did this file's bytes change" check -- not a
+/// cryptographic or cross-run-stable hash, just `DefaultHasher` (SipHash)
+/// over the raw file contents, good enough to notice that some *other*
+/// process touched `settings.json` since this one last read or wrote it.
 fn content_fingerprint(contents: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -156,24 +166,21 @@ fn content_fingerprint(contents: &str) -> u64 {
 }
 
 /// A fingerprint of `settings.json` exactly as it sits on disk right now --
-/// see `session::fingerprint`'s own doc comment for the full reasoning;
-/// this is the identical mechanism applied to the other single-shared-file
-/// auto-save path.
+/// `None` if it doesn't exist or can't be read. `App::save_settings`
+/// compares it against what it saw at last load/save, so a second
+/// `manifold.exe` on this profile that changed the file meanwhile is
+/// noticed instead of silently clobbered.
 pub fn fingerprint() -> Option<u64> {
     let contents = std::fs::read_to_string(settings_path()?).ok()?;
     Some(content_fingerprint(&contents))
 }
 
 /// Where a save that lost a fingerprint race lands instead of overwriting
-/// the real `settings.json` -- see `session::conflict_path`'s own doc
-/// comment for why this is timestamped rather than a fixed name.
+/// the real `settings.json`. Unix-seconds-suffixed, so a second conflict
+/// later in the same run can't overwrite the first one's unreviewed data.
 pub fn conflict_path() -> Option<PathBuf> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("manifold").join(format!("settings.conflict-{secs}.json")))
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    Some(crate::profile::dir()?.join(format!("settings.conflict-{secs}.json")))
 }
 
 impl Settings {
@@ -202,19 +209,29 @@ impl Settings {
     /// save_settings` to redirect a fingerprint-conflicted save to `settings::
     /// conflict_path()` instead of overwriting the real `settings.json`.
     pub fn save_to(&self, path: &std::path::Path) {
-        if let Some(dir) = path.parent() {
-            if let Err(err) = std::fs::create_dir_all(dir) {
-                eprintln!("settings: failed to create {}: {err}", dir.display());
-                return;
-            }
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(path, json) {
-                    eprintln!("settings: failed to write {}: {err}", path.display());
-                }
-            }
-            Err(err) => eprintln!("settings: failed to serialize: {err}"),
-        }
+        crate::json_file::save(self, path, "settings");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cef_directory_defaults_when_missing_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.cef_directory, None);
+        let settings = Settings { cef_directory: Some("D:/cef".into()), ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(back.cef_directory.as_deref(), Some("D:/cef"));
+    }
+
+    /// A file without the field takes the platform default; a saved engine is kept even where it can't run.
+    #[test]
+    fn the_starting_engine_defaults_per_platform_and_a_saved_one_is_kept() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.default_starting_engine, crate::process_manager::platform_default_engine(std::env::consts::OS));
+        let saved: Settings = serde_json::from_str(r#"{"default_starting_engine":"webview2"}"#).unwrap();
+        assert_eq!(saved.default_starting_engine, EngineKind::Webview2);
     }
 }

@@ -11,12 +11,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment, ICoreWebView2Environment15, ICoreWebView2Find,
-    ICoreWebView2FindOptions, ICoreWebView2_28,
+    ICoreWebView2, ICoreWebView2Environment, ICoreWebView2Environment15, ICoreWebView2Find, ICoreWebView2FindOptions,
+    ICoreWebView2_28,
 };
 use webview2_com::{
-    FindActiveMatchIndexChangedEventHandler, FindMatchCountChangedEventHandler,
-    FindStartCompletedHandler,
+    FindActiveMatchIndexChangedEventHandler, FindMatchCountChangedEventHandler, FindStartCompletedHandler,
 };
 use windows::core::HSTRING;
 
@@ -49,10 +48,7 @@ fn read_result(find: &ICoreWebView2Find) -> (u32, u32) {
 /// `ICoreWebView2_28`/`ICoreWebView2Environment15`-less WebView2 Runtime just
 /// means this tab's find bar silently never reports results, same
 /// graceful-degradation shape as favicon's own version-gated API.
-pub fn register(
-    environment: &ICoreWebView2Environment,
-    webview: &ICoreWebView2,
-) -> windows::core::Result<FindState> {
+pub fn register(environment: &ICoreWebView2Environment, webview: &ICoreWebView2) -> windows::core::Result<FindState> {
     let environment15: ICoreWebView2Environment15 = windows::core::Interface::cast(environment)?;
     let webview28: ICoreWebView2_28 = windows::core::Interface::cast(webview)?;
     let find = unsafe { webview28.Find()? };
@@ -77,13 +73,12 @@ pub fn register(
     }
 
     let pending_for_active = pending.clone();
-    let active_handler =
-        FindActiveMatchIndexChangedEventHandler::create(Box::new(move |sender, _args| {
-            if let Some(sender) = &sender {
-                *pending_for_active.borrow_mut() = Some(read_result(sender));
-            }
-            Ok(())
-        }));
+    let active_handler = FindActiveMatchIndexChangedEventHandler::create(Box::new(move |sender, _args| {
+        if let Some(sender) = &sender {
+            *pending_for_active.borrow_mut() = Some(read_result(sender));
+        }
+        Ok(())
+    }));
     unsafe {
         let _ = find.add_ActiveMatchIndexChanged(&active_handler, &mut token);
     }

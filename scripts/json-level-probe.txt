@@ -1,0 +1,24 @@
+RESIZE 1200 800
+!mkdir -p target/json-probe && python -P scripts/json-level-probe.py fixture target/json-probe/users.json < /dev/null
+ADDFILE {repo}\target\json-probe\users.json 500 350
+sleep 1
+EXPORTSTATE {repo}\target\json-probe\0-parent.json
+!while [ ! -f target/json-probe/0-parent.json ]; do sleep 0.2; done; python -P scripts/json-level-probe.py doubleclick target/json-probe/0-parent.json 500 350 < /dev/null
+sleep 1
+CLICK 266 17
+sleep 1
+SCREENSHOT {repo}\target\json-probe\1-entered.png
+EXPORTSTATE {repo}\target\json-probe\1-entered.json
+JSONTOGGLE /meta
+JSONMORE /users
+SCREENSHOT {repo}\target\json-probe\2-toggled-paged.png
+EXPORTSTATE {repo}\target\json-probe\2-toggled-paged.json
+JSONSEARCH user 33
+JSONSELECT /users/33/name
+SCREENSHOT {repo}\target\json-probe\3-search.png
+EXPORTSTATE {repo}\target\json-probe\3-search.json
+JSONRELAYOUT
+EXPORTSTATE {repo}\target\json-probe\4-relayout.json
+CLICK 22 17
+sleep 1
+EXPORTSTATE {repo}\target\json-probe\5-left.json

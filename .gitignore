@@ -1,5 +1,6 @@
 /target
 /target-linux
+/target-servo
 *.log
 webkit_swap_test.png
 .superpowers/

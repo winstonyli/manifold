@@ -11,12 +11,11 @@
 //! pages are compiled in rather than supplied dynamically by `manifold.exe`.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment, ICoreWebView2CustomSchemeRegistration,
-    ICoreWebView2EnvironmentOptions, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+    ICoreWebView2, ICoreWebView2CustomSchemeRegistration, ICoreWebView2Environment, ICoreWebView2EnvironmentOptions,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
 };
 use webview2_com::{
-    take_pwstr, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions,
-    WebResourceRequestedEventHandler,
+    take_pwstr, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, WebResourceRequestedEventHandler,
 };
 use windows::core::HSTRING;
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -68,10 +67,7 @@ pub fn environment_options() -> windows::core::Result<ICoreWebView2EnvironmentOp
 /// path needs), `manifold://` pages simply won't render for this tab,
 /// same soft-degradation posture `find::register`'s own caller already
 /// gives its own best-effort registration.
-pub fn register(
-    environment: &ICoreWebView2Environment,
-    webview: &ICoreWebView2,
-) -> windows::core::Result<()> {
+pub fn register(environment: &ICoreWebView2Environment, webview: &ICoreWebView2) -> windows::core::Result<()> {
     unsafe {
         webview.AddWebResourceRequestedFilter(
             &HSTRING::from(format!("{SCHEME_NAME}://*")),

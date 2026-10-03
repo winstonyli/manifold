@@ -1,0 +1,7 @@
+#!/bin/sh
+# Enabled per clone: git config core.hooksPath .githooks (see CLAUDE.md).
+# Skips when no Rust file or rustfmt.toml is staged.
+git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|rustfmt\.toml$' || exit 0
+cargo fmt --all --check >/dev/null 2>&1 || { echo "pre-commit: run 'cargo fmt --all'" >&2; exit 1; }
+# The engine crates for WebKit and Servo don't build on Windows; lint what does.
+cargo clippy -q -j 12 -p manifold -p ipc-protocol --all-targets -- -D warnings || { echo "pre-commit: clippy failed" >&2; exit 1; }

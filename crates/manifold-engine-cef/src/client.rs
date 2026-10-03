@@ -1,22 +1,22 @@
+// `wrap_client!`'s generated `new` and `ClientBuilder::build` take one argument per
+// handler or shared handle; bundling them into a struct would only rename the list.
+#![allow(clippy::too_many_arguments)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
 
-use crate::context_menu_handler::{
-    ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink,
-};
+use crate::context_menu_handler::{ContextMenuHandlerBuilder, EngineContextMenuHandler, SharedContextMenuLink};
 use crate::download_handler::{DownloadHandlerBuilder, EngineDownloadHandler, SharedDownloadPath};
 use crate::find_handler::{EngineFindHandler, FindHandlerBuilder, SharedFindResult};
-use crate::life_span_handler::{
-    EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab,
-};
+use crate::life_span_handler::{EngineLifeSpanHandler, LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab};
 use crate::nav_handler::{
-    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, LoadHandlerBuilder, SharedMuted,
-    SharedNavState,
+    DisplayHandlerBuilder, EngineDisplayHandler, EngineLoadHandler, EngineRequestHandler, LoadHandlerBuilder,
+    RequestHandlerBuilder, SharedMuted, SharedNavState,
 };
 use crate::render_handler::{EngineRenderHandler, RenderHandlerBuilder};
-use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, REDIRECT_RESULT};
+use crate::render_process_handler::{AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, PAGE_STATE_RESULT, REDIRECT_RESULT};
 
 /// The renderer subprocess's own answer to a `check-json-body`
 /// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
@@ -51,11 +51,20 @@ pub fn new_shared_audio_playing() -> SharedAudioPlaying {
     Rc::new(RefCell::new(None))
 }
 
+/// The renderer's `page-state-result` reply: the raw script text, which
+/// `main.rs` takes and parses with `ipc_protocol::PageState::parse`.
+pub type SharedPageState = Rc<RefCell<Option<String>>>;
+
+pub fn new_shared_page_state() -> SharedPageState {
+    Rc::new(RefCell::new(None))
+}
+
 wrap_client! {
     pub struct ClientBuilder {
         render_handler: RenderHandler,
         display_handler: DisplayHandler,
         load_handler: LoadHandler,
+        request_handler: RequestHandler,
         life_span_handler: LifeSpanHandler,
         find_handler: FindHandler,
         download_handler: DownloadHandler,
@@ -63,6 +72,7 @@ wrap_client! {
         json_body: SharedJsonBody,
         redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
+        page_state: SharedPageState,
     }
 
     impl Client {
@@ -94,6 +104,12 @@ wrap_client! {
                 }
                 return 1;
             }
+            if name == PAGE_STATE_RESULT {
+                if let Some(args) = message.argument_list() {
+                    *self.page_state.borrow_mut() = Some(CefString::from(&args.string(0)).to_string());
+                }
+                return 1;
+            }
             0
         }
 
@@ -107,6 +123,10 @@ wrap_client! {
 
         fn load_handler(&self) -> Option<cef::LoadHandler> {
             Some(self.load_handler.clone())
+        }
+
+        fn request_handler(&self) -> Option<cef::RequestHandler> {
+            Some(self.request_handler.clone())
         }
 
         fn life_span_handler(&self) -> Option<cef::LifeSpanHandler> {
@@ -140,11 +160,13 @@ impl ClientBuilder {
         json_body: SharedJsonBody,
         redirect_content_type: SharedRedirectContentType,
         audio_playing: SharedAudioPlaying,
+        page_state: SharedPageState,
     ) -> Client {
         Self::new(
             RenderHandlerBuilder::build(render_handler),
             DisplayHandlerBuilder::build(EngineDisplayHandler::new(nav_state.clone())),
-            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state, muted)),
+            LoadHandlerBuilder::build(EngineLoadHandler::new(nav_state.clone(), muted)),
+            RequestHandlerBuilder::build(EngineRequestHandler::new(nav_state)),
             LifeSpanHandlerBuilder::build(EngineLifeSpanHandler::new(pending_open_tab, closed)),
             FindHandlerBuilder::build(EngineFindHandler::new(find_result)),
             DownloadHandlerBuilder::build(EngineDownloadHandler::new(download_path)),
@@ -152,6 +174,7 @@ impl ClientBuilder {
             json_body,
             redirect_content_type,
             audio_playing,
+            page_state,
         )
     }
 }

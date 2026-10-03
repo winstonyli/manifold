@@ -90,8 +90,7 @@ pub fn write_image_as_pdf(image_path: &Path, pdf_path: &Path) -> Result<(), Stri
         pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
     pdf.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF", offsets.len() + 1)
-            .as_bytes(),
+        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF", offsets.len() + 1).as_bytes(),
     );
 
     std::fs::write(pdf_path, pdf).map_err(|err| format!("failed to write {}: {err}", pdf_path.display()))

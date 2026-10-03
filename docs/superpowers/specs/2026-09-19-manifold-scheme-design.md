@@ -21,6 +21,7 @@ session itself is out of scope here.
   part of this spec. Navigating a `manifold://` URL on one of those three
   today will simply fail to load (no scheme registered there) — an
   accepted, disclosed limitation, not a bug to guard against here.
+  (Update 2026-10-02: the first-launch demo, whose tabs are all `manifold://` pages, now always opens in WebView2 whatever the default engine, and where WebView2 is unavailable (Linux, macOS) a first launch opens a normal root tab instead of a demo whose pages would fail to load.)
 - **A real custom scheme (`manifold://welcome`), not an `https://` virtual
   host.** WebView2 supports both: `SetVirtualHostNameToFolderMapping` is
   simpler but produces an `https://`-look-alike hostname, not a literal

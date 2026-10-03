@@ -11,9 +11,10 @@ use cef::{rc::Rc as CefRc, *};
 /// module) so `main.rs` does the actual translation, same separation
 /// `manifold-engine-webview2`'s own `download::DownloadEvent` uses.
 pub enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64> },
+    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
     Progress { path: String, bytes_received: u64 },
     Completed { path: String },
+    Failed { path: String },
 }
 
 /// Download events, queued rather than a single slot -- two downloads
@@ -21,7 +22,7 @@ pub enum DownloadEvent {
 /// other. `on_download_updated` fires repeatedly for the same item over its
 /// whole lifetime (not just once at completion) -- `started` dedupes it
 /// down to exactly one `Started` per item id, `reported` the same for
-/// `Completed`; every other call in between is a `Progress`.
+/// `Completed` or `Failed`; every other call in between is a `Progress`.
 pub struct DownloadResults {
     pub queue: Vec<DownloadEvent>,
     started: HashSet<u32>,
@@ -31,11 +32,7 @@ pub struct DownloadResults {
 pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
 
 pub fn new_shared_download_path() -> SharedDownloadPath {
-    Rc::new(RefCell::new(DownloadResults {
-        queue: Vec::new(),
-        started: HashSet::new(),
-        reported: HashSet::new(),
-    }))
+    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), started: HashSet::new(), reported: HashSet::new() }))
 }
 
 /// `%USERPROFILE%\Downloads` -- CEF (unlike WebView2) has no built-in
@@ -44,9 +41,7 @@ pub fn new_shared_download_path() -> SharedDownloadPath {
 /// the (practically never, on a real Windows install) case `USERPROFILE`
 /// isn't set, rather than failing the download outright.
 fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join("Downloads"))
-        .unwrap_or_default()
+    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Downloads")).unwrap_or_default()
 }
 
 #[derive(Clone)]
@@ -117,11 +112,16 @@ wrap_download_handler! {
                 if results.started.insert(id) {
                     let total = item.total_bytes();
                     let total_bytes = (total > 0).then_some(total as u64);
-                    results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes });
+                    let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
+                    results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
                 }
                 if item.is_complete() != 0 {
                     if results.reported.insert(id) {
                         results.queue.push(DownloadEvent::Completed { path });
+                    }
+                } else if item.is_canceled() != 0 || item.is_interrupted() != 0 {
+                    if results.reported.insert(id) {
+                        results.queue.push(DownloadEvent::Failed { path });
                     }
                 } else {
                     let received = item.received_bytes();
