@@ -38,13 +38,14 @@ pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
     use field::*;
     match kind {
-        Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED],
-        Kind::Group => &[POS, COLOR, NAME, FROM_JSON],
+        Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET],
+        Kind::Group => &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR],
         Kind::Note => &[POS, COLOR, URL, TEXT],
         Kind::Image | Kind::Pdf => &[POS, COLOR, URL, PATH],
         Kind::Json => &[POS, COLOR, URL, PATH, VIEW],
         Kind::Download => &[POS, COLOR, URL, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
+        Kind::Jar => &[COLOR, NAME, EPHEMERAL],
         Kind::Unknown(_) => &[],
     }
 }
@@ -274,6 +275,8 @@ fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, 
     fields.insert(field::ENGINE, FieldValue::Engine(engine_code(engine)));
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
+    fields.insert(field::JAR, FieldValue::Id(None));
+    fields.insert(field::JAR_SET, FieldValue::Bool(false));
     Kind::Tab
 }
 
@@ -319,6 +322,7 @@ impl App {
                 NodePayload::Group(g) => {
                     fields.insert(field::NAME, str(&g.name));
                     fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
+                    fields.insert(field::DEFAULT_JAR, FieldValue::Id(None));
                     Kind::Group
                 }
                 NodePayload::Note(n) => {
@@ -634,7 +638,7 @@ impl App {
                 };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
             }
-            Kind::Unknown(_) => return,
+            Kind::Jar | Kind::Unknown(_) => return,
         }
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;
@@ -1488,6 +1492,14 @@ pub(crate) mod tests {
     use crate::SpawnPurpose;
 
     const A: ActorId = ActorId(0xA);
+
+    #[test]
+    fn jar_fields_belong_to_tabs_groups_and_jars() {
+        use field::*;
+        assert_eq!(kind_fields(Kind::Tab), &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET]);
+        assert_eq!(kind_fields(Kind::Group), &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR]);
+        assert_eq!(kind_fields(Kind::Jar), &[COLOR, NAME, EPHEMERAL]);
+    }
 
     /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
     /// Under test (no content dir) every fetch fails at once.

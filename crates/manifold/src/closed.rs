@@ -34,7 +34,7 @@ pub(crate) const MAX_CLOSED: usize = 20;
 /// PDFs, JSON files and leaves -- is.
 pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
     match kind {
-        store::model::Kind::Download => false,
+        store::model::Kind::Download | store::model::Kind::Jar => false,
         store::model::Kind::Note => match fields.get(&field::TEXT) {
             Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
             _ => false,
