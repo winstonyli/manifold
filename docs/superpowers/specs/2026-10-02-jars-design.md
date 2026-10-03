@@ -65,6 +65,23 @@ explicit user action.
 
 - The default jar starts empty. The old WebView2 folder is not imported (decided 2026-10-02).
 
+## WebView2 isolation (read, not run)
+
+`create_environment` passes a null user-data folder (the shared one next to the exe) and creates tabs with
+`CreateCoreWebView2CompositionController`. The vendored bindings (`webview2-com-sys` 0.39) offer two ways out:
+
+- **InPrivate (chosen):** `ICoreWebView2ControllerOptions::SetIsInPrivateModeEnabled(true)`, passed through
+  `CreateCoreWebView2CompositionControllerWithOptions` (Environment10). Nothing touches disk and the tab starts with an empty
+  jar, so only the jar's cookies are ever present and the user's real shared folder stops being involved. Manifold seeds
+  from the jar and pulls back as in the flow above.
+- Per-jar user-data folder: a path argument to `CreateCoreWebView2EnvironmentWithOptions`. Works on older runtimes but
+  puts a second, WebView2-managed store of the same cookies on disk, and one folder cannot be shared by differently
+  configured environments.
+
+To verify before building: the minimum WebView2 runtime that supports the controller options (the existing code already
+degrades when Environment15 is missing, `main.rs:224`; do the same, and fall back to the per-jar folder), and that
+InPrivate controllers accept `Network.setCookies` before the first navigation.
+
 ## Out of scope for v1
 
 localStorage, sessionStorage, IndexedDB, cache, permissions, a jar picker UI, jar nodes drawn in the graph, a "clear
@@ -73,5 +90,4 @@ browsing data" command. Storage has no verified engine-agnostic read or write pa
 ## Open questions
 
 - Sync cadence versus cost for the timer, and whether a pull on every navigation commit is cheaper than a timer.
-- InPrivate or per-jar folder for WebView2: needs a check that WebView2 exposes the option this app's wrapper can set.
 - Whether missing never-visited path-scoped cookies on WebKit and Servo is acceptable (it is a small gap).
