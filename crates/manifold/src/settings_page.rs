@@ -257,7 +257,11 @@ impl App {
                 }
                 _ => engine_state_line(ui, &state),
             }
-            let removable = runtime.is_some() && !matches!(state, EngineState::Installing { .. });
+            // Leftovers (a kept `.part`, a failed install's `.tmp`) can exist with no runtime; they get a
+            // button too, since nothing else would ever delete them.
+            let leftovers = kind == EngineKind::Cef
+                && crate::process_manager::engine_hosts_dir().is_some_and(|d| crate::engine_install::has_leftovers(&d));
+            let removable = (runtime.is_some() || leftovers) && !matches!(state, EngineState::Installing { .. });
             if matches!(state, EngineState::Installed | EngineState::Custom(_)) && !removable {
                 continue;
             }
@@ -275,7 +279,12 @@ impl App {
                     EngineState::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_engine_install(kind),
                     _ => {}
                 }
-                if removable && ui.button("Remove").on_hover_text("Delete the downloaded runtime").clicked() {
+                let (label, hint) = if runtime.is_some() {
+                    ("Remove", "Delete the downloaded runtime")
+                } else {
+                    ("Clear leftovers", "Delete the partial download and install leftovers")
+                };
+                if removable && ui.button(label).on_hover_text(hint).clicked() {
                     self.pending_engine_confirm = Some(EngineConfirm::Remove(kind));
                 }
             });

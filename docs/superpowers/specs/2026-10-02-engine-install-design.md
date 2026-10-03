@@ -30,7 +30,7 @@ Each engine is in exactly one state, computed in one place (`engine_availability
 |---|---|---|
 | **Installed** | present and matching the app's pin (bundled engines always) | no extra marker beyond the name |
 | **Not installed** | needs the download | "Not installed · 172 MB" with a Download button |
-| **Installing** | download or unpack in progress | progress bar with bytes and Cancel |
+| **Installing** | download or unpack in progress | progress bar with bytes; Cancel is in Settings, Engines only (the cards and pickers show the state line) |
 | **Update needed** | installed for an older pin (after an app update) | "Update needed · 172 MB" with an Update button |
 | **Failed** | last install failed | the reason and a Retry button |
 | **Custom** | using a user-chosen CEF directory | the path, with its validation result |
@@ -45,8 +45,8 @@ A tab, session or restored node that needs a missing engine shows its card as "C
 2. Download to `engine-hosts/cef-runtime.part` with HTTP Range resume; progress shown as in section 2 (reusing the download-card UI).
 3. Verify SHA-256 (and SHA-1) of the archive before unpacking anything.
 4. Unpack only `Release/` and `Resources/` (bz2 + tar) into a temp directory next to the final one; drop build leftovers (`include/`, `cmake/`, `libcef_dll/`, `libcef.lib`, `CMakeLists.txt`, `debug.log`); write a `ready` marker holding the pin; rename the directory into place.
-5. Failure at any step deletes the temp directory and `.part` only when verification failed (keep `.part` for resume on network errors), sets state Failed with the reason, and leaves any previous install untouched.
-6. Cancel stops the download and keeps `.part`. It hides the job at once, but the thread ends only at its next read, so a new install of that engine waits (a toast says so) until the old thread is done. Install also refuses to start while a CEF tab is live: its process holds the runtime's DLLs open and the swap would fail.
+5. Failure at any step removes the temp directory and sets state Failed. The `.part` is deleted only when the archive is bad (hash mismatch, or a corrupt bz2/tar), so a retry downloads afresh; a network error, an idle timeout, a cancel or a file error (disk full) keeps it for resuming. Downloads fail with a network error after 30 s with no data. The state carries the reason, and the failure leaves any previous install untouched.
+6. Cancel (Settings, Engines) is seen while downloading (within about 100 ms, even on a stalled read), between unpack entries and before the swap; it removes the temp directory, keeps `.part` and leaves the previous install alone. A new install of that engine waits (a toast says so) until the old thread is done. Install also refuses to start while a CEF tab is live: its process holds the runtime's DLLs open and the swap would fail.
 
 ## 4. Lookup
 
@@ -54,11 +54,11 @@ A tab, session or restored node that needs a missing engine shows its card as "C
 
 ## 5. Management
 
-Settings shows installed size per downloaded engine and a Remove button (deletes `cef-runtime/`). An app update that changes the pin turns the state to Update needed, and a stale marker means a spawn is refused: the shipped host links the pinned CEF exactly, so an older runtime would crash it. (This replaces the earlier idea that the old runtime keeps working until the user updates.) The Update button runs the normal install flow. A Failed install outranks what is on disk in the displayed state, so a failed update over an old runtime reads Failed, with Retry and Remove.
+Settings shows installed size per downloaded engine and a Remove button (deletes the marker first, then `cef-runtime/`, then any `.part`, `.tmp` and `.old` leftovers). When only leftovers exist (no runtime) the button reads "Clear leftovers". An app update that changes the pin turns the state to Update needed, and a stale marker means a spawn is refused: the shipped host links the pinned CEF exactly, so an older runtime would crash it. (This replaces the earlier idea that the old runtime keeps working until the user updates.) The Update button runs the normal install flow. A current runtime outranks a recorded Failed (so the lists agree with what a spawn does); Failed outranks Not installed and Update needed, so a failed update over an old runtime reads Failed, with Retry and Remove.
 
 ## 6. Bring-your-own
 
-A "CEF directory" setting accepts a runtime directory. Validation requires `libcef.dll` and reads the version from its `archive.json` only (the `name` field) against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. A directory our own install made has no `archive.json`, so it does not validate as a custom one.
+A "CEF directory" setting accepts a runtime directory. Validation requires `libcef.dll` and reads the version from its `archive.json` only (the `name` field) against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. A directory our own install made has no `archive.json`, so it does not validate as a custom one. The copy is made to a unique temp name and renamed, under a lock; a user's own `manifold-engine-cef.exe` in a custom folder is overwritten only when it differs from the shipped host (size or modification time), and a matching one is left alone even if a running host has it locked. Archive entry names containing `:` are refused when unpacking (drive-relative names and NTFS streams).
 
 There is no auto-switch: after an install (or choosing a custom directory) the engine becomes available, but no tab, default or setting changes by itself.
 

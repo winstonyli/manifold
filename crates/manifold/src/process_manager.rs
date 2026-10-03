@@ -462,8 +462,8 @@ pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
 }
 
 /// How `kind` is available, in one place. Engines that ship with the app are
-/// always Installed; CEF follows the disk (`cef_on_disk`), then a custom
-/// path, a running install and a failed one override it.
+/// always Installed; CEF follows the disk (`cef_on_disk`). A custom path and a running install
+/// override it; a failed install overrides Missing and Stale but not a current runtime.
 pub(crate) fn engine_availability(
     kind: EngineKind,
     cef_on_disk: RuntimeOnDisk,
@@ -479,6 +479,11 @@ pub(crate) fn engine_availability(
     }
     if let Some((received, total)) = installing {
         return EngineState::Installing { received, total };
+    }
+    // A runtime that is there and current outranks a recorded failure (the failure was an update or a
+    // retry that did not matter in the end); a failure outranks Missing and Stale.
+    if cef_on_disk == RuntimeOnDisk::Ready {
+        return EngineState::Installed;
     }
     if let Some(message) = failed {
         return EngineState::Failed(message.to_string());
@@ -527,9 +532,18 @@ fn custom_host_path(custom_dir: &Path, host_exe: &Path) -> PathBuf {
     custom_dir.join(host_exe.file_name().unwrap_or_default())
 }
 
+/// Spawns run on their own threads, so two can reach `ensure_host_copy` at once; one copy at a time.
+static HOST_COPY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Makes `custom_host_path` hold the current host exe: copied when missing, replaced when the source's
 /// size or modification time differs, left alone otherwise. Returns the path to launch.
+///
+/// The copy goes to a uniquely named file in the same directory and is renamed into place, under a
+/// process-wide lock, so a launching host never sees a half-written exe and concurrent spawns copy once.
+/// A destination that already matches is current even when a running host has it locked.
 fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathBuf> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let _guard = HOST_COPY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = std::fs::metadata(host_exe).map_err(|e| {
         std::io::Error::new(e.kind(), format!("the CEF host {} was not found: {e}", host_exe.display()))
     })?;
@@ -538,14 +552,25 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
         .map(|m| m.len() == source.len() && m.modified().ok() == source.modified().ok())
         .unwrap_or(false);
     if !same {
-        // `fs::copy` carries no mtime on every platform; set it so the next launch can skip.
-        std::fs::copy(host_exe, &dest).map_err(|e| {
+        let wrap = |e: std::io::Error| {
             std::io::Error::new(e.kind(), format!("could not copy the CEF host into {}: {e}", custom_dir.display()))
-        })?;
+        };
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = custom_dir.join(format!(
+            "{}.{}-{n}.tmp",
+            dest.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id()
+        ));
+        std::fs::copy(host_exe, &temp).map_err(wrap)?;
+        // `fs::copy` carries no mtime on every platform; set it so the next launch can skip.
         if let Ok(modified) = source.modified() {
-            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&dest) {
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&temp) {
                 let _ = file.set_modified(modified);
             }
+        }
+        if let Err(e) = std::fs::rename(&temp, &dest) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(wrap(e));
         }
     }
     Ok(dest)
@@ -943,6 +968,9 @@ mod tests {
             EngineState::Installing { received: 5, total: 9 }
         );
         assert_eq!(a(RuntimeOnDisk::Missing, None, Some("boom"), None), EngineState::Failed("boom".into()));
+        assert_eq!(a(RuntimeOnDisk::Stale, None, Some("boom"), None), EngineState::Failed("boom".into()));
+        // A current runtime outranks a recorded failure, so the list agrees with what a spawn would do.
+        assert_eq!(a(RuntimeOnDisk::Ready, None, Some("boom"), None), EngineState::Installed);
         let p = Path::new("C:/my/cef");
         assert_eq!(a(RuntimeOnDisk::Missing, Some((1, 2)), Some("x"), Some(p)), EngineState::Custom(p.to_path_buf()));
     }
@@ -1004,6 +1032,47 @@ mod tests {
         assert_eq!(host_home(None, true, Some(runtime.clone())), None, "a dev tree runs its own host");
         assert_eq!(host_home(None, false, Some(runtime.clone())), Some(runtime), "a downloaded runtime has none");
         assert_eq!(host_home(None, false, None), None);
+    }
+
+    #[test]
+    fn concurrent_spawns_copy_the_host_once_and_leave_no_temp_files() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_race_src");
+        let custom = temp_dir("host_race_dest");
+        let host = src_dir.join("manifold-engine-cef.exe");
+        std::fs::write(&host, vec![7u8; 200_000]).unwrap();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (custom, host) = (custom.clone(), host.clone());
+                std::thread::spawn(move || ensure_host_copy(&custom, &host))
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().unwrap(), custom.join("manifold-engine-cef.exe"));
+        }
+        assert_eq!(std::fs::read(custom.join("manifold-engine-cef.exe")).unwrap(), vec![7u8; 200_000]);
+        let names: Vec<_> = std::fs::read_dir(&custom).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "no temp copies left: {names:?}");
+    }
+
+    #[test]
+    fn a_matching_host_copy_is_current_even_when_it_is_locked() {
+        use crate::store::testutil::temp_dir;
+        let src_dir = temp_dir("host_lock_src");
+        let custom = temp_dir("host_lock_dest");
+        let host = src_dir.join("manifold-engine-cef.exe");
+        std::fs::write(&host, b"host").unwrap();
+        let dest = ensure_host_copy(&custom, &host).unwrap();
+        // Held open without share-delete, as a running host holds its exe: a rename over it would fail.
+        let mut held = std::fs::OpenOptions::new();
+        held.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            held.share_mode(1);
+        }
+        let _held = held.open(&dest).unwrap();
+        assert_eq!(ensure_host_copy(&custom, &host).unwrap(), dest);
     }
 
     #[test]

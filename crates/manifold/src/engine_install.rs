@@ -127,8 +127,11 @@ const CHUNK: usize = 64 * 1024;
 /// An existing `part` already `total` bytes long returns Ok at once, so the caller (`install`) MUST
 /// delete `part` when `verify` reports `BadHash`, or the next try would accept the same bad file.
 ///
-/// There is no idle timeout on the body: a connection that stalls mid-body blocks the read until the OS
-/// gives up, and `cancel` is only checked between reads. Run it on a worker thread.
+/// The body is read on a helper thread so that a connection that goes quiet is noticed: no data for
+/// `IDLE_TIMEOUT` is a `Network` error (the `.part` is kept, so a retry resumes), and `cancel` is seen
+/// within about 100 ms even while a read is blocked. (ureq's own body timeouts are totals, not idle
+/// times, so they cannot be used for a 172 MB transfer.) The helper thread ends when the socket does.
+/// Run it on a worker thread.
 // Later install tasks call it.
 #[allow(dead_code)]
 pub(crate) fn download(
@@ -137,6 +140,21 @@ pub(crate) fn download(
     total: u64,
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    download_with_idle(url, part, total, progress, cancel, IDLE_TIMEOUT)
+}
+
+/// How long a download may receive nothing before it fails.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `download` with the idle timeout given (tests use a short one).
+fn download_with_idle(
+    url: &str,
+    part: &Path,
+    total: u64,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+    idle: Duration,
 ) -> Result<(), InstallError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(InstallError::Cancelled);
@@ -149,7 +167,7 @@ pub(crate) fn download(
         progress(have);
         return Ok(());
     }
-    if fetch(url, part, total, have, progress, cancel)? == Fetched::Done {
+    if fetch(url, part, total, have, progress, cancel, idle)? == Fetched::Done {
         return Ok(());
     }
     match std::fs::remove_file(part) {
@@ -157,7 +175,7 @@ pub(crate) fn download(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(InstallError::Io(e.to_string())),
     }
-    match fetch(url, part, total, 0, progress, cancel)? {
+    match fetch(url, part, total, 0, progress, cancel, idle)? {
         Fetched::Done => Ok(()),
         Fetched::Restart => Err(InstallError::Network("the server rejected the request".into())),
     }
@@ -178,6 +196,7 @@ fn fetch(
     mut have: u64,
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
+    idle: Duration,
 ) -> Result<Fetched, InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let mut request = ureq::get(url)
@@ -211,18 +230,42 @@ fn fetch(
     file.set_len(have).map_err(io)?;
     file.seek(SeekFrom::Start(have)).map_err(io)?;
     let mut body = response.into_body().into_reader();
-    let mut buf = vec![0u8; CHUNK];
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(4);
+    std::thread::spawn(move || loop {
+        let mut buf = vec![0u8; CHUNK];
+        match body.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.truncate(n);
+                if tx.send(Ok(buf)).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                break;
+            }
+        }
+    });
+    let mut last_data = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
-        let n = body.read(&mut buf).map_err(|e| InstallError::Network(e.to_string()))?;
-        if n == 0 {
-            break;
+        match rx.recv_timeout(idle.min(Duration::from_millis(100))) {
+            Ok(Ok(chunk)) => {
+                last_data = std::time::Instant::now();
+                file.write_all(&chunk).map_err(io)?;
+                have += chunk.len() as u64;
+                progress(have);
+            }
+            Ok(Err(e)) => return Err(InstallError::Network(e.to_string())),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if last_data.elapsed() >= idle => {
+                return Err(InstallError::Network(format!("no data for {} s", idle.as_secs_f32())));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        file.write_all(&buf[..n]).map_err(io)?;
-        have += n as u64;
-        progress(have);
     }
     if have != total {
         return Err(InstallError::Network(format!("the download ended at {have} of {total} bytes")));
@@ -259,13 +302,18 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Where the runtime entry `path` goes under `into`, or None to skip it. The path is `<top>/Release/..`
-/// or `<top>/Resources/..`; both folders flatten into `into`. Errors on any component that could escape.
+/// or `<top>/Resources/..`; both folders flatten into `into`. Errors on any component that could escape:
+/// `..`, a root or prefix, and any name containing `:` (on Windows `C:evil.dll` is a drive-relative name
+/// that `join` would let replace the whole destination, and `a:b` names an NTFS stream).
 // Task 6 calls `install`.
 #[allow(dead_code)]
 fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
     let mut names = Vec::new();
     for c in path.components() {
         match c {
+            Component::Normal(n) if n.to_string_lossy().contains(':') => {
+                return Err(InstallError::Unpack(format!("unsafe path in archive: {}", path.display())));
+            }
             Component::Normal(n) => names.push(n),
             Component::CurDir => {}
             _ => return Err(InstallError::Unpack(format!("unsafe path in archive: {}", path.display()))),
@@ -288,17 +336,30 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
 /// and `<top>/Resources/`, flattened into `into`, without the build leftovers (`*.lib`, `include`, `cmake`,
 /// `libcef_dll`, `CMakeLists.txt`, `debug.log`). Any entry that is a link, or whose path has a `..`,
 /// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
-/// On error `into` may be half-filled; the caller discards it.
+/// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
+/// discards it.
 // Task 6 calls `install`.
 #[allow(dead_code)]
-pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin) -> Result<(), InstallError> {
+pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    let bad = |e: std::io::Error| InstallError::Unpack(e.to_string());
+    // A bad archive (corrupt bz2, truncated tar) is `Unpack`; any other failure (disk full, access denied)
+    // is `Io`, which `install` treats as retryable without downloading again.
+    let bad = |e: std::io::Error| {
+        use std::io::ErrorKind::{InvalidData, InvalidInput, UnexpectedEof};
+        if matches!(e.kind(), InvalidData | InvalidInput | UnexpectedEof) {
+            InstallError::Unpack(e.to_string())
+        } else {
+            InstallError::Io(e.to_string())
+        }
+    };
     let file = std::fs::File::open(archive).map_err(io)?;
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
     std::fs::create_dir_all(into).map_err(io)?;
     let mut files = 0usize;
     for entry in tar.entries().map_err(bad)? {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
         let mut entry = entry.map_err(bad)?;
         let path = entry.path().map_err(bad)?.into_owned();
         // Check every entry, even ones that will be skipped.
@@ -342,9 +403,10 @@ fn remove_file(path: &Path) {
 
 /// Download `pin`, verify it, unpack it beside the final directory and swap it in; returns
 /// `data_dir/cef-runtime`. The final directory only changes at the end (old one removed, new one
-/// renamed in). A bad hash or a failed unpack deletes the `.part` (so a retry downloads afresh) and the
-/// `.tmp`; a network failure or cancel keeps the `.part` for resuming and touches nothing else. Blocking:
-/// run it on a worker thread.
+/// renamed in). A bad hash or a corrupt archive deletes the `.part` (so a retry downloads afresh); a
+/// network failure, a cancel (checked while downloading, between archive entries and before the swap) or
+/// a file error (disk full) keeps it. Every failure removes the `.tmp` and leaves the previous install
+/// alone. Blocking: run it on a worker thread.
 // Task 6 calls `install`.
 #[allow(dead_code)]
 pub(crate) fn install(
@@ -366,13 +428,27 @@ pub(crate) fn install(
         }
         return Err(e);
     }
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    if cancelled() {
+        return Err(InstallError::Cancelled);
+    }
     remove_dir(&tmp)?;
-    if let Err(e) = unpack(&part, &tmp, pin) {
+    if let Err(e) = unpack(&part, &tmp, pin, cancel) {
         let _ = remove_dir(&tmp);
-        remove_file(&part);
+        // The archive itself is bad: a retry must download afresh. Cancel and disk errors keep it.
+        if matches!(e, InstallError::Unpack(_)) {
+            remove_file(&part);
+        }
         return Err(e);
     }
-    swap(&tmp, &live)?;
+    if cancelled() {
+        let _ = remove_dir(&tmp);
+        return Err(InstallError::Cancelled);
+    }
+    if let Err(e) = swap(&tmp, &live) {
+        let _ = remove_dir(&tmp);
+        return Err(e);
+    }
     remove_file(&part);
     Ok(live)
 }
@@ -400,8 +476,18 @@ fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// Delete the downloaded runtime (`data_dir/cef-runtime`) and nothing else. Refused, with the reason, while
-/// an engine process is using it (`running`) or an install is writing next to it (`installing`).
+/// The files an install leaves beside the runtime while it works (and after some failures).
+const LEFTOVERS: [&str; 3] = ["cef-runtime.part", "cef-runtime.tmp", "cef-runtime.old"];
+
+/// Whether any install leftover (`.part`, `.tmp`, `.old`) is in `data_dir`.
+pub(crate) fn has_leftovers(data_dir: &Path) -> bool {
+    LEFTOVERS.iter().any(|name| data_dir.join(name).exists())
+}
+
+/// Delete the downloaded runtime (`data_dir/cef-runtime`) and the install leftovers beside it, and nothing
+/// else. The `ready` marker goes first, so a delete that stops partway never reads as Installed. Refused,
+/// with the reason, while an engine process is using it (`running`) or an install is writing next to it
+/// (`installing`).
 pub(crate) fn remove_runtime(data_dir: &Path, running: bool, installing: bool) -> Result<(), String> {
     if running {
         return Err("Close the tabs using it first".into());
@@ -409,7 +495,22 @@ pub(crate) fn remove_runtime(data_dir: &Path, running: bool, installing: bool) -
     if installing {
         return Err("It is installing; cancel that first".into());
     }
-    remove_dir(&data_dir.join("cef-runtime")).map_err(|e| e.to_string())
+    let live = data_dir.join("cef-runtime");
+    match std::fs::remove_file(live.join(MARKER)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    remove_dir(&live).map_err(|e| e.to_string())?;
+    for name in LEFTOVERS {
+        let path = data_dir.join(name);
+        if path.is_dir() {
+            remove_dir(&path).map_err(|e| e.to_string())?;
+        } else if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// Total size in bytes of the files under `dir` (0 when it is missing).
@@ -629,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_deletes_only_the_runtime_and_only_when_idle() {
+    fn remove_deletes_the_runtime_and_its_leftovers_only_when_idle() {
         let dir = temp_dir("remove_runtime");
         std::fs::create_dir_all(dir.join("cef-runtime")).unwrap();
         std::fs::write(dir.join("cef-runtime").join("libcef.dll"), vec![0u8; 5]).unwrap();
@@ -640,7 +741,7 @@ mod tests {
         assert!(dir.join("cef-runtime").exists());
         remove_runtime(&dir, false, false).unwrap();
         assert!(!dir.join("cef-runtime").exists());
-        assert!(dir.join("cef-runtime.part").exists());
+        assert!(!dir.join("cef-runtime.part").exists(), "Remove also clears the leftovers");
         remove_runtime(&dir, false, false).unwrap(); // already gone is fine
     }
 
@@ -1014,7 +1115,7 @@ Connection: close
         let dir = temp_dir("ei20");
         let a = archive(&dir, &GOOD);
         let out = dir.join("out");
-        unpack(&a, &out, &pin_for(&a, String::new())).unwrap();
+        unpack(&a, &out, &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read(out.join("libcef.dll")).unwrap(), b"dll");
         assert_eq!(std::fs::read(out.join("resources.pak")).unwrap(), b"pak");
         assert!(!out.join("libcef.lib").exists() && !out.join("x.h").exists() && !out.join("include").exists());
@@ -1028,7 +1129,7 @@ Connection: close
         // `into` is nested so that a naive join lands at a place inside `dir` that we can check.
         let nested = dir.join("nested");
         let out = nested.join("out");
-        let err = unpack(&a, &out, &pin_for(&a, String::new())).unwrap_err();
+        let err = unpack(&a, &out, &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap_err();
         assert!(matches!(err, InstallError::Unpack(_)), "{err:?}");
         assert!(!dir.join("evil").exists() && !out.join(MARKER).exists());
         for (name, lands) in [
@@ -1039,10 +1140,148 @@ Connection: close
             ("/top/Release/evil", PathBuf::from("/top/Release/evil")),
         ] {
             let a = archive(&dir, &[(name, b"x")]);
-            let r = unpack(&a, &out, &pin_for(&a, String::new()));
+            let r = unpack(&a, &out, &pin_for(&a, String::new()), &AtomicBool::new(false));
             assert!(matches!(r, Err(InstallError::Unpack(_))), "{name}: {r:?}");
             assert!(!lands.exists(), "{name} wrote {lands:?}");
         }
+    }
+
+    #[test]
+    fn unpack_refuses_names_with_a_colon() {
+        // `C:evil.dll` is drive-relative: `join` would let it replace the destination; `a:b` is a stream.
+        let dir = temp_dir("ei40");
+        let out = dir.join("out");
+        for name in ["top/Release/C:evil.dll", "top/Release/a:b", "top/Release/sub/D:x", "top/Resources/c:"] {
+            let a = archive(&dir, &[(name, b"x")]);
+            let r = unpack(&a, &out, &pin_for(&a, String::new()), &AtomicBool::new(false));
+            assert!(matches!(r, Err(InstallError::Unpack(_))), "{name}: {r:?}");
+            assert!(!out.join(MARKER).exists(), "{name}");
+        }
+        assert!(target(Path::new("top/Release/C:evil.dll"), &out).is_err());
+        assert!(target(Path::new("top/Release/libcef.dll"), &out).unwrap().is_some());
+    }
+
+    #[test]
+    fn unpack_stops_when_cancelled() {
+        let dir = temp_dir("ei41");
+        let a = archive(&dir, &GOOD);
+        let r = unpack(&a, &dir.join("out"), &pin_for(&a, String::new()), &AtomicBool::new(true));
+        assert_eq!(r, Err(InstallError::Cancelled));
+        assert!(!dir.join("out").join(MARKER).exists());
+    }
+
+    #[test]
+    fn a_cancel_before_unpack_keeps_the_part_and_makes_no_runtime() {
+        let dir = temp_dir("ei42");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        // The part is already complete, so the download returns at once and the flag is first seen after it.
+        std::fs::copy(&a, data.join("cef-runtime.part")).unwrap();
+        let err = install(&pin, &data, &mut |_| {}, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(err, InstallError::Cancelled);
+        assert!(data.join("cef-runtime.part").exists(), "the part is kept");
+        assert!(!data.join("cef-runtime").exists() && !data.join("cef-runtime.tmp").exists());
+    }
+
+    #[test]
+    fn a_cancel_once_the_download_has_started_changes_nothing() {
+        let dir = temp_dir("ei43");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
+        std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
+        // Cancelled from the progress callback: the download is done, the flag is seen before the unpack.
+        let cancel = AtomicBool::new(false);
+        let err = install(&pin, &data, &mut |_| cancel.store(true, Ordering::Relaxed), &cancel).unwrap_err();
+        assert_eq!(err, InstallError::Cancelled);
+        assert!(data.join("cef-runtime.part").exists());
+        assert!(!data.join("cef-runtime.tmp").exists());
+        assert!(data.join("cef-runtime").join("old").exists(), "no swap happened");
+    }
+
+    #[test]
+    fn a_stalled_download_times_out_keeps_the_part_and_resumes() {
+        let b = body(300_000);
+        let (url, release) = serve_held(b.clone());
+        let part = temp_dir("ei44").join("f.part");
+        let started = std::time::Instant::now();
+        let err = download_with_idle(
+            &url,
+            &part,
+            b.len() as u64,
+            &mut |_| {},
+            &AtomicBool::new(false),
+            Duration::from_millis(400),
+        )
+        .unwrap_err();
+        assert!(matches!(err, InstallError::Network(_)), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let kept = std::fs::metadata(&part).unwrap().len();
+        assert!(kept > 0 && kept < b.len() as u64, "kept {kept}");
+        release.send(()).unwrap();
+        // A resume from the kept part finishes the file.
+        let url = serve(b.clone(), Mode::Honour, None);
+        download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), *b);
+    }
+
+    #[test]
+    fn a_stalled_download_is_cancelled_promptly() {
+        let b = body(300_000);
+        let (url, release) = serve_held(b.clone());
+        let part = temp_dir("ei45").join("f.part");
+        let cancel = AtomicBool::new(false);
+        let err = download_with_idle(
+            &url,
+            &part,
+            b.len() as u64,
+            &mut |_| cancel.store(true, Ordering::Relaxed),
+            &cancel,
+            Duration::from_secs(60),
+        )
+        .unwrap_err();
+        assert_eq!(err, InstallError::Cancelled);
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn a_failed_swap_removes_tmp_and_keeps_the_part() {
+        let dir = temp_dir("ei46");
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        // A file where `cef-runtime.old` should be a directory: the swap cannot clear it.
+        std::fs::write(data.join("cef-runtime.old"), b"x").unwrap();
+        std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
+        std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
+        let err = install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(err, InstallError::Io(_)), "{err:?}");
+        assert!(!data.join("cef-runtime.tmp").exists(), "tmp removed");
+        assert!(data.join("cef-runtime.part").exists(), "a file error keeps the part");
+        assert!(data.join("cef-runtime").join("old").exists());
+    }
+
+    #[test]
+    fn remove_deletes_the_marker_first_and_the_leftovers() {
+        let dir = temp_dir("ei47");
+        let live = dir.join("cef-runtime");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join(MARKER), "v").unwrap();
+        std::fs::write(live.join("libcef.dll"), b"x").unwrap();
+        std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("cef-runtime.tmp")).unwrap();
+        std::fs::create_dir_all(dir.join("cef-runtime.old")).unwrap();
+        assert!(has_leftovers(&dir));
+        remove_runtime(&dir, false, false).unwrap();
+        assert!(!live.exists() && !has_leftovers(&dir));
+        // Leftovers with no runtime: still deletable.
+        std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
+        remove_runtime(&dir, false, false).unwrap();
+        assert!(!has_leftovers(&dir));
     }
 
     #[test]
@@ -1057,7 +1296,7 @@ Connection: close
         h.set_cksum();
         tar.append(&h, std::io::empty()).unwrap();
         let a = bz(&dir, "s.tar.bz2", &tar.into_inner().unwrap());
-        let err = unpack(&a, &dir.join("out"), &pin_for(&a, String::new())).unwrap_err();
+        let err = unpack(&a, &dir.join("out"), &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap_err();
         assert!(matches!(err, InstallError::Unpack(_)), "{err:?}");
     }
 
@@ -1252,10 +1491,7 @@ Connection: close
         }
         app.cancel_engine_install(EngineKind::Cef);
         assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }), "at once");
-        // The thread is still blocked on its read, so a new install must wait for it.
-        assert!(!app.start_engine_install_at(EngineKind::Cef, &data, &pin));
-        assert_eq!(toasts(&app).len(), 1, "the refusal says why");
-        app.save_toast_queue.clear();
+        // The helper thread is still blocked on its read, but the job sees the cancel within ~100 ms.
         release.send(()).unwrap();
         settle(&mut app);
         assert!(matches!(cef_state(&app, &data, &pin), EngineState::NotInstalled { .. }));
@@ -1283,19 +1519,15 @@ Connection: close
         assert!(!app.start_engine_install_at(EngineKind::Webkit, &data, &pin), "only CEF downloads anything");
     }
 
-    // The cef crate version in Cargo.lock and the CEF build it wraps. A crate bump must update both
-    // of these and re-run scripts/cef-pin.sh (see scripts/cef_pin.py).
-    const CEF_CRATE_VERSION: &str = "152.1.0";
-    const CEF_BUILD_PREFIX: &str = "152.0.6";
-
     #[test]
     fn the_pin_matches_the_cef_crates_version() {
         let lock = include_str!("../../../Cargo.lock");
         let after = lock.split("name = \"cef\"").nth(1).expect("Cargo.lock has a cef package");
         let line = after.lines().nth(1).expect("a version line follows the name");
         let version = line.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')).expect("a version line");
-        assert_eq!(version.split('+').next(), Some(CEF_CRATE_VERSION), "the cef crate changed: update the mapping");
+        // `152.1.0+152.0.6`: the crate's own version, then the CEF build it wraps.
+        let build = version.split_once('+').expect("the cef crate version names its CEF build").1;
         let pinned = crate::cef_pin::CEF_PIN.version;
-        assert_eq!(pinned.split('+').next(), Some(CEF_BUILD_PREFIX), "the pin is not the CEF build the crate wraps");
+        assert_eq!(pinned.split('+').next(), Some(build), "the pin is not the CEF build the crate wraps: {pinned}");
     }
 }
