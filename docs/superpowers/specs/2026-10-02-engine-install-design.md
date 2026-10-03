@@ -122,3 +122,10 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 - Whether to trim locales or other files after unpack.
 - Where the Settings "Engines" section lives relative to the existing sections.
 - Servo and WebKit availability: both "Installed" where the OS can run them, else Unavailable; the same states apply if either ever becomes downloadable.
+
+## System-library preflight (2026-10-02)
+
+CEF on Linux needs `libnss3` and `libnspr4` from the system. `CefPlatform::system_libs` lists them (empty on Windows).
+`missing_system_libs()` reads `ldconfig -p` (cached 10 s) and the Download confirm dialog adds a "Missing system
+libraries: ..." line before the 321 MB download. It is a warning, not a block: if `ldconfig` cannot be run, nothing is
+shown, since unknown is not missing. Not yet exercised on a machine that lacks the libraries.

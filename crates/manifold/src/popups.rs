@@ -299,24 +299,30 @@ impl App {
                 } else {
                     "Download"
                 };
-                (
-                    format!("{verb} {}, {size}?", engine_label(kind)),
-                    "Downloaded once, checked against a pinned hash, then kept in your profile.",
-                    verb,
-                )
+                let mut detail =
+                    "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
+                let missing = crate::cef_platform::PLATFORM.missing_system_libs();
+                if !missing.is_empty() {
+                    detail.push_str(&format!(
+                        "
+Missing system libraries: {}. Install them with your package manager, or CEF will not start.",
+                        missing.join(", ")
+                    ));
+                }
+                (format!("{verb} {}, {size}?", engine_label(kind)), detail, verb)
             }
             EngineConfirm::Remove(kind)
                 if !crate::process_manager::engine_hosts_dir().is_some_and(|d| d.join("cef-runtime").exists()) =>
             {
                 (
                     format!("Clear {} leftovers?", engine_label(kind)),
-                    "Deletes the partial download and install leftovers.",
+                    "Deletes the partial download and install leftovers.".to_string(),
                     "Clear",
                 )
             }
             EngineConfirm::Remove(kind) => (
                 format!("Remove {}?", engine_label(kind)),
-                "Deletes the downloaded runtime. You can download it again later.",
+                "Deletes the downloaded runtime. You can download it again later.".to_string(),
                 "Remove",
             ),
         };
@@ -330,7 +336,7 @@ impl App {
                     ui.set_min_width(240.0);
                     ui.label(heading_text(title));
                     ui.add_space(4.0);
-                    ui.add(egui::Label::new(egui::RichText::new(detail).small().weak()).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(&detail).small().weak()).wrap());
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         yes = ui.button(button).clicked();
