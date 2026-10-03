@@ -298,6 +298,15 @@ impl App {
                     verb,
                 )
             }
+            EngineConfirm::Remove(kind)
+                if !crate::process_manager::engine_hosts_dir().is_some_and(|d| d.join("cef-runtime").exists()) =>
+            {
+                (
+                    format!("Clear {} leftovers?", engine_label(kind)),
+                    "Deletes the partial download and install leftovers.",
+                    "Clear",
+                )
+            }
             EngineConfirm::Remove(kind) => (
                 format!("Remove {}?", engine_label(kind)),
                 "Deletes the downloaded runtime. You can download it again later.",

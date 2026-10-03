@@ -341,6 +341,18 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
 // Task 6 calls `install`.
 #[allow(dead_code)]
 pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
+    unpack_with(archive, into, pin, cancel, &mut || {})
+}
+
+/// `unpack` that calls `on_entry` for each entry, after the cancel check (tests flip `cancel` from it at an
+/// exact point).
+fn unpack_with(
+    archive: &Path,
+    into: &Path,
+    pin: &Pin,
+    cancel: &AtomicBool,
+    on_entry: &mut dyn FnMut(),
+) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     // A bad archive (corrupt bz2, truncated tar) is `Unpack`; any other failure (disk full, access denied)
     // is `Io`, which `install` treats as retryable without downloading again.
@@ -360,6 +372,7 @@ pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
+        on_entry();
         let mut entry = entry.map_err(bad)?;
         let path = entry.path().map_err(bad)?.into_owned();
         // Check every entry, even ones that will be skipped.
@@ -415,6 +428,17 @@ pub(crate) fn install(
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<PathBuf, InstallError> {
+    install_with(pin, data_dir, progress, cancel, &mut || {})
+}
+
+/// `install` with `on_entry` passed to the unpack (see `unpack_with`).
+fn install_with(
+    pin: &Pin,
+    data_dir: &Path,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+    on_entry: &mut dyn FnMut(),
+) -> Result<PathBuf, InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     std::fs::create_dir_all(data_dir).map_err(io)?;
     let part = data_dir.join("cef-runtime.part");
@@ -429,11 +453,9 @@ pub(crate) fn install(
         return Err(e);
     }
     let cancelled = || cancel.load(Ordering::Relaxed);
-    if cancelled() {
-        return Err(InstallError::Cancelled);
-    }
+    // A cancel that arrives after the download is seen by the first unpack entry, so no separate check here.
     remove_dir(&tmp)?;
-    if let Err(e) = unpack(&part, &tmp, pin, cancel) {
+    if let Err(e) = unpack_with(&part, &tmp, pin, cancel, on_entry) {
         let _ = remove_dir(&tmp);
         // The archive itself is bad: a retry must download afresh. Cancel and disk errors keep it.
         if matches!(e, InstallError::Unpack(_)) {
@@ -533,7 +555,7 @@ pub(crate) struct InstallJob {
     cancel: Arc<AtomicBool>,
     /// The pin's size, for `(received, total)`.
     total: u64,
-    /// Set by Cancel: the UI no longer shows the job, but the thread may linger until its next read, and
+    /// Set by Cancel: the UI no longer shows the job, but the thread may linger briefly (until it next checks the flag), and
     /// its result is discarded. The job stays in the map until the thread has finished, so a new install
     /// never races its `.part`.
     cancelled: bool,
@@ -655,13 +677,19 @@ impl crate::App {
         let running = self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_installs.contains_key(&kind);
         match remove_runtime(&dir, running, installing) {
-            Ok(()) => self.queue_toast(format!("{label} removed")),
+            Ok(()) => {
+                // A recorded failure described the files just deleted.
+                self.engine_failures.remove(&kind);
+                self.engine_state_cache.borrow_mut().clear();
+                self.queue_toast(format!("{label} removed"));
+            }
             Err(why) => self.queue_toast(format!("Couldn't remove {label}: {why}")),
         }
     }
 
-    /// Stop showing `kind`'s install at once and tell its thread to stop at its next read. The `.part`
-    /// stays for resuming and no failure is recorded.
+    /// Stop showing `kind`'s install at once and tell its thread to stop: it notices within about 100 ms
+    /// while downloading (even on a stalled read), and between unpack entries and before the swap after
+    /// that. The `.part` stays for resuming and no failure is recorded.
     pub(crate) fn cancel_engine_install(&mut self, kind: EngineKind) {
         if let Some(job) = self.engine_installs.get_mut(&kind) {
             job.cancel.store(true, Ordering::Relaxed);
@@ -1177,7 +1205,7 @@ Connection: close
         let pin = pin_for(&a, serve_file(&a));
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
-        // The part is already complete, so the download returns at once and the flag is first seen after it.
+        // The part is already complete, so the download returns at once; the first unpack entry sees the flag.
         std::fs::copy(&a, data.join("cef-runtime.part")).unwrap();
         let err = install(&pin, &data, &mut |_| {}, &AtomicBool::new(true)).unwrap_err();
         assert_eq!(err, InstallError::Cancelled);
@@ -1187,19 +1215,63 @@ Connection: close
 
     #[test]
     fn a_cancel_once_the_download_has_started_changes_nothing() {
-        let dir = temp_dir("ei43");
+        let dir = temp_dir("ei43a");
         let a = archive(&dir, &GOOD);
         let pin = pin_for(&a, serve_file(&a));
         let data = dir.join("data");
         std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
         std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
-        // Cancelled from the progress callback: the download is done, the flag is seen before the unpack.
+        // Cancelled from the progress callback: the download loop itself sees it (not the checks after it).
         let cancel = AtomicBool::new(false);
         let err = install(&pin, &data, &mut |_| cancel.store(true, Ordering::Relaxed), &cancel).unwrap_err();
         assert_eq!(err, InstallError::Cancelled);
         assert!(data.join("cef-runtime.part").exists());
         assert!(!data.join("cef-runtime.tmp").exists());
         assert!(data.join("cef-runtime").join("old").exists(), "no swap happened");
+    }
+
+    /// An install whose cancel flag flips at the `n`th unpack entry (counting from 1); `n` past the last
+    /// entry never flips it. Returns the result and the data dir, which holds a previous install.
+    fn install_cancelled_at_entry(name: &str, n: usize) -> (Result<PathBuf, InstallError>, PathBuf, usize) {
+        let dir = temp_dir(name);
+        let a = archive(&dir, &GOOD);
+        let pin = pin_for(&a, serve_file(&a));
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
+        std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut seen = 0;
+        let r = install_with(&pin, &data, &mut |_| {}, &cancel, &mut || {
+            seen += 1;
+            if seen == n {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        (r, data, seen)
+    }
+
+    #[test]
+    fn a_cancel_during_unpack_removes_tmp_and_keeps_the_part() {
+        let (r, data, seen) = install_cancelled_at_entry("ei43", 2);
+        assert_eq!(r, Err(InstallError::Cancelled));
+        assert_eq!(seen, 2, "the unpack stopped at the next entry");
+        assert!(data.join("cef-runtime.part").exists());
+        assert!(!data.join("cef-runtime.tmp").exists(), "install removed the half-filled tmp");
+        assert!(data.join("cef-runtime").join("old").exists());
+    }
+
+    #[test]
+    fn a_cancel_after_the_last_entry_stops_before_the_swap() {
+        // A dry run counts the entries; flipping at the last one lets the whole unpack finish.
+        let (r, _, entries) = install_cancelled_at_entry("ei43b", usize::MAX);
+        assert!(r.is_ok());
+        let (r, data, _) = install_cancelled_at_entry("ei43c", entries);
+        assert_eq!(r, Err(InstallError::Cancelled));
+        assert!(data.join("cef-runtime.part").exists());
+        assert!(!data.join("cef-runtime.tmp").exists());
+        assert!(!data.join("cef-runtime.old").exists());
+        assert!(data.join("cef-runtime").join("old").exists(), "the previous install is untouched");
+        assert!(!data.join("cef-runtime").join(MARKER).exists(), "nothing new was swapped in");
     }
 
     #[test]
