@@ -331,6 +331,7 @@ Since 2026-09-25, day-to-day work goes on `dev`, and `main` moves only at releas
 
 - Commit and push to `dev`. Feature branches and worktrees branch from `dev` and merge back into it.
 - A release merges `dev` into `main` with `git merge --no-ff dev`, then tags it `vX.Y.Z`. Following `main`'s first parents then lists exactly the releases.
+- Release checklist: if the `cef` crate moved, re-pin CEF for every pinned platform (`scripts/cef-pin.sh [--platform <id>] <prefix>`, a download per platform; spec `2026-10-02-engine-install-design.md`, "Platforms") before tagging.
 - A hotfix branches from `main`, merges into `main` (tagged like a release), then merges into `dev`.
 - Everything on `main` up to `2a88b50` predates this convention and is the pre-release baseline. `dev` starts from there.
 

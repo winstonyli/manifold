@@ -8,7 +8,7 @@ A packaged build ships `manifold`, `manifold-engine-webview2` and the small `man
 
 ## Scope
 
-- CEF only, Windows first. Servo stays bundled (decided). WebView2 is the default and always present. WebKit is unchanged (WSL/macOS-native).
+- CEF only, Windows first (other platforms: see "Platforms"). Servo stays bundled (decided). WebView2 is the default and always present. WebKit is unchanged (WSL/macOS-native).
 - Out of scope: installer integration, a package-manager add-on, delta updates, a hosted manifest or mirror.
 - Open product question, not an engineering one: whether packaged builds offer CEF at all (WebView2 is already Chromium). This spec only applies if they do.
 
@@ -61,6 +61,24 @@ Settings shows installed size per downloaded engine and a Remove button (deletes
 A "CEF directory" setting accepts a runtime directory. Validation requires `libcef.dll` and reads the version from its `archive.json` only (the `name` field) against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. A directory our own install made has no `archive.json`, so it does not validate as a custom one. The copy is made to a unique temp name and renamed, under a lock; a user's own `manifold-engine-cef.exe` in a custom folder is overwritten only when it differs from the shipped host (size or modification time), and a matching one is left alone even if a running host has it locked. Archive entry names containing `:` are refused when unpacking (drive-relative names and NTFS streams).
 
 There is no auto-switch: after an install (or choosing a custom directory) the engine becomes available, but no tab, default or setting changes by itself.
+
+## Platforms
+
+Windows is the only supported install target today. The per-OS facts live in one place, `crates/manifold/src/cef_platform.rs` (`CefPlatform`, selected by `cfg`), and the pins are looked up per platform (`cef_pin::pin_for_platform()`, `Some` only where a real pin exists).
+
+**What is Windows-specific** (all in `CefPlatform` unless noted): the CDN platform id `windows64`; the runtime library `libcef.dll` (the check in `validate_custom`, the "Folder with libcef.dll" hint in Settings, the leftover test fixtures); the host's `.exe` suffix; the unpack rules (flatten `Release/` and `Resources/`, skip `*.lib` import libraries, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`, `debug.log`); and, not in the table, the host copy (`ensure_host_copy`, `custom_host_path`, `host_home` in `process_manager.rs`), which exists because Windows resolves the host's implicit `libcef.dll` from the exe's own directory before `PATH`. The sibling `cef-runtime/` dev layout and `scripts/sync-runtime-deps.sh` are also Windows-shaped.
+
+**Pin table plan.** One pin per CDN platform id, the same `minimal` type and the same `index.json`: `windows64` (pinned), `linux64`, `macosx64`, `macosarm64`. `scripts/cef_pin.py --platform <id> <prefix>` replaces one platform's block in `cef_pin.rs` (default `windows64`); a new platform is that command plus its `CefPlatform` entry. Archive sizes differ per platform and the hash is per archive, so each is downloaded once to pin. A linux64 pin needs a 100+ MB download and is a documented follow-up that waits for the user's go-ahead.
+
+**No pin on a platform (today: everywhere but Windows).** CEF reads as Unavailable ("no CEF build for this platform yet"): no Download or Update offer, picking it toasts that it is not available, and starting an install refuses with the same toast. A runtime already on disk (a dev tree's sibling `cef-runtime/`) still reads Installed. A bring-your-own directory is not accepted either, since there is no pin to validate it against. `engine_availability` is covered by a pure test with no pin.
+
+**Linux next** (no signing issue). Library `libcef.so`; the host finds it through an rpath (`$ORIGIN`) or `LD_LIBRARY_PATH` rather than the DLL search order. The host-copy trick may not be needed: an rpath of `$ORIGIN` would again look beside the exe, but `LD_LIBRARY_PATH` set at spawn can point at the runtime directory, so the host could stay where it is. To verify, on a real Linux machine: which of the two the `cef` crate's host build supports, that the archive's `Release/` and `Resources/` flatten correctly there (CEF on Linux also wants the sandbox and `chrome-sandbox` permissions decided), and the unpack skip list (no `.lib`). Nothing of this has been built or run; the `cfg(not(windows))` `CefPlatform` entry is untested and was not compiled here.
+
+**macOS later, and only with a Mac to test on.** CEF there is a framework (`Chromium Embedded Framework.framework`) inside an app bundle, with separate helper executables (renderer, GPU, plugin) that must sit at fixed bundle paths, so the flatten-into-one-directory unpack does not apply. Code signing and notarization matter: whether Gatekeeper accepts a downloaded, unsigned framework next to a signed host is unverified and needs a real test; it may force the `signed` archive or a different distribution altogether. Both `macosx64` and `macosarm64` would need pins. Not started.
+
+**Re-pin burden.** The shipped host links one CEF build exactly, so every `cef` crate bump re-pins every pinned platform (one download each). The release checklist (README, "Branches") carries that line.
+
+**Product position.** CEF is offered as an opt-in advanced engine, never the default. WebView2 stays the Windows default, and where nothing comparable ships with the OS the defaults are decided separately. Re-pinning is part of the release checklist, not left to whoever notices the test fail.
 
 ## Testing
 
