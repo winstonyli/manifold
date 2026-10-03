@@ -5,6 +5,7 @@
 use super::*;
 use crate::nav_history::Dir;
 use crate::sleep_state::SleepWhy;
+use crate::tabs::Held;
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -143,6 +144,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.was_minimized = minimized;
+        self.release_expired_cookie_holds();
         if self.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
             self.jar_pull_all();
             self.jar_last_pull = Some(std::time::Instant::now());
@@ -482,10 +484,10 @@ pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_mil
 /// an idle page still sends a few.
 const BUSY_FRAMES: u32 = 6;
 
-/// How often a minimized window's loop wakes (see `about_to_wait`).
 /// How often every WebView2 and CEF tab is asked for its cookies (`App::jar_pull_all`).
 const JAR_PULL_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How often a minimized window's loop wakes (see `about_to_wait`).
 const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl App {
@@ -1524,15 +1526,24 @@ impl App {
     pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
         match msg {
             EngineToHost::FrameReady { .. } => {}
-            EngineToHost::PageState(state) => self.finish_sleep(tab_id, state),
+            EngineToHost::PageState(state) => {
+                if let Some(Held::PageState(state)) = self.hold_for_cookies(tab_id, Held::PageState(state)) {
+                    self.finish_sleep(tab_id, state);
+                }
+            }
             EngineToHost::Cookies(json) => {
                 self.jar_pulls.remove(tab_id);
-                self.apply_pulled_cookies(&json);
+                self.apply_pulled_cookies(tab_id, &json);
+                self.release_cookie_hold(tab_id);
             }
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {
-                    self.finish_swap(tab_id, target, state.url);
+                    if let Some(Held::Snapshot(target, url)) =
+                        self.hold_for_cookies(tab_id, Held::Snapshot(target, state.url))
+                    {
+                        self.finish_swap(tab_id, target, url);
+                    }
                 }
             }
             EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {

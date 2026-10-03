@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
+pub(crate) enum Held {
+    PageState(PageState),
+    Snapshot(EngineKind, String),
+}
+
+/// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
+const COOKIE_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `id` has a `GetCookies` sent less than `JAR_PULL_TIMEOUT` ago and not yet answered.
+pub(crate) fn pull_pending(pulls: &HashMap<String, std::time::Instant>, id: &str, now: std::time::Instant) -> bool {
+    pulls.get(id).is_some_and(|sent| now.saturating_duration_since(*sent) < JAR_PULL_TIMEOUT)
+}
+
 /// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
 const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 use ipc_protocol::PageState;
@@ -37,25 +51,39 @@ impl App {
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let custom_cef = self.custom_cef_dir();
-        let jar_json = serde_json::to_string(&self.jar.cookies).ok();
+        let snapshot = self.jar_snapshot.clone();
         std::thread::spawn(move || {
-            let result = process_manager::spawn_tab(
-                spawn.kind,
-                &spawn.id,
-                &spawn.url,
-                custom_cef.as_deref(),
-                jar_json.as_deref(),
-            );
-            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
+            // Read when the host has connected (the host starts seconds after the spawn), and remember its keys.
+            let seeded = std::cell::RefCell::new(HashSet::new());
+            let seed = || {
+                let jar = snapshot.lock().map(|j| j.clone()).unwrap_or_default();
+                *seeded.borrow_mut() = jar.keys();
+                serde_json::to_string(&jar.cookies).unwrap_or_else(|_| "[]".to_owned())
+            };
+            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed);
+            let seeded = seeded.into_inner();
+            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
+                spawn,
+                generation,
+                result,
+                seeded,
+            })));
         });
     }
 
-    /// Folds one engine's cookie dump into the jar and saves it when it changed. `false` for a dump that does not parse.
-    pub(crate) fn apply_pulled_cookies(&mut self, json: &str) -> bool {
+    /// Folds tab `tab_id`'s cookie dump into the jar and saves it when it changed. `false` for a dump that does not parse.
+    /// Only that tab's own `jar_known` cookies can be deleted by its absence.
+    pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         let Some(pulled) = crate::jar::from_json(json) else { return false };
-        let changed = self.jar.merge(pulled, &self.jar_known);
-        self.jar_known = self.jar.keys();
+        let reported: HashSet<crate::jar::Key> =
+            pulled.iter().map(|c| (c.name.clone(), c.domain.clone(), c.path.clone())).collect();
+        let known = self.jar_known.entry(tab_id.to_string()).or_default();
+        let changed = self.jar.merge(pulled, known);
+        *known = reported;
         if changed {
+            if let Ok(mut snapshot) = self.jar_snapshot.lock() {
+                *snapshot = self.jar.clone();
+            }
             if let Some(dir) = crate::profile::jars_dir() {
                 if let Err(e) = self.jar.save(&dir) {
                     eprintln!("jar: could not save: {e}");
@@ -69,13 +97,48 @@ impl App {
     /// host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not stacked.
     pub(crate) fn pull_cookies(&mut self, id: &str) {
         let now = std::time::Instant::now();
-        if self.jar_pulls.get(id).is_some_and(|sent| now.duration_since(*sent) < JAR_PULL_TIMEOUT) {
+        if pull_pending(&self.jar_pulls, id, now) {
             return;
         }
         let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
         if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef) {
             node.tab.send(&HostToEngine::GetCookies);
             self.jar_pulls.insert(id.to_string(), now);
+        }
+    }
+
+    /// Parks `held` until tab `id`'s pending `Cookies` reply (or `COOKIE_HOLD`), so the host is not dropped before its
+    /// last cookies arrive. Hands it back when no pull is pending: act on it now.
+    pub(crate) fn hold_for_cookies(&mut self, id: &str, held: Held) -> Option<Held> {
+        let now = std::time::Instant::now();
+        if !pull_pending(&self.jar_pulls, id, now) {
+            return Some(held);
+        }
+        self.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
+        None
+    }
+
+    /// Acts on what `hold_for_cookies` parked for `id`, if anything.
+    pub(crate) fn release_cookie_hold(&mut self, id: &str) {
+        if let Some((_, held)) = self.cookie_holds.remove(id) {
+            self.run_held(id, held);
+        }
+    }
+
+    /// Acts on every hold whose deadline has passed (a host that never answered its pull).
+    pub(crate) fn release_expired_cookie_holds(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<String> =
+            self.cookie_holds.iter().filter(|(_, (t, _))| *t <= now).map(|(id, _)| id.clone()).collect();
+        for id in due {
+            self.release_cookie_hold(&id);
+        }
+    }
+
+    pub(crate) fn run_held(&mut self, id: &str, held: Held) {
+        match held {
+            Held::PageState(state) => self.finish_sleep(id, state),
+            Held::Snapshot(target, url) => self.finish_swap(id, target, url),
         }
     }
 
@@ -100,6 +163,7 @@ impl App {
             spawn: TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind },
             generation,
             result,
+            seeded,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
         self.spawning.remove(&id);
@@ -152,6 +216,7 @@ impl App {
         }
         match result {
             Ok(mut tab) => {
+                self.jar_known.insert(id.clone(), seeded);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -599,8 +664,10 @@ impl App {
             return false;
         }
         let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
-        tab.tab.send(&HostToEngine::QueryPageState);
+        let _ = tab;
         self.pull_cookies(id);
+        let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
+        tab.tab.send(&HostToEngine::QueryPageState);
         self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
         true
     }

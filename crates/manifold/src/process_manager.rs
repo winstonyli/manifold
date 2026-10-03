@@ -901,7 +901,7 @@ pub fn spawn_tab(
     tab_id: &str,
     initial_url: &str,
     custom_cef: Option<&Path>,
-    jar_json: Option<&str>,
+    jar_json: &dyn Fn() -> String,
 ) -> Result<EngineTab, SpawnError> {
     if let Some(reason) = unsupported_on(std::env::consts::OS, kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
@@ -989,7 +989,8 @@ pub fn spawn_tab(
 
     let mut tab = EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir };
     if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
-        tab.send(&HostToEngine::SetCookies(jar_json.unwrap_or("[]").to_owned()));
+        // Serialised now that the host is connected, so cookies merged while it started are in the seed.
+        tab.send(&HostToEngine::SetCookies(jar_json()));
     }
     Ok(tab)
 }

@@ -15,7 +15,7 @@ pub enum SameSite {
 }
 
 /// The neutral cookie every engine's cookies convert to and from. `expires` is Unix seconds, `None` for a session cookie.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cookie {
     pub name: String,
     pub value: String,
@@ -25,6 +25,18 @@ pub struct Cookie {
     pub secure: bool,
     pub http_only: bool,
     pub same_site: SameSite,
+}
+
+/// Never prints `value`: a session cookie is a credential, and a stray `{:?}` must not leak it into a log.
+impl std::fmt::Debug for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cookie")
+            .field("name", &self.name)
+            .field("domain", &self.domain)
+            .field("path", &self.path)
+            .field("value", &format_args!("<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 /// `(name, domain, path)`: what identifies a cookie.
@@ -82,7 +94,12 @@ impl Jar {
         let before = self.cookies.clone();
         let t = now();
         let pulled_keys: HashSet<Key> = pulled.iter().map(Cookie::key).collect();
-        self.cookies.retain(|c| pulled_keys.contains(&c.key()) || !known.contains(&c.key()));
+        // A pulled cookie that is already expired is the engine deleting it: it removes the stored one too.
+        let expired_keys: HashSet<Key> = pulled.iter().filter(|p| p.expired(t)).map(Cookie::key).collect();
+        self.cookies.retain(|c| {
+            let k = c.key();
+            !expired_keys.contains(&k) && (pulled_keys.contains(&k) || !known.contains(&k))
+        });
         for p in pulled.into_iter().filter(|p| !p.expired(t)) {
             match self.cookies.iter_mut().find(|c| c.key() == p.key()) {
                 Some(slot) => *slot = p,
@@ -125,6 +142,22 @@ mod tests {
         let known: HashSet<Key> = [("sid".into(), "example.com".into(), "/".into())].into();
         assert!(jar.merge(vec![], &known));
         assert_eq!(jar.cookies, vec![c("fresh", "2")], "sid was a logout; fresh was never seen by the engine");
+    }
+
+    #[test]
+    fn an_expired_pulled_cookie_deletes_the_stored_one_with_its_key() {
+        let mut jar = Jar { cookies: vec![c("sid", "1"), c("other", "2")] };
+        let mut gone = c("sid", "1");
+        gone.expires = Some(1.0);
+        assert!(jar.merge(vec![gone], &HashSet::new()), "not even known: the engine's own expiry still wins");
+        assert_eq!(jar.cookies, vec![c("other", "2")]);
+    }
+
+    #[test]
+    fn debug_never_prints_a_cookie_value() {
+        let jar = Jar { cookies: vec![c("sid", "TOP-SECRET")] };
+        let text = format!("{jar:?} {:?}", c("sid", "TOP-SECRET"));
+        assert!(!text.contains("TOP-SECRET") && text.contains("<redacted>") && text.contains("sid"), "{text}");
     }
 
     #[test]

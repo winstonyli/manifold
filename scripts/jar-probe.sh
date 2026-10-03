@@ -42,7 +42,13 @@ cs = j if isinstance(j, list) else j.get("cookies", [])
 sid = [c for c in cs if c.get("name") == "sid"]
 print(f"jar file: {len(cs)} cookies; sid present={bool(sid)} http_only={[c.get('http_only') for c in sid]}")
 PY
-jar_summary() { python -P "$(cygpath -w "$out/jar_summary.py")" "$(cygpath -w "$profile/manifold/jars/default.json")" </dev/null; }
+fail=0
+jar_summary() {
+  local line
+  line="$(python -P "$(cygpath -w "$out/jar_summary.py")" "$(cygpath -w "$profile/manifold/jars/default.json")" </dev/null)"
+  echo "$line"
+  case "$line" in *"sid present=True http_only=[True]"*) ;; *) echo "FAIL: jar lacks an HttpOnly sid"; fail=1 ;; esac
+}
 
 run login webview2 /login 38
 jar_summary
@@ -51,6 +57,12 @@ run cef cef /whoami 12
 run webview2 webview2 /whoami 12
 echo "=== requests (engine path auth)"; awk '{print $2, $3, $4}' "$out/req.log"
 echo "=== first /whoami per engine"
-for e in cef webview2; do echo "$e: $(grep " $e /whoami" "$out/req.log" | head -1 | awk '{print $4}')"; done
+for e in cef webview2; do
+  first="$(grep " $e /whoami" "$out/req.log" | head -1 | awk '{print $4}')"
+  echo "$e: $first"
+  [ "$first" = "auth=True" ] || { echo "FAIL: $e's first /whoami was not authenticated"; fail=1; }
+done
 jar_summary
 echo "out=$out"
+[ "$fail" = 0 ] && echo "PROBE PASS" || echo "PROBE FAIL"
+exit "$fail"

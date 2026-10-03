@@ -96,5 +96,6 @@ browsing data" command. Storage has no verified engine-agnostic read or write pa
 
 - Sync cadence versus cost for the timer, and whether a pull on every navigation commit is cheaper than a timer.
 - Whether missing never-visited path-scoped cookies on WebKit and Servo is acceptable (it is a small gap).
+- Follow-up: a tab already running does not receive cookies another tab added later (no delta broadcast in v1); it only gets them when it is next respawned. Each tab's pull can delete only cookies that tab itself was seeded with or reported (per-tab `jar_known`).
 - A tab closed within 30 s of its last cookie change loses that change: manifold pulls every 30 s and before a sleep, never from a host that is gone.
 - A WebView2 host that fell back to the shared profile (InPrivate unavailable) never answers `GetCookies`, so the jar never absorbs the shared profile; its tabs also do not contribute logins. Pulls are best effort: an unanswered `GetCookies` times out after 10 s and never blocks or merges.

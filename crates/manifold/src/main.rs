@@ -664,6 +664,8 @@ struct TabSpawnOutcome {
     /// `App::session_generation` when the spawn started -- see that field.
     generation: u64,
     result: Result<EngineTab, process_manager::SpawnError>,
+    /// The keys of the jar the host was seeded with (empty for hosts that are not).
+    seeded: HashSet<jar::Key>,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
@@ -867,8 +869,14 @@ struct App {
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
     /// The cookie jar shared by every WebView2 and CEF tab (see `jar`).
     jar: jar::Jar,
-    /// The jar's keys as of the last merge: a known cookie missing from a pull is a logout.
-    jar_known: HashSet<jar::Key>,
+    /// Per tab, the cookies it was seeded with plus those it reported in its last pull. A cookie missing from a tab's
+    /// pull is a logout only if that tab knew it, so a tab that never saw a login cannot delete it.
+    jar_known: HashMap<String, HashSet<jar::Key>>,
+    /// A copy of `jar` for spawn threads: the seed is read when the host connects, not when the spawn starts.
+    jar_snapshot: Arc<std::sync::Mutex<jar::Jar>>,
+    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
+    /// host is not dropped before its last cookies arrive.
+    cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
     /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
     jar_last_pull: Option<std::time::Instant>,
     /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
@@ -1338,7 +1346,7 @@ impl Default for App {
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
         let jar = profile::jars_dir().map(|dir| jar::Jar::load(&dir)).unwrap_or_default();
-        let jar_known = jar.keys();
+        let jar_snapshot = Arc::new(std::sync::Mutex::new(jar.clone()));
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
@@ -1367,7 +1375,9 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             jar,
-            jar_known,
+            jar_known: HashMap::new(),
+            jar_snapshot,
+            cookie_holds: HashMap::new(),
             jar_last_pull: None,
             jar_pulls: HashMap::new(),
             saved_scroll: HashMap::new(),
@@ -2641,15 +2651,63 @@ fn main() {
 mod tests {
     use super::*;
 
+    const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
+
+    fn sid_key() -> jar::Key {
+        ("sid".into(), "a.com".into(), "/".into())
+    }
+
     #[test]
     fn pulled_cookies_reach_the_jar_and_a_logout_removes_them() {
         let mut app = App::default();
-        let sid = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
-        assert!(app.apply_pulled_cookies(sid));
+        assert!(app.apply_pulled_cookies("a", SID));
         assert_eq!(app.jar.cookies.len(), 1);
-        assert!(app.apply_pulled_cookies("[]"), "sid was known, so its absence is a logout");
+        assert!(app.apply_pulled_cookies("a", "[]"), "sid was known to a, so its absence is a logout");
         assert!(app.jar.cookies.is_empty());
-        assert!(!app.apply_pulled_cookies("not json"), "a garbled pull changes nothing");
+        assert!(!app.apply_pulled_cookies("a", "not json"), "a garbled pull changes nothing");
+    }
+
+    #[test]
+    fn a_tab_that_never_saw_a_cookie_cannot_delete_it() {
+        let mut app = App::default();
+        // Tab b was opened before a logged in, so it was seeded with nothing.
+        app.jar_known.insert("b".into(), HashSet::new());
+        assert!(app.apply_pulled_cookies("a", SID));
+        assert!(!app.apply_pulled_cookies("b", "[]"), "b never saw sid: its pull must not delete it");
+        assert_eq!(app.jar.cookies.len(), 1);
+        assert!(app.apply_pulled_cookies("a", "[]"), "a logout seen by a (sid in a's known) does delete it");
+        assert!(app.jar.cookies.is_empty());
+    }
+
+    #[test]
+    fn a_tab_seeded_with_a_cookie_can_delete_it() {
+        let mut app = App::default();
+        app.apply_pulled_cookies("a", SID);
+        app.jar_known.insert("b".into(), [sid_key()].into());
+        assert!(app.apply_pulled_cookies("b", "[]"));
+        assert!(app.jar.cookies.is_empty());
+    }
+
+    #[test]
+    fn a_pending_pull_blocks_another_until_it_times_out() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let pulls: HashMap<String, Instant> = [("t".to_string(), now)].into();
+        assert!(tabs::pull_pending(&pulls, "t", now + Duration::from_secs(1)));
+        assert!(!tabs::pull_pending(&pulls, "t", now + Duration::from_secs(11)), "a silent host is asked again");
+        assert!(!tabs::pull_pending(&pulls, "other", now));
+    }
+
+    #[test]
+    fn a_sleep_answer_is_held_for_a_pending_pull_and_released_by_it() {
+        let mut app = App::default();
+        let state = || ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
+        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_some(), "no pull pending: act now");
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_none());
+        assert!(app.cookie_holds.contains_key("t"));
+        app.release_cookie_hold("t");
+        assert!(app.cookie_holds.is_empty());
     }
 
     #[test]

@@ -2551,7 +2551,12 @@ pub(crate) mod tests {
     fn fail_spawns(app: &mut App) {
         for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
             let result = Err(std::io::Error::other("no engine").into());
-            app.handle_tab_spawn_result(crate::TabSpawnOutcome { spawn, generation, result });
+            app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+                spawn,
+                generation,
+                result,
+                seeded: Default::default(),
+            });
         }
     }
 
