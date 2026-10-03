@@ -452,7 +452,7 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
         ui.label(heading_text("Jars"));
-        let count_text = |n: usize| egui::RichText::new(format!("{n} tabs")).small().weak();
+        let count_text = |n: usize| egui::RichText::new(tab_count_label(n)).small().weak();
         ui.horizontal(|ui| {
             jar_swatch(ui, egui::Color32::GRAY);
             ui.label("Default");
@@ -695,6 +695,11 @@ fn jar_swatch(ui: &mut egui::Ui, color: egui::Color32) {
     ui.painter().circle_filled(rect.center(), 5.0, color);
 }
 
+/// A Settings jar row's tab count: "1 tab", "2 tabs".
+fn tab_count_label(n: usize) -> String {
+    format!("{n} tab{}", if n == 1 { "" } else { "s" })
+}
+
 /// A Settings jar-name field's widget id.
 fn jar_name_edit_id(id: NodeId) -> egui::Id {
     egui::Id::new(("jar_name_edit", id))
@@ -742,6 +747,11 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.settings_jars_section(ui, &mut req));
         output.textures_delta.clear(); // nothing uploads the font atlas here
         req
+    }
+
+    #[test]
+    fn a_jar_row_counts_tabs_in_the_singular_for_one() {
+        assert_eq!([tab_count_label(0), tab_count_label(1), tab_count_label(2)], ["0 tabs", "1 tab", "2 tabs"]);
     }
 
     /// Task 6/7 review: a draft left by a field that lost its page while focused must not come back later, while a
