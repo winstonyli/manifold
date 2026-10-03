@@ -1,6 +1,13 @@
 # Cookie jars: design, 2026-10-02
 
-Status: proposed, not built. Decisions from the user on 2026-10-02: **persistent per jar**; **cookies only for v1**.
+Status: built (v1), 2026-10-03: one default jar, WebView2 and CEF only (plan `docs/superpowers/plans/2026-10-02-cookie-jar-v1.md`,
+final review fixes in `.superpowers/sdd/2026-10-02-cookie-jar-v1/`). Decisions from the user on 2026-10-02: **persistent per
+jar**; **cookies only for v1**.
+
+**WebView2 tabs now run InPrivate, so WebView2 no longer persists localStorage, IndexedDB, cache or permissions across
+restarts; only cookies persist, through the jar.** Before v1 they kept all of that in the shared user-data folder. Sites that
+keep a login in localStorage (many single-page apps keep a token there) now sign the user out on every restart, and on a
+WebView2 sleep and wake once no other WebView2 tab is running.
 Background: `2026-10-02-user-data-survey.md` (what each engine does today). Evidence: spike branch `spike/cookie-bridge`
 (commit 7b6666b, throwaway, not for merge).
 
@@ -21,6 +28,9 @@ in one engine is present in another, and a swap between engines keeps the user s
 
 ## Model
 
+Built (v1): a single default jar, `Jar { cookies }` in `<profile>\jars\default.json`, used by every WebView2 and CEF tab.
+The per-tab `jar` field, named jars and group inheritance below are **not built yet**; they are the design for later.
+
 - `Jar { id, name, cookies: Vec<Cookie> }`, stored in the profile (`<profile>\jars\<id>.json`).
 - `Cookie` is the neutral shape the spike used: `name, value, domain, path, expires: Option<f64 unix>, secure, http_only,
   same_site: Strict | Lax | None | Unspecified`.
@@ -29,12 +39,35 @@ in one engine is present in another, and a swap between engines keeps the user s
 
 ## Flow
 
-1. **Tab start:** manifold sends the jar's cookies to the host (`SetCookies`) before the first navigation.
-2. **During use:** the engine's own jar is the working copy. Manifold syncs back (`GetCookies`) on tab close, on engine
-   swap, on sleep, and on a timer while a tab is live.
-3. **Merge:** last write wins per `(name, domain, path)`; a cookie missing from an engine's export is deleted from the jar
-   only if it was present at the last sync (a logout must propagate).
-4. Engines that cannot be seeded before navigation get a start page of `about:blank`, seed, then navigate.
+As built:
+
+1. **Tab start:** WebView2 and CEF hosts are started with `ENGINE_AWAIT_COOKIES=1`. Manifold sends the jar's cookies
+   (`SetCookies`, a JSON array of neutral cookies) as its first message once the host connects, and the host waits up to
+   5 s for it before its first navigation. The snapshot is read at connect time, so it is at most one pull old. Servo and
+   WebKit are neither seeded nor pulled.
+2. **During use:** the engine's own store is the working copy. Manifold pulls it back (`GetCookies`, answered by `Cookies`)
+   every 30 s for every live WebView2 and CEF tab, before a sleep or an engine swap (which wait up to 2 s for the reply),
+   and once at quit (waiting up to 1 s). There is no pull on tab close or on navigation.
+3. **Merge**, per tab, against two sets manifold keeps for that tab: its *baseline* (the cookies it was seeded with,
+   updated by each of its pulls) and the keys it has itself *reported* in a pull (empty at spawn: a seed is not proof the
+   engine holds a cookie). A pulled cookie equal to the tab's baseline is unchanged and ignored, so an idle tab's stale copy
+   cannot overwrite a value another tab changed since; one that differs or is new replaces the jar's (last change wins per
+   `(name, domain, path)`; an already-expired one deletes it). A key the tab reported before and no longer has is a
+   deletion, so a logout propagates; a seeded key the tab never reported is never deleted by it, so a seed the engine
+   rejected is not a logout. Both sets are cleared when the tab's host closes or is replaced.
+4. **A host answers only a complete read.** A failed, errored or unparsable read gets no reply (manifold's pull times out
+   after 10 s), never `[]`, which would read as a logout of everything. CEF cannot tell an empty store from a slow one (its
+   visitor is never called for zero cookies, and a visit before the store initialises is queued): after 2 s without a
+   callback it answers `[]` only if that host was never seeded with cookies and has never reported any, and otherwise
+   stays silent. WebView2's `Network.getAllCookies` answers nothing on a CDP error or a result without a `cookies` array.
+5. **Seeding fidelity.** CEF: a host-only cookie (no leading dot) is set with an empty `domain` and its host in the URL
+   (https if `secure`, with the cookie's path), because Chromium prefixes a dot to any non-empty domain and rejects a
+   `__Host-` cookie that has one; a dotted domain is passed as is. CEF reads a host-only cookie back by its bare host, the
+   neutral form (checked by `scripts/jar-probe.sh` on `jar.localhost`, 2026-10-03). WebView2: cookies with no name or domain
+   are left out of the `Network.setCookies` batch, and a failed batch is retried one cookie at a time.
+
+The design's `about:blank` start page for engines that cannot be seeded before navigation was not needed: both seeded
+engines wait for the seed instead.
 
 ## Engine mapping
 
@@ -56,14 +89,16 @@ path-scoped cookie never visited is missed. Neither engine exposes a raw "all co
 
 ## Security
 
-Cookie files are credentials. v1 stores them under the profile with user-only file permissions and protects them at rest
-with the OS store (DPAPI on Windows; the platform keyring elsewhere). Never log values (the spike's dump printed real
+Cookie files are credentials. The design: store them under the profile with user-only file permissions and protect them at
+rest with the OS store (DPAPI on Windows; the platform keyring elsewhere). v1 builds the Windows half only (below). Never log values (the spike's dump printed real
 ones; the host must filter and the debug commands must not exist outside debug builds). A jar can be exported only by an
 explicit user action.
 
-Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, `CRYPTPROTECT_UI_FORBIDDEN`, no entropy). Without entropy any process of the same Windows user can decrypt it; the accepted v1 threat model is other users and offline copies. A legacy plaintext file still loads and is rewritten protected on the next save. A file that cannot be read (decrypt failure, truncation, bad JSON) is renamed to `default.json.unreadable-<unix seconds>` at load, never over an earlier one. If it cannot be read at all or cannot be moved aside, the jar is locked for the session: cookies work in memory but nothing is saved, so the file is never overwritten. A stale `default.json.tmp` is deleted at load.
+Implemented (Task 6): the jar file is `MJR1` followed by the DPAPI blob (current user, `CRYPTPROTECT_UI_FORBIDDEN`, no entropy). Without entropy any process of the same Windows user can decrypt it; the accepted v1 threat model is other users and offline copies. A legacy plaintext file still loads and is rewritten protected on the next save. A file that cannot be read (decrypt failure, truncation, bad JSON) is renamed to `default.json.unreadable-<unix seconds>[-<n>]` at load, never over an earlier one; only the 5 newest are kept, since each holds credentials. If it cannot be read at all or cannot be moved aside, the jar is locked for the session: cookies work in memory but nothing is saved, so the file is never overwritten. A save writes `default.json.<pid>.tmp` and renames it; load leaves temp files alone, since one may be another instance's save in progress.
 
-On Linux and macOS `MJR1` names the format only: the content is plain JSON, not protected. A file moved across OSes (or users, or machines) is not readable and is set aside as above. Platform keyring protection is the follow-up, not built.
+v1 protects the file for the user only through DPAPI, on Windows; there the file itself gets the profile folder's ACL. On Linux and macOS `MJR1` names the format only: the content is plain JSON, not protected, in a file created with mode 0600. A file moved across OSes (or users, or machines) is not readable and is set aside as above. Platform keyring protection is the follow-up, not built.
+
+Two manifold instances on one profile each load the jar once and save their whole jar on every change, so they overwrite each other's jar file (last save wins). That is not supported in v1; a re-read and merge under a lock before each save, as the session store does, is the fix if it is needed.
 
 ## Decided
 
@@ -98,9 +133,36 @@ browsing data" command. Storage has no verified engine-agnostic read or write pa
 
 ## Open questions
 
-- Sync cadence versus cost for the timer, and whether a pull on every navigation commit is cheaper than a timer.
+What was built answers some of these; each says so.
+
+- Sync cadence versus cost: built as a 30 s timer plus a pull before sleep and swap (2 s wait) and at quit (1 s wait). Whether
+  a pull on every navigation commit is cheaper than a timer is still open.
 - Whether missing never-visited path-scoped cookies on WebKit and Servo is acceptable (it is a small gap).
-- Follow-up: a tab already running does not receive cookies another tab added later (no delta broadcast in v1); it only gets them when it is next respawned. Each tab's pull can delete only cookies that tab itself was seeded with or reported (per-tab `jar_known`).
-- With no delta broadcast, a logout in one tab can be undone by another tab that still holds the cookie: it is re-added on that tab's next pull.
-- A tab closed within 30 s of its last cookie change loses that change: manifold pulls every 30 s and before a sleep, never from a host that is gone.
-- A WebView2 host that fell back to the shared profile (InPrivate unavailable) never answers `GetCookies`, so the jar never absorbs the shared profile; its tabs also do not contribute logins. Pulls are best effort: an unanswered `GetCookies` times out after 10 s and never blocks or merges.
+- No delta broadcast in v1: a running CEF tab does not receive cookies another tab added later; it gets them when it is next
+  respawned. **WebView2 differs:** all WebView2 tabs run InPrivate in one browser process and share one in-memory cookie
+  store across host processes while any of them runs (`scripts/jar-probe.sh` two-tab run, 2026-10-03: a second tab seeded
+  with an empty jar sent the first tab's login on its first request). So WebView2 tabs see each other's changes at once,
+  and seeding a new WebView2 tab writes the jar snapshot (up to 30 s old) into the store the running WebView2 tabs use: it
+  can put back an older value or a cookie a running tab just logged out of, and that tab's next pull then reports it as its
+  own change, which wins in the jar. Undecided: give each host its own profile, or treat all WebView2 tabs as one
+  participant (seed only the first, pull once for all).
+- With no delta broadcast, a logout in one tab is undone by another tab that still holds the cookie only if that tab
+  changes it again; an unchanged copy no longer overwrites the jar (the per-tab baseline). A rotation in one tab likewise
+  survives an idle tab's stale copy.
+- A tab closed within 30 s of its last cookie change loses that change: there is no pull on close (only every 30 s, before a
+  sleep or swap, and at quit), and never from a host that is gone.
+- Pulls are best effort. An unanswered `GetCookies` times out after 10 s and blocks nothing, but a reply that arrives late
+  is still merged. After 3 unanswered pulls in a row a tab is not asked again until it respawns, so a WebView2 tab whose CDP
+  read keeps failing stops contributing its logins. A WebView2 host that fell back to the shared profile (InPrivate
+  unavailable) never answers `GetCookies` and is not seeded, so the jar never absorbs the user's real shared-profile cookies.
+- A CEF host that was seeded but whose store has since emptied (every cookie deleted) never reports the deletions: CEF does
+  not call the visitor for an empty store, and a seeded host stays silent rather than answer `[]` (Flow 4).
+- Session cookies (`expires: null`) are saved and re-seeded on every restart until a tab reports them gone, unlike a
+  browser, which drops them when it closes. A design choice for v1, not yet reviewed with the user.
+- Manifold and its hosts ship together: the IPC messages are not versioned, and a host built from another commit (such as
+  the WebKit host built separately in WSL) must be rebuilt with manifold.
+- Saves (DPAPI, a write and a rename) run on the UI thread for every pull that changed the jar. Cheap now; move them off the
+  frame path or debounce them if the number of tabs grows.
+- The implementation plan is historical: it still shows earlier signatures (`jar_json: Option<&str>`,
+  `apply_pulled_cookies(json)`), unticked steps, and commit titles ("seed from the jar file") from the abandoned file-seeding
+  design. Seeding is over IPC.
