@@ -44,6 +44,9 @@ pub(crate) fn pull_pending(pulls: &HashMap<String, std::time::Instant>, id: &str
     pulls.get(id).is_some_and(|sent| now.saturating_duration_since(*sent) < JAR_PULL_TIMEOUT)
 }
 
+/// How long quitting waits for the tabs' last `Cookies` replies (`App::final_cookie_pull`).
+const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
 const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 use ipc_protocol::PageState;
@@ -196,6 +199,33 @@ impl App {
             self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(id, _)| id.clone()).collect();
         for id in ids {
             self.pull_cookies(&id);
+        }
+    }
+
+    /// One last pull as the app quits, so a login made since the last timed pull is kept. Waits at most
+    /// `QUIT_PULL_WAIT` for the replies. Any other engine message read meanwhile is dropped: nothing would act on it
+    /// after quit anyway.
+    pub(crate) fn final_cookie_pull(&mut self) {
+        self.jar_pull_all();
+        let deadline = std::time::Instant::now() + QUIT_PULL_WAIT;
+        while !self.jar_pulls.is_empty() && std::time::Instant::now() < deadline {
+            for id in self.jar_pulls.keys().cloned().collect::<Vec<_>>() {
+                let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else {
+                    self.jar_pulls.remove(&id);
+                    continue;
+                };
+                let reply = std::iter::from_fn(|| tab.tab.events_rx.try_recv().ok())
+                    .filter_map(|msg| match msg {
+                        EngineToHost::Cookies(json) => Some(json),
+                        _ => None,
+                    })
+                    .last();
+                if let Some(json) = reply {
+                    self.jar_pulls.remove(&id);
+                    self.apply_pulled_cookies(&id, &json);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 

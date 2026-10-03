@@ -87,7 +87,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.prune_content_dir();
     }
 
-    /// A clean exit (a window close, or headless `QUIT`): the store's last
+    /// A clean exit (a window close, or headless `QUIT`): the tabs' last
+    /// cookies (`final_cookie_pull`, at most 1 s), the store's last
     /// save and close, then everything tied to the window, while the event
     /// loop still exists. `run_app` drops the event loop (on Wayland, its
     /// display connection) before `main` drops `App`, and egui-winit's
@@ -96,6 +97,7 @@ impl ApplicationHandler<UserEvent> for App {
     /// WSLg. Children before the window: egui's state and the surface hold
     /// handles to it.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.final_cookie_pull();
         self.close_store();
         self.egui_state = None;
         self.gpu = None;
