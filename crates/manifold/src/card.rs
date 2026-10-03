@@ -2182,10 +2182,7 @@ mod tests {
             node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
             NOTE_NODE_SIZE
         );
-        assert_eq!(
-            node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
-            GROUP_NODE_SIZE
-        );
+        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::named("g"))), GROUP_NODE_SIZE);
         let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
             NodePayload::Json(JsonPayload {
                 path: "a.json".into(),
@@ -2211,6 +2208,7 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             GRAPH_NODE_SIZE
         );
@@ -2282,10 +2280,7 @@ mod tests {
             })),
             ["x.json"]
         );
-        assert_eq!(
-            card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })),
-            ["Reading"]
-        );
+        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(
@@ -2297,6 +2292,7 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             ["Example", "https://example.org/"]
         );
@@ -2309,6 +2305,7 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             ["", "https://example.org/"]
         );

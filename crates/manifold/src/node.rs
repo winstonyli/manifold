@@ -382,6 +382,8 @@ pub(crate) struct UnloadedTabPayload {
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
     pub(crate) state: UnloadedState,
+    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
+    pub(crate) jar: crate::jar::JarChoice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -445,6 +447,8 @@ pub(crate) struct TabPayload {
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     pub(crate) swap_target: Option<EngineKind>,
+    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
+    pub(crate) jar: crate::jar::JarChoice,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -652,6 +656,15 @@ pub(crate) struct GroupPayload {
     /// any group, as are the JSON leaves inside it, so a session saved by
     /// that build still loads.
     pub(crate) from_json: bool,
+    /// The jar new tabs in this group start with (`field::DEFAULT_JAR`); `None` inherits from the parent group.
+    pub(crate) default_jar: Option<crate::store::model::NodeId>,
+}
+
+impl GroupPayload {
+    /// A plain group: not from JSON, no default jar.
+    pub(crate) fn named(name: impl Into<String>) -> GroupPayload {
+        GroupPayload { name: name.into(), from_json: false, default_jar: None }
+    }
 }
 
 #[cfg(test)]
@@ -674,10 +687,7 @@ mod tests {
             })),
             ItemNodeKind::Download
         );
-        assert_eq!(
-            item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
-            ItemNodeKind::Group
-        );
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::named("g"))), ItemNodeKind::Group);
         assert_eq!(
             item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
             ItemNodeKind::Note
@@ -739,10 +749,11 @@ second"
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             }))
             .saved_tab(),
             Some(("https://example.org/", EngineKind::Cef))
         );
-        assert_eq!(NodePayload::Group(GroupPayload { name: "g".into(), from_json: false }).saved_tab(), None);
+        assert_eq!(NodePayload::Group(GroupPayload::named("g")).saved_tab(), None);
     }
 }

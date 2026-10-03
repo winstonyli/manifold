@@ -265,19 +265,38 @@ fn parse_id(id: &Option<String>) -> Option<NodeId> {
 /// tab whose spawn hasn't landed yet (`App::spawning`).
 pub(crate) fn spawn_shared(spawn: &TabSpawn) -> Shared {
     let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
-    let kind = tab_fields(&mut fields, &spawn.url, spawn.kind, spawn.carry.pinned, parse_id(&spawn.parent));
+    let kind =
+        tab_fields(&mut fields, &spawn.url, spawn.kind, spawn.carry.pinned, parse_id(&spawn.parent), spawn.carry.jar);
     Shared { kind, group: parse_id(&spawn.group), fields }
 }
 
 /// A tab's fields beyond `pos` and `color`, live or failed.
-fn tab_fields(fields: &mut Fields, url: &str, engine: EngineKind, pinned: bool, parent: Option<NodeId>) -> Kind {
+fn tab_fields(
+    fields: &mut Fields,
+    url: &str,
+    engine: EngineKind,
+    pinned: bool,
+    parent: Option<NodeId>,
+    jar: crate::jar::JarChoice,
+) -> Kind {
     fields.insert(field::URL, FieldValue::Str(url.to_owned()));
     fields.insert(field::ENGINE, FieldValue::Engine(engine_code(engine)));
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
-    fields.insert(field::JAR, FieldValue::Id(None));
-    fields.insert(field::JAR_SET, FieldValue::Bool(false));
+    fields.insert(field::JAR, FieldValue::Id(jar.jar));
+    fields.insert(field::JAR_SET, FieldValue::Bool(jar.set));
     Kind::Tab
+}
+
+fn node_id_of(fields: &Fields, no: u32) -> Option<NodeId> {
+    match fields.get(&no) {
+        Some(FieldValue::Id(id)) => *id,
+        _ => None,
+    }
+}
+
+fn jar_choice_of(fields: &Fields) -> crate::jar::JarChoice {
+    crate::jar::JarChoice { jar: node_id_of(fields, field::JAR), set: bool_of(fields, field::JAR_SET) }
 }
 
 /// `raw` (an imported node's field values, as `store::json::import` gave
@@ -307,11 +326,11 @@ impl App {
             let kind = match &node.payload {
                 // A swap in progress already shows its target engine, so a
                 // save meanwhile doesn't write the old one back.
-                NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, .. }) => {
-                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent))
+                NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, jar, .. }) => {
+                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent), *jar)
                 }
-                NodePayload::Unloaded(UnloadedTabPayload { url, kind, pinned, .. }) => {
-                    tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent))
+                NodePayload::Unloaded(UnloadedTabPayload { url, kind, pinned, jar, .. }) => {
+                    tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent), *jar)
                 }
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
@@ -322,7 +341,7 @@ impl App {
                 NodePayload::Group(g) => {
                     fields.insert(field::NAME, str(&g.name));
                     fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
-                    fields.insert(field::DEFAULT_JAR, FieldValue::Id(None));
+                    fields.insert(field::DEFAULT_JAR, FieldValue::Id(g.default_jar));
                     Kind::Group
                 }
                 NodePayload::Note(n) => {
@@ -458,6 +477,9 @@ impl App {
                 if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
                     swap = Some(want);
                 }
+                if changed(field::JAR) || changed(field::JAR_SET) {
+                    tab.jar = jar_choice_of(fields);
+                }
             }
             NodePayload::Unloaded(tab) => {
                 if changed(field::PINNED) {
@@ -469,6 +491,9 @@ impl App {
                 if changed(field::ENGINE) {
                     tab.kind = engine_field(fields);
                 }
+                if changed(field::JAR) || changed(field::JAR_SET) {
+                    tab.jar = jar_choice_of(fields);
+                }
             }
             NodePayload::Group(g) => {
                 if changed(field::NAME) {
@@ -476,6 +501,9 @@ impl App {
                 }
                 if changed(field::FROM_JSON) {
                     g.from_json = bool_of(fields, field::FROM_JSON);
+                }
+                if changed(field::DEFAULT_JAR) {
+                    g.default_jar = node_id_of(fields, field::DEFAULT_JAR);
                 }
             }
             NodePayload::Note(n) => {
@@ -556,15 +584,19 @@ impl App {
                 // Title, mute and zoom come from personal state (`apply_local`).
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
-                let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
+                let jar = jar_choice_of(fields);
+                let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
                 if let Some(node) = self.nodes.get_mut(&id) {
                     node.parent = parent;
                 }
             }
             Kind::Group => {
-                let payload =
-                    GroupPayload { name: str_of(fields, field::NAME), from_json: bool_of(fields, field::FROM_JSON) };
+                let payload = GroupPayload {
+                    name: str_of(fields, field::NAME),
+                    from_json: bool_of(fields, field::FROM_JSON),
+                    default_jar: node_id_of(fields, field::DEFAULT_JAR),
+                };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Group(payload));
             }
             Kind::Note => {
@@ -1738,6 +1770,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_tabs_jar_and_a_groups_default_project_to_fields_and_back() {
+        let jar = NodeId { actor: ActorId(7), counter: 1 };
+        let nodes = BTreeMap::from([
+            (
+                id(1),
+                shared(
+                    Kind::Tab,
+                    None,
+                    &[
+                        (field::URL, FieldValue::Str("https://a.com/".into())),
+                        (field::ENGINE, FieldValue::Engine(engine_code(EngineKind::Servo))),
+                        (field::JAR, FieldValue::Id(Some(jar))),
+                        (field::JAR_SET, FieldValue::Bool(true)),
+                    ],
+                ),
+            ),
+            (id(2), shared(Kind::Group, None, &[(field::DEFAULT_JAR, FieldValue::Id(Some(jar)))])),
+        ]);
+        let app = app_with(&nodes);
+        let tab = &app.nodes[&id(1).to_string()];
+        assert_eq!(tab.payload.as_unloaded().unwrap().jar, crate::jar::JarChoice { jar: Some(jar), set: true });
+        assert_eq!(app.nodes[&id(2).to_string()].payload.as_group().unwrap().default_jar, Some(jar));
+        assert_eq!(app.shared_nodes(), nodes, "the live payloads project back to the same fields");
+    }
+
+    #[test]
+    fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
+        let jar = NodeId { actor: ActorId(2), counter: 50 };
+        let tab = shared(Kind::Tab, None, &[(field::URL, FieldValue::Str("https://a.com/".into()))]);
+        let group = shared(Kind::Group, None, &[]);
+        let mut app = app_with(&BTreeMap::from([(id(1), tab.clone()), (id(2), group.clone())]));
+        let mut tab_fields = tab.fields.clone();
+        tab_fields.insert(field::JAR, FieldValue::Id(Some(jar)));
+        let mut group_fields = group.fields.clone();
+        group_fields.insert(field::DEFAULT_JAR, FieldValue::Id(Some(jar)));
+        app.apply_remote(vec![
+            (id(1), Some((Kind::Tab, tab_fields, None))),
+            (id(2), Some((Kind::Group, group_fields, None))),
+        ]);
+        assert_eq!(app.nodes[&id(1).to_string()].payload.as_unloaded().unwrap().jar.jar, Some(jar));
+        assert_eq!(app.nodes[&id(2).to_string()].payload.as_group().unwrap().default_jar, Some(jar));
+    }
+
+    #[test]
     fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
         let red = color_value(Some(egui::Color32::from_rgb(200, 10, 10)));
         let nodes = BTreeMap::from([
@@ -1969,6 +2045,7 @@ pub(crate) mod tests {
             muted: false,
             zoom_factor: 1.0,
             state: UnloadedState::Failed("x".into()),
+            jar: Default::default(),
         };
         let tab = add(&mut app, NodePayload::Unloaded(failed));
         assert!(app.save_session());
@@ -2150,6 +2227,7 @@ pub(crate) mod tests {
                 muted: false,
                 zoom_factor: 1.0,
                 state: UnloadedState::Failed("x".into()),
+                jar: Default::default(),
             }),
         );
         // A node whose id isn't live yet -- `spawning`, not `self.nodes` --
@@ -2286,6 +2364,7 @@ pub(crate) mod tests {
             muted: false,
             zoom_factor,
             state: UnloadedState::Failed("x".into()),
+            jar: Default::default(),
         })
     }
 
@@ -2299,6 +2378,7 @@ pub(crate) mod tests {
             muted: false,
             zoom_factor: 1.0,
             state: UnloadedState::Sleeping,
+            jar: Default::default(),
         })
     }
 
@@ -2603,7 +2683,7 @@ pub(crate) mod tests {
     #[test]
     fn an_imported_groups_tab_arrives_asleep_in_the_new_group() {
         let mut app = app_on(&temp_dir("import-sleep").join("session.mnf"), 1);
-        let g = add(&mut app, NodePayload::Group(GroupPayload { name: "G".into(), from_json: false }));
+        let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
         let tab = add(&mut app, failed_tab("https://i/", 1.0));
         app.nodes.get_mut(&tab).unwrap().group = Some(g.clone());
         let json = app.export_group_json(&g).unwrap();
@@ -2620,8 +2700,8 @@ pub(crate) mod tests {
     #[test]
     fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
         let mut app = app_on(&temp_dir("import-outside").join("session.mnf"), 1);
-        let level = add(&mut app, NodePayload::Group(GroupPayload { name: "L".into(), from_json: false }));
-        let elsewhere = add(&mut app, NodePayload::Group(GroupPayload { name: "E".into(), from_json: false }));
+        let level = add(&mut app, NodePayload::Group(GroupPayload::named("L")));
+        let elsewhere = add(&mut app, NodePayload::Group(GroupPayload::named("E")));
         app.current_group = Some(level.clone());
         let json = JsonDoc {
             nodes: vec![
@@ -2821,7 +2901,7 @@ pub(crate) mod tests {
         let dir = temp_dir("last-shared");
         let path = dir.join("session.mnf");
         let mut app = app_on(&path, 1);
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+        let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
         let outer = add(&mut app, group("outer"));
         let inner = add(&mut app, group("inner"));
         let tab = add(&mut app, failed_tab("https://a/", 1.0));
@@ -2887,9 +2967,7 @@ pub(crate) mod tests {
             let dir = temp_dir(&format!("app-cost-{tabs}"));
             let mut app = app_on(&dir.join("session.mnf"), 1);
             let groups: Vec<String> = (0..tabs / 10)
-                .map(|i| {
-                    add(&mut app, NodePayload::Group(GroupPayload { name: format!("Group {i}"), from_json: false }))
-                })
+                .map(|i| add(&mut app, NodePayload::Group(GroupPayload::named(format!("Group {i}")))))
                 .collect();
             let mut ids = Vec::new();
             for i in 0..tabs {

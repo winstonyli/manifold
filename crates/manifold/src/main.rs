@@ -703,6 +703,8 @@ struct TabCarry {
     title: String,
     /// See `TabPayload::muted`. Sent to the new engine on landing.
     muted: bool,
+    /// See `TabPayload::jar`.
+    jar: crate::jar::JarChoice,
 }
 
 impl TabSpawn {
@@ -723,7 +725,14 @@ impl TabSpawn {
             pos,
             vel: egui::Vec2::ZERO,
             purpose,
-            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
+            carry: TabCarry {
+                pinned: false,
+                color: None,
+                zoom_factor,
+                title: String::new(),
+                muted: false,
+                jar: Default::default(),
+            },
             fallback_kind: None,
         }
     }
@@ -747,6 +756,7 @@ impl TabSpawn {
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
+                jar: tab.jar,
             },
             fallback_kind: None,
         })
@@ -1881,7 +1891,7 @@ impl App {
         self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
         let group_pos = egui::vec2(300.0, 0.0);
-        let group = NodePayload::Group(GroupPayload { name: "Try grouping".to_string(), from_json: false });
+        let group = NodePayload::Group(GroupPayload::named("Try grouping".to_string()));
         let group_id = self.place_node(None, group, Placement { group: None, pos: group_pos });
         // A small fixed offset, not `graph_layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
@@ -2153,7 +2163,7 @@ impl App {
     fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let name = self.default_group_name();
         let at = self.placement(&id, pos);
-        self.place_node(Some(id), NodePayload::Group(GroupPayload { name, from_json: false }), at);
+        self.place_node(Some(id), NodePayload::Group(GroupPayload::named(name)), at);
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
@@ -2183,6 +2193,7 @@ impl App {
             zoom_factor: tab.zoom_factor,
             title: tab.title.clone(),
             muted: tab.muted,
+            jar: tab.jar,
         };
         let url = tab.url.clone();
         let vel = egui::Vec2::ZERO;
@@ -2807,7 +2818,7 @@ mod tests {
             color: None,
             payload,
         };
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+        let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
         let mut nodes = NodeMap::default();
         nodes.insert("outer".into(), node(None, group("outer")));
@@ -2838,7 +2849,7 @@ mod tests {
     fn a_new_group_takes_the_smallest_free_number() {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
-            let payload = NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+            let payload = NodePayload::Group(GroupPayload::named(name));
             let node = GraphNode {
                 parent: None,
                 group: None,

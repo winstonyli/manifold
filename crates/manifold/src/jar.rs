@@ -1,10 +1,30 @@
 //! The cookie jar manifold owns. Engines are seeded from it at tab start and pulled back into it, so a login
-//! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`.
+//! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it names jars by store `NodeId`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::store::model::NodeId;
+
+/// What a tab's `jar` / `jar_set` fields hold (spec "Data model").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JarChoice {
+    /// A `Kind::Jar` node; `None` is the default jar.
+    pub jar: Option<NodeId>,
+    /// Picked by hand: a group-default cascade leaves it alone.
+    pub set: bool,
+}
+
+/// Which jar a running host merges into, and which file it saves (spec "Resolution").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[allow(dead_code)] // Used from the next task on (host merge keying); added here with its sibling type.
+pub enum JarKey {
+    #[default]
+    Default,
+    Named(NodeId),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SameSite {

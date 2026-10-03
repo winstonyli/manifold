@@ -144,7 +144,7 @@ mod tests {
     }
 
     fn group(name: &str) -> NodePayload {
-        NodePayload::Group(GroupPayload { name: name.to_string(), from_json: false })
+        NodePayload::Group(GroupPayload::named(name.to_string()))
     }
 
     #[test]

@@ -322,7 +322,7 @@ impl App {
                 let pos = sum / count;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
-                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload { name, from_json: false }), at);
+                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload::named(name)), at);
                 for tab_id in self.selected_tabs.drain() {
                     if let Some(node) = self.nodes.get_mut(&tab_id) {
                         node.group = Some(id.clone());

@@ -242,7 +242,7 @@ impl App {
             result,
             seeded,
         } = outcome;
-        let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
+        let TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar } = carry;
         self.spawning.remove(&id);
         let remote = self.remote_in_flight.remove(&id);
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
@@ -267,10 +267,10 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
+        let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
-                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted)
+                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted, tab.jar)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -283,7 +283,7 @@ impl App {
                 }
             }
         } else {
-            (parent, group, pos, color, pinned, muted)
+            (parent, group, pos, color, pinned, muted, carry_jar)
         };
         let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
@@ -338,6 +338,7 @@ impl App {
                             pinned,
                             zoom_factor,
                             swap_target: None,
+                            jar: carry_jar,
                         }),
                     },
                 );
@@ -419,7 +420,7 @@ impl App {
                         engine_label(kind),
                         engine_label(fallback)
                     ));
-                    let carry = TabCarry { pinned, color, zoom_factor, title, muted };
+                    let carry = TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar };
                     let spawn = TabSpawn {
                         id,
                         url,
@@ -449,7 +450,8 @@ impl App {
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
+                    let failed =
+                        UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
                     if !self.node_order.iter().any(|t| t == &id) {
@@ -710,6 +712,7 @@ impl App {
             muted: tab.muted,
             zoom_factor: tab.zoom_factor,
             state: UnloadedState::Sleeping,
+            jar: tab.jar,
         };
         // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
         // the engine host down (see `teardown_running_session`).

@@ -455,11 +455,7 @@ mod tests {
         let path = dir.join("level.json");
         std::fs::write(&path, text).unwrap();
         let mut app = App::default();
-        app.insert_placeholder_node(
-            OUTER.into(),
-            egui::Vec2::ZERO,
-            NodePayload::Group(GroupPayload { name: "outer".into(), from_json: false }),
-        );
+        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
         app.insert_json_node_with_id(
             J.into(),
             path.to_string_lossy().into_owned(),
@@ -646,11 +642,7 @@ mod tests {
     fn a_failed_refresh_leaves_the_level_for_the_error_card() {
         let dir = crate::store::testutil::temp_dir("json_level-failed_refresh");
         let mut app = App::default();
-        app.insert_placeholder_node(
-            OUTER.into(),
-            egui::Vec2::ZERO,
-            NodePayload::Group(GroupPayload { name: "outer".into(), from_json: false }),
-        );
+        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
         let body = crate::redirect_fetch::save(&dir, J, crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
         let source = ContentSource::Web { url: "https://x.test/j".into(), body };
         app.insert_content(source, J.into(), egui::Vec2::ZERO, Some(OUTER.into())).unwrap();
@@ -697,11 +689,7 @@ mod tests {
     fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
         let dir = crate::store::testutil::temp_dir("json_level-placeholder");
         let mut app = App::default();
-        app.insert_placeholder_node(
-            OUTER.into(),
-            egui::Vec2::ZERO,
-            NodePayload::Group(GroupPayload { name: "outer".into(), from_json: false }),
-        );
+        app.insert_placeholder_node(OUTER.into(), egui::Vec2::ZERO, NodePayload::Group(GroupPayload::named("outer")));
         // What `materialize` inserts for a missing file with a known URL.
         let view = JsonView::from_field(r#"{"/a":{"collapsed":true}}"#);
         let payload = JsonPayload {

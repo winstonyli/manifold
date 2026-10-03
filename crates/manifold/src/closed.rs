@@ -227,12 +227,12 @@ mod tests {
         let mut app = app_on(&path, 1);
         let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
 
-        let outer = add(&mut app, NodePayload::Group(GroupPayload { name: "Outer".into(), from_json: false }));
+        let outer = add(&mut app, NodePayload::Group(GroupPayload::named("Outer")));
         let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
         put_in(&mut app, &note0, &outer);
         let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
         put_in(&mut app, &note1, &outer);
-        let inner = add(&mut app, NodePayload::Group(GroupPayload { name: "Inner".into(), from_json: false }));
+        let inner = add(&mut app, NodePayload::Group(GroupPayload::named("Inner")));
         put_in(&mut app, &inner, &outer);
         let img0 = add(
             &mut app,
