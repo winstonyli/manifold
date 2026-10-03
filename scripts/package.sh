@@ -94,5 +94,5 @@ else
     powershell -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$stage/$name")' -DestinationPath '$(cygpath -w "$zip")'"
 fi
 echo "$zip"
-ls -l "$zip" | awk '{print $5 " bytes"}'
+echo "$(stat -c %s "$zip") bytes"
 sha256sum "$zip" | cut -d' ' -f1
