@@ -59,7 +59,21 @@ impl Cookie {
     fn expired(&self, now: f64) -> bool {
         self.expires.is_some_and(|e| e <= now)
     }
+
+    /// Equal, with expiries within `EXPIRES_TOLERANCE`: an engine's float conversion of the same expiry is not a
+    /// change.
+    fn same_as(&self, other: &Cookie) -> bool {
+        let expires_same = match (self.expires, other.expires) {
+            (Some(a), Some(b)) => (a - b).abs() < EXPIRES_TOLERANCE,
+            (a, b) => a == b,
+        };
+        expires_same && Cookie { expires: other.expires, ..self.clone() } == *other
+    }
 }
+
+/// How far apart two expiries (seconds) may be and still count as one. Engines report microseconds; a real change
+/// (a new `Max-Age` or `Expires`) moves an expiry by far more.
+const EXPIRES_TOLERANCE: f64 = 0.001;
 
 /// An engine's cookie dump, as its host serialised it. `None` if it is not that shape.
 pub fn from_json(json: &str) -> Option<Vec<Cookie>> {
@@ -276,8 +290,8 @@ impl Jar {
 
     /// Folds tab `tab`'s cookie dump into the jar and updates what the tab is believed to hold. Returns whether the
     /// jar changed. Only what the tab itself changed is applied, so the last change wins, not the last pull:
-    /// - a pulled cookie equal to the tab's `baseline` entry is unchanged there and is ignored (an idle tab's stale
-    ///   copy cannot overwrite a newer value another tab wrote);
+    /// - a pulled cookie equal to the tab's `baseline` entry (expiries within `EXPIRES_TOLERANCE`) is unchanged there
+    ///   and is ignored (an idle tab's stale copy cannot overwrite a newer value another tab wrote);
     /// - a pulled cookie that differs or is new is a change: it replaces the jar's (an already-expired one deletes it);
     /// - a key the tab reported before (`reported`) and is now missing is a deletion. A seeded key the tab never
     ///   reported is not: the seed may have failed, which is not a logout.
@@ -290,11 +304,12 @@ impl Jar {
         }
         for p in &pulled {
             let k = p.key();
-            if tab.baseline.get(&k) == Some(p) {
+            if tab.baseline.get(&k).is_some_and(|b| b.same_as(p)) {
                 continue;
             }
             match self.cookies.iter_mut().position(|c| c.key() == k) {
                 _ if p.expired(t) => self.cookies.retain(|c| c.key() != k),
+                Some(i) if self.cookies[i].same_as(p) => {}
                 Some(i) => self.cookies[i] = p.clone(),
                 None => self.cookies.push(p.clone()),
             }
@@ -411,6 +426,45 @@ mod tests {
         let mut tab = TabCookies::seeded(&jar.cookies);
         assert!(!jar.merge(vec![], &mut tab));
         assert_eq!(jar.cookies, vec![c("sid", "1")]);
+    }
+
+    fn expiring(name: &str, value: &str, expires: f64) -> Cookie {
+        Cookie { expires: Some(expires), ..c(name, value) }
+    }
+
+    #[test]
+    fn expiries_within_a_millisecond_are_the_same_cookie() {
+        let e = 4_102_444_800.123_456;
+        assert!(expiring("sid", "1", e).same_as(&expiring("sid", "1", e + 0.000_001)), "a conversion wobble");
+        assert!(!expiring("sid", "1", e).same_as(&expiring("sid", "1", e + 0.01)));
+        assert!(!expiring("sid", "1", e).same_as(&expiring("sid", "2", e)), "the value still counts");
+        assert!(!expiring("sid", "1", e).same_as(&c("sid", "1")), "a session cookie is not a persistent one");
+        assert!(c("sid", "1").same_as(&c("sid", "1")));
+    }
+
+    #[test]
+    fn an_expiry_wobble_is_ignored_and_a_real_expiry_change_wins() {
+        let e = 4_102_444_800.123_456;
+        let mut jar = Jar { locked: false, cookies: vec![expiring("sid", "v1", e)] };
+        let mut active = TabCookies::seeded(&jar.cookies);
+        let mut idle = TabCookies::seeded(&jar.cookies);
+        assert!(jar.merge(vec![expiring("sid", "v2", e + 3600.0)], &mut active), "rotated, with a new Max-Age");
+        // The idle tab's copy of v1 came back through its engine a microsecond off: still its seed, not a change.
+        assert!(!jar.merge(vec![expiring("sid", "v1", e + 0.000_001)], &mut idle));
+        assert_eq!(jar.cookies, vec![expiring("sid", "v2", e + 3600.0)]);
+        // The active tab's own copy wobbles too: no change, so no save.
+        assert!(!jar.merge(vec![expiring("sid", "v2", e + 3_600.000_001)], &mut active));
+        // A real expiry change (a sliding session) wins.
+        assert!(jar.merge(vec![expiring("sid", "v2", e + 7200.0)], &mut active));
+        assert_eq!(jar.cookies, vec![expiring("sid", "v2", e + 7200.0)]);
+    }
+
+    #[test]
+    fn an_unseeded_tab_reporting_the_jars_cookie_with_a_wobble_changes_nothing() {
+        let e = 4_102_444_800.5;
+        let mut jar = Jar { locked: false, cookies: vec![expiring("sid", "1", e)] };
+        assert!(!jar.merge(vec![expiring("sid", "1", e - 0.000_001)], &mut TabCookies::default()));
+        assert_eq!(jar.cookies, vec![expiring("sid", "1", e)]);
     }
 
     #[test]

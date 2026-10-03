@@ -11,15 +11,18 @@ use serde_json::{json, Value};
 /// CEF never calls a cookie visitor when the store holds no cookies, so a pull with no callback by then is either
 /// empty or slow (CEF queues the visit until its store is initialised). `JarPull::poll` decides which.
 const EMPTY_PULL_TIMEOUT: Duration = Duration::from_secs(2);
-/// Seconds between the Windows epoch (1601-01-01), which CEF's `Basetime` counts from, and the Unix epoch.
-const WINDOWS_TO_UNIX_SECS: f64 = 11_644_473_600.0;
+/// Microseconds between the Windows epoch (1601-01-01), which CEF's `Basetime` counts from, and the Unix epoch.
+const WINDOWS_TO_UNIX_MICROS: i64 = 11_644_473_600_000_000;
 
+/// The epoch shift is done in integer microseconds: a Windows-epoch microsecond count (~1.3e16) is past 2^53, so
+/// shifting in `f64` would round it and a cookie's expiry would not come back bit for bit. Unix microseconds (~1.8e15)
+/// fit an `f64` exactly, so only the edges convert.
 fn to_basetime(unix: f64) -> Basetime {
-    Basetime { val: ((unix + WINDOWS_TO_UNIX_SECS) * 1_000_000.0) as i64 }
+    Basetime { val: ((unix * 1_000_000.0).round() as i64).saturating_add(WINDOWS_TO_UNIX_MICROS) }
 }
 
 fn from_basetime(t: &Basetime) -> f64 {
-    t.val as f64 / 1_000_000.0 - WINDOWS_TO_UNIX_SECS
+    t.val.saturating_sub(WINDOWS_TO_UNIX_MICROS) as f64 / 1_000_000.0
 }
 
 /// A CEF cookie from one neutral cookie, with the URL `set_cookie` needs. `None` when it has no name or domain.
@@ -189,7 +192,29 @@ mod tests {
     #[test]
     fn unix_seconds_round_trip_through_cef_basetime() {
         let t = to_basetime(1_700_000_000.0);
-        assert!((from_basetime(&t) - 1_700_000_000.0).abs() < 0.001);
+        assert_eq!(t.val, 1_700_000_000_000_000 + WINDOWS_TO_UNIX_MICROS);
+        assert_eq!(from_basetime(&t), 1_700_000_000.0);
+    }
+
+    #[test]
+    fn fractional_max_age_expiries_round_trip_through_cef_basetime_exactly() {
+        // CDP reports a `Max-Age` cookie's expiry with microseconds; the shift through f64 changed ~90% of these.
+        let mut values = vec![1_790_000_000.123_456, 1_759_420_800.000_001, 1_759_420_800.999_999, 4_102_444_799.5];
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..100_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            // A microsecond-resolution expiry between 2025 and 2100, as CDP would parse it from its decimal text.
+            let micros = 1_735_689_600_000_000 + (x % 2_366_841_600_000_000) as i64;
+            values.push(format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000).parse().unwrap());
+        }
+        for v in values {
+            assert_eq!(from_basetime(&to_basetime(v)), v, "{v}");
+            // Stable from the CEF side too: a Basetime read back, seeded and read again is unchanged.
+            let read = from_basetime(&to_basetime(v));
+            assert_eq!(to_basetime(read).val, to_basetime(v).val);
+        }
     }
 
     #[test]
