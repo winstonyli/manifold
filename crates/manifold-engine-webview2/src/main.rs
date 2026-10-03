@@ -16,6 +16,7 @@ mod composition;
 mod download;
 mod find;
 mod input;
+mod jar_cdp;
 mod nav_state;
 mod popup;
 mod scheme;
@@ -31,11 +32,12 @@ use std::time::Duration;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, InputEvent, SharedFrameBuffer};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
-    ICoreWebView2Environment3, ICoreWebView2_8, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+    ICoreWebView2Environment10, ICoreWebView2Environment3, ICoreWebView2_8,
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 use webview2_com::{
-    CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    ExecuteScriptCompletedHandler,
+    CallDevToolsProtocolMethodCompletedHandler, CreateCoreWebView2CompositionControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING};
 use windows::Win32::Foundation::RECT;
@@ -52,6 +54,8 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// manifold without this). ~30fps is plenty for a tab preview/thumbnail
 /// use case and well below what caused the observed overload.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+/// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 
 fn main() {
     // Must happen before any window exists (`create_hidden_window` below is
@@ -153,7 +157,7 @@ fn main() {
         composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create composition target");
 
     let environment = create_environment().expect("create CoreWebView2Environment");
-    let (comp_controller, controller, webview) =
+    let (comp_controller, controller, webview, in_private) =
         create_composition_controller(environment.clone(), hwnd).expect("create CoreWebView2CompositionController");
     unsafe {
         comp_controller.SetRootVisualTarget(&root_visual).expect("set composition root visual target");
@@ -214,6 +218,7 @@ fn main() {
     let pending_json_body = nav_state::new_shared_json_body();
     let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
     let pending_page_state: Rc<RefCell<Option<ipc_protocol::PageState>>> = Rc::new(RefCell::new(None));
+    let pending_cookies: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     nav_state::register_handlers(
         &webview,
         nav_state.clone(),
@@ -229,6 +234,18 @@ fn main() {
     let drag_state: input::DragState = Default::default();
     let pending_download = download::register(&webview).ok();
     let _ = scheme::register(&environment, &webview);
+
+    // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
+    // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // Any other first message is kept for the loop below rather than dropped.
+    let mut first_message: Option<HostToEngine> = None;
+    if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
+        match wait_for_first_message(&rx, COOKIE_SEED_WAIT) {
+            Some(HostToEngine::SetCookies(json)) => seed_cookies(&webview, in_private, &json),
+            Some(other) => first_message = Some(other),
+            None => eprintln!("jar: no seed received"),
+        }
+    }
 
     unsafe {
         webview.Navigate(&HSTRING::from(&initial_url)).expect("initial navigate");
@@ -257,7 +274,7 @@ fn main() {
     loop {
         window::pump_messages();
 
-        while let Ok(msg) = rx.try_recv() {
+        while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToEngine::Navigate { url, .. } => unsafe {
                     nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
@@ -305,7 +322,29 @@ fn main() {
                     let url = nav_state.borrow().url.clone();
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
                 }
-                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // Temporary no-op; the cookie-jar plan replaces it (Task 3 WebView2, Task 4 CEF).
+                // A seed that arrives after the first navigation (not the expected path) still goes in.
+                HostToEngine::SetCookies(json) => seed_cookies(&webview, in_private, &json),
+                HostToEngine::GetCookies => {
+                    // On the shared profile the answer would hold the user's real cookies, and an empty answer
+                    // would read as a logout: say nothing.
+                    if in_private {
+                        let slot = pending_cookies.clone();
+                        let handler =
+                            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |_error, result| {
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result.to_string()) {
+                                    *slot.borrow_mut() = Some(jar_cdp::jar_from_cdp(&parsed));
+                                }
+                                Ok(())
+                            }));
+                        let _ = unsafe {
+                            webview.CallDevToolsProtocolMethod(
+                                &HSTRING::from("Network.getAllCookies"),
+                                &HSTRING::from("{}"),
+                                &handler,
+                            )
+                        };
+                    }
+                }
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_error, result| {
@@ -382,6 +421,10 @@ fn main() {
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
             let _ = control.send(&EngineToHost::JsonBody { body });
+        }
+
+        if let Some(json) = pending_cookies.borrow_mut().take() {
+            let _ = control.send(&EngineToHost::Cookies(json));
         }
 
         if let Some(state) = pending_page_state.borrow_mut().take() {
@@ -508,24 +551,92 @@ fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     Ok(webview2_com::wait_with_pump(rx)??)
 }
 
-/// Returns `(comp_controller, controller, webview)` -- `comp_controller`
+/// Waits up to `timeout` for the first message from manifold, pumping window messages meanwhile so WebView2's
+/// async completions keep running. `None` on timeout or a closed channel.
+fn wait_for_first_message(rx: &mpsc::Receiver<HostToEngine>, timeout: Duration) -> Option<HostToEngine> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        window::pump_messages();
+        match rx.try_recv() {
+            Ok(msg) => return Some(msg),
+            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(8)),
+            Err(mpsc::TryRecvError::Disconnected) => return None,
+        }
+    }
+    None
+}
+
+/// `Network.setCookies` from the neutral jar JSON, awaited. Only into an InPrivate tab: seeding the shared
+/// profile would write into the user's real cookies. Never logs cookie values.
+fn seed_cookies(webview: &ICoreWebView2, in_private: bool, jar_json: &str) {
+    if !in_private {
+        eprintln!("jar: not seeding the shared profile");
+        return;
+    }
+    let params = jar_cdp::cdp_cookies_from_jar(jar_json).to_string();
+    let webview = webview.clone();
+    let res = CallDevToolsProtocolMethodCompletedHandler::wait_for_async_operation(
+        Box::new(move |handler| unsafe {
+            webview
+                .CallDevToolsProtocolMethod(
+                    &HSTRING::from("Network.setCookies"),
+                    &HSTRING::from(params.as_str()),
+                    &handler,
+                )
+                .map_err(webview2_com::Error::WindowsError)
+        }),
+        Box::new(|error_code, _result| {
+            if error_code.is_err() {
+                eprintln!("jar: Network.setCookies failed: {error_code:?}");
+            }
+            Ok(())
+        }),
+    );
+    if res.is_err() {
+        eprintln!("jar: seeding did not complete");
+    }
+}
+
+/// Returns `(comp_controller, controller, webview, in_private)` -- `comp_controller`
 /// (`ICoreWebView2CompositionController`) is used for `SendMouseInput`/
 /// `SetRootVisualTarget`; `controller` (`ICoreWebView2Controller`) for
 /// bounds/visibility/zoom/focus exactly as before (the object
 /// `CreateCoreWebView2CompositionController` returns implements both
 /// interfaces -- confirmed live this session, not assumed); `webview`
 /// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
+///
+/// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies). If the runtime
+/// lacks `ICoreWebView2Environment10` or the options fail, it falls back to the shared profile and `in_private`
+/// is `false`; callers must then neither seed nor report cookies.
 fn create_composition_controller(
     environment: ICoreWebView2Environment,
     parent: windows::Win32::Foundation::HWND,
-) -> webview2_com::Result<(ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2)> {
+) -> webview2_com::Result<(ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2, bool)> {
     let environment3: ICoreWebView2Environment3 = environment.cast().map_err(webview2_com::Error::WindowsError)?;
+    let private_options = environment.cast::<ICoreWebView2Environment10>().and_then(|env10| unsafe {
+        let options = env10.CreateCoreWebView2ControllerOptions()?;
+        options.SetIsInPrivateModeEnabled(true)?;
+        Ok((env10, options))
+    });
+    let private_options = match private_options {
+        Ok(p) => Some(p),
+        Err(_) => {
+            eprintln!("jar: InPrivate unavailable, using the shared profile");
+            None
+        }
+    };
+    let in_private = private_options.is_some();
     let (tx, rx) = mpsc::channel();
     CreateCoreWebView2CompositionControllerCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
-            environment3
-                .CreateCoreWebView2CompositionController(parent, &handler)
-                .map_err(webview2_com::Error::WindowsError)
+            match &private_options {
+                Some((env10, options)) => env10
+                    .CreateCoreWebView2CompositionControllerWithOptions(parent, options, &handler)
+                    .map_err(webview2_com::Error::WindowsError),
+                None => environment3
+                    .CreateCoreWebView2CompositionController(parent, &handler)
+                    .map_err(webview2_com::Error::WindowsError),
+            }
         }),
         Box::new(move |error_code, controller| {
             error_code?;
@@ -537,7 +648,7 @@ fn create_composition_controller(
     let comp_controller = webview2_com::wait_with_pump(rx)??;
     let controller: ICoreWebView2Controller = comp_controller.cast().map_err(webview2_com::Error::WindowsError)?;
     let webview = unsafe { controller.CoreWebView2() }?;
-    Ok((comp_controller, controller, webview))
+    Ok((comp_controller, controller, webview, in_private))
 }
 
 fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &ContainerVisual, width: u32, height: u32) {
