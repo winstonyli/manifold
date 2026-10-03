@@ -1,6 +1,6 @@
 # Per-tab jars: design, 2026-10-03
 
-Status: proposed, not built. Builds on the shipped cookie jar v1 (`2026-10-02-jars-design.md`, `jar.rs`, the per-tab merge
+Status: built (plan `docs/superpowers/plans/2026-10-03-per-tab-jars.md`). Builds on the shipped cookie jar v1 (`2026-10-02-jars-design.md`, `jar.rs`, the per-tab merge
 state, the WebView2 and CEF hosts). Decisions from the user on 2026-10-03: a jar choice **per tab**, a **group default**
 that tabs inherit, and **ephemeral** jars; the group default is a **snapshot that cascades** (it behaves as if live, but
 every tab stores a plain value); live tabs **switch by sleeping**; jars are **nodes in the synced document**; the jar
@@ -148,3 +148,4 @@ localStorage and the other storage the v1 spec leaves out.
 - Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
+- After "Clear cookies", every pull from that jar's running tabs is dropped until they switch, including a login made after the clear (plan deviation 14). Accepted as "cleared means cleared"; revisit if users sign in again in a tab still waiting to switch and expect it kept.

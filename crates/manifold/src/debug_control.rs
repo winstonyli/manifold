@@ -327,6 +327,13 @@ pub enum DebugCommand {
     /// `IDLESWEEP secs` -- one idle auto-sleep sweep with a limit of `secs`
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
     IdleSweep(u64),
+    /// `SETJAR <name|default>` -- the focused tab picks that jar (a new
+    /// named jar if none has the name), as from its menu. See
+    /// `App::set_tab_jar`.
+    SetJar(String),
+    /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
+    /// `App::switch_jar_now`.
+    SwitchJarNow,
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -471,6 +478,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
     ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
+    ("SETJAR <name|default>", "The focused tab uses that jar (a new named jar if none has the name)"),
+    ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -663,6 +672,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
+        "SETJAR" => non_empty(DebugCommand::SetJar),
+        "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
@@ -754,6 +765,14 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jar_commands_parse() {
+        assert!(matches!(parse_line("SETJAR Work"), Some(DebugCommand::SetJar(n)) if n == "Work"));
+        assert!(matches!(parse_line("SETJAR default"), Some(DebugCommand::SetJar(n)) if n == "default"));
+        assert!(parse_line("SETJAR").is_none(), "a jar name is required");
+        assert!(matches!(parse_line("SWITCHJARNOW"), Some(DebugCommand::SwitchJarNow)));
+    }
 
     #[test]
     fn parses_json_level_commands_with_an_optional_pointer() {

@@ -1230,6 +1230,22 @@ impl App {
                     self.request_sleep(&id, SleepWhy::Manual);
                 }
             }
+            DebugCommand::SetJar(name) => {
+                if let Some(tab) = self.focused.clone() {
+                    let jar = if name.eq_ignore_ascii_case("default") {
+                        None
+                    } else {
+                        Some(self.jar_named(&name).unwrap_or_else(|| self.create_jar(&name)))
+                    };
+                    self.set_tab_jar(&tab, jar);
+                    self.save_session();
+                }
+            }
+            DebugCommand::SwitchJarNow => {
+                if let Some(tab) = self.focused.clone() {
+                    self.switch_jar_now(&tab);
+                }
+            }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
