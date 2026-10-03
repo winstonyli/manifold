@@ -2768,6 +2768,50 @@ pub(crate) mod tests {
         assert!(back.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
     }
 
+    /// Final review I2b: a jar deleted on another device while this one was not running never reaches `forget_jar`
+    /// here, so startup deletes the files of named jars the document no longer has, unless it may not know them all.
+    #[test]
+    fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
+        let dir = crate::store::testutil::temp_dir("jar-prune-startup");
+        let (path, jars) = (dir.join("session.mnf"), dir.join("jars"));
+        std::fs::create_dir(&jars).unwrap();
+        let mut app = app_on(&path, 1);
+        add(&mut app, sleeping_tab("https://a.com/", "A"));
+        let work = app.create_jar("Work");
+        app.save_session();
+        drop(app);
+        let gone = NodeId { actor: ActorId(0xdead), counter: 9 };
+        let (w, g) = (crate::jar::JarKey::Named(work).file_stem(), crate::jar::JarKey::Named(gone).file_stem());
+        let files = [format!("{w}.json"), format!("{g}.json"), format!("{g}.json.unreadable-5"), "default.json".into()];
+        // A readable (legacy plaintext) empty jar: the restore wakes a tab, which loads the default jar.
+        let write_all = || files.iter().for_each(|f| std::fs::write(jars.join(f), r#"{"cookies":[]}"#).unwrap());
+        let left = || files.iter().filter(|f| jars.join(f).exists()).cloned().collect::<Vec<_>>();
+        let on = |actor| App { jars_dir_override: Some(jars.clone()), ..app_on(&path, actor) };
+        write_all();
+
+        // No journal: nothing is known, nothing goes.
+        App { jars_dir_override: Some(jars.clone()), ..App::default() }.prune_jar_files();
+        assert_eq!(left().len(), 4);
+        // A repaired store may have lost jar nodes.
+        let mut repaired = on(2);
+        repaired.restore_session();
+        repaired.store_recovered = true;
+        repaired.prune_jar_files();
+        assert_eq!(left().len(), 4);
+        drop(repaired);
+        // A new, empty session file (deleted or moved away) knows no jars at all.
+        let mut fresh = App { jars_dir_override: Some(jars.clone()), ..app_on(&dir.join("other.mnf"), 3) };
+        fresh.restore_session();
+        fresh.prune_jar_files();
+        assert_eq!(left().len(), 4);
+        drop(fresh);
+
+        let mut back = on(4);
+        assert!(back.restore_session());
+        back.prune_jar_files();
+        assert_eq!(left(), [format!("{w}.json"), "default.json".to_string()], "the deleted jar's files go");
+    }
+
     #[test]
     fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
         let mut app = App::default();

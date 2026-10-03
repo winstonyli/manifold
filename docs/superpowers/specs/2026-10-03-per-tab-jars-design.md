@@ -105,6 +105,14 @@ cookie values and leaves the other jars alone.
 A named jar's node can sync to a device where its file does not exist; that device starts the jar empty and signs in
 separately.
 
+The file goes with the delete (final review I2): deleting a jar, here or on another device, deletes its file, its
+unreadable copies and its crashed saves' temp files (each a full copy of its cookies); a running instance's temp file is
+left alone. A jar deleted on another device while this one was not running never reaches that path, so at startup, after
+the restore, the files of named jars the document no longer has are deleted the same way. That sweep touches only names
+of the form `<node id>.json[.unreadable-…|.<pid>.tmp]`, never `default.json` or its copies, and is skipped when the
+document may not name every jar: no session store, a repaired one (including one rebuilt as a new document), one written
+by a newer build, or one with no live node at all.
+
 ## Hosts
 
 No host or IPC change: seeding and pulling are already per host. Servo and WebKit ignore jars; a tab on one of them with a

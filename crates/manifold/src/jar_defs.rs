@@ -6,9 +6,10 @@ use crate::jar::{Jar, JarChoice, JarKey};
 use crate::node::NodePayload;
 use crate::process_manager::EngineKind;
 use crate::session_sync::{color_of, Fields, Shared};
-use crate::store::model::{field, FieldValue, NodeId};
+use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::{App, JarDef};
+use std::collections::BTreeSet;
 
 /// What a tab's card and Tab view show of its jar (spec "UI", chip).
 #[derive(Clone, Debug, PartialEq)]
@@ -268,6 +269,23 @@ impl App {
                 eprintln!("jar: could not delete {}: {e}", key.file_stem());
             }
         }
+    }
+
+    /// Startup, after `restore_session` (final review I2b): a jar deleted on another device while this one was not
+    /// running never reaches `forget_jar` here, so its files (`jars\<id>.json`, unreadable copies, crashed saves'
+    /// temp files) are deleted now: the file goes with the delete. Kept: every jar in `jar_defs` or live in the
+    /// document. Skipped when the document may not name every jar: no journal, a repaired one (`store_recovered`,
+    /// which includes a lost snapshot rebuilt as a new document), one a newer build wrote (read-only), or one with
+    /// no live node at all (a new or replaced session file).
+    pub(crate) fn prune_jar_files(&self) {
+        let (Some(journal), Some(dir)) = (&self.journal, self.jars_dir()) else { return };
+        let doc = journal.doc();
+        if !self.may_prune_content() || journal.read_only() || doc.live().next().is_none() {
+            return;
+        }
+        let in_doc = doc.live().filter(|(_, n)| n.kind == Kind::Jar).map(|(id, _)| id);
+        let keep: BTreeSet<NodeId> = self.jar_defs.keys().copied().chain(in_doc).collect();
+        crate::jar::prune_orphans(&dir, &keep);
     }
 
     /// `profile::jars_dir()`, or a test's temp dir. Never the real profile under test (`profile::dir()` is None).

@@ -799,7 +799,7 @@ impl Journal {
         &self.doc
     }
 
-    #[cfg(test)]
+    /// A newer build wrote the file: commits are refused, and this build may not read all of it.
     pub fn read_only(&self) -> bool {
         self.read_only
     }

@@ -1,7 +1,7 @@
 //! The cookie jar manifold owns. Engines are seeded from it at tab start and pulled back into it, so a login
 //! carries between engines (spec docs/superpowers/specs/2026-10-02-jars-design.md). Pure: no egui, no `App`; it names jars by store `NodeId`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -266,6 +266,38 @@ fn prune_asides(dir: &Path, file: &str) {
             eprintln!("jar: could not delete an old unreadable jar file: {e}");
         }
     }
+}
+
+/// The named jar a file in the jars folder belongs to: `<id>.json`, `<id>.json.unreadable-…` or `<id>.json.<pid>.tmp`,
+/// with `<id>` spelled exactly as a node id prints. `None` for any other name, `default.json` and its copies included.
+fn named_jar_of(file: &str) -> Option<NodeId> {
+    let (stem, rest) = file.split_once(".json")?;
+    let id: NodeId = stem.parse().ok().filter(|id: &NodeId| id.to_string() == stem)?;
+    let pid = rest.strip_prefix('.').and_then(|r| r.strip_suffix(".tmp"));
+    let ours = rest.is_empty()
+        || rest.starts_with(".unreadable-")
+        || pid.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    ours.then_some(id)
+}
+
+/// Deletes the files (`Jar::delete_files`) of every named jar in `dir` that `keep` does not name: jars deleted while
+/// this device was not running (final review I2b). Touches only names `named_jar_of` reads, so never the default jar's.
+/// Returns how many jars it found to remove.
+pub fn prune_orphans(dir: &Path, keep: &BTreeSet<NodeId>) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let orphans: BTreeSet<NodeId> = entries
+        .flatten()
+        .filter_map(|e| named_jar_of(e.file_name().to_str()?))
+        .filter(|id| !keep.contains(id))
+        .collect();
+    for &id in &orphans {
+        let key = JarKey::Named(id);
+        match Jar::delete_files(dir, key) {
+            Ok(()) => eprintln!("jar: deleted the files of jar {}, which no longer exists", key.file_stem()),
+            Err(e) => eprintln!("jar: could not delete the files of deleted jar {}: {e}", key.file_stem()),
+        }
+    }
+    orphans.len()
 }
 
 /// Writes `bytes` to a new file only the current user can read where the OS has file modes (0600 on Unix). On
@@ -797,6 +829,56 @@ mod tests {
             assert!(!dir.join(name).exists(), "{name}");
         }
         for name in &kept {
+            assert!(dir.join(name).exists(), "{name}");
+        }
+    }
+
+    /// Final review I2b: only a named jar's own file names count, in their exact spelling.
+    #[test]
+    fn named_jar_of_reads_only_named_jar_file_names() {
+        let id = NodeId { actor: ActorId(0xab), counter: 3 };
+        for name in
+            ["00000000000000ab-3.json", "00000000000000ab-3.json.unreadable-9-1", "00000000000000ab-3.json.42.tmp"]
+        {
+            assert_eq!(named_jar_of(name), Some(id), "{name}");
+        }
+        for name in [
+            "default.json",
+            "default.json.unreadable-9",
+            "00000000000000AB-3.json", // not how ids are spelled
+            "00000000000000ab-03.json",
+            "00000000000000ab-3.jsonx",
+            "00000000000000ab-3.json.x.tmp",
+            "00000000000000ab-3.json.bak",
+            "notes.txt",
+        ] {
+            assert_eq!(named_jar_of(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn prune_orphans_deletes_only_unkept_named_jars_files() {
+        let dir = temp_dir("jar-prune-orphans");
+        let kept = NodeId { actor: ActorId(1), counter: 1 };
+        let gone = NodeId { actor: ActorId(1), counter: 2 };
+        let (k, g) = (JarKey::Named(kept).file_name(), JarKey::Named(gone).file_name());
+        let doomed = [g.clone(), format!("{g}.unreadable-5"), format!("{g}.4294967295.tmp")];
+        let stays = [
+            k.clone(),
+            format!("{k}.unreadable-5"),
+            format!("{g}.{}.tmp", std::process::id()), // a live save in progress
+            "default.json".into(),
+            "default.json.unreadable-5".into(),
+            "notes.txt".into(),
+        ];
+        for name in doomed.iter().chain(&stays) {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        assert_eq!(prune_orphans(&dir, &[kept].into()), 1);
+        for name in &doomed {
+            assert!(!dir.join(name).exists(), "{name}");
+        }
+        for name in &stays {
             assert!(dir.join(name).exists(), "{name}");
         }
     }

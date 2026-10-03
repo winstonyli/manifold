@@ -85,6 +85,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.prune_content_dir();
+        self.prune_jar_files();
     }
 
     /// A clean exit (a window close, or headless `QUIT`): the tabs' last
