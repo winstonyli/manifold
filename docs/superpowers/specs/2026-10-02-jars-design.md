@@ -42,8 +42,12 @@ in one engine is present in another, and a swap between engines keeps the user s
 |---|---|---|---|
 | WebView2 | CDP `Network.getAllCookies` (proved) | CDP `Network.setCookies` or `CookieManager.AddOrUpdateCookie` | the shared persistent folder must stop being the source of truth: use InPrivate or a per-jar folder so only jar cookies are present |
 | CEF | `visit_all_cookies` | `set_cookie` (proved) | per-tab throwaway cache stays; the jar is the persistence |
-| WebKit | `CookieManager::cookies` | `add_cookie` | unverified here |
-| Servo | `SiteDataManager::cookies_for_url` | `set_cookie_for_url` | needs a domain list to enumerate; unverified |
+| WebKit | `CookieManager::cookies(uri)` (feature `v2_20`; one URI per call, no whole-jar dump) | `add_cookie` (async) | read in the vendored crates, not run. `soup3::Cookie` has `is_http_only` and `same_site_policy`, so the attributes fit. Both calls are async and need the glib main context |
+| Servo | `SiteDataManager::cookies_for_url(url, CookieSource::HTTP)` (also `_async`) | `set_cookie_for_url(url, cookie, cb)` (always `CookieSource::HTTP`, so HttpOnly can be set) | read in the vendored crates, not run. Uses the `cookie` crate type (http_only, same_site, expires). One URL per call, no whole-jar dump |
+
+WebKit and Servo can only be read per URL, so a sync needs the set of URLs to ask about: the jar's own domains plus the
+origins of the tab's navigations (tracked by manifold from its history). Cookies set by an origin manifold never saw would
+be missed; WebView2 and CEF dump whole jars and do not have this gap.
 
 ## Security
 
@@ -51,6 +55,10 @@ Cookie files are credentials. v1 stores them under the profile with user-only fi
 with the OS store (DPAPI on Windows; the platform keyring elsewhere). Never log values (the spike's dump printed real
 ones; the host must filter and the debug commands must not exist outside debug builds). A jar can be exported only by an
 explicit user action.
+
+## Decided
+
+- The default jar starts empty. The old WebView2 folder is not imported (decided 2026-10-02).
 
 ## Out of scope for v1
 
@@ -61,5 +69,5 @@ browsing data" command. Storage has no verified engine-agnostic read or write pa
 
 - Sync cadence versus cost for the timer, and whether a pull on every navigation commit is cheaper than a timer.
 - InPrivate or per-jar folder for WebView2: needs a check that WebView2 exposes the option this app's wrapper can set.
-- Servo and WebKit enumeration limits.
-- Whether the default jar imports the existing WebView2 folder once, or starts empty.
+- Whether the per-URL enumeration gap for WebKit and Servo is acceptable, or a tab's cookies should be pulled by asking
+  those engines for each URL on its history.
