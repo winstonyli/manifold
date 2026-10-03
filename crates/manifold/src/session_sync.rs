@@ -2707,6 +2707,7 @@ pub(crate) mod tests {
                 generation,
                 result,
                 seeded: Default::default(),
+                jar: Default::default(),
             });
         }
     }

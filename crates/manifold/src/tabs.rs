@@ -75,6 +75,9 @@ impl App {
         self.tab_spawns_in_flight += 1;
         self.spawning.insert(spawn.id.clone(), session_sync::spawn_shared(&spawn));
         let generation = self.session_generation;
+        // Resolved and loaded before the test early return, so tests see the load happen.
+        let (jar, _) = self.resolved_jar(&spawn.carry.jar);
+        self.ensure_jar_loaded(jar);
         #[cfg(test)]
         if self.event_proxy.is_none() {
             self.test_spawns.push((spawn, generation));
@@ -82,14 +85,15 @@ impl App {
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let custom_cef = self.custom_cef_dir();
-        let snapshot = self.jar_snapshot.clone();
+        let snapshots = self.jar_snapshots.clone();
         std::thread::spawn(move || {
             // Read when the host has connected (the host starts seconds after the spawn), and remember its keys.
             let seeded = std::cell::RefCell::new(crate::jar::TabCookies::default());
             let seed = || {
-                let jar = snapshot.lock().map(|j| j.clone()).unwrap_or_default();
-                *seeded.borrow_mut() = crate::jar::TabCookies::seeded(&jar.cookies);
-                serde_json::to_string(&jar.cookies).unwrap_or_else(|_| "[]".to_owned())
+                let cookies =
+                    snapshots.lock().ok().and_then(|s| s.get(&jar).map(|j| j.cookies.clone())).unwrap_or_default();
+                *seeded.borrow_mut() = crate::jar::TabCookies::seeded(&cookies);
+                serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
             };
             let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed);
             let seeded = seeded.into_inner();
@@ -98,26 +102,33 @@ impl App {
                 generation,
                 result,
                 seeded,
+                jar,
             })));
         });
     }
 
-    /// Folds tab `tab_id`'s cookie dump into the jar and saves it when it changed. `false` for a dump that does not parse.
-    /// Merged against that tab's own `jar_tabs` entry (`jar::Jar::merge`). A reply from a tab with no entry (closed or
-    /// replaced since it was asked) starts one empty, so it can add cookies but delete none.
+    /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
+    /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
+    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse, a tab with no `jar_tabs` entry
+    /// (closed or replaced since it was asked; deviation 5), or a named jar deleted while it ran.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
         let Some(pulled) = crate::jar::from_json(json) else { return false };
-        let tab = self.jar_tabs.entry(tab_id.to_string()).or_default();
-        let changed = self.jar.merge(pulled, tab);
+        let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
+        let key = *key;
+        if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
+            return false;
+        }
+        self.ensure_jar_loaded(key);
+        let (Some(jar), Some((_, tab))) = (self.jars.get_mut(&key), self.jar_tabs.get_mut(tab_id)) else {
+            return false;
+        };
+        let changed = jar.merge(pulled, tab);
         if changed {
-            if let Ok(mut snapshot) = self.jar_snapshot.lock() {
-                *snapshot = self.jar.clone();
+            let jar = jar.clone();
+            if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+                snapshots.insert(key, jar);
             }
-            if let Some(dir) = crate::profile::jars_dir() {
-                if let Err(e) = self.jar.save(&dir) {
-                    eprintln!("jar: could not save: {e}");
-                }
-            }
+            self.save_jar(key);
         }
         changed
     }
@@ -241,6 +252,7 @@ impl App {
             generation,
             result,
             seeded,
+            jar,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar } = carry;
         self.spawning.remove(&id);
@@ -294,7 +306,7 @@ impl App {
         match result {
             Ok(mut tab) => {
                 self.clear_cookie_state(&id);
-                self.jar_tabs.insert(id.clone(), seeded);
+                self.jar_tabs.insert(id.clone(), (jar, seeded));
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
