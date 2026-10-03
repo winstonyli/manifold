@@ -2768,6 +2768,29 @@ pub(crate) mod tests {
         assert!(back.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
     }
 
+    /// Final review M1: a jar deleted here whose delete is not saved yet must not come back (nameless, from an
+    /// ephemeral-only change, or whole) when the save's first round applies another device's edit to it.
+    #[test]
+    fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
+        for (n, (no, value)) in
+            [(field::EPHEMERAL, FieldValue::Bool(true)), (field::NAME, FieldValue::Str("Job".into()))]
+                .into_iter()
+                .enumerate()
+        {
+            let path = crate::store::testutil::temp_dir(&format!("jar-deleted-here-{n}")).join("session.mnf");
+            let mut app = app_on(&path, 1);
+            add(&mut app, sleeping_tab("https://a.com/", "A"));
+            let jar = app.create_jar("Work");
+            assert!(app.save_session());
+            let mut other = Journal::open(&path, ActorId(2)).unwrap();
+            remote_set(&mut other, &jar.to_string(), no, value);
+            app.delete_jar(jar);
+            assert!(app.save_session());
+            assert!(!app.jar_defs.contains_key(&jar), "field {no}: deleted here, not recreated");
+            assert!(!app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "field {no}: the delete was saved");
+        }
+    }
+
     /// Final review I2b: a jar deleted on another device while this one was not running never reaches `forget_jar`
     /// here, so startup deletes the files of named jars the document no longer has, unless it may not know them all.
     #[test]

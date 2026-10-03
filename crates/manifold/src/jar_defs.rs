@@ -256,7 +256,8 @@ impl App {
     /// Drops jar `id` (a local or remote delete): its definition, its cookies and its files, unreadable copies and
     /// crashed saves' temp files included (`Jar::delete_files`). A tab still running on it
     /// has its pulls dropped (`apply_pulled_cookies`) and now resolves to the default jar, so it switches: the caller
-    /// sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in).
+    /// sweeps (`delete_jar`, or `apply_remote` once the whole remote batch is in). Its `last_shared` entry stays: after a
+    /// local delete it is what keeps a remote edit from recreating the jar before the save (`materialize_jar`).
     pub(crate) fn forget_jar(&mut self, id: NodeId) {
         self.jar_defs.remove(&id);
         let key = JarKey::Named(id);
@@ -503,7 +504,14 @@ impl App {
     }
 
     /// A `Kind::Jar` change from the document: applies the fields that differ from what this replica last saw.
+    /// A jar this replica knew (`seen`) but no longer has was deleted here, and the next save's diff deletes its node:
+    /// another device's edit to it is dropped rather than bringing it back, nameless from a partial change or whole
+    /// (final review M1). `forget_jar` leaves the `last_shared` entry that marks it; a remote delete removes that entry
+    /// first (`apply_remote`).
     pub(crate) fn materialize_jar(&mut self, id: NodeId, fields: &Fields, seen: &Option<Shared>, now: &Shared) {
+        if seen.is_some() && !self.jar_defs.contains_key(&id) {
+            return;
+        }
         let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
         let def =
             self.jar_defs.entry(id).or_insert_with(|| JarDef { name: String::new(), color: None, ephemeral: false });
