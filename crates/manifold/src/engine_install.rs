@@ -153,7 +153,7 @@ const CHUNK: usize = 64 * 1024;
 /// The body is read on a helper thread so that a connection that goes quiet is noticed: no data for
 /// `IDLE_TIMEOUT` is a `Network` error (the `.part` is kept, so a retry resumes), and `cancel` is seen
 /// within about 100 ms even while a read is blocked. (ureq's body timeout is a total, not an idle
-/// time, so it only bounds the leaked helper thread: see `body_budget`.) The helper thread ends when the socket does, or at the latest when `body_budget` runs out.
+/// time, so it only bounds the leaked helper thread: see the body budget in `fetch`.) The helper thread ends when the socket does, or at the latest when that budget runs out.
 /// Run it on a worker thread.
 pub(crate) fn download(
     url: &str,
@@ -209,14 +209,7 @@ enum Fetched {
     Restart,
 }
 
-/// The most a body read may take in total: the time `remaining` bytes need at `SLOW_BYTES_PER_SEC`,
-/// at least two minutes. The idle timeout is what ends a quiet connection from the caller's side; this
-/// total only bounds the helper thread left blocked on a dead socket, which would otherwise leak for
-/// ever. A link slower than the floor fails with a `Network` error and resumes from the `.part`.
-fn body_budget(remaining: u64) -> Duration {
-    Duration::from_secs((remaining / SLOW_BYTES_PER_SEC).max(120))
-}
-
+/// The slowest link a body read allows for: see the body budget in `fetch`.
 const SLOW_BYTES_PER_SEC: u64 = 32 * 1024;
 
 /// One request, appending to `part` from byte `have`.
@@ -230,11 +223,17 @@ fn fetch(
     idle: Duration,
 ) -> Result<Fetched, InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
+    // The most the body read may take in total: the time the remaining bytes need at
+    // `SLOW_BYTES_PER_SEC`, at least two minutes. The idle timeout is what ends a quiet connection
+    // from the caller's side; this total only bounds the helper thread left blocked on a dead socket,
+    // which would otherwise leak for ever. A link slower than the floor fails with a `Network` error
+    // and resumes from the `.part`.
+    let body_budget = crate::net::body_budget(total - have.min(total), SLOW_BYTES_PER_SEC, Duration::from_secs(120));
     let mut request = ureq::get(url)
         .config()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(body_budget(total - have.min(total))))
+        .timeout_recv_body(Some(body_budget))
         .build();
     if have > 0 {
         request = request.header("Range", format!("bytes={have}-"));
@@ -801,13 +800,6 @@ mod tests {
     }
 
     use super::*;
-
-    #[test]
-    fn the_body_budget_scales_with_size_and_has_a_floor() {
-        assert_eq!(body_budget(0), Duration::from_secs(120));
-        assert_eq!(body_budget(171_619_649), Duration::from_secs(171_619_649 / (32 * 1024)));
-        assert!(body_budget(171_619_649) > Duration::from_secs(60 * 60));
-    }
     use crate::store::testutil::temp_dir;
     use std::io::BufRead;
     use std::net::TcpListener;

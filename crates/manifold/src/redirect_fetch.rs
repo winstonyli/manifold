@@ -13,6 +13,7 @@
 
 use crate::content::{self, ContentKind};
 use crate::WebBody;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -44,23 +45,31 @@ pub struct RedirectFetcher {
     dir: Option<PathBuf>,
     tx: mpsc::Sender<FetchResult>,
     rx: mpsc::Receiver<FetchResult>,
+    /// Nodes with a fetch running: a second Refresh (or a Retry racing a
+    /// restore-time refetch) is dropped instead of writing the same file.
+    in_flight: HashSet<String>,
 }
 
 impl RedirectFetcher {
     /// `dir` is `profile::content_dir()`; `None` (tests) fails every fetch.
     pub fn new(dir: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { dir, tx, rx }
+        Self { dir, tx, rx, in_flight: HashSet::new() }
     }
 
-    /// Fetches `job.url` on a background thread.
-    pub fn request(&self, job: FetchJob) {
+    /// Fetches `job.url` on a background thread. `false` (and nothing done)
+    /// when `job.node_id` is already being fetched.
+    pub fn request(&mut self, job: FetchJob) -> bool {
+        if !self.in_flight.insert(job.node_id.clone()) {
+            return false;
+        }
         let tx = self.tx.clone();
         let dir = self.dir.clone();
         std::thread::spawn(move || {
             let body = dir.as_deref().and_then(|d| fetch(d, &job.node_id, &job.url, job.kind));
             let _ = tx.send(FetchResult { job, body });
         });
+        true
     }
 
     /// Call once per frame. `body: None` means the fetch failed (a network
@@ -68,31 +77,75 @@ impl RedirectFetcher {
     /// the engine's own `document.contentType` check) -- the tab is just
     /// left as an ordinary tab in that case, still showing whichever
     /// native viewer page the engine itself rendered for it.
-    pub fn tick(&self) -> Vec<FetchResult> {
-        self.rx.try_iter().collect()
+    pub fn tick(&mut self) -> Vec<FetchResult> {
+        let results: Vec<FetchResult> = self.rx.try_iter().collect();
+        for r in &results {
+            self.in_flight.remove(&r.job.node_id);
+        }
+        results
     }
 }
 
 /// Fetches (or, for `file://`, reads) `url`, checks it is `kind`, and
 /// saves it as `<node_id>.<ext>` in `dir`. A note's text comes back
-/// instead of being saved. Blocking: `request` runs it on a thread.
+/// instead of being saved. Blocking: `request` runs it on a thread. A
+/// `file:` URL on another host is refused (`is_unc_file_url`). A web
+/// fetch's failure is logged with the URL's origin only: a path or query
+/// can carry a token.
 pub fn fetch(dir: &Path, node_id: &str, url: &str, kind: ContentKind) -> Option<WebBody> {
     let limit = max_bytes(kind);
     let bytes = match content::file_url_path(url) {
+        Some(_) if is_unc_file_url(url) => {
+            eprintln!("fetch: refused a file URL on another host (node {node_id})");
+            return None;
+        }
         Some(path) => {
             let mut bytes = Vec::new();
             std::fs::File::open(path).ok()?.take(limit + 1).read_to_end(&mut bytes).ok()?;
             bytes
         }
         None => {
-            let response = ureq::get(url).config().timeout_global(Some(Duration::from_secs(15))).build().call().ok()?;
-            response.into_body().with_config().limit(limit).read_to_vec().ok()?
+            let budget = crate::net::Budget {
+                connect: Duration::from_secs(10),
+                response: Duration::from_secs(20),
+                body: crate::net::body_budget(limit, SLOW_BYTES_PER_SEC, Duration::from_secs(60)),
+            };
+            match crate::net::get_limited(url, limit, budget) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let origin = crate::favicon_fetch::url_origin(url).unwrap_or_default();
+                    eprintln!("fetch: {origin} (node {node_id}): {e}");
+                    return None;
+                }
+            }
         }
     };
     if bytes.len() as u64 > limit {
         return None;
     }
     save(dir, node_id, kind, bytes)
+}
+
+/// Most a web fetch's body may take: `max_bytes` at 128 KB/s (about
+/// 1 Mbit/s), at least a minute. 100 MB gets about 13 minutes.
+const SLOW_BYTES_PER_SEC: u64 = 128 * 1024;
+
+/// A `file:` URL naming another machine (`file://host/share/...`, or a
+/// path that decodes to `\\host\...`): reading it would make Windows
+/// connect to that host and offer the user's credentials. Such URLs come
+/// from synced or imported sessions, not from the user's own picks.
+pub fn is_unc_file_url(url: &str) -> bool {
+    content::file_url_path(url).is_some_and(|p| {
+        let s = p.to_string_lossy();
+        // Windows: `\\host\share` (UNC) and `\x` (root-relative, what
+        // `file:////host/...` decodes to); a drive path (`C:\`) passes.
+        // Elsewhere: `//host`; an absolute path (`/home/...`) passes.
+        if cfg!(windows) {
+            s.starts_with('\\') || s.starts_with('/')
+        } else {
+            s.starts_with("//")
+        }
+    })
 }
 
 /// The most a fetch of `kind` reads: a note's limit, or 100 MB.
@@ -164,5 +217,38 @@ mod tests {
         assert!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note).is_none());
         std::fs::write(&src, vec![b'a'; content::NOTE_MAX_BYTES]).unwrap();
         assert!(matches!(fetch(&dir, "9-2", &path_file_url(&src), ContentKind::Note), Some(WebBody::Text(_))));
+    }
+
+    #[cfg(windows)] // the host forms decode to UNC paths on Windows only
+    #[test]
+    fn unc_file_urls_are_recognized() {
+        assert!(is_unc_file_url("file://server/share/x.pdf"));
+        assert!(is_unc_file_url("file:///%5C%5Cserver/share/x.pdf"));
+        assert!(is_unc_file_url("file:////server/share/x.pdf"));
+        assert!(!is_unc_file_url("file:///C:/x.pdf"));
+        assert!(!is_unc_file_url("file://localhost/C:/x.pdf"));
+        assert!(!is_unc_file_url("https://server/x.pdf"));
+    }
+
+    #[test]
+    fn a_second_request_for_a_node_in_flight_is_dropped() {
+        // `None`: every fetch fails at once, without the network.
+        let mut fetcher = RedirectFetcher::new(None);
+        let job = || FetchJob {
+            target: FetchTarget::Node("7-1".into()),
+            node_id: "7-1".into(),
+            url: "https://example.invalid/x.pdf".into(),
+            kind: ContentKind::Pdf,
+        };
+        assert!(fetcher.request(job()));
+        assert!(!fetcher.request(job()), "already in flight");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut results = Vec::new();
+        while results.is_empty() && std::time::Instant::now() < deadline {
+            results.extend(fetcher.tick());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(results.len(), 1);
+        assert!(fetcher.request(job()), "free again once its result is ticked");
     }
 }

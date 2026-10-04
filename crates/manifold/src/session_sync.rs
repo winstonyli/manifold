@@ -1587,7 +1587,7 @@ pub(crate) mod tests {
 
     /// Waits up to ~1 s for `app.redirect_fetcher` to report something.
     /// Under test (no content dir) every fetch fails at once.
-    fn drain_fetches(app: &App) -> Vec<FetchResult> {
+    fn drain_fetches(app: &mut App) -> Vec<FetchResult> {
         for _ in 0..200 {
             let results = app.redirect_fetcher.tick();
             if !results.is_empty() {
@@ -1959,7 +1959,7 @@ pub(crate) mod tests {
                 ],
             ),
         )]);
-        let app = app_with(&nodes);
+        let mut app = app_with(&nodes);
         let node_id = id(0).to_string();
         match &app.nodes[&node_id].payload {
             NodePayload::Json(p) => {
@@ -1969,7 +1969,7 @@ pub(crate) mod tests {
             _ => panic!("expected a Json placeholder"),
         }
         assert!(app.save_toast_queue.is_empty() && app.save_toast.is_none(), "no 'Couldn't open' toast");
-        let results = drain_fetches(&app);
+        let results = drain_fetches(&mut app);
         assert_eq!(results.len(), 1, "materialize's own refresh_node queued exactly one fetch");
         assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
         assert!(results[0].body.is_none(), "no content dir under test, so the fetch itself fails");
@@ -1990,7 +1990,7 @@ pub(crate) mod tests {
         let mut app = app_with(&nodes);
         let mut results = Vec::new();
         while results.len() < 3 {
-            let more = drain_fetches(&app);
+            let more = drain_fetches(&mut app);
             assert!(!more.is_empty(), "every missing file was refetched");
             results.extend(more);
         }
@@ -2028,9 +2028,9 @@ pub(crate) mod tests {
         let node_id = id(0).to_string();
         // `materialize` already queued one refetch on its own; drain and
         // discard it so the assertion below reflects only the click.
-        drain_fetches(&app);
+        drain_fetches(&mut app);
         app.retry_missing_file(&node_id);
-        let results = drain_fetches(&app);
+        let results = drain_fetches(&mut app);
         assert_eq!(results.len(), 1, "the URL branch queued exactly one fetch");
         assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
     }

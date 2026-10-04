@@ -23,7 +23,7 @@
 //! fetch isn't recorded, so an origin without a favicon is tried once per
 //! launch, as before.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
@@ -41,6 +41,10 @@ pub struct FaviconImage {
     pub height: u32,
 }
 
+/// Favicon fetches running at once; the rest wait in `queue`. A restored
+/// session can name dozens of origins at the same moment.
+const MAX_FAVICON_FETCHES: usize = 4;
+
 /// Fetches and decodes favicons on background threads, deduplicating
 /// concurrent requests for the same origin (two tabs navigating to the same
 /// site around the same time shouldn't fire two redundant HTTP requests).
@@ -50,7 +54,11 @@ pub struct FaviconFetcher {
     tx: mpsc::Sender<(String, Option<FaviconImage>)>,
     rx: mpsc::Receiver<(String, Option<FaviconImage>)>,
     in_flight: HashSet<String>,
+    /// Origins waiting for one of the `MAX_FAVICON_FETCHES` slots.
+    queue: VecDeque<String>,
     cache_dir: Option<PathBuf>,
+    /// `fetch_favicon`; tests swap in a stub so no request leaves the machine.
+    fetch: fn(&str) -> Option<FaviconImage>,
 }
 
 impl FaviconFetcher {
@@ -61,23 +69,33 @@ impl FaviconFetcher {
         if let Some(dir) = cache_dir.clone() {
             std::thread::spawn(move || prune_cache(&dir, CACHE_PRUNE));
         }
-        Self { tx, rx, in_flight: HashSet::new(), cache_dir }
+        Self { tx, rx, in_flight: HashSet::new(), queue: VecDeque::new(), cache_dir, fetch: fetch_favicon }
     }
 
-    /// Requests `origin`'s favicon if it isn't already being fetched. A
-    /// no-op if a request for this exact origin is already in flight --
-    /// the caller is expected to have already checked its own cache for a
-    /// previously-*completed* fetch (this only dedupes concurrent ones).
+    /// Requests `origin`'s favicon if it isn't already being fetched: it
+    /// starts at once while fewer than `MAX_FAVICON_FETCHES` run, and waits
+    /// in the queue otherwise. A no-op if this origin is already running or
+    /// queued -- the caller is expected to have already checked its own
+    /// cache for a previously-*completed* fetch (this only dedupes
+    /// concurrent ones).
     pub fn request(&mut self, origin: String) {
-        if !self.in_flight.insert(origin.clone()) {
+        if self.in_flight.contains(&origin) || self.queue.contains(&origin) {
             return;
         }
-        let tx = self.tx.clone();
-        let cache_dir = self.cache_dir.clone();
+        if self.in_flight.len() < MAX_FAVICON_FETCHES {
+            self.start(origin);
+        } else {
+            self.queue.push_back(origin);
+        }
+    }
+
+    fn start(&mut self, origin: String) {
+        self.in_flight.insert(origin.clone());
+        let (tx, cache_dir, fetch) = (self.tx.clone(), self.cache_dir.clone(), self.fetch);
         std::thread::spawn(move || {
             let result = match &cache_dir {
-                Some(dir) => cached_or_fetched(dir, &origin, fetch_favicon),
-                None => fetch_favicon(&origin),
+                Some(dir) => cached_or_fetched(dir, &origin, fetch),
+                None => fetch(&origin),
             };
             let _ = tx.send((origin, result));
         });
@@ -87,19 +105,25 @@ impl FaviconFetcher {
     /// last call -- `None` for the image means the fetch failed (no
     /// favicon at that origin, a network error, or undecodable bytes);
     /// the caller should still remember that as a negative result so it
-    /// doesn't keep retrying the same origin every navigation.
+    /// doesn't keep retrying the same origin every navigation. Queued
+    /// origins start here as slots free up.
     pub fn tick(&mut self) -> Vec<(String, Option<FaviconImage>)> {
         let mut results = Vec::new();
         while let Ok((origin, result)) = self.rx.try_recv() {
             self.in_flight.remove(&origin);
             results.push((origin, result));
         }
+        while self.in_flight.len() < MAX_FAVICON_FETCHES {
+            let Some(origin) = self.queue.pop_front() else { break };
+            self.start(origin);
+        }
         results
     }
 }
 
-/// The `scheme://host[:port]` prefix of `url`, or `None` if `url` has no
-/// `://` at all (a `data:`/`about:` URL, or already-malformed input) --
+/// The `scheme://host[:port]` prefix of `url`, lowercased and without any
+/// userinfo, or `None` if `url` has no `://` at all (a `data:`/`about:`
+/// URL, or already-malformed input) or no host --
 /// deliberately simple hand-rolled parsing, same "no full URL-syntax
 /// validation" posture `suggestions::looks_like_url` already documents,
 /// rather than pulling in a real URL-parsing crate for just this.
@@ -107,11 +131,12 @@ pub fn url_origin(url: &str) -> Option<String> {
     let scheme_end = url.find("://")?;
     let rest = &url[scheme_end + 3..];
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    if authority.is_empty() {
+    // Userinfo (`user:pass@`) is a credential: never part of a cache name or key.
+    let host = rest[..authority_end].rsplit_once('@').map_or(&rest[..authority_end], |(_, host)| host);
+    if host.is_empty() {
         return None;
     }
-    Some(format!("{}://{authority}", &url[..scheme_end]))
+    Some(format!("{}://{}", url[..scheme_end].to_ascii_lowercase(), host.to_ascii_lowercase()))
 }
 
 /// `GET {origin}/favicon.ico`, decoded to RGBA8 -- the same well-established
@@ -120,14 +145,17 @@ pub fn url_origin(url: &str) -> Option<String> {
 /// `<link rel="icon">` (this project doesn't parse page HTML at all, so
 /// that richer path isn't available here; the plain `/favicon.ico` guess
 /// covers the overwhelming majority of real sites without needing it).
-/// Same size/timeout caps as `manifold-engine-cef`'s own now-dead `fetch_favicon`
-/// this was ported from -- a favicon is always small, so a generous cap
-/// here is purely a safety net against a misbehaving server, not a real
-/// constraint.
+/// The size and timeout caps are safety nets against a misbehaving server;
+/// a favicon is small. A missing favicon is the common case, so a failure
+/// isn't logged.
 fn fetch_favicon(origin: &str) -> Option<FaviconImage> {
     let url = format!("{origin}/favicon.ico");
-    let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
-    let bytes = response.into_body().with_config().limit(2_000_000).read_to_vec().ok()?;
+    let budget = crate::net::Budget {
+        connect: Duration::from_secs(3),
+        response: Duration::from_secs(3),
+        body: Duration::from_secs(5),
+    };
+    let bytes = crate::net::get_limited(&url, 2_000_000, budget).ok()?;
     let image = crate::rgba::decode_limited(&bytes, 512).ok()?;
     let image = crate::rgba::fit_image(image, crate::rgba::FAVICON_SIDE);
     let (width, height) = image.dimensions();
@@ -242,5 +270,35 @@ mod tests {
     fn a_cache_file_name_is_the_origin_made_safe() {
         assert_eq!(cache_file_name("https://example.org:8080"), "https_3a_2f_2fexample.org_3a8080.png");
         assert_ne!(cache_file_name("https://a:1"), cache_file_name("https://a_1"));
+    }
+
+    #[test]
+    fn an_origin_drops_userinfo_and_case() {
+        assert_eq!(url_origin("https://user:pass@Example.COM/x?y"), Some("https://example.com".into()));
+        assert_eq!(url_origin("HTTP://a@b@Host:8080#f"), Some("http://host:8080".into()));
+        assert_eq!(url_origin("https://user@/x"), None, "no host left");
+    }
+
+    #[test]
+    fn at_most_four_favicon_fetches_run_at_once() {
+        let mut fetcher = FaviconFetcher::new(None);
+        fetcher.fetch = |_| None;
+        for n in 0..6 {
+            fetcher.request(format!("https://o{n}.example"));
+        }
+        fetcher.request("https://o5.example".into());
+        assert_eq!(
+            (fetcher.in_flight.len(), fetcher.queue.len()),
+            (MAX_FAVICON_FETCHES, 2),
+            "a queued origin isn't queued twice"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut done = Vec::new();
+        while done.len() < 6 && std::time::Instant::now() < deadline {
+            done.extend(fetcher.tick().into_iter().map(|(origin, _)| origin));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done.sort();
+        assert_eq!(done, (0..6).map(|n| format!("https://o{n}.example")).collect::<Vec<_>>());
     }
 }

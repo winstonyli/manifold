@@ -31,6 +31,7 @@ mod level;
 mod local_state;
 mod names;
 mod nav_history;
+mod net;
 mod node;
 mod node_menu;
 mod pdf;
