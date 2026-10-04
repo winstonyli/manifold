@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use memmap2::MmapMut;
 
@@ -27,6 +27,54 @@ pub struct SharedFrameBuffer {
 /// send the path over the control channel.
 pub fn frame_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("manifold-frame-{name}.bin"))
+}
+
+/// Deletes `name`'s frame file (errors ignored). Only call once its engine-host
+/// has exited and before anything can create a new file under the same name:
+/// Windows deletes a file another process still maps (measured, Windows 11
+/// 26200), so a late call would take a successor's file out from under it.
+pub fn remove_frame_file(name: &str) {
+    let _ = std::fs::remove_file(frame_path(name));
+}
+
+/// Deletes `manifold-frame-*.bin` files in `dir` last modified more than
+/// `older_than` ago and not in use. A live engine-host keeps its file
+/// mapped. On Windows that makes an exclusive open fail, so a file that opens
+/// with `share_mode(0)` belongs to no one. On Unix age alone decides, so
+/// callers pass a generous age.
+pub fn sweep_stale_frames_in(dir: &Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("manifold-frame-") && name.ends_with(".bin")) {
+            continue;
+        }
+        let path = entry.path();
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if old && unused(&path) && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg(windows)]
+fn unused(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Dropped before the delete below; only the open's success matters.
+    OpenOptions::new().read(true).share_mode(0).open(path).is_ok()
+}
+
+#[cfg(not(windows))]
+fn unused(_path: &Path) -> bool {
+    true
 }
 
 impl SharedFrameBuffer {
@@ -130,6 +178,59 @@ impl SharedFrameBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// A unique directory per test, so no test sweeps the real temp dir, where
+    /// a running manifold's frame files live.
+    fn sweep_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("manifold-frame-sweep-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_sweep_removes_only_old_frame_files() {
+        let dir = sweep_dir("old");
+        std::fs::write(dir.join("manifold-frame-a.bin"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("manifold-store-x"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("other.bin"), [0u8; 8]).unwrap();
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::from_secs(3600)), 0, "too new");
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
+        assert!(!dir.join("manifold-frame-a.bin").exists());
+        assert!(dir.join("manifold-store-x").exists() && dir.join("other.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live engine keeps its frame file mapped; Windows refuses an exclusive
+    /// open of a mapped file, which is how the sweep tells it apart. The file is
+    /// mapped the way `SharedFrameBuffer::create` maps it (the file handle
+    /// dropped, only the mapping kept), but in a private directory.
+    #[cfg(windows)]
+    #[test]
+    fn the_sweep_spares_a_mapped_frame_file() {
+        let dir = sweep_dir("live");
+        let path = dir.join("manifold-frame-live.bin");
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).unwrap();
+        file.set_len(64).unwrap();
+        let live = unsafe { MmapMut::map_mut(&file).unwrap() };
+        drop(file);
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 0);
+        assert!(path.exists(), "a mapped file survives");
+        drop(live);
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
+        assert!(!path.exists(), "an unmapped one goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_frame_file_deletes_a_released_buffer() {
+        let name = format!("test-remove-frame-{}", std::process::id());
+        drop(SharedFrameBuffer::create(&name, 4, 4).unwrap());
+        assert!(frame_path(&name).exists());
+        remove_frame_file(&name);
+        assert!(!frame_path(&name).exists());
+    }
 
     #[test]
     fn open_existing_refuses_a_file_of_the_wrong_size() {

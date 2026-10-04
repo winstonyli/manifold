@@ -239,7 +239,8 @@ pub struct EngineTab {
     pub socket_id: String,
     to_engine: ToEngine,
     pub events_rx: mpsc::Receiver<EngineToHost>,
-    child: Child,
+    /// `None` once `Drop` has handed it to its reaper thread.
+    child: Option<Child>,
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
     /// (`webview2_profile_dir`).
     cache_dir: Option<PathBuf>,
@@ -264,47 +265,61 @@ impl EngineTab {
 impl Drop for EngineTab {
     fn drop(&mut self) {
         self.to_engine.send(&HostToEngine::Shutdown);
+        let Some(child) = self.child.take() else { return };
+        let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
         if self.kind == EngineKind::Webkit {
-            // For the WSL2-hosted case, `child` is only the Windows-side
-            // `wsl.exe` relay — force-killing it immediately (the
-            // local-engine path below) does NOT terminate the actual
-            // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
-            // manifold-engine-webkit), which WSL2 keeps running independently
-            // of any Windows-side process state: confirmed live, a killed
-            // relay leaves that whole tree orphaned and running
-            // indefinitely, invisible to any further Windows-side cleanup.
-            // The graceful `Shutdown` sent above already makes
-            // manifold-engine-webkit return from `main()` on its own, which
-            // cascades correctly on the Linux side (xvfb-run's own EXIT
-            // trap kills its Xvfb child once its wrapped command exits, and
-            // so on up through bash/fish to `wsl.exe` itself returning) —
-            // also confirmed live, leaving zero orphaned processes. So wait
-            // for that natural exit first, bounded in case the message
-            // never lands (network hiccup, or the process was already
-            // wedged for some unrelated reason), and only fall back to a
-            // force-kill — with its known orphan risk — if it doesn't
-            // happen in time.
-            let mut exited = false;
-            for _ in 0..30 {
-                if matches!(self.child.try_wait(), Ok(Some(_))) {
-                    exited = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            if !exited {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-            }
-        } else {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            // Off the UI thread: a WebKit host gets up to 3 s to exit on its own,
+            // and dropping a session of N of them used to freeze the window for 3N s.
+            // It has no frame file (frames arrive over TCP) and no cache dir.
+            let reaper = std::thread::spawn(move || reap_host(EngineKind::Webkit, child));
+            CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(reaper);
+            return;
         }
-        // The host has exited (killed and waited for above), so its profile slot is freed after the folder's deletion is tried.
-        if let Some(dir) = self.cache_dir.take() {
-            remove_cache_dir(dir, self.profile_slot.take());
+        // A local host is killed at once, so this stays inline. It must: a respawn
+        // of the same tab reuses `socket_id`, and Windows deletes a file even while
+        // another process maps it (measured), so a delete that ran late on another
+        // thread could take the new host's frame file.
+        reap_host(self.kind, child);
+        // The host has exited, so its frame file is no longer mapped by it.
+        ipc_protocol::remove_frame_file(&self.socket_id);
+        // The profile slot is freed after the folder's deletion is tried.
+        if let Some(dir) = cache_dir {
+            remove_cache_dir(dir, slot);
         }
     }
+}
+
+/// Waits for an engine host to exit after `Shutdown`, killing it if needed.
+fn reap_host(kind: EngineKind, mut child: Child) {
+    if kind == EngineKind::Webkit {
+        // For the WSL2-hosted case, `child` is only the Windows-side
+        // `wsl.exe` relay — force-killing it immediately (the
+        // local-engine path below) does NOT terminate the actual
+        // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
+        // manifold-engine-webkit), which WSL2 keeps running independently
+        // of any Windows-side process state: confirmed live, a killed
+        // relay leaves that whole tree orphaned and running
+        // indefinitely, invisible to any further Windows-side cleanup.
+        // The graceful `Shutdown` sent above already makes
+        // manifold-engine-webkit return from `main()` on its own, which
+        // cascades correctly on the Linux side (xvfb-run's own EXIT
+        // trap kills its Xvfb child once its wrapped command exits, and
+        // so on up through bash/fish to `wsl.exe` itself returning) —
+        // also confirmed live, leaving zero orphaned processes. So wait
+        // for that natural exit first, bounded in case the message
+        // never lands (network hiccup, or the process was already
+        // wedged for some unrelated reason), and only fall back to a
+        // force-kill — with its known orphan risk — if it doesn't
+        // happen in time.
+        for _ in 0..30 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Parent of every CEF engine-host's own `root_cache_path`. Temp when
@@ -347,13 +362,32 @@ fn remove_cache_dir(dir: PathBuf, slot: Option<usize>) {
 
 static CACHE_REMOVALS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
 
-/// Waits for every `remove_cache_dir` so far, at most its few seconds of
-/// retries: `main` calls this after dropping the app's tabs, since the
-/// process exiting would otherwise cut the deletes short.
+/// Waits for every WebKit host reap (`Drop for EngineTab`) and
+/// `remove_cache_dir` so far, at most their few seconds each: `main` calls
+/// this after dropping the app's tabs, since the process exiting would
+/// otherwise cut the waits and deletes short. A WebKit host's wait for its
+/// own exit can make this take up to 3 s, as it did when `Drop` waited
+/// inline. Loops until the list stays empty, so a thread pushed while
+/// earlier ones are joined is waited for too.
 pub fn finish_cache_removals() {
-    let removals = std::mem::take(&mut *CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()));
-    for removal in removals {
-        let _ = removal.join();
+    loop {
+        let removals = std::mem::take(&mut *CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()));
+        if removals.is_empty() {
+            return;
+        }
+        for removal in removals {
+            let _ = removal.join();
+        }
+    }
+}
+
+/// Frame files left by hosts that never got reaped (manifold killed or
+/// crashed): any `manifold-frame-*.bin` in temp that no running host has
+/// mapped and that is over ten minutes old.
+pub fn sweep_frame_files() {
+    let removed = ipc_protocol::sweep_stale_frames_in(&std::env::temp_dir(), Duration::from_secs(600));
+    if removed > 0 {
+        eprintln!("removed {removed} stale frame buffer file(s)");
     }
 }
 
@@ -894,7 +928,11 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // does not reliably propagate to a grandchild process spawned from
     // inside it, so an inherited engine-host produces no visible output at
     // all even though it runs fine.
-    let stdout_file = std::fs::File::create(per_tab_log_path(tab_id))?;
+    let mut stdout_file = std::fs::OpenOptions::new().create(true).append(true).open(per_tab_log_path(tab_id))?;
+    // Appended, not truncated: a second manifold, or a respawn racing the old
+    // host's last writes, used to wipe the log that explains a crash.
+    use std::io::Write as _;
+    let _ = writeln!(stdout_file, "---- manifold pid {} spawning a host for {tab_id} ----", std::process::id());
     let stderr_file = stdout_file.try_clone()?;
     Ok((stdout_file, stderr_file))
 }
@@ -1122,8 +1160,15 @@ pub fn spawn_tab(
         };
     let events_rx = spawn_reader_thread(RemoteOrLocalReceiver::Local(from_engine));
 
-    let mut tab =
-        EngineTab { kind, socket_id, to_engine: ToEngine::Local(to_engine), events_rx, child, cache_dir, profile_slot };
+    let mut tab = EngineTab {
+        kind,
+        socket_id,
+        to_engine: ToEngine::Local(to_engine),
+        events_rx,
+        child: Some(child),
+        cache_dir,
+        profile_slot,
+    };
     if matches!(kind, EngineKind::Webview2 | EngineKind::Cef) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToEngine::SetCookies(jar_json()));
@@ -1221,7 +1266,7 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
         socket_id: tab_id.to_string(),
         to_engine: ToEngine::Remote(to_engine),
         events_rx,
-        child,
+        child: Some(child),
         cache_dir: None,
         profile_slot: None,
     })
@@ -1231,6 +1276,19 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A second spawn for the same tab id keeps the first one's log.
+    #[test]
+    fn per_tab_logs_append() {
+        let tab_id = format!("test-log-append-{}", std::process::id());
+        let path = per_tab_log_path(&tab_id);
+        let _ = std::fs::remove_file(&path);
+        drop(per_tab_log_files(&tab_id).unwrap());
+        drop(per_tab_log_files(&tab_id).unwrap());
+        let log = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(log.matches("spawning a host for").count(), 2, "{log}");
+    }
     /// The host copy tests only need a file name; the platform's suffix is not what they check.
     const HOST: &str = "manifold-engine-cef";
 
