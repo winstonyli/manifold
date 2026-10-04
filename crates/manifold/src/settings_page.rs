@@ -475,7 +475,10 @@ impl App {
                     if !escape && draft.trim() != def.name {
                         req.rename_jar = Some((id, draft));
                     }
-                } else if response.has_focus() {
+                } else if ui.memory(|m| m.has_focus(response.id)) {
+                    // Not `response.has_focus()`: that is also false while the OS window is unfocused, yet the field
+                    // still takes typed text (`TextEdit` and `jar_name_draft` ask egui memory alone), so the draft
+                    // would be dropped each frame.
                     ui.data_mut(|d| d.insert_temp(key, draft));
                 }
                 ui.label(count_text(self.jar_tab_count(JarKey::Named(id))));
@@ -744,10 +747,40 @@ mod tests {
     use super::*;
 
     fn jars_frame(app: &mut App, ctx: &egui::Context) -> SettingsRequests {
+        jars_frame_with(app, ctx, egui::RawInput::default())
+    }
+
+    fn jars_frame_with(app: &mut App, ctx: &egui::Context, input: egui::RawInput) -> SettingsRequests {
         let mut req = SettingsRequests::default();
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.settings_jars_section(ui, &mut req));
+        let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
         output.textures_delta.clear(); // nothing uploads the font atlas here
         req
+    }
+
+    /// Fix batch A1: typing into a jar's name field keeps the draft and commits it on focus loss whether or not the OS
+    /// window has focus. `Response::has_focus` is also false while the window is unfocused (`RawInput::focused`), but
+    /// the `TextEdit` still takes the typed text, so a draft kept only under that check was dropped every frame.
+    #[test]
+    fn a_typed_jar_name_survives_with_the_window_focused_or_not() {
+        for window_focused in [true, false] {
+            let ctx = egui::Context::default();
+            crate::theme::apply_fonts(&ctx);
+            crate::theme::apply_style(&ctx);
+            let mut app = App::default();
+            let work = app.create_jar("Work");
+            let input =
+                |events: Vec<egui::Event>| egui::RawInput { focused: window_focused, events, ..Default::default() };
+            ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(work)));
+            jars_frame_with(&mut app, &ctx, input(vec![]));
+            jars_frame_with(&mut app, &ctx, input(vec![egui::Event::Text("Home".into())]));
+            jars_frame_with(&mut app, &ctx, input(vec![]));
+            let key = egui::Id::new(("jar_name", work));
+            let draft = ctx.data(|d| d.get_temp::<String>(key));
+            assert!(draft.as_deref().is_some_and(|d| d.contains("Home")), "window focused {window_focused}: {draft:?}");
+            ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(work)));
+            let req = jars_frame_with(&mut app, &ctx, input(vec![]));
+            assert_eq!(req.rename_jar, Some((work, draft.unwrap())), "window focused {window_focused}: committed");
+        }
     }
 
     #[test]
