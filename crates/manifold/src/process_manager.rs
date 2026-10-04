@@ -998,6 +998,8 @@ fn per_tab_log_path(tab_id: &str) -> PathBuf {
 /// it exits. On failure the child is killed and reaped, and the error says
 /// which way it failed: "exited with code N before connecting: <the last
 /// lines of its log>", or "still running but did not connect within ...".
+/// A host that exited after writing an `ipc_protocol::HOST_FATAL` line (among
+/// those last lines) gets that line's reason alone, e.g. "CEF runtime too old: ...".
 /// The log is the per-tab file the child writes its stdout and stderr to.
 fn connect_host(
     listeners: &transport::LocalListenerPair,
@@ -1023,12 +1025,17 @@ fn connect_host(
     let _ = child.wait();
     let message = match exited {
         Some(status) => {
+            let lines = log_tail_lines(log_path, 5);
+            // The host said why in a line of its own (`HOST_FATAL`): that line alone is the reason.
+            if let Some(reason) = host_fatal(&lines) {
+                return Err(std::io::Error::new(err.kind(), reason));
+            }
             let how = match status.code() {
                 Some(code) if code < 0 => format!("with code {:#x}", code as u32),
                 Some(code) => format!("with code {code}"),
                 None => format!("({status})"),
             };
-            let tail = log_tail(log_path, 5);
+            let tail = lines.join(" | ");
             let tail = if tail.is_empty() { String::from(" (its log is empty)") } else { format!(": {tail}") };
             format!("engine-host exited {how} before connecting{tail}")
         }
@@ -1040,9 +1047,9 @@ fn connect_host(
     Err(std::io::Error::new(err.kind(), message))
 }
 
-/// The last `lines` non-empty lines of a log, joined with " | ", read from at
-/// most its last 16 KiB. Empty when there is no such file.
-fn log_tail(path: &Path, lines: usize) -> String {
+/// The last `lines` non-empty lines of a log, trimmed, read from at most its
+/// last 16 KiB. Empty when there is no such file.
+fn log_tail_lines(path: &Path, lines: usize) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut bytes = Vec::new();
     if let Ok(mut file) = std::fs::File::open(path) {
@@ -1051,9 +1058,15 @@ fn log_tail(path: &Path, lines: usize) -> String {
         let _ = file.read_to_end(&mut bytes);
     }
     let text = String::from_utf8_lossy(&bytes);
-    let mut tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(lines).collect();
+    let mut tail: Vec<String> =
+        text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(lines).map(String::from).collect();
     tail.reverse();
-    tail.join(" | ")
+    tail
+}
+
+/// The reason in the last `ipc_protocol::HOST_FATAL` line among `lines`, without the prefix.
+fn host_fatal(lines: &[String]) -> Option<String> {
+    lines.iter().rev().find_map(|l| l.strip_prefix(ipc_protocol::HOST_FATAL)).map(|r| r.trim().to_string())
 }
 
 /// Synthesizes `EngineToHost::Crashed` when the connection to an
@@ -1465,9 +1478,37 @@ mod tests {
         let dir = crate::store::testutil::temp_dir("log_tail");
         let log = dir.join("a.log");
         std::fs::write(&log, "one\n\ntwo\r\nthree\n  \nfour\n").unwrap();
-        assert_eq!(log_tail(&log, 2), "three | four");
-        assert_eq!(log_tail(&log, 9), "one | two | three | four");
-        assert_eq!(log_tail(&dir.join("missing.log"), 3), "");
+        assert_eq!(log_tail_lines(&log, 2), ["three", "four"]);
+        assert_eq!(log_tail_lines(&log, 9), ["one", "two", "three", "four"]);
+        assert!(log_tail_lines(&dir.join("missing.log"), 3).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_host_fatal_line_is_the_whole_reason() {
+        let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let reason = "CEF runtime too old: it doesn't support CEF API version 15200 (needs CEF >= 152)";
+        let log = lines(&[
+            "---- manifold pid 1 spawning a host for t ----",
+            "[...:ERROR:cef\\libcef_dll\\libcef_dll2.cc:105] Request for unsupported CEF API version 15200",
+            &format!("{}{reason}", ipc_protocol::HOST_FATAL),
+        ]);
+        assert_eq!(host_fatal(&log).as_deref(), Some(reason));
+        assert_eq!(host_fatal(&lines(&["starting", "libfake.so: cannot open shared object file"])), None);
+    }
+
+    #[test]
+    fn a_host_that_exits_with_a_fatal_line_is_reported_by_that_line() {
+        let dir = crate::store::testutil::temp_dir("host_fatal_on_start");
+        let log = dir.join("host.log");
+        let listeners = transport::listen_local_pair(&format!("test-fatal-{}", std::process::id())).unwrap();
+        let mut child = fake_host(
+            "echo noise 1>&2 & echo engine-host fatal: CEF runtime too old 1>&2 & exit /b 1",
+            "echo noise >&2; echo 'engine-host fatal: CEF runtime too old' >&2; exit 1",
+            &log,
+        );
+        let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
+        assert_eq!(err.to_string(), "CEF runtime too old");
         let _ = std::fs::remove_dir_all(dir);
     }
 

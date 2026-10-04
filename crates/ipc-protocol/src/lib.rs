@@ -26,6 +26,12 @@ pub const PROTOCOL_VERSION: u32 = 3;
 /// host shows a failed card instead of respawning the same stale binary.
 pub const PROTOCOL_MISMATCH: &str = "protocol mismatch";
 
+/// Starts the one line an engine host writes to stderr (its per-tab log) when it cannot start at all and
+/// exits before connecting, e.g. a CEF runtime too old for the host's API version. manifold shows the rest
+/// of that line as the failure (`process_manager::connect_host`) instead of the raw log tail. A log
+/// convention only: nothing is sent over the control channel.
+pub const HOST_FATAL: &str = "engine-host fatal: ";
+
 /// `Ok` when the peer speaks `PROTOCOL_VERSION`.
 pub fn check_version(theirs: u32) -> Result<(), String> {
     if theirs == PROTOCOL_VERSION {
