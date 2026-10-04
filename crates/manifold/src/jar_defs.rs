@@ -163,10 +163,14 @@ impl App {
         }
     }
 
-    /// A new named jar with the next palette colour. Saved by the caller's `save_session`.
+    /// A new named jar with the first palette colour no jar shows (one without a colour shows the first, `jar_color`),
+    /// so deleting a jar doesn't make the next one repeat a colour; with every colour taken, they cycle by count.
+    /// Saved by the caller's `save_session`.
     pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
         let id: NodeId = self.alloc_node_id().parse().expect("alloc_node_id returns a store id");
-        let color = Some(TAG_COLOR_PALETTE[self.jar_defs.len() % TAG_COLOR_PALETTE.len()]);
+        let shown = |c: &egui::Color32| self.jar_defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
+        let free = TAG_COLOR_PALETTE.iter().find(|c| !shown(c));
+        let color = Some(*free.unwrap_or(&TAG_COLOR_PALETTE[self.jar_defs.len() % TAG_COLOR_PALETTE.len()]));
         self.jar_defs.insert(id, JarDef { name: name.trim().to_string(), color, ephemeral: false });
         id
     }
@@ -544,6 +548,7 @@ mod tests {
     use crate::node::{GroupPayload, NodePayload};
     use crate::session_sync::tests::{add, sleeping_tab};
     use crate::App;
+    use std::collections::BTreeSet;
 
     fn tab_in(app: &mut App, group: Option<&str>) -> String {
         let id = add(app, sleeping_tab("https://a.com/", "A"));
@@ -743,6 +748,28 @@ mod tests {
         assert!(chip.missing);
         assert_eq!(chip.tooltip.as_deref(), Some("This tab's jar was deleted; it uses the default jar"));
         assert!(app.jar_chip("nobody").is_none());
+    }
+
+    /// Fix batch A2: a new jar takes the first palette colour no jar uses, so a delete doesn't make the next jar repeat
+    /// one; with every colour taken it still gets one.
+    #[test]
+    fn a_new_jar_takes_a_colour_no_jar_uses() {
+        use crate::theme::TAG_COLOR_PALETTE;
+        let mut app = App::default();
+        let colour = |app: &App, id| app.jar_defs[&id].color.unwrap();
+        let ids: Vec<_> = ["A", "B", "C"].iter().map(|n| app.create_jar(n)).collect();
+        assert_eq!(ids.iter().map(|&id| colour(&app, id)).collect::<Vec<_>>(), TAG_COLOR_PALETTE[..3]);
+        app.delete_jar(ids[1]);
+        let d = app.create_jar("D");
+        assert_eq!(colour(&app, d), TAG_COLOR_PALETTE[1], "the freed colour");
+        let distinct = |app: &App| app.jar_defs.values().map(|j| j.color.unwrap().to_array()).collect::<BTreeSet<_>>();
+        assert_eq!(distinct(&app).len(), app.jar_defs.len(), "no colour repeats");
+        while app.jar_defs.len() < TAG_COLOR_PALETTE.len() {
+            app.create_jar("More");
+        }
+        assert_eq!(distinct(&app).len(), TAG_COLOR_PALETTE.len(), "every palette colour once");
+        let extra = app.create_jar("Extra");
+        assert!(TAG_COLOR_PALETTE.contains(&colour(&app, extra)), "all taken: still a palette colour");
     }
 
     /// `SETJAR` (Task 8 review): makes a jar only for a focused tab, reuses one by name, and "default" picks Default.

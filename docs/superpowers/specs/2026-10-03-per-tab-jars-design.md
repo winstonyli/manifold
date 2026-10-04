@@ -127,8 +127,8 @@ Built on the node context menu (a declarative list of `Button`, `Colors`, `MoveT
 action) and the settings page's sections.
 
 - **Tab menu:** a `Jars` item listing "Default", each named jar with its colour dot and a tick on the current one, then
-  "New jar...". "New jar..." swaps the menu for a name field (as group rename does), creates the jar with the next palette
-  colour and picks it for the tab. "Follow group's jar" appears only for a set tab whose group has a default. New actions:
+  "New jar...". "New jar..." swaps the menu for a name field (as group rename does), creates the jar with the first palette
+  colour no jar uses (cycling once all are used) and picks it for the tab. "Follow group's jar" appears only for a set tab whose group has a default. New actions:
   `SetJar(Option<NodeId>)`, `NewJar(String)`, `FollowGroupJar`, `SwitchJarNow`.
 - **Group menu:** the same list under "Default jar for new tabs" with a tick on the current default, and "Clear default". The
   entry shows how many tabs the cascade will change; no confirm dialog (sleeping a background tab loses nothing, and setting the
