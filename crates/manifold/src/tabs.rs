@@ -519,8 +519,10 @@ impl App {
                     // "Couldn't start Blink (CEF): Blink (CEF) is not installed" says it twice.
                     let toast = match err {
                         process_manager::SpawnError::EngineMissing(_)
-                        | process_manager::SpawnError::EngineUnavailable(..) => format!("Couldn't open {url}: {err}"),
-                        _ => format!("Couldn't start {} for {url}: {err}", engine_label(kind)),
+                        | process_manager::SpawnError::EngineUnavailable(..) => {
+                            format!("Couldn't open {}: {err}", Self::toast_url(&url))
+                        }
+                        _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
