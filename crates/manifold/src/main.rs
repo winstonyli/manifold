@@ -28,6 +28,7 @@ mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
+mod names;
 mod nav_history;
 mod node;
 mod node_menu;

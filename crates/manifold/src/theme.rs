@@ -455,7 +455,7 @@ pub(crate) fn control_bold_family() -> egui::FontFamily {
 /// `heading_family()` above, instanced Bold and at a display-sized `opsz`,
 /// for the handful of dialog titles/section headers that want more
 /// contrast than body text at any weight gives for free.
-pub(crate) fn apply_fonts(ctx: &egui::Context) {
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "Literata".to_owned(),
@@ -504,7 +504,12 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
         chain.insert(0, name.to_owned());
         fonts.families.insert(family, chain);
     }
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+/// Installs `font_definitions` in `ctx`.
+pub(crate) fn apply_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
 }
 
 /// A dialog title or settings-section header — `heading_family()` (Newsreader

@@ -77,9 +77,18 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10.7"
 sha2 = "0.10.9"
 tar = "0.4.46"
+# Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
+# sequences (already built for url's idna), grapheme clusters for the 64 cap.
+icu_properties = "2.3.0"
+unicode-segmentation = "1.13.3"
 ureq = "3"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[dev-dependencies]
+# Reads the monospace font's character map in names::tests (already in Cargo.lock through epaint). Exact, because
+# Cargo.lock holds two skrifa versions.
+skrifa = "=0.44.0"
 
 # Windows-only dependencies. `manifold` also compiles on Linux (`cargo check
 # -p manifold` under WSL), and `windows` pulls `windows-future`, which does not
