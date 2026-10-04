@@ -966,6 +966,15 @@ mod tests {
             let path = entry.unwrap().path();
             let file = path.file_name().unwrap().to_string_lossy().into_owned();
             if path.is_dir() {
+                // `session_sync/` holds only `session_sync`'s test module, which `production` would skip anyway.
+                if file == "session_sync" {
+                    let files: Vec<_> = std::fs::read_dir(&path)
+                        .unwrap()
+                        .map(|e| e.unwrap().file_name().into_string().unwrap())
+                        .collect();
+                    assert_eq!(files, ["tests.rs"], "session_sync/ gained production code: scan it here too");
+                    continue;
+                }
                 assert_eq!(file, "store", "a new source folder: scan it here too");
                 continue;
             }

@@ -4,7 +4,10 @@ use ipc_protocol::KeyCode;
 use winit::event::MouseButton;
 use winit::event_loop::EventLoopProxy;
 
+use super::*;
+use crate::nav_history::Dir;
 use crate::process_manager::EngineKind;
+use crate::sleep_state::SleepWhy;
 use crate::UserEvent;
 
 /// A headless-mode automation command, one per stdin line (see `parse_line`
@@ -782,6 +785,431 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
         }
         let _ = proxy.send_event(UserEvent::Debug(DebugCommand::Quit));
     });
+}
+
+impl App {
+    /// Applies one headless `DebugCommand` (see `debug_control`'s doc
+    /// comment for the overall design: mouse commands are real synthetic
+    /// `WindowEvent`s, keyboard/text commands call the equivalent effect
+    /// directly since `winit::event::KeyEvent` has no public constructor).
+    pub(crate) fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
+        // A transition only ends in a frame, and frames can stall for
+        // seconds on a busy GPU, so one that ran out long ago could still
+        // be `Some` here and make the ENTER/ESCAPE/arrow guards below drop
+        // their command. It's timed by the clock, so end it by the clock.
+        self.finish_transition_if_done();
+        match cmd {
+            DebugCommand::MouseMove { x, y } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
+                );
+            }
+            DebugCommand::MouseDown { x, y, button } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Pressed, button },
+                );
+            }
+            DebugCommand::MouseUp { x, y, button } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button },
+                );
+            }
+            DebugCommand::Click { x, y, button } => self.debug_click(event_loop, x, y, button, 1),
+            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2),
+            DebugCommand::Scroll { x, y, delta_x, delta_y } => {
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
+                );
+                self.dispatch_window_event(
+                    event_loop,
+                    WindowEvent::MouseWheel {
+                        device_id: DeviceId::dummy(),
+                        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
+                        phase: TouchPhase::Moved,
+                    },
+                );
+            }
+            // A click on the address bar, then select-all and typing: focus
+            // is requested now, and the text is typed as egui `Text` input in
+            // the first frame the bar has it (see `debug_address_bar_typing`).
+            DebugCommand::AddressBar(text) if self.showing_tab_view() => {
+                self.pending_focus = Some(FocusTarget::AddressBar);
+                self.debug_address_bar_typing = Some(text);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            DebugCommand::AddressBar(_) => eprintln!("debug: ADDRESSBAR ignored: not in Tab view"),
+            // Real key presses for the next frame's egui input, so they go
+            // through the same checks a keyboard does, in any view.
+            DebugCommand::Enter => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
+            }
+            DebugCommand::Escape => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
+            }
+            DebugCommand::Backspace => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Backspace, egui::Modifiers::NONE))
+            }
+            // The focused egui field takes it, as from a keyboard (`TYPE` goes to the page instead).
+            DebugCommand::EguiText(text) => self.debug_input_events.push(egui::Event::Text(text)),
+            DebugCommand::ArrowDown => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
+            }
+            DebugCommand::ArrowRight => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
+            }
+            DebugCommand::DigitKey(d) => {
+                let key = [
+                    egui::Key::Num0,
+                    egui::Key::Num1,
+                    egui::Key::Num2,
+                    egui::Key::Num3,
+                    egui::Key::Num4,
+                    egui::Key::Num5,
+                    egui::Key::Num6,
+                    egui::Key::Num7,
+                    egui::Key::Num8,
+                    egui::Key::Num9,
+                ][d as usize];
+                self.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
+            }
+            DebugCommand::SpaceKey => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
+            }
+            DebugCommand::ArrowLeft => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
+            }
+            DebugCommand::ArrowUp => {
+                self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
+            }
+            DebugCommand::TabKey(shift) => {
+                let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+                self.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
+            }
+            DebugCommand::ShiftF10 => {
+                self.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
+            }
+            DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
+            DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
+            DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
+            DebugCommand::GraphFocusDown => self.move_graph_focus(egui::vec2(0.0, 1.0)),
+            DebugCommand::GraphOpenFocused => self.open_focused_graph_node(),
+            DebugCommand::TypeIntoPage(text) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                        for ch in text.chars() {
+                            node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
+                        }
+                    }
+                }
+            }
+            DebugCommand::KeyPage(key) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
+                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
+                    }
+                }
+            }
+            DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
+            DebugCommand::InstallEngine(kind) => {
+                self.start_engine_install(kind);
+            }
+            DebugCommand::EngineState(kind) => {
+                eprintln!(
+                    "engine-state {}: {}",
+                    kind.desc().name,
+                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0
+                )
+            }
+            DebugCommand::ZoomIn => self.zoom_in_shortcut(),
+            DebugCommand::ZoomOut => self.zoom_out_shortcut(),
+            DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
+            DebugCommand::OpenDevTools => self.open_devtools_shortcut(),
+            DebugCommand::NewTab => self.new_tab_shortcut(),
+            DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
+            DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
+            DebugCommand::NextTab => self.cycle_focused_tab(true),
+            DebugCommand::PrevTab => self.cycle_focused_tab(false),
+            DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
+            DebugCommand::FindText(text) => {
+                self.find.text = text;
+                self.send_find_start();
+            }
+            DebugCommand::FindMatchCase(match_case) => {
+                self.find.match_case = match_case;
+                self.send_find_start();
+            }
+            DebugCommand::FindNext => self.send_find_navigate(true),
+            DebugCommand::FindPrevious => self.send_find_navigate(false),
+            DebugCommand::CloseFindBar => self.close_find_bar(),
+            DebugCommand::SetVisible(visible) => {
+                if let Some(id) = self.focused.clone() {
+                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+                        node.tab.set_visible(visible);
+                    }
+                }
+            }
+            // Only ever intercepted by the stdin reader itself.
+            DebugCommand::Screenshot(_) | DebugCommand::Sleep(_) => {}
+            DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
+                self.pending_screenshot = Some(path);
+                self.screenshot_waiter = Some(waiter);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            DebugCommand::Resize(width, height) => {
+                if let Some(window) = &self.window {
+                    let _ = window.request_inner_size(PhysicalSize::new(width, height));
+                }
+            }
+            DebugCommand::QuickSwitchOpen => self.open_quick_switcher(),
+            DebugCommand::QuickSwitchText(text) => {
+                if let Some(switcher) = &mut self.quick_switcher {
+                    switcher.query = text;
+                    switcher.selected = 0;
+                }
+            }
+            DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
+            DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
+            DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
+            DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
+            DebugCommand::SessionNameText(text) => self.session_name_draft = text,
+            DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
+            DebugCommand::OpenSession(name) => {
+                self.load_named_session(&name);
+                self.close_settings_page();
+            }
+            DebugCommand::GraphFilterText(text) => self.graph_filter = text,
+            DebugCommand::HistoryFilterText(text) => self.history_filter = text,
+            DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
+            DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
+            DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
+            DebugCommand::ExportSession(path) => {
+                self.export_session_to(std::path::Path::new(&path));
+            }
+            DebugCommand::ExportState(path) => {
+                let focused_url = self
+                    .focused
+                    .as_ref()
+                    .and_then(|id| self.nodes.get(id))
+                    .and_then(|n| n.as_tab())
+                    .map(|t| t.url.clone());
+                let suggestions: Vec<String> = self
+                    .address_bar
+                    .combined()
+                    .into_iter()
+                    .map(|s| match s {
+                        Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
+                        Suggestion::Search { query } => query,
+                    })
+                    .collect();
+                // The current level's cards, in draw order, with where each
+                // one's center is on screen: what a headless test needs to
+                // aim a click or drag at a card.
+                let cards: Vec<serde_json::Value> = self
+                    .level_items()
+                    .into_iter()
+                    .filter_map(|item| {
+                        let screen = self.graph_world_rect_to_screen(item.rect);
+                        if item.kind == LevelItemKind::JsonCard {
+                            return Some(serde_json::json!({
+                                "id": item.id,
+                                "kind": "JsonCard",
+                                "screen": [screen.center().x, screen.center().y],
+                                "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                            }));
+                        }
+                        let LevelItemKind::Node(kind) = item.kind else { return None };
+                        let node = self.nodes.get(&item.id)?;
+                        Some(serde_json::json!({
+                            "id": item.id,
+                            "kind": format!("{kind:?}"),
+                            "group": node.group,
+                            "parent": node.parent,
+                            "color": node.color.is_some(),
+                            "pinned": node.payload.pinned(),
+                            "editing": node.as_note().is_some_and(|n| n.editing),
+                            "screen": [screen.center().x, screen.center().y],
+                            "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                        }))
+                    })
+                    .collect();
+                let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
+                selected_tabs.sort();
+                let state = serde_json::json!({
+                    "tab_view": self.showing_tab_view(),
+                    "transition": self.transition.is_some(),
+                    "focused_url": focused_url,
+                    "address_bar_text": self.address_bar.text,
+                    "suggestions": suggestions,
+                    "highlighted": self.address_bar.highlighted,
+                    "current_group": self.current_group,
+                    "cards": cards,
+                    "json_level": self.json_level_state(),
+                    "selected_tabs": selected_tabs,
+                    // The toast showing, or else the next queued one.
+                    "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
+                });
+                if let Err(err) = std::fs::write(&path, state.to_string()) {
+                    eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
+                }
+            }
+            DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
+                Ok(json) => self.pending_import = Some(json),
+                Err(err) => self.queue_toast(err),
+            },
+            DebugCommand::ConfirmImport => {
+                if let Some(json) = self.pending_import.take() {
+                    self.replace_running_session(&json, crate::store::json::Trust::Foreign);
+                }
+            }
+            DebugCommand::CancelImport => {
+                self.pending_import = None;
+            }
+            DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
+            DebugCommand::BookmarkFolderText(text) => {
+                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
+                    *draft = text;
+                }
+            }
+            DebugCommand::DismissPeek => self.dismiss_hover_peek(),
+            DebugCommand::ExportGroup(path) => {
+                if let Some((group_id, _)) = self
+                    .node_menu
+                    .clone()
+                    .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
+                {
+                    if let Some(json) = self.export_group_json(&group_id) {
+                        write_json_export(&json, std::path::Path::new(&path), "group");
+                    }
+                }
+            }
+            DebugCommand::ImportGroup(path) => {
+                match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
+                    Ok(json) => self.import_group_json(&json),
+                    Err(err) => self.queue_toast(err),
+                }
+            }
+            DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
+            DebugCommand::ExportBookmarks(path) => {
+                bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
+            }
+            DebugCommand::ImportBookmarks(path) => match bookmarks::load_from(std::path::Path::new(&path)) {
+                Ok(imported) => {
+                    self.bookmarks = imported;
+                    bookmarks::save(&self.bookmarks);
+                }
+                Err(err) => self.queue_toast(err),
+            },
+            DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
+            DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
+            DebugCommand::Reload => self.reload_focused_tab_shortcut(),
+            DebugCommand::GoBack | DebugCommand::GoForward => {
+                if let Some(id) = self.focused.clone() {
+                    let dir = if matches!(cmd, DebugCommand::GoBack) { Dir::Back } else { Dir::Forward };
+                    self.navigate_history(&id, dir);
+                }
+            }
+            DebugCommand::NewGroup => self.new_group_shortcut(),
+            DebugCommand::NewNote => self.new_note_shortcut(),
+            DebugCommand::AddFile(path, None) => {
+                if self.add_file_at(path.into(), None).is_ok() {
+                    self.save_session();
+                }
+            }
+            // Placed like a real drop at that window point. No
+            // `save_session` here either -- same reasoning as
+            // `WindowEvent::DroppedFile`, so a script sending several
+            // `ADDFILE`s with a point still gets one save per batch, not
+            // one per file.
+            DebugCommand::AddFile(path, Some((x, y))) => {
+                self.drop_file(path.into(), egui::pos2(x, y));
+            }
+            // Only ever intercepted by the stdin reader itself.
+            DebugCommand::WaitTabs(_) => {}
+            DebugCommand::NotifyWhenTabsSpawned(waiter) => {
+                if self.tab_spawns_in_flight == 0 {
+                    let _ = waiter.send(());
+                } else {
+                    self.tabs_spawned_waiters.push(waiter);
+                }
+            }
+            DebugCommand::AddDownload(path) => {
+                if let Some(tab_id) = self.focused.clone() {
+                    self.insert_download_node(tab_id, path, None, None);
+                }
+            }
+            DebugCommand::Split(kind) => self.start_split(kind),
+            DebugCommand::CloseSplit => self.close_split(),
+            DebugCommand::JsonSelect(pointer) => self.apply_json_edit(JsonEdit::Select(pointer)),
+            DebugCommand::JsonToggle(pointer) => self.apply_json_edit(JsonEdit::Toggle(pointer)),
+            DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
+            DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
+            DebugCommand::JsonSearch(text) => self.set_json_search(text),
+            DebugCommand::CloseGroup(id) => {
+                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                    self.close_node(&id);
+                }
+            }
+            DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
+            DebugCommand::SleepNode(id) => {
+                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
+                    self.sleep_group(&id);
+                } else {
+                    self.request_sleep(&id, SleepWhy::Manual);
+                }
+            }
+            DebugCommand::SetJar(name) => {
+                if self.set_focused_tab_jar_named(&name) {
+                    self.save_session();
+                }
+            }
+            DebugCommand::SwitchJarNow => {
+                if let Some(tab) = self.focused.clone() {
+                    self.switch_jar_now(&tab);
+                }
+            }
+            DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
+            DebugCommand::Help => debug_control::print_help(),
+            DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
+            DebugCommand::ToggleShortcutsHelp => {
+                self.shortcuts_help_open = !self.shortcuts_help_open;
+            }
+            DebugCommand::Quit => {
+                // See `quit_after_redraws`'s doc comment: exiting right
+                // now could drop a pending Enter/Escape/arrow command, or a
+                // just-requested Screenshot that hasn't been captured yet
+                // (`pending_screenshot` is only consumed inside a
+                // `RedrawRequested` — a `Screenshot` immediately followed by
+                // `Quit`, with no frame in between, would otherwise silently
+                // lose the screenshot the same way an unconsumed Enter
+                // could).
+                if self.debug_input_pending() {
+                    self.quit_after_redraws = Some(3);
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                } else {
+                    event_loop.exit();
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
