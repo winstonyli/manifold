@@ -34,20 +34,15 @@ pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String
 }
 
 /// `text` cut to `max_width` screen points at the start ("…\\Trips\\a.jpg"), so a path's file name
-/// stays visible. Cut as `truncate_to_width` cuts the reversed text, which shares its cache.
-fn truncate_start_to_width(
-    cache: &mut HashMap<TruncateCacheKey, String>,
+/// stays visible. Shares `truncate_to_width`'s cache.
+pub(crate) fn truncate_start_to_width(
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
     ctx: &egui::Context,
     text: &str,
     font_id: &egui::FontId,
     max_width: f32,
 ) -> String {
-    let reversed: String = text.chars().rev().collect();
-    let cut = truncate_to_width(cache, ctx, &reversed, font_id, max_width);
-    match cut.strip_suffix('\u{2026}') {
-        Some(kept) if kept.len() < reversed.len() => format!("\u{2026}{}", kept.chars().rev().collect::<String>()),
-        _ => cut.chars().rev().collect(),
-    }
+    truncate_core(cache, ctx, text, font_id, max_width, true)
 }
 
 /// Height of a card's header F (glyph or favicon, title, source line), in screen points.
@@ -1468,12 +1463,6 @@ impl App {
                 self.save_session();
             }
         } else if !self.graph_lod_simplified {
-            // `text` is cloned out before the closure below --
-            // `ui.scope_builder`'s closure borrows `self.
-            // commonmark_cache` mutably, which the borrow
-            // checker only allows alongside a *finished*
-            // borrow of `self.nodes`, not one still live inside
-            // the same closure.
             // LOD: skip the markdown render (real parsing +
             // rich text layout, one of the pricier per-node
             // widgets in this whole view) once simplified --
@@ -1483,12 +1472,15 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            let text = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()).unwrap_or_default();
+            // Borrowed, not cloned: `text` borrows `self.nodes` and `cache` `self.commonmark_cache`, two
+            // disjoint fields.
+            let text = self.nodes.get(id).and_then(|n| n.as_note()).map_or("", |n| n.text.as_str());
+            let cache = &mut self.commonmark_cache;
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
                 |ui| {
                     ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_black_alpha(220));
-                    egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.commonmark_cache, &text);
+                    egui_commonmark::CommonMarkViewer::new().show(ui, cache, text);
                 },
             );
         }

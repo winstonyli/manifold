@@ -405,25 +405,13 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// border.
 const GROUP_OVERLOAD_THRESHOLD: usize = 8;
 
-/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
-/// no wider than `max_width` at `font_id`, or returns it unchanged if it
-/// already fits. Needed because graph-view node labels are now painted at
-/// a fixed screen-space font size regardless of zoom (see
-/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
-/// card shrinks well below the label's natural width, and unlike a normal
-/// egui `Label` widget (which can `.truncate()` itself during layout),
-/// text painted directly via `Painter::text` has no such built-in limit.
-/// A binary search over char-boundary indices rather than a linear
-/// shrink-by-one-char loop, since `layout_no_wrap` (one text-shaping pass)
-/// is the expensive part and a title could in principle be long.
-/// `truncate_to_width`'s cache key -- the exact text and font size (as a
-/// bit pattern, since `f32` isn't `Hash`/`Eq`) plus available width
-/// *bucketed* to the nearest `TRUNCATE_WIDTH_BUCKET` pixels, not the
-/// exact width. Every call site in this app builds its `FontId` via
-/// `FontId::proportional`, so font family never needs to be part of the
-/// key. See `truncate_to_width`'s own doc comment for why bucketing (not
-/// the exact width) is the key.
-type TruncateCacheKey = (String, u32, i32);
+/// `truncate_core`'s cache key: a hash of the text (the text itself is in
+/// the value, compared on a hit, so a lookup allocates nothing), the font
+/// size as bits (`f32` isn't `Hash`/`Eq`), the width bucket, and which end
+/// is cut. Every call site builds its `FontId` with `FontId::proportional`,
+/// so the family is not in the key. See `truncate_to_width` for why the
+/// width is bucketed rather than exact.
+type TruncateCacheKey = (u64, u32, i32, bool);
 
 /// Width granularity `truncate_to_width` bucket its cache key to -- see
 /// that function's own doc comment. A truncation result only actually
@@ -445,9 +433,16 @@ const TRUNCATE_WIDTH_BUCKET: f32 = 4.0;
 /// titles cycling through over a long session).
 const TRUNCATE_CACHE_CAP: usize = 2000;
 
-/// Same truncation behavior as before (binary search for the longest
-/// prefix, plus "…", that fits `max_width`), but memoized on `cache` --
-/// each binary-search step needs a real text-shaping call
+/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
+/// no wider than `max_width` at `font_id`, or returns it unchanged if it
+/// already fits. Needed because graph-view node labels are now painted at
+/// a fixed screen-space font size regardless of zoom (see
+/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
+/// card shrinks well below the label's natural width, and unlike a normal
+/// egui `Label` widget (which can `.truncate()` itself during layout),
+/// text painted directly via `Painter::text` has no such built-in limit.
+///
+/// Memoized on `cache` -- each search step needs a real text-shaping call
 /// (`ctx.fonts_mut(...).layout_no_wrap`), and the overwhelming common
 /// case frame to frame is "this exact label, this exact width, again",
 /// since neither a card's title nor its on-screen width usually change
@@ -456,24 +451,48 @@ const TRUNCATE_CACHE_CAP: usize = 2000;
 /// frame, for every visible labeled card, regardless of graph size.
 ///
 /// **`max_width` is bucketed, not used exactly, for both the cache key
-/// and the search bound below.** Every call site derives it from
+/// and the search bound.** Every call site derives it from
 /// `zoom_scale`, which changes continuously (as a raw float) on every
 /// frame during an active pan/zoom gesture -- keying on the exact width
 /// meant this cache hit approximately never while the user was actually
 /// zooming, the one time avoiding repeated font-shaping calls matters
 /// most. Found live, following up on the general audit above.
 fn truncate_to_width(
-    cache: &mut HashMap<TruncateCacheKey, String>,
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
     ctx: &egui::Context,
     text: &str,
     font_id: &egui::FontId,
     max_width: f32,
 ) -> String {
+    truncate_core(cache, ctx, text, font_id, max_width, false)
+}
+
+/// `text` cut to fit `max_width` with "…" at the cut: at the end, or at the
+/// start when `from_start` (a path keeps its file name). Cuts fall on
+/// grapheme boundaries, so a ZWJ emoji or a combining mark is never split,
+/// and the width measured is the width drawn. A binary search over
+/// grapheme boundaries rather than a shrink-by-one loop, since
+/// `layout_no_wrap` (one text-shaping pass) is the expensive part and a
+/// title could in principle be long. Memoized on `cache`.
+fn truncate_core(
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
+    ctx: &egui::Context,
+    text: &str,
+    font_id: &egui::FontId,
+    max_width: f32,
+    from_start: bool,
+) -> String {
+    use std::hash::{Hash, Hasher};
+    use unicode_segmentation::UnicodeSegmentation;
     let bucketed_width = (max_width / TRUNCATE_WIDTH_BUCKET).floor() * TRUNCATE_WIDTH_BUCKET;
     let width_bucket = (max_width / TRUNCATE_WIDTH_BUCKET).floor() as i32;
-    let key: TruncateCacheKey = (text.to_owned(), font_id.size.to_bits(), width_bucket);
-    if let Some(cached) = cache.get(&key) {
-        return cached.clone();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let key: TruncateCacheKey = (hasher.finish(), font_id.size.to_bits(), width_bucket, from_start);
+    if let Some((cached_text, cut)) = cache.get(&key) {
+        if cached_text == text {
+            return cut.clone();
+        }
     }
     let width_of = |s: &str| -> f32 {
         ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)).size().x
@@ -483,27 +502,32 @@ fn truncate_to_width(
     } else if width_of(text) <= bucketed_width {
         text.to_owned()
     } else {
-        let chars: Vec<char> = text.chars().collect();
-        let (mut lo, mut hi) = (0usize, chars.len());
+        // Byte offsets of every grapheme boundary, both ends included.
+        let mut bounds: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        bounds.push(text.len());
+        let candidate = |k: usize| {
+            if from_start {
+                format!("\u{2026}{}", &text[bounds[bounds.len() - 1 - k]..])
+            } else {
+                format!("{}\u{2026}", &text[..bounds[k]])
+            }
+        };
+        // The most graphemes `k` kept that still fit.
+        let (mut lo, mut hi) = (0usize, bounds.len() - 1);
         while lo < hi {
             let mid = (lo + hi).div_ceil(2);
-            let candidate: String = chars[..mid].iter().collect::<String>() + "…";
-            if width_of(&candidate) <= bucketed_width {
+            if width_of(&candidate(mid)) <= bucketed_width {
                 lo = mid;
             } else {
                 hi = mid - 1;
             }
         }
-        if lo == 0 {
-            "…".to_owned()
-        } else {
-            chars[..lo].iter().collect::<String>() + "…"
-        }
+        candidate(lo)
     };
     if cache.len() >= TRUNCATE_CACHE_CAP {
         cache.clear();
     }
-    cache.insert(key, result.clone());
+    cache.insert(key, (text.to_owned(), result.clone()));
     result
 }
 
@@ -1141,7 +1165,7 @@ struct App {
     /// a count sitting right at one boundary doesn't flicker every frame.
     graph_lod_simplified: bool,
     /// See `truncate_to_width`'s own doc comment.
-    truncate_cache: HashMap<TruncateCacheKey, String>,
+    truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
     /// See `App::cached_favicon_origin`'s own doc comment.
     favicon_origin_cache: HashMap<String, Option<String>>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
@@ -1354,6 +1378,9 @@ struct App {
     /// The history popup's own filter box text -- same "cleared on each
     /// open" reasoning as `bookmarks_filter`.
     history_filter: String,
+    /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
+    /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
+    history_matches_cache: Option<(String, usize, Vec<usize>)>,
     /// Which popup anchored below a toolbar or Settings button is open, if
     /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
     /// `close_popup`.
@@ -1572,6 +1599,7 @@ impl Default for App {
             history,
             history_dirty: false,
             history_filter: String::new(),
+            history_matches_cache: None,
             open_popup: None,
             card_nav_active: false,
             hints_revealed: false,
@@ -1802,6 +1830,7 @@ impl App {
                     self.history.remove(0);
                 }
                 self.history_dirty = true;
+                self.history_matches_cache = None;
             }
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
@@ -2883,6 +2912,68 @@ mod tests {
     #[test]
     fn explorer_select_quotes_the_path() {
         assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+    }
+
+    fn with_fonts(f: impl FnOnce(&egui::Context)) {
+        let ctx = egui::Context::default();
+        // `run_ui` takes an `FnMut`; the test body runs once.
+        let mut f = Some(f);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            if let Some(f) = f.take() {
+                f(ui.ctx());
+            }
+        });
+        // The font atlas upload is never applied here; dropping it unapplied is a debug assertion.
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_cut_from_the_start_keeps_a_true_suffix_on_grapheme_boundaries() {
+        use unicode_segmentation::UnicodeSegmentation;
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            let text = format!("{}e\u{301}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}tail.jpg", "dir\\".repeat(30));
+            let cut = truncate_start_to_width(&mut cache, ctx, &text, &font, 80.0);
+            let kept = cut.strip_prefix('\u{2026}').expect("cut at the start");
+            assert!(text.ends_with(kept), "a true suffix, not a re-reversed one: {cut}");
+            let start = text.len() - kept.len();
+            assert!(text.grapheme_indices(true).any(|(i, _)| i == start), "starts on a grapheme boundary");
+        });
+    }
+
+    #[test]
+    fn a_cut_from_the_end_never_splits_a_grapheme() {
+        use unicode_segmentation::UnicodeSegmentation;
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            // A ZWJ family, and a base letter with a combining mark; every width, so some cut lands
+            // inside a sequence if the search counts chars.
+            for text in ["\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(40), "e\u{301}".repeat(60)] {
+                for width in (8..=200).step_by(4) {
+                    let cut = truncate_to_width(&mut cache, ctx, &text, &font, width as f32);
+                    let kept = cut.strip_suffix('\u{2026}').expect("cut at the end");
+                    assert!(
+                        text.grapheme_indices(true).any(|(i, _)| i == kept.len()) || kept.is_empty(),
+                        "width {width}: {kept:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_repeated_cut_is_one_cache_entry() {
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            let a = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            let b = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            assert_eq!((a, cache.len()), (b, 1));
+            truncate_start_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            assert_eq!(cache.len(), 2, "start and end cuts are cached apart");
+        });
     }
 
     #[test]

@@ -1622,6 +1622,7 @@ impl App {
                         self.history.remove(0);
                     }
                     self.history_dirty = true;
+                    self.history_matches_cache = None;
                     // The origin is known as soon as the url is --
                     // no need to wait for the page to actually
                     // finish loading, unlike a page's own favicon

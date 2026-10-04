@@ -72,6 +72,21 @@ fn list_rows_key(ui: &egui::Ui) -> egui::Id {
     ui.layer_id().id.with("list_rows")
 }
 
+/// Marks this frame's list rows as a window of a longer list: `list_row_nav`
+/// then stops at the ends instead of wrapping to the wrong row.
+fn mark_list_partial(ui: &egui::Ui) {
+    ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("partial"), true));
+}
+
+/// Above this many matching entries, the History popup lays out only the
+/// rows in view. Shorter lists keep the plain layout (and wrapping arrow keys).
+const HISTORY_WINDOW_FROM: usize = 100;
+
+/// Indexes into `history` of the entries `filter` matches, newest first.
+pub(crate) fn history_matches(history: &[crate::history::HistoryEntry], filter: &str) -> Vec<usize> {
+    (0..history.len()).rev().filter(|&i| filter_matches(filter, &[&history[i].title, &history[i].url])).collect()
+}
+
 /// A bookmark folder as committed from the folder field: the draft's clean form (name rules), or no folder when
 /// nothing is left of it.
 fn folder_from_draft(draft: &str) -> Option<String> {
@@ -119,10 +134,11 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
 }
 
 /// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
-/// focus between rows on Up/Down (wrapping).
+/// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
+    let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let open_key = key.with("was_open");
     let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
     ui.data_mut(|d| d.insert_temp(open_key, interactable));
@@ -140,10 +156,28 @@ fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
         )
     });
-    // Down is +1, Up is -1 (as len - 1, mod len).
-    let step = usize::from(down) + (rows.len() - 1) * usize::from(up);
-    if step != 0 {
-        ui.memory_mut(|m| m.request_focus(rows[(at + step) % rows.len()]));
+    // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
+    let next = if down {
+        if at + 1 < rows.len() {
+            Some(at + 1)
+        } else if partial {
+            None
+        } else {
+            Some(0)
+        }
+    } else if up {
+        if at > 0 {
+            Some(at - 1)
+        } else if partial {
+            None
+        } else {
+            Some(rows.len() - 1)
+        }
+    } else {
+        None
+    };
+    if let Some(next) = next {
+        ui.memory_mut(|m| m.request_focus(rows[next]));
     }
 }
 
@@ -807,17 +841,35 @@ impl App {
                 if self.history.is_empty() {
                     ui.label(egui::RichText::new("No history yet.").weak());
                 }
-                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                    for entry in self.history.iter().rev() {
-                        let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                        if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
-                            continue;
-                        }
-                        if list_row(ui, label).clicked() {
-                            navigate_url = Some(entry.url.clone());
-                        }
+                let key_ok = matches!(&self.history_matches_cache,
+                    Some((f, n, _)) if *f == self.history_filter && *n == self.history.len());
+                if !key_ok {
+                    let matches = history_matches(&self.history, &self.history_filter);
+                    self.history_matches_cache = Some((self.history_filter.clone(), self.history.len(), matches));
+                }
+                let matches = self.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
+                let row = |ui: &mut egui::Ui, i: usize, navigate_url: &mut Option<String>| {
+                    let entry = &self.history[i];
+                    let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                    // Keyed by the entry, not by position: a windowed list starts at a different row each
+                    // scroll, and positional ids would move keyboard focus to another entry.
+                    if ui.push_id(i, |ui| list_row(ui, label)).inner.clicked() {
+                        *navigate_url = Some(entry.url.clone());
                     }
-                });
+                };
+                let scroll = egui::ScrollArea::vertical().max_height(280.0);
+                if matches.len() < HISTORY_WINDOW_FROM {
+                    scroll.show(ui, |ui| matches.iter().for_each(|&i| row(ui, i, &mut navigate_url)));
+                } else {
+                    // The height a row really lays out at: the popup's own font (`menu_item_style` overrides
+                    // the Body style), so `show_rows` places the window where the rows actually are.
+                    let font_id = egui::FontSelection::Default.resolve(ui.style());
+                    let row_height = ui.ctx().fonts_mut(|f| f.row_height(&font_id));
+                    scroll.show_rows(ui, row_height, matches.len(), |ui, range| {
+                        matches[range].iter().for_each(|&i| row(ui, i, &mut navigate_url));
+                    });
+                    mark_list_partial(ui);
+                }
                 ui.separator();
                 if ui.button("Clear").clicked() {
                     clear_requested = true;
@@ -835,6 +887,7 @@ impl App {
         if clear_requested {
             self.history.clear();
             self.history_dirty = true;
+            self.history_matches_cache = None;
             close = true;
         }
         if clicked_outside {
@@ -1552,6 +1605,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn history_matches_lists_filtered_entries_newest_first() {
+        let entry = |title: &str, url: &str| crate::history::HistoryEntry { title: title.into(), url: url.into() };
+        let history = vec![entry("Rust", "https://a"), entry("", "https://rust.example"), entry("Go", "https://b")];
+        assert_eq!(history_matches(&history, ""), vec![2, 1, 0]);
+        assert_eq!(history_matches(&history, "rust"), vec![1, 0]);
+    }
+
     /// Name rules: a bookmark folder is committed under its clean name; nothing left of it means no folder.
     #[test]
     fn a_bookmark_folder_commits_its_clean_name() {
@@ -1819,6 +1880,60 @@ mod engine_picker_tests {
         });
         output.textures_delta.clear(); // nothing uploads the font atlas here
         clicked
+    }
+
+    /// A long History popup lays out only the rows in view, and Down walks past them (the list scrolls, so the
+    /// newest entry leaves the view) without Up wrapping from the first row to the last laid-out one.
+    #[test]
+    fn a_long_history_popup_lays_out_only_the_rows_in_view() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let history = (0..300)
+            .map(|i| crate::history::HistoryEntry { title: format!("entry {i}"), url: format!("https://e/{i}") })
+            .collect();
+        let mut app = App { history, open_popup: Some(AnchoredPopup::History), ..App::default() };
+        let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
+        // A second a frame, so `scroll_to_me`'s scroll animation finishes between frames.
+        let mut time = 0.0;
+        let mut drawn = |events: Vec<egui::Event>| -> Vec<String> {
+            time += 1.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_history_popup(ui, anchor, 1.0));
+            output.textures_delta.clear();
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text.starts_with("entry ") => Some(t.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for _ in 0..3 {
+            drawn(vec![]);
+        }
+        let rows = drawn(vec![]);
+        // Painted rows alone prove nothing (a label out of view is laid out but not painted): count the widgets.
+        let widgets = ctx.viewport(|v| v.this_pass.widgets.layers().map(|(_, w)| w.len()).sum::<usize>());
+        assert!(widgets < 100, "{widgets} widgets laid out for 300 entries");
+        assert_eq!(rows[0], "entry 299", "newest first");
+        drawn(vec![key(egui::Key::ArrowUp)]);
+        assert_eq!(drawn(vec![])[0], "entry 299", "Up on the first row does not wrap in a windowed list");
+        for _ in 0..rows.len() + 5 {
+            drawn(vec![key(egui::Key::ArrowDown)]);
+            drawn(vec![]);
+        }
+        let rows = drawn(vec![]);
+        assert!(!rows.contains(&"entry 299".to_owned()), "Down walked past the first view: {rows:?}");
+        let n: Vec<usize> = rows.iter().map(|r| r["entry ".len()..].parse().unwrap()).collect();
+        assert!(n.windows(2).all(|w| w[0] == w[1] + 1), "a contiguous window, newest first: {rows:?}");
+        assert_eq!(app.open_popup, Some(AnchoredPopup::History));
     }
 
     /// A list popup opens on its first row; Down and Up move (wrapping) and Enter clicks the focused row.
