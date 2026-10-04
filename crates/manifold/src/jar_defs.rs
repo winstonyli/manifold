@@ -9,11 +9,12 @@ use crate::session_sync::{color_of, Fields, Shared};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::theme::TAG_COLOR_PALETTE;
 use crate::{App, JarDef};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What a tab's card and Tab view show of its jar (spec "UI", chip).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct JarChip {
+    /// The jar's label (`App::jar_label`), shown on the chip and in Tab view's hover text.
     pub(crate) name: String,
     pub(crate) color: egui::Color32,
     /// Unset, and the nearest group default (`inherited_jar`) is this jar: the dot is outlined. An unset tab whose
@@ -66,6 +67,44 @@ pub(crate) fn will_switch_tooltip(cleared: bool, target: &str, can_switch_now: b
     }
 }
 
+/// The SHA-256 hex (lower case) of node id `id`'s text, where a jar's marker fragment comes from (`jar_fragment`).
+fn id_digest(id: NodeId) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(id.to_string().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What makes two jar names the same name (jar name labels): trimmed, any case.
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// The marker fragment that tells jar `id` apart from the other jars with its name; `None` when no other jar has it
+/// (or there is no jar `id`). It is the start of `id_digest(id)`: 4 characters, or as many more as it takes to differ
+/// from every same-named jar's. It derives from the id alone, so it never changes for the jar's life, except to grow
+/// on the rare collision with a same-named jar that arrives later. Not a hex prefix of the id itself: jars made on one
+/// device share the id's actor half and differ only in its decimal counter.
+pub(crate) fn jar_fragment(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<String> {
+    let key = name_key(&defs.get(&id)?.name);
+    let twins: Vec<String> =
+        defs.iter().filter(|(o, d)| **o != id && name_key(&d.name) == key).map(|(o, _)| id_digest(*o)).collect();
+    if twins.is_empty() {
+        return None;
+    }
+    let own = id_digest(id);
+    let len = (4..own.len()).find(|&n| twins.iter().all(|t| t[..n] != own[..n])).unwrap_or(own.len());
+    Some(own[..len].to_string())
+}
+
+/// Jar `id`'s label, what every view shows for it (spec "Names"); `None` when there is no jar `id`. The stored name
+/// when no other jar has it, else `"<name> · #<frag>"` (`jar_fragment`). Derived each time, never stored or synced.
+pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<String> {
+    let name = &defs.get(&id)?.name;
+    Some(match jar_fragment(id, defs) {
+        Some(frag) => format!("{name} · #{frag}"),
+        None => name.clone(),
+    })
+}
+
 impl App {
     /// The card's jar chip (spec "UI"): `None` for a tab on the default jar with nothing to warn about.
     pub(crate) fn jar_chip(&self, id: &str) -> Option<JarChip> {
@@ -111,10 +150,11 @@ impl App {
         })
     }
 
-    /// "Default", or a named jar's name (also "Default" once it is gone, as that is what its tabs use).
+    /// "Default", or a named jar's label (`named_jar_label`; also "Default" once it is gone, as that is what its tabs
+    /// use).
     pub(crate) fn jar_label(&self, key: JarKey) -> String {
         match key {
-            JarKey::Named(id) => self.jar_defs.get(&id).map_or_else(|| "Default".into(), |d| d.name.clone()),
+            JarKey::Named(id) => named_jar_label(id, &self.jar_defs).unwrap_or_else(|| "Default".into()),
             JarKey::Default => "Default".into(),
         }
     }
@@ -546,13 +586,14 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::JarConfirm;
+    use super::{id_digest, jar_fragment, named_jar_label, JarConfirm};
     use crate::card::DropEffect;
     use crate::jar::{JarChoice, JarKey};
     use crate::node::{GroupPayload, NodePayload};
     use crate::session_sync::tests::{add, sleeping_tab};
+    use crate::store::model::NodeId;
     use crate::App;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn tab_in(app: &mut App, group: Option<&str>) -> String {
         let id = add(app, sleeping_tab("https://a.com/", "A"));
@@ -878,6 +919,98 @@ mod tests {
             "deleted elsewhere meanwhile: nothing to ask"
         );
         assert!(app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(work))).is_none());
+    }
+
+    /// A jar def named `name`, for tests that need chosen ids.
+    fn def(name: &str) -> crate::JarDef {
+        crate::JarDef { name: name.into(), color: None, ephemeral: false }
+    }
+
+    fn id(counter: u64) -> NodeId {
+        NodeId { actor: crate::store::model::ActorId(0xabcd), counter }
+    }
+
+    /// Jar name labels: a name no other jar has (trimmed, any case) is shown as stored; a shared one gets a marker.
+    #[test]
+    fn a_label_is_the_name_unless_another_jar_shares_it() {
+        let mut defs = BTreeMap::new();
+        defs.insert(id(1), def("Work"));
+        defs.insert(id(2), def("Home"));
+        assert_eq!(named_jar_label(id(1), &defs).as_deref(), Some("Work"));
+        assert_eq!(jar_fragment(id(1), &defs), None);
+        assert_eq!(named_jar_label(id(9), &defs), None, "no such jar");
+        defs.insert(id(3), def(" work "));
+        defs.insert(id(4), def("WORK"));
+        let labels: Vec<String> = [1, 3, 4].map(|n| named_jar_label(id(n), &defs).unwrap()).to_vec();
+        for (n, (label, name)) in labels.iter().zip(["Work", " work ", "WORK"]).enumerate() {
+            let frag = label.strip_prefix(&format!("{name} · #")).unwrap_or_else(|| panic!("{n}: {label}"));
+            assert_eq!(frag.len(), 4, "{label}");
+            assert!(frag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{label}");
+        }
+        assert_eq!(labels.iter().collect::<BTreeSet<_>>().len(), 3, "every clashing label differs: {labels:?}");
+        assert_eq!(named_jar_label(id(2), &defs).as_deref(), Some("Home"), "an unrelated jar stays plain");
+    }
+
+    /// Two ids whose 4-character fragments collide get longer ones, just long enough to differ; a third jar with the
+    /// same name whose 4 characters already differ keeps them.
+    #[test]
+    fn colliding_fragments_lengthen_just_enough() {
+        let mut seen = std::collections::HashMap::new();
+        let (a, b) = (0..)
+            .find_map(|n| seen.insert(id_digest(id(n))[..4].to_string(), id(n)).map(|other| (other, id(n))))
+            .unwrap();
+        let (da, db) = (id_digest(a), id_digest(b));
+        let differ = (0..).find(|&i| da.as_bytes()[i] != db.as_bytes()[i]).unwrap();
+        let c = (0..).map(id).find(|&c| c != a && c != b && id_digest(c)[..4] != da[..4]).unwrap();
+        let mut defs = BTreeMap::new();
+        for n in [a, b, c] {
+            defs.insert(n, def("Work"));
+        }
+        assert_eq!(jar_fragment(a, &defs), Some(da[..=differ].to_string()));
+        assert_eq!(jar_fragment(b, &defs), Some(db[..=differ].to_string()));
+        assert_ne!(jar_fragment(a, &defs), jar_fragment(b, &defs));
+        assert_eq!(jar_fragment(c, &defs), Some(id_digest(c)[..4].to_string()));
+    }
+
+    /// A label is derived from the jar's own id: adding or deleting a jar with another name never changes it, and
+    /// it is back to the plain name once its twin goes.
+    #[test]
+    fn a_label_is_stable_while_other_jars_come_and_go() {
+        let mut app = App::default();
+        let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+        let label = |app: &App, j| app.jar_label(JarKey::Named(j));
+        let (l1, l2) = (label(&app, w1), label(&app, w2));
+        assert_ne!(l1, l2);
+        let home = app.create_jar("Home");
+        assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2.clone()), "a third jar added elsewhere");
+        app.delete_jar(home);
+        assert_eq!((label(&app, w1), label(&app, w2)), (l1.clone(), l2), "and deleted");
+        app.delete_jar(w2);
+        assert_eq!(label(&app, w1), "Work", "no twin left: plain again");
+        let w3 = app.create_jar("work");
+        // The same marker when a twin comes back (longer only in the 1-in-65536 case that the two collide).
+        assert!(label(&app, w1).starts_with(&l1), "{} vs {l1}", label(&app, w1));
+        assert!(label(&app, w3).starts_with("work · #"));
+    }
+
+    /// The chip, its will-switch text and the confirm dialogs all name a clashing jar by its label.
+    #[test]
+    fn the_chip_and_confirms_show_the_label() {
+        let mut app = App::default();
+        let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+        let l2 = app.jar_label(JarKey::Named(w2));
+        assert!(l2.starts_with("Work · #"), "{l2}");
+        let t = tab_in(&mut app, None);
+        app.set_tab_jar(&t, Some(w2));
+        assert_eq!(app.jar_chip(&t).unwrap().name, l2);
+        assert_eq!(
+            app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(w2))).unwrap().0,
+            format!("Clear cookies in {l2}?")
+        );
+        assert_eq!(app.jar_confirm_text(JarConfirm::Delete(w2)).unwrap().0, format!("Delete jar {l2}?"));
+        assert_eq!(app.jar_confirm_text(JarConfirm::Ephemeral(w2)).unwrap().0, format!("Make {l2} ephemeral?"));
+        let l1 = app.jar_label(JarKey::Named(w1));
+        assert_eq!(app.jar_confirm_text(JarConfirm::Delete(w1)).unwrap().0, format!("Delete jar {l1}?"));
     }
 
     /// Task 6 review M3: "Switch Jar Now" waits out an engine swap or a sleep already on its way, since either

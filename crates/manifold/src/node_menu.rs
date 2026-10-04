@@ -662,7 +662,7 @@ impl App {
                 .iter()
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
-                    name: d.name.clone(),
+                    name: crate::jar_defs::named_jar_label(*jid, &self.jar_defs).unwrap_or_else(|| d.name.clone()),
                     color: d.color,
                     ticked: ticked(*jid),
                     count: count(*jid),
@@ -1035,6 +1035,23 @@ mod tests {
         app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect::<Vec<_>>(), [("Default", true)]);
+    }
+
+    /// Jar name labels: the tab and group menus list two same-named jars by their labels, a unique one plainly.
+    #[test]
+    fn the_jar_menus_list_same_named_jars_by_label() {
+        let mut app = App::default();
+        let (w1, w2, home) = (app.create_jar("Work"), app.create_jar("Work"), app.create_jar("Home"));
+        let label = |app: &App, j| app.jar_label(crate::jar::JarKey::Named(j));
+        let want = [label(&app, w1), label(&app, w2), "Home".to_string()];
+        assert!(want[0].starts_with("Work · #") && want[1].starts_with("Work · #") && want[0] != want[1], "{want:?}");
+        assert_eq!(label(&app, home), "Home");
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
+        assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
+        let g = crate::session_sync::tests::add(&mut app, NodePayload::Group(crate::node::GroupPayload::named("G")));
+        let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
+        assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
     }
 
     fn menu_ctx() -> egui::Context {
