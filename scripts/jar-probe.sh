@@ -157,14 +157,15 @@ fi
 
 # Slot reuse while the browser lives: tab C (the first host, whose job holds the browser process; started alone
 # first) stays open; tab A logs in and closes; tab B then takes the lowest free profile name, A's if its folder could
-# be deleted. All within the first 30 s, so no pull carries A's login into the jar (B's `seeded 0 cookies` confirms
-# it). NEWTAB leaves focus on C, so NEXTTAB (tabs cycle in creation order) moves it to the new tab before
-# ADDRESSBAR and CLOSETAB; closing a tab leaves nothing focused.
+# be deleted. A closes well within the first 30 s, so no pull carries A's login into the jar (B's `seeded 0 cookies`
+# confirms it). NEWTAB leaves focus on C, so NEXTTAB (tabs cycle in creation order) moves it to the new tab before
+# ADDRESSBAR and CLOSETAB; closing a tab leaves nothing focused. A's slot is freed only after `remove_cache_dir` gives
+# up on its folder, which C's live browser holds: 50 tries, measured 5.1 to 9.6 s (2026-10-04), so B waits 14 s.
 if wanted reuse; then
 rm -rf "$profile/manifold/jars"
 n0=$(wc -l <"$out/req.log")
 run reuse webview2 /whoami?c 4 "SLEEP 4" NEWTAB WAITTABS NEXTTAB "ADDRESSBAR $base/login" "SLEEP 1" ENTER "SLEEP 3" \
-  "ADDRESSBAR $base/whoami?a" "SLEEP 1" ENTER "SLEEP 3" CLOSETAB "SLEEP 7" NEWTAB WAITTABS "SLEEP 3"
+  "ADDRESSBAR $base/whoami?a" "SLEEP 1" ENTER "SLEEP 3" CLOSETAB "SLEEP 14" NEWTAB WAITTABS "SLEEP 3"
 reuse_log="$(tail -n +"$((n0 + 1))" "$out/req.log")"
 a="$(grep " webview2 /whoami?a" <<<"$reuse_log" | head -1 | awk '{print $4}')"
 r="$(grep " webview2 /whoami?b" <<<"$reuse_log" | sed -n 2p | awk '{print $4}')"
