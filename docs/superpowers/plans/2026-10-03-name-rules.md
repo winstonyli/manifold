@@ -2284,3 +2284,20 @@ Re-run on 2026-10-03 after the spec revision (emoji sequences, bookmark folders,
 - `crumb_hover(segs, short, long)` has the same argument order in its definition and its three calls.
 - `save_named_session(&mut self, raw: &str)` is called from Settings with the draft and from `event_loop.rs:1054` unchanged.
 - `PLACEHOLDER_CHARS` is `#[cfg(test)]` and read only by the font test; the interface list says so.
+
+## Outcome (2026-10-03)
+
+- Done as planned (Tasks 1-5), with the deviations listed under Self-review, plus:
+  - The guard takes a `// name rule: <why>` mark on the line itself or as a comment on the line just above (`ruled`, tested). After `cargo fmt`, six of the twelve marks sit above their line: five whose trailing comment would pass the 120 width, and `jar_named`'s, which `cargo fmt` moved. A thirteenth mark, above its read, came with the card header change below. The `ALLOWED`/`OTHER_NAMES` presence check now really checks `OTHER_NAMES` (the brief's version excused them).
+  - `CardHeader.user_name` is the display segments (`Option<&[NameSeg]>`), not a flag: `paint_group_body` runs `display_name` once for the hover and the header, and other cards' titles no longer build a segment `Vec`.
+  - The per-tab jars spec's clash line (149) and the README's "(trimmed, any case)" now name the clean-form key.
+- Live check (`scripts/drive.sh`, isolated profile, window 1400x900; shots in `target/shots/names/`, not committed). The seed added to the plan's: group `g` named `Re<U+200B>ading <U+202E>evil`, a 95-character group with U+200B, U+202E and U+202C, an empty-named group, a `Pay<U+202E>roll` jar, and a `bookmarks.json` with a hidden character and a long folder name.
+  - Graph (`2-graph.png`): `Re⟦200B⟧ading ⟦2…` and `Quarterly⟦200B⟧…` headers, placeholders dim monospace and legible on the card; the empty group reads "Untitled". Chips: `Wo⟦200B⟧rk`; `Home #2b36`; the typed `Work · #3f2a` is plain serif text, unlike a real marker.
+  - **Emoji (the spec's open question):** egui draws 👩‍💻 as 👩 and 💻 side by side, monochrome, with nothing for the joiner, on the chip, in menus and in Settings.
+  - Group card hover (`3-group-tooltip.png`): "Hidden characters: U+200B zero width space, U+202E right-to-left override". Over the card's close button it is the only tooltip; with the card's menu open it is suppressed (`4-groupmenu.png`).
+  - Menus (`4-groupmenu.png`, `5-tabmenu.png`): jar rows show `Home #2b36` / `Home #2cc2` markers, `Wo⟦200B⟧rk` and `Pay⟦202E⟧roll` distinct from them and from the typed look-alike. Move to rows show placeholders and are cut at 64 units, so the menu widens to about 515 points for the long name.
+  - Recently Closed (`7-recently-closed.png`, `7b-recently-closed-hover.png`): the long group's row is truncated at the popup's width with "…" and placeholders kept; its hover is egui's elision hover with the whole label, not a "Hidden characters" hint, and a row that fits has no hover.
+  - Breadcrumb (`8-breadcrumb.png`, `8b-breadcrumb-hover.png`): `Re⟦200B⟧ading ⟦202E⟧evil`, hover "Click to rename (F2)" plus the hidden-characters line. Rename (`9a`/`9c`/`9-renamed.png`): the field prefill is the stored text (hidden characters invisible in it); after 16 Backspaces and `EGUITEXT Pa<U+200B>sted`, Enter stores exactly `"Pasted"` (`9-session.json`) and the crumb reads `Pasted`.
+  - Settings Jars (`11-settings.png`, a second run, so new ids): the `Home` markers `#5b76`/`#1159` sit beside their fields; the `Wo<U+200B>rk` and `Pay<U+202E>roll` fields show the stored text, which looks like "Work" and "Payroll" (the hover is not captured).
+  - Bookmarks list (`13-bookmarks.png`): folder headers and folder labels show `Re⟦200B⟧ading ⟦202E⟧list`; the long folder name wraps at the popup's width and, cut at 64 units with no ellipsis, ends "past the" / "w" on a line of its own.
+- Open, for the user: the display cap cuts with no ellipsis, so a capped name looks complete (the bookmark folder's lone "w", the Move to row's "travel and"); and the Recently Closed row has no hover naming its hidden characters.
