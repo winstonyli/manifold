@@ -852,8 +852,13 @@ impl App {
                     let entry = &self.history[i];
                     let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
                     // Keyed by the entry, not by position: a windowed list starts at a different row each
-                    // scroll, and positional ids would move keyboard focus to another entry.
-                    if ui.push_id(i, |ui| list_row(ui, label)).inner.clicked() {
+                    // scroll, and positional ids would move keyboard focus to another entry. An explicit id,
+                    // not `push_id`: a child's id also mixes in the parent's running widget count, which is
+                    // positional. (An entry evicted at `MAX_HISTORY_ENTRIES` while the popup is open shifts
+                    // every index by one, so focus slips to the neighbouring entry for that frame; rare
+                    // enough to leave.)
+                    let id = egui::Id::new(("history_row", i));
+                    if ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner.clicked() {
                         *navigate_url = Some(entry.url.clone());
                     }
                 };
@@ -862,11 +867,26 @@ impl App {
                     scroll.show(ui, |ui| matches.iter().for_each(|&i| row(ui, i, &mut navigate_url)));
                 } else {
                     // The height a row really lays out at: the popup's own font (`menu_item_style` overrides
-                    // the Body style), so `show_rows` places the window where the rows actually are.
+                    // the Body style), so the window is placed where the rows actually are.
                     let font_id = egui::FontSelection::Default.resolve(ui.style());
-                    let row_height = ui.ctx().fonts_mut(|f| f.row_height(&font_id));
-                    scroll.show_rows(ui, row_height, matches.len(), |ui, range| {
-                        matches[range].iter().for_each(|&i| row(ui, i, &mut navigate_url));
+                    let spacing = ui.spacing().item_spacing.y;
+                    let pitch = ui.ctx().fonts_mut(|f| f.row_height(&font_id)) + spacing;
+                    scroll.show_viewport(ui, |ui, viewport| {
+                        ui.set_height((pitch * matches.len() as f32 - spacing).max(0.0));
+                        // `ScrollArea::show_rows`, but with one row of overlap above the view as well as
+                        // below: `show_rows` leaves out the row just above a view whose top edge falls on a
+                        // row boundary, and Up from the first laid-out row would then have nowhere to go.
+                        // The extra row takes the focus, and `list_row`'s `scroll_to_me` brings it in.
+                        let end = ((viewport.max.y / pitch).ceil() as usize + 1).min(matches.len());
+                        let first = ((viewport.min.y / pitch).floor() as usize).saturating_sub(1).min(end);
+                        let top = ui.max_rect().top();
+                        let rect = egui::Rect::from_x_y_ranges(
+                            ui.max_rect().x_range(),
+                            top + first as f32 * pitch..=top + end as f32 * pitch,
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            matches[first..end].iter().for_each(|&i| row(ui, i, &mut navigate_url));
+                        });
                     });
                     mark_list_partial(ui);
                 }
@@ -1882,8 +1902,9 @@ mod engine_picker_tests {
         clicked
     }
 
-    /// A long History popup lays out only the rows in view, and Down walks past them (the list scrolls, so the
-    /// newest entry leaves the view) without Up wrapping from the first row to the last laid-out one.
+    /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view
+    /// (the list scrolls), and Up walks back one at a time to the newest entry (the list scrolls back), without
+    /// wrapping at either end of the laid-out window.
     #[test]
     fn a_long_history_popup_lays_out_only_the_rows_in_view() {
         let ctx = egui::Context::default();
@@ -1896,7 +1917,8 @@ mod engine_picker_tests {
         let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
         // A second a frame, so `scroll_to_me`'s scroll animation finishes between frames.
         let mut time = 0.0;
-        let mut drawn = |events: Vec<egui::Event>| -> Vec<String> {
+        // One frame: the entry numbers painted, top to bottom, and the focused row's entry.
+        let mut frame = |events: Vec<egui::Event>| -> (Vec<usize>, Option<usize>) {
             time += 1.0;
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
@@ -1906,33 +1928,48 @@ mod engine_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| app.build_history_popup(ui, anchor, 1.0));
             output.textures_delta.clear();
-            output
+            let rows: Vec<(usize, egui::Pos2)> = output
                 .shapes
                 .into_iter()
                 .filter_map(|s| match s.shape {
-                    egui::Shape::Text(t) if t.galley.job.text.starts_with("entry ") => Some(t.galley.job.text.clone()),
+                    egui::Shape::Text(t) => {
+                        t.galley.job.text.strip_prefix("entry ").and_then(|n| n.parse().ok()).map(|n| (n, t.pos))
+                    }
                     _ => None,
                 })
-                .collect()
+                .collect();
+            let focused = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).map(|r| r.rect);
+            let at = focused.and_then(|r| rows.iter().find(|(_, pos)| r.y_range().contains(pos.y + 1.0)).map(|p| p.0));
+            (rows.into_iter().map(|(n, _)| n).collect(), at)
         };
         for _ in 0..3 {
-            drawn(vec![]);
+            frame(vec![]);
         }
-        let rows = drawn(vec![]);
+        let (rows, at) = frame(vec![]);
         // Painted rows alone prove nothing (a label out of view is laid out but not painted): count the widgets.
         let widgets = ctx.viewport(|v| v.this_pass.widgets.layers().map(|(_, w)| w.len()).sum::<usize>());
         assert!(widgets < 100, "{widgets} widgets laid out for 300 entries");
-        assert_eq!(rows[0], "entry 299", "newest first");
-        drawn(vec![key(egui::Key::ArrowUp)]);
-        assert_eq!(drawn(vec![])[0], "entry 299", "Up on the first row does not wrap in a windowed list");
-        for _ in 0..rows.len() + 5 {
-            drawn(vec![key(egui::Key::ArrowDown)]);
-            drawn(vec![]);
+        assert_eq!((rows[0], at), (299, Some(299)), "newest first, and focused");
+        frame(vec![key(egui::Key::ArrowUp)]);
+        assert_eq!(frame(vec![]).1, Some(299), "Up on the first row does not wrap in a windowed list");
+        let steps = rows.len() + 5;
+        for k in 1..=steps {
+            frame(vec![key(egui::Key::ArrowDown)]);
+            frame(vec![]); // the focused row scrolls into view on the frame after it takes focus
+            let (rows, at) = frame(vec![]);
+            assert_eq!(at, Some(299 - k), "Down step {k}: {rows:?}");
         }
-        let rows = drawn(vec![]);
-        assert!(!rows.contains(&"entry 299".to_owned()), "Down walked past the first view: {rows:?}");
-        let n: Vec<usize> = rows.iter().map(|r| r["entry ".len()..].parse().unwrap()).collect();
-        assert!(n.windows(2).all(|w| w[0] == w[1] + 1), "a contiguous window, newest first: {rows:?}");
+        let (rows, _) = frame(vec![]);
+        assert!(!rows.contains(&299), "Down walked past the first view: {rows:?}");
+        assert!(rows.windows(2).all(|w| w[0] == w[1] + 1), "a contiguous window, newest first: {rows:?}");
+        for k in (0..steps).rev() {
+            frame(vec![key(egui::Key::ArrowUp)]);
+            frame(vec![]); // the focused row scrolls into view on the frame after it takes focus
+            let (rows, at) = frame(vec![]);
+            assert_eq!(at, Some(299 - k), "Up back to {}: {rows:?}", 299 - k);
+        }
+        let (rows, at) = frame(vec![]);
+        assert_eq!((rows[0], at), (299, Some(299)), "back at the top, scrolled back: {rows:?}");
         assert_eq!(app.open_popup, Some(AnchoredPopup::History));
     }
 
