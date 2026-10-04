@@ -23,20 +23,20 @@ pub fn downloads_dir() -> PathBuf {
 ///   file would then not be at the path this returns);
 /// - at most `MAX_NAME_UNITS` UTF-16 units, cut from the stem so the
 ///   extension stays (`cap_length`);
-/// - a Windows device name (`is_windows_device_name`) gets a leading `_`;
+/// - a Windows device name (`is_windows_device_name`) gets a leading `_`, within that length;
 /// - "download" if nothing is left, or only `.`/`..`.
 pub fn safe_name(suggested: &str) -> String {
     let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String =
         last.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
     let capped = cap_length(cleaned.trim_end_matches(['.', ' ']));
-    let name = capped.as_str();
-    if name.is_empty() {
+    if capped.is_empty() {
         "download".to_string()
-    } else if is_windows_device_name(name) {
-        format!("_{name}")
+    } else if is_windows_device_name(&capped) {
+        // Cut again with the `_` in place, so the prefix can't push it past the cap.
+        cap_length(&format!("_{capped}"))
     } else {
-        name.to_string()
+        capped
     }
 }
 
@@ -206,6 +206,34 @@ mod tests {
         ] {
             assert_eq!(safe_name(raw), want, "{raw:?}");
         }
+    }
+
+    #[test]
+    fn a_device_name_prefix_stays_within_the_cap_and_safe_name_is_idempotent() {
+        let units = |s: &str| s.encode_utf16().count();
+        let inputs = [
+            format!("CON.{}", "x".repeat(300)),
+            format!("CON.{}", "\u{1F600}".repeat(200)),
+            format!("nul{}.txt", " ".repeat(300)),
+            format!("CON{}x.txt", " ".repeat(300)),
+            "COM1".repeat(100),
+            "CON".to_string(),
+            "con.txt".to_string(),
+            "LPT\u{b9}.tar.gz".to_string(),
+            "\u{1F600}".repeat(300),
+            format!("{}.pdf", "a".repeat(300)),
+        ];
+        for raw in &inputs {
+            let once = safe_name(raw);
+            assert!(units(&once) <= MAX_NAME_UNITS, "{raw:?} gave {} units", units(&once));
+            assert!(!is_windows_device_name(&once), "{raw:?} gave a device name");
+            assert_eq!(safe_name(&once), once, "{raw:?} is not idempotent");
+        }
+        assert_eq!(safe_name("CON"), "_CON");
+        assert_eq!(safe_name("con.txt"), "_con.txt");
+        let capped = safe_name(&format!("CON.{}", "x".repeat(300)));
+        assert_eq!(units(&capped), MAX_NAME_UNITS);
+        assert!(capped.starts_with("_CON.x"));
     }
 
     #[test]
