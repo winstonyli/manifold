@@ -2143,7 +2143,7 @@ impl App {
             .nodes
             .values()
             .filter_map(|node| match &node.payload {
-                NodePayload::Group(group) => Some(group.name.as_str()),
+                NodePayload::Group(group) => Some(group.name.as_str()), // name rule: compares stored names
                 _ => None,
             })
             .collect();

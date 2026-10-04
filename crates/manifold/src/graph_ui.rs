@@ -888,13 +888,12 @@ impl App {
                 // toolbar's other buttons were already
                 // confirmed live to hit once before (see the
                 // icon-only button conversion elsewhere in this
-                // file). Truncated the same char-count way
-                // `json_summary` already bounds a JSON card's
-                // own label, for the same "small fixed chrome,
-                // not a place for arbitrarily long text" reason.
-                // Shortened by the name rules (`names::shorten`),
-                // so a placeholder counts as one and cannot dodge
-                // the bound.
+                // file). So it is drawn by the display rule and
+                // cut to `CRUMB_UNITS` by `names::shorten` (small
+                // fixed chrome, not a place for arbitrarily long
+                // text), where a placeholder counts as one unit
+                // and cannot dodge the bound; the hover gives the
+                // whole name.
                 let segs = crate::names::display_name(name, crate::names::UNTITLED);
                 let shown = crate::names::shorten(&segs, CRUMB_UNITS);
                 let text = crate::names::name_job(ui, "", shown.as_deref().unwrap_or(&segs), "");

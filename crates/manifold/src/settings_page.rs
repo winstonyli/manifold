@@ -499,7 +499,7 @@ impl App {
         for (&id, def) in &self.jar_defs {
             let marker = self.jar_label(JarKey::Named(id)).marker_text();
             head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), marker, &mut |ui| {
-                let mut draft = jar_name_draft(ui, id, &def.name);
+                let mut draft = jar_name_draft(ui, id, &def.name); // name rule: the field edits the stored name
                 let key = egui::Id::new(("jar_name", id));
                 let edit =
                     egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(ui.available_width());

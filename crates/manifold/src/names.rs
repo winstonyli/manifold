@@ -3,9 +3,6 @@
 //! `display_name`, for every stored name that is drawn. Stored names are never rewritten. A name from sync, an import
 //! or older data is shown through the display rule, which reveals a hidden character as a placeholder.
 
-// The callers arrive in the next commits (name-rules plan, Tasks 2-4); Task 5 removes this.
-#![allow(dead_code)]
-
 use icu_properties::props::{BinaryProperty, EnumeratedProperty, ExtendedPictographic, GeneralCategory};
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
@@ -662,5 +659,123 @@ mod tests {
         let font = skrifa::FontRef::from_index(&data.font, data.index).expect("a readable font file");
         let missing: Vec<char> = PLACEHOLDER_CHARS.chars().filter(|&c| font.charmap().map(c).is_none()).collect();
         assert_eq!(missing, Vec::<char>::new(), "{first} lacks these, so a placeholder would draw tofu");
+    }
+
+    /// Source files that may read a group, jar or session `.name`: each read there is either drawn through a name
+    /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
+    /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
+    /// which rule its site gets.
+    const ALLOWED: [&str; 9] = [
+        "card.rs",
+        "graph_nav.rs",
+        "jar_defs.rs",
+        "main.rs",
+        "node.rs",
+        "node_menu.rs",
+        "session_sync.rs",
+        "settings_page.rs",
+        "shortcuts.rs",
+    ];
+    /// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`).
+    const OTHER_NAMES: [&str; 2] = ["jar.rs", "json_level_ui.rs"];
+    const RULE_MARKS: [&str; 8] = [
+        "display_name(",
+        "clean_name(",
+        "name_key(",
+        ".display()",
+        "append_to(",
+        "marker_text(",
+        "hidden_hint(",
+        "// name rule:",
+    ];
+
+    /// `src` up to its first test module. Every file here keeps its test modules last (checked when the guard was
+    /// written, 2026-10-03).
+    fn production(src: &str) -> &str {
+        let starts = ["#[cfg(test)]\nmod ", "#[cfg(test)]\npub(crate) mod "];
+        starts.iter().filter_map(|m| src.find(m)).min().map_or(src, |i| &src[..i])
+    }
+
+    /// The `.name` reads on `line`: `.name` not followed by more of an identifier (`.name_format`), not assigned
+    /// (`.name = `), and not an engine descriptor's (`desc().name`).
+    fn name_reads(line: &str) -> usize {
+        line.match_indices(".name")
+            .filter(|(i, _)| {
+                let rest = &line[i + ".name".len()..];
+                !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    && !rest.starts_with(" = ")
+                    && !line[..*i].ends_with("desc()")
+            })
+            .count()
+    }
+
+    /// Whether the `.name` reads on `line` are ruled: the line itself holds one of `RULE_MARKS` (a rule's call, or a
+    /// trailing `// name rule: <why>`), or the line just above is a `// name rule: <why>` comment of its own. The
+    /// mark goes above where a trailing comment would push the line past the width or `cargo fmt` would move it.
+    fn ruled(above: &str, line: &str) -> bool {
+        RULE_MARKS.iter().any(|m| line.contains(m)) || above.trim_start().starts_with("// name rule:")
+    }
+
+    #[test]
+    fn name_reads_counts_reads_only() {
+        assert_eq!(name_reads("let n = group.name.clone();"), 1);
+        assert_eq!(name_reads("f(&a.name, &b.name)"), 2);
+        assert_eq!(name_reads("group.name = clean;"), 0);
+        assert_eq!(name_reads("label.name_format(font)"), 0);
+        assert_eq!(name_reads("engine.desc().name"), 0);
+        assert_eq!(production("a\n#[cfg(test)]\nmod tests {\nb.name\n}"), "a\n");
+    }
+
+    #[test]
+    fn a_mark_counts_on_the_line_or_the_line_above() {
+        let read = "let n = group.name.clone();";
+        assert!(!ruled("", read));
+        assert!(ruled("", "let n = group.name.clone(); // name rule: why"));
+        assert!(ruled("    // name rule: why", read));
+        assert!(ruled("", "let n = display_name(&group.name, UNTITLED);"));
+        // Only a raw mark reaches down a line, not a rule's call above.
+        assert!(!ruled("let s = display_name(&a, UNTITLED);", read));
+        assert!(!ruled("// a comment", read));
+    }
+
+    /// Spec "Guard against missed sites": outside `names.rs` and the store layer, a stored name reaches UI text only
+    /// through a name rule.
+    #[test]
+    fn every_stored_name_reaches_the_screen_through_a_name_rule() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                assert_eq!(file, "store", "a new source folder: scan it here too");
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || file == "names.rs" {
+                continue;
+            }
+            seen.push(file.clone());
+            if OTHER_NAMES.contains(&file.as_str()) {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+            let mut above = "";
+            for (no, line) in production(&src).lines().enumerate() {
+                let reads = !line.trim_start().starts_with("//") && name_reads(line) > 0;
+                if reads && (!ALLOWED.contains(&file.as_str()) || !ruled(above, line)) {
+                    offenders.push(format!("{file}:{}: {}", no + 1, line.trim()));
+                }
+                above = line;
+            }
+        }
+        for file in ALLOWED.iter().chain(&OTHER_NAMES) {
+            assert!(seen.contains(&file.to_string()), "{file} is gone: drop it from the list");
+        }
+        assert_eq!(
+            offenders,
+            Vec::<String>::new(),
+            "draw a stored name through names::display_name, or mark a raw use `// name rule: <why>`"
+        );
     }
 }

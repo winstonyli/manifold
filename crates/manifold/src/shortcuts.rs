@@ -199,6 +199,7 @@ impl App {
         if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
+        // name rule: the field edits the stored name
         let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
         self.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);

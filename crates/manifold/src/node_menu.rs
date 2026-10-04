@@ -669,6 +669,7 @@ impl App {
                 .filter(|other| other.as_str() != id)
                 .filter_map(|other| {
                     let sibling = self.nodes.get(other).filter(|n| n.group == node.group)?;
+                    // name rule: drawn by display_name in the MoveTo rows
                     Some((other.clone(), sibling.as_group()?.name.clone()))
                 })
                 .collect(),
@@ -772,6 +773,7 @@ impl App {
             }
             NodeAction::FitSubtree => self.camera.jump_to(self.fit_subtree_scene_rect(id)),
             NodeAction::Rename => {
+                // name rule: the field edits the stored name
                 let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
                 self.renaming_group = Some((id.to_string(), name));
                 self.pending_focus = Some(FocusTarget::GroupRename);

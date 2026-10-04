@@ -181,6 +181,7 @@ pub(crate) fn paint_jar_chip(
     });
     let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
     let fit = fit_jar_chip(max_width, lead, name.size().x, marker.as_ref().map_or(0.0, |m| m.size().x))?;
+    // name rule: a fitted width, not text
     let name = fit.name.map(|room| if room >= name.size().x { name } else { name_job(Some(room)) });
     let marker = marker.filter(|_| fit.marker);
     let lead = if fit.lead { lead } else { 0.0 };
@@ -847,7 +848,7 @@ pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
         NodePayload::Image(image) => vec![download_filename(&image.path)],
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
-        NodePayload::Group(group) => vec![&group.name],
+        NodePayload::Group(group) => vec![&group.name], // name rule: the filter matches the stored text
     }
 }
 

@@ -146,7 +146,8 @@ action) and the settings page's sections.
 **Names.** A jar is its node id; its name is only what it is called, and need not be unique. A rename to a name in use is
 allowed, and import never matches jars by name. Every view shows a jar's *label*, derived each time and never stored or
 synced (`jar_defs::JarLabel`, from `named_jar_label` and `App::jar_label`). A label is a name and an optional marker:
-- A name no other jar has, compared trimmed and in any case, is shown as stored, with no marker.
+- A name no other jar has, compared by its clean form (name rules: hidden characters dropped, spaces collapsed,
+  trimmed) and in any case, is shown with no marker, through the name rules' display rule.
 - When two or more jars share a name, each one's marker is `#<frag>`. `<frag>` is the start of the SHA-256 hex of the node
   id's text, 4 characters, or as many more as it takes to differ from the other same-named jars'. It derives from the id
   alone, so it stays the same for the jar's life.
@@ -192,5 +193,5 @@ localStorage and the other storage the v1 spec leaves out.
 - Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
-- Name rules for every user-editable name (jars, groups, the saved-session name) are designed in `2026-10-03-name-rules-design.md`, not built yet; jar names today only trim and reject empty.
+- Name rules for every user-editable name (jars, groups, the saved-session name, bookmark folders) are built (`2026-10-03-name-rules-design.md`): names are cleaned when committed, and a stored name's hidden characters are shown as placeholders.
 - After "Clear cookies", every pull from that jar's running tabs is dropped until they switch, including a login made after the clear (plan deviation 14). Accepted as "cleared means cleared"; revisit if users sign in again in a tab still waiting to switch and expect it kept.

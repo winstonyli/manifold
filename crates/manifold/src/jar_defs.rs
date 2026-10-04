@@ -214,7 +214,7 @@ impl std::fmt::Display for JarLabel {
 /// Jar `id`'s label, what every view shows for it (spec "Names"); `None` when there is no jar `id`. The stored name,
 /// with a `Fragment` marker (`jar_fragment`) when another jar has that name.
 pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<JarLabel> {
-    let name = defs.get(&id)?.name.clone();
+    let name = defs.get(&id)?.name.clone(); // name rule: drawn through JarLabel::display
     Some(JarLabel { name, marker: jar_fragment(id, defs).map(JarMarker::Fragment) })
 }
 
@@ -323,8 +323,9 @@ impl App {
         }
     }
 
-    /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without a colour shows the first, `jar_color`),
-    /// so deleting a jar doesn't make the next one repeat a colour; with every colour taken, they cycle by count.
+    /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without
+    /// a colour shows the first, `jar_color`), so deleting a jar doesn't make the next one repeat a colour; with every
+    /// colour taken, they cycle by count.
     /// Saved by the caller's `save_session`.
     pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
         let id: NodeId = self.alloc_node_id().parse().expect("alloc_node_id returns a store id");
@@ -344,6 +345,7 @@ impl App {
             .jar_defs
             .keys()
             .find(|&&id| named_jar_label(id, &self.jar_defs).is_some_and(|l| l.to_string() == text));
+        // name rule: SETJAR matches the stored name
         label.or_else(|| self.jar_defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 

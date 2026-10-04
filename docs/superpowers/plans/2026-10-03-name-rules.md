@@ -2264,6 +2264,8 @@ Re-run on 2026-10-03 after the spec revision (emoji sequences, bookmark folders,
 - **The guard with an explicit list:** Task 5. Folder, note and Recently Closed sites are invisible to it, as the spec says, and covered by their tests.
 - **The live check:** Task 5, steps 1-7, now with a 👩‍💻 jar to see how egui draws a kept sequence (the spec's open question).
 - **Migration:** none needed.
+- **An empty group name** is drawn "Untitled" everywhere, and its screen-reader name is "Group: Untitled" (`node.rs` test); the spec's Sites table says so since Task 5.
+- **A note's first line in `accessible_name`** is capped at 64 units by `display_name`, as in the Recently Closed row; the spec's Sites table says so since Task 5.
 
 **Deviations from the spec, to record in the Outcome:**
 - The Recently Closed rows and the session toasts are sites the guard cannot see: the name comes through `str_field(..)` or a local, not `.name`. They are listed in the Sites table instead.

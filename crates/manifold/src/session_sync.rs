@@ -339,7 +339,7 @@ impl App {
                 }
                 NodePayload::Download(_) => continue,
                 NodePayload::Group(g) => {
-                    fields.insert(field::NAME, str(&g.name));
+                    fields.insert(field::NAME, str(&g.name)); // name rule: synced as stored
                     fields.insert(field::FROM_JSON, FieldValue::Bool(g.from_json));
                     fields.insert(field::DEFAULT_JAR, FieldValue::Id(g.default_jar));
                     Kind::Group
@@ -386,7 +386,7 @@ impl App {
         for (id, def) in &self.jar_defs {
             let fields = Fields::from([
                 (field::COLOR, color_value(def.color)),
-                (field::NAME, str(&def.name)),
+                (field::NAME, str(&def.name)), // name rule: synced as stored
                 (field::EPHEMERAL, FieldValue::Bool(def.ephemeral)),
             ]);
             out.insert(*id, Shared { kind: Kind::Jar, group: None, fields });
