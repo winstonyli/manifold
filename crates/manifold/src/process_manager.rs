@@ -1011,9 +1011,29 @@ fn log_tail(path: &Path, lines: usize) -> String {
 /// now-dropped `EngineTab`, so the `send` below simply fails and is
 /// ignored; only a tab that's still the *current* one has a live `rx` to
 /// actually receive this.
+///
+/// Reads the engine's `PROTOCOL_VERSION` first. A stale host (built from an
+/// older `messages.rs`) gets a `Crashed` whose reason starts with
+/// `PROTOCOL_MISMATCH`, so no message of it is ever misread.
 fn spawn_reader_thread(mut from_engine: RemoteOrLocalReceiver) -> mpsc::Receiver<EngineToHost> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        let version = match &mut from_engine {
+            RemoteOrLocalReceiver::Local(t) => t.recv_version(),
+            RemoteOrLocalReceiver::Remote(t) => t.recv_version(),
+        };
+        match version.map(ipc_protocol::check_version) {
+            Ok(Ok(())) => {}
+            Ok(Err(mismatch)) => {
+                eprintln!("{mismatch}");
+                let _ = tx.send(EngineToHost::Crashed { reason: mismatch });
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(EngineToHost::Crashed { reason: "engine-host connection lost".to_string() });
+                return;
+            }
+        }
         loop {
             let msg = match &mut from_engine {
                 RemoteOrLocalReceiver::Local(t) => t.recv::<EngineToHost>(),
@@ -1276,6 +1296,35 @@ fn spawn_webkit_tab(tab_id: &str, initial_url: &str) -> std::io::Result<EngineTa
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// The host's reader of one engine connection, fed `version` and then a
+    /// well-formed message; returns the first event it delivers.
+    fn first_event_after_version(version: u32) -> EngineToHost {
+        use std::io::Write as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let engine = std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(&version.to_le_bytes()).unwrap();
+            // Best effort: on a mismatch the reader may already have hung up.
+            let _ = ipc_protocol::MessageChannel::new(stream).send(&EngineToHost::Cookies("[]".into()));
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let rx = spawn_reader_thread(RemoteOrLocalReceiver::Remote(ipc_protocol::MessageChannel::new(stream)));
+        engine.join().unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
+    #[test]
+    fn a_stale_engine_host_is_a_protocol_mismatch_crash() {
+        assert!(matches!(first_event_after_version(ipc_protocol::PROTOCOL_VERSION), EngineToHost::Cookies(_)));
+        match first_event_after_version(ipc_protocol::PROTOCOL_VERSION + 1) {
+            EngineToHost::Crashed { reason } => {
+                assert!(reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH), "{reason}")
+            }
+            other => panic!("expected a protocol-mismatch Crashed, got {other:?}"),
+        }
+    }
 
     /// A second spawn for the same tab id keeps the first one's log.
     #[test]

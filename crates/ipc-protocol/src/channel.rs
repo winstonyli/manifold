@@ -46,6 +46,19 @@ impl<S: Read + Write> MessageChannel<S> {
         postcard::from_bytes(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
+    /// Writes `PROTOCOL_VERSION`; the first thing each side sends.
+    pub fn send_version(&mut self) -> io::Result<()> {
+        self.stream.write_all(&crate::PROTOCOL_VERSION.to_le_bytes())?;
+        self.stream.flush()
+    }
+
+    /// Reads the peer's `send_version`.
+    pub fn recv_version(&mut self) -> io::Result<u32> {
+        let mut buf = [0u8; 4];
+        self.stream.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+
     /// Used only by `RemoteTransport`: read `len` raw frame bytes sent
     /// immediately after an `EngineToHost::FrameReady` message, since a
     /// WSL2-hosted engine-host has no shared memory segment with the
@@ -88,5 +101,31 @@ mod tests {
         out.send(&"hello".to_string()).unwrap();
         let mut back = MessageChannel::new(Cursor::new(out.into_inner().into_inner()));
         assert_eq!(back.recv::<String>().unwrap(), "hello");
+    }
+
+    #[test]
+    fn a_version_round_trips_ahead_of_messages() {
+        let mut sender = MessageChannel::new(Cursor::new(Vec::new()));
+        sender.send_version().unwrap();
+        sender.send(&7u32).unwrap();
+        let mut receiver = MessageChannel::new(Cursor::new(sender.into_inner().into_inner()));
+        assert_eq!(receiver.recv_version().unwrap(), crate::PROTOCOL_VERSION);
+        assert_eq!(receiver.recv::<u32>().unwrap(), 7);
+    }
+
+    #[test]
+    fn a_truncated_payload_is_an_eof_not_a_hang() {
+        let mut bytes = 10u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[1, 2, 3]);
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<u32>().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn garbage_payload_is_invalid_data_not_a_panic() {
+        let mut bytes = 4u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<crate::HostToEngine>().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

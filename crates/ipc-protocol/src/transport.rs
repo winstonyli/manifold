@@ -34,15 +34,30 @@ pub type RemoteTransport = MessageChannel<TcpStream>;
 /// its usual path instead of running orphaned. Before this was shared, only
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
+/// Reads the host's `PROTOCOL_VERSION` first; a mismatch is a `Shutdown`.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
 ) -> mpsc::Receiver<HostToEngine> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || loop {
-        let msg = from_host.recv::<HostToEngine>().unwrap_or(HostToEngine::Shutdown);
-        let is_shutdown = matches!(msg, HostToEngine::Shutdown);
-        if tx.send(msg).is_err() || is_shutdown {
-            break;
+    std::thread::spawn(move || {
+        match from_host.recv_version().map(crate::check_version) {
+            Ok(Ok(())) => {}
+            Ok(Err(mismatch)) => {
+                eprintln!("{mismatch}");
+                let _ = tx.send(HostToEngine::Shutdown);
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(HostToEngine::Shutdown);
+                return;
+            }
+        }
+        loop {
+            let msg = from_host.recv::<HostToEngine>().unwrap_or(HostToEngine::Shutdown);
+            let is_shutdown = matches!(msg, HostToEngine::Shutdown);
+            if tx.send(msg).is_err() || is_shutdown {
+                break;
+            }
         }
     });
     rx
@@ -109,6 +124,7 @@ fn accept_one(listener: &Listener, timeout: Duration, waiting: &mut dyn FnMut() 
 }
 
 /// Called by manifold once the engine-host child process has connected.
+/// Writes `PROTOCOL_VERSION` on the sender before returning.
 /// Returns `(sender, receiver)`: send `HostToEngine` on the first, recv
 /// `EngineToHost` on the second. `timeout` applies to each socket in turn
 /// (so the real worst case is up to `2 * timeout`, not shared/split between
@@ -129,7 +145,8 @@ pub fn accept_local_pair_while(
     timeout: Duration,
     waiting: &mut dyn FnMut() -> bool,
 ) -> io::Result<(LocalTransport, LocalTransport)> {
-    let sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout, waiting)?);
+    let mut sender = MessageChannel::new(accept_one(&pair.host_to_engine, timeout, waiting)?);
+    sender.send_version()?;
     let receiver = MessageChannel::new(accept_one(&pair.engine_to_host, timeout, waiting)?);
     Ok((sender, receiver))
 }
@@ -142,9 +159,12 @@ pub fn accept_local_pair_while(
 /// `socket_id` must match whatever id `listen_local_pair` was called
 /// with for this tab (manifold passes it down as `ENGINE_SOCKET_ID`,
 /// separate from the user-visible `ENGINE_TAB_ID`).
+/// Writes `PROTOCOL_VERSION` on the sender; `spawn_host_reader` reads the
+/// host's from the receiver.
 pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
     let receiver = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "h2e")?)?);
-    let sender = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "e2h")?)?);
+    let mut sender = MessageChannel::new(LocalStream::connect(socket_name(socket_id, "e2h")?)?);
+    sender.send_version()?;
     Ok((receiver, sender))
 }
 
@@ -196,27 +216,38 @@ pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
 /// A connection is accepted only once it sends `token` (see `connect_remote`): the
 /// listener is on every interface, so without it the first host on the network to
 /// connect would become the engine. Connections that send another token, or none
-/// within a second, are dropped and the wait continues until `timeout`.
+/// within a second (or within what is left of `timeout`, if less), are dropped and
+/// the wait continues until `timeout`; the deadline holds however many such peers
+/// arrive. Writes `PROTOCOL_VERSION` once the token is accepted.
 pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -> io::Result<RemoteTransport> {
+    let timed_out = || {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("timed out after {timeout:?} waiting for engine-host to connect"),
+        )
+    };
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
             Ok((mut stream, _addr)) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(timed_out());
+                }
                 stream.set_nonblocking(false)?;
-                stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                stream.set_read_timeout(Some(left.min(Duration::from_secs(1))))?;
                 let mut sent = [0u8; TOKEN_LEN];
                 if stream.read_exact(&mut sent).is_ok() && &sent == token {
                     stream.set_read_timeout(None)?;
-                    return Ok(MessageChannel::new(stream));
+                    let mut channel = MessageChannel::new(stream);
+                    channel.send_version()?;
+                    return Ok(channel);
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("timed out after {timeout:?} waiting for engine-host to connect"),
-                    ));
+                    return Err(timed_out());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -227,11 +258,13 @@ pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -
 
 /// `host` is the Windows side's address as reachable from inside WSL2 —
 /// the default-gateway IP, not 127.0.0.1 (see `listen_remote`).
-/// Sends `token` first, which `accept_remote` checks.
+/// Sends `token` first, which `accept_remote` checks, then `PROTOCOL_VERSION`.
 pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<RemoteTransport> {
     let mut stream = TcpStream::connect((host, port))?;
     stream.write_all(token)?;
-    Ok(MessageChannel::new(stream))
+    let mut channel = MessageChannel::new(stream);
+    channel.send_version()?;
+    Ok(channel)
 }
 
 #[cfg(test)]
@@ -295,6 +328,79 @@ mod tests {
             "accept_local_pair took {elapsed:?}, expected roughly 2x the {timeout:?} timeout"
         );
     }
+
+    #[test]
+    fn a_dropped_host_becomes_shutdown() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&crate::PROTOCOL_VERSION.to_le_bytes()).unwrap();
+            // dropped: the engine's reader must turn this into Shutdown
+        });
+        let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
+        host.join().unwrap();
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToEngine::Shutdown));
+    }
+
+    #[test]
+    fn a_wrong_version_from_the_host_becomes_shutdown() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&(crate::PROTOCOL_VERSION + 1).to_le_bytes()).unwrap();
+            // A well-formed Navigate after it must never be delivered. Best
+            // effort: the reader may already have hung up on the bad version.
+            let _ =
+                MessageChannel::new(stream).send(&HostToEngine::Navigate { url: "https://x".into(), referrer: None });
+        });
+        let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
+        host.join().unwrap();
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToEngine::Shutdown));
+    }
+
+    /// An intruder that keeps reconnecting with a bad token must not keep
+    /// `accept_remote` past its deadline.
+    #[test]
+    fn accept_remote_times_out_under_a_stream_of_bad_peers() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let intruder = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+                        let _ = s.write_all(&[0u8; TOKEN_LEN]);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        };
+        let start = Instant::now();
+        let result = accept_remote(&listener, Duration::from_millis(300), &[7; TOKEN_LEN]);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        intruder.join().unwrap();
+        assert_eq!(result.err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
+
+    /// Peers that connect and then say nothing each used to cost a full 1 s
+    /// read timeout, deadline or not, so a queue of them kept `accept_remote`
+    /// (on the UI thread) busy for as many seconds as there were peers.
+    #[test]
+    fn accept_remote_times_out_under_silent_peers() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Held open (not dropped) so each read waits out its timeout, not EOF.
+        let silent: Vec<TcpStream> = (0..5).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+        let start = Instant::now();
+        let result = accept_remote(&listener, Duration::from_millis(300), &[7; TOKEN_LEN]);
+        drop(silent);
+        assert_eq!(result.err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +430,9 @@ mod token_tests {
         let mut accepted = accept_remote(&listener, Duration::from_secs(5), &token).expect("the real engine");
         let mut engine = engine.join().unwrap();
         intruder.join().unwrap();
+        // Each side wrote its version as soon as the token was through.
+        assert_eq!(accepted.recv_version().unwrap(), crate::PROTOCOL_VERSION);
+        assert_eq!(engine.recv_version().unwrap(), crate::PROTOCOL_VERSION);
         engine.send(&1u8).unwrap();
         assert_eq!(accepted.recv::<u8>().unwrap(), 1);
     }
