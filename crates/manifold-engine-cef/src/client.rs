@@ -2,6 +2,11 @@
 // handler or shared handle; bundling them into a struct would only rename the list.
 #![allow(clippy::too_many_arguments)]
 
+// cef-rs fills in every callback of a wrapped handler, so one left out returns `Default::default()` (0) where
+// CEF would have used its own default. Audited for cef 152 (2026-10-04): every int-returning callback left out
+// of this crate's handlers is one whose 0 is CEF's default too ("false for the default behavior"); the one that
+// wasn't, `can_download`, is overridden (`download_handler.rs`). Recheck when wrapping a handler or overriding less.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
