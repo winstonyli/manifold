@@ -9,6 +9,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// The most grapheme clusters a name keeps (input) or shows (display, where a placeholder counts as one).
 pub(crate) const NAME_CAP: usize = 64;
+/// The most characters a name keeps or shows, as a second budget beside `NAME_CAP`: one grapheme cluster can hold
+/// any number of characters (a combining mark or skin-tone modifier repeated, a long joiner chain).
+pub(crate) const NAME_MAX_CHARS: usize = 256;
 /// What a name with nothing left to show is drawn as.
 pub(crate) const UNTITLED: &str = "Untitled";
 /// Every character a rich placeholder (`placeholder`) can use. `tests` checks that the monospace font has them all.
@@ -64,11 +67,17 @@ fn is_pict(c: char) -> bool {
     ExtendedPictographic::for_char(c) && GeneralCategory::for_char(c) != GeneralCategory::Unassigned
 }
 
-/// The byte length of the subdivision-flag tags at the start of `rest`, the text after a 🏴: one or more tag
-/// characters U+E0020-E007E, then the cancel tag U+E007F. 0 when `rest` does not start with such a run.
+/// The most tags a subdivision flag's code has: a region (2) and a subdivision (1-4), as in `gbeng`.
+const FLAG_TAGS_MAX: usize = 6;
+
+/// The byte length of the subdivision-flag tags at the start of `rest`, the text after a 🏴: 1 to `FLAG_TAGS_MAX`
+/// tags for a lowercase letter or digit (U+E0030-E0039, U+E0061-E007A), then the cancel tag U+E007F. 0 when `rest`
+/// does not start with such a run, so a 🏴 cannot carry invisible tag text.
 fn flag_tags_len(rest: &str) -> usize {
-    let spec: usize = rest.chars().take_while(|c| ('\u{E0020}'..='\u{E007E}').contains(c)).map(char::len_utf8).sum();
-    if spec > 0 && rest[spec..].starts_with(CANCEL_TAG) {
+    let valid = |c: &char| matches!(c, '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}');
+    let tags: Vec<char> = rest.chars().take_while(valid).take(FLAG_TAGS_MAX + 1).collect();
+    let spec: usize = tags.iter().map(|c| c.len_utf8()).sum();
+    if (1..=FLAG_TAGS_MAX).contains(&tags.len()) && rest[spec..].starts_with(CANCEL_TAG) {
         spec + CANCEL_TAG.len_utf8()
     } else {
         0
@@ -133,7 +142,7 @@ fn is_clean(s: &str) -> bool {
         && !s.ends_with(' ')
         && !s.contains("  ")
         && classify(s).all(|(_, c, class)| class == Class::Keep || c == ' ')
-        && (s.len() <= NAME_CAP || s.graphemes(true).nth(NAME_CAP).is_none())
+        && (s.len() <= NAME_CAP || fits(&[NameSeg::Plain(s)], NAME_CAP, NAME_MAX_CHARS))
 }
 
 /// What a cut at a cluster boundary must not leave at the end: a space, or a joiner (should the segmenter's emoji
@@ -141,8 +150,8 @@ fn is_clean(s: &str) -> bool {
 const CUT_TRIM: [char; 2] = [' ', ZWJ];
 
 /// The input rule: `s` without hidden characters (`classify`: emoji sequences keep theirs), with each whitespace run
-/// as one plain space, trimmed, and cut to `NAME_CAP` grapheme clusters. It borrows `s` when `s` is already clean,
-/// and is idempotent.
+/// as one plain space, trimmed, and cut to `NAME_CAP` grapheme clusters and `NAME_MAX_CHARS` characters
+/// (`take_units`). It borrows `s` when `s` is already clean, and is idempotent.
 pub(crate) fn clean_name(s: &str) -> Cow<'_, str> {
     if is_clean(s) {
         return Cow::Borrowed(s);
@@ -161,9 +170,17 @@ pub(crate) fn clean_name(s: &str) -> Cow<'_, str> {
             }
         }
     }
-    if let Some((cut, _)) = out.grapheme_indices(true).nth(NAME_CAP) {
-        out.truncate(cut);
-        out.truncate(out.trim_end_matches(CUT_TRIM).len());
+    if !fits(&[NameSeg::Plain(&out)], NAME_CAP, NAME_MAX_CHARS) {
+        let kept = match take_units(&[NameSeg::Plain(&out)], NAME_CAP, NAME_MAX_CHARS)[..] {
+            [NameSeg::Plain(p)] => p.len(),
+            _ => 0,
+        };
+        out.truncate(kept);
+        // A cut inside one long cluster can strand a character whose context it took (a keycap's selector without
+        // its U+20E3): clean what is left again. It only gets shorter, so this ends.
+        if !is_clean(&out) {
+            out = clean_name(&out).into_owned();
+        }
     }
     Cow::Owned(out)
 }
@@ -200,7 +217,7 @@ pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>
     if let Some(start) = run {
         segs.push(NameSeg::Plain(&s[start..]));
     }
-    let segs = take_units(&segs, NAME_CAP);
+    let segs = take_units(&segs, NAME_CAP, NAME_MAX_CHARS);
     if segs.is_empty() {
         vec![NameSeg::Plain(fallback)]
     } else {
@@ -218,29 +235,60 @@ pub(crate) fn units(segs: &[NameSeg]) -> usize {
         .sum()
 }
 
-/// The first `max` units of `segs` (`units`), cut at a cluster boundary, with no trailing space.
-pub(crate) fn take_units<'a>(segs: &[NameSeg<'a>], max: usize) -> Vec<NameSeg<'a>> {
+/// How many characters `segs` holds, with a `Hidden` counting as one (the character it stands for).
+fn chars(segs: &[NameSeg]) -> usize {
+    segs.iter()
+        .map(|s| match s {
+            NameSeg::Plain(p) => p.chars().count(),
+            NameSeg::Hidden(_) => 1,
+        })
+        .sum()
+}
+
+/// Whether `segs` is within both budgets: `max_units` units (`units`) and `max_chars` characters (`chars`).
+fn fits(segs: &[NameSeg], max_units: usize, max_chars: usize) -> bool {
+    units(segs) <= max_units && chars(segs) <= max_chars
+}
+
+/// The characters `shorten` allows for `max` units: `NAME_MAX_CHARS` for `NAME_CAP`, in proportion for a shorter
+/// cap, so a cluster of many characters cannot widen a short row either.
+fn chars_for(max: usize) -> usize {
+    max.saturating_mul(NAME_MAX_CHARS) / NAME_CAP
+}
+
+/// The longest start of `segs` within both budgets (`fits`), cut at a cluster boundary, with no trailing space or
+/// joiner. When the first cluster alone is over `max_chars`, it is cut by character.
+fn take_units<'a>(segs: &[NameSeg<'a>], max_units: usize, max_chars: usize) -> Vec<NameSeg<'a>> {
     let mut out = Vec::new();
-    let mut left = max;
-    for &seg in segs {
-        if left == 0 {
-            break;
-        }
+    let (mut units, mut chars) = (0, 0);
+    'segs: for &seg in segs {
         match seg {
             NameSeg::Hidden(_) => {
+                if units == max_units || chars == max_chars {
+                    break;
+                }
                 out.push(seg);
-                left -= 1;
+                units += 1;
+                chars += 1;
             }
-            NameSeg::Plain(p) => match p.grapheme_indices(true).nth(left) {
-                Some((cut, _)) => {
-                    out.push(NameSeg::Plain(&p[..cut]));
-                    left = 0;
+            NameSeg::Plain(p) => {
+                for (i, g) in p.grapheme_indices(true) {
+                    let len = g.chars().count();
+                    let full = units == max_units;
+                    if full || chars + len > max_chars {
+                        let end = if !full && units == 0 {
+                            i + g.char_indices().nth(max_chars).map_or(g.len(), |(j, _)| j)
+                        } else {
+                            i
+                        };
+                        out.push(NameSeg::Plain(&p[..end]));
+                        break 'segs;
+                    }
+                    units += 1;
+                    chars += len;
                 }
-                None => {
-                    left -= p.graphemes(true).count();
-                    out.push(seg);
-                }
-            },
+                out.push(seg);
+            }
         }
     }
     if let Some(NameSeg::Plain(p)) = out.last_mut() {
@@ -251,10 +299,16 @@ pub(crate) fn take_units<'a>(segs: &[NameSeg<'a>], max: usize) -> Vec<NameSeg<'a
     out
 }
 
-/// `segs` cut to `max - 1` units plus "…", or `None` when `segs` already fits in `max`.
+/// `segs` cut to `max - 1` units plus "…", or `None` when `segs` already fits in `max`. The characters are bounded
+/// too (`chars_for`), the "…" counting within both budgets.
 pub(crate) fn shorten<'a>(segs: &[NameSeg<'a>], max: usize) -> Option<Vec<NameSeg<'a>>> {
-    (units(segs) > max).then(|| {
-        let mut short = take_units(segs, max.saturating_sub(1));
+    cut(segs, max, chars_for(max))
+}
+
+/// `segs` cut within `max_units - 1` units and `max_chars - 1` characters plus "…", or `None` when it fits.
+fn cut<'a>(segs: &[NameSeg<'a>], max_units: usize, max_chars: usize) -> Option<Vec<NameSeg<'a>>> {
+    (!fits(segs, max_units, max_chars)).then(|| {
+        let mut short = take_units(segs, max_units.saturating_sub(1), max_chars.saturating_sub(1));
         short.push(NameSeg::Plain("…"));
         short
     })
@@ -505,10 +559,59 @@ mod tests {
         assert_eq!(clean_name(&"👍🏽".repeat(65)), "👍🏽".repeat(64), "a skin-tone emoji is never cut from its modifier");
         assert_eq!(clean_name(&"🇯🇵".repeat(65)), "🇯🇵".repeat(64), "a flag is never split");
         assert_eq!(clean_name(&CODER.repeat(65)), CODER.repeat(64), "a ZWJ sequence is one cluster");
-        assert_eq!(clean_name(&ENGLAND.repeat(65)), ENGLAND.repeat(64), "a tag sequence is one cluster");
+        // A tag sequence is one cluster of 7 characters, so the character budget cuts first: 36 of them are 252.
+        assert_eq!(clean_name(&ENGLAND.repeat(65)), ENGLAND.repeat(36), "a tag sequence is never split");
         assert_eq!(clean_name(&"e\u{0301}".repeat(65)), "e\u{0301}".repeat(64), "a combining mark stays");
         assert_eq!(clean_name(&("x".repeat(63) + " y")), "x".repeat(63), "the space left at the cut is trimmed");
         assert_eq!(clean_name(&"x".repeat(64)), "x".repeat(64));
+    }
+
+    /// One grapheme cluster can be any length; the character budget bounds it on input and at display.
+    #[test]
+    fn a_long_cluster_is_cut_to_the_character_budget() {
+        let chain = format!("👩{}", "\u{200D}👩".repeat(500));
+        let skin = format!("a{}", "🏽".repeat(500));
+        let acute = format!("a{}", "\u{0301}".repeat(500));
+        let tags = format!("🏴{}\u{E007F}", "\u{E0067}".repeat(500));
+        // A cut inside a cluster that leaves a keycap's selector without its U+20E3 (U+0D4E is a Prepend, so the
+        // run and the keycap are one cluster).
+        let keycap = format!("{}1\u{FE0F}\u{20E3}{}", "\u{0D4E}".repeat(254), "\u{0301}".repeat(10));
+        for raw in [&chain, &skin, &acute, &tags, &keycap] {
+            let once = clean_name(raw).into_owned();
+            assert!(once.chars().count() <= NAME_MAX_CHARS, "{} chars", once.chars().count());
+            assert!(matches!(clean_name(&once), Cow::Borrowed(_)), "idempotent: {raw:?} -> {once:?}");
+            let segs = display_name(raw, UNTITLED);
+            assert!(chars(&segs) <= NAME_MAX_CHARS && units(&segs) <= NAME_CAP, "{segs:?}");
+        }
+        assert_eq!(clean_name(&chain), format!("👩{}", "\u{200D}👩".repeat(127)), "the joiner left at the cut goes");
+        assert_eq!(clean_name(&skin), format!("a{}", "🏽".repeat(255)));
+        assert_eq!(clean_name(&acute), format!("a{}", "\u{0301}".repeat(255)));
+        assert_eq!(clean_name(&tags), "🏴", "500 tags are not a subdivision flag");
+        assert_eq!(clean_name(&keycap), format!("{}1", "\u{0D4E}".repeat(254)), "the stranded selector goes");
+    }
+
+    /// The cut is at the last cluster boundary inside both budgets.
+    #[test]
+    fn the_cap_cuts_inside_both_budgets() {
+        let five = "e\u{0301}\u{0301}\u{0301}\u{0301}";
+        assert_eq!(clean_name(&five.repeat(64)), five.repeat(51), "51 clusters of 5 is 255 characters");
+        assert_eq!(clean_name(&"x".repeat(300)), "x".repeat(64), "64 clusters come first");
+        let raw = five.repeat(64) + "\u{200B}";
+        let segs = display_name(&raw, UNTITLED);
+        assert!(chars(&segs) <= NAME_MAX_CHARS, "{}", chars(&segs));
+    }
+
+    /// A subdivision flag's tags are its code: 1 to 6 lowercase letters and digits, then the cancel tag.
+    #[test]
+    fn a_flag_keeps_only_valid_subdivision_tags() {
+        let tag = |s: &str| s.chars().map(|c| char::from_u32(c as u32 + 0xE0000).unwrap()).collect::<String>();
+        for code in ["gbsct", "usca", "gbeng", "fr75", "a", "abcdef"] {
+            let flag = format!("🏴{}\u{E007F}", tag(code));
+            assert!(matches!(clean_name(&flag), Cow::Borrowed(_)), "{code}");
+        }
+        for code in ["abcdefg", "GBENG", "gb eng", "gb-en"] {
+            assert_eq!(clean_name(&format!("🏴{}\u{E007F}", tag(code))), "🏴", "{code}");
+        }
     }
 
     #[test]
