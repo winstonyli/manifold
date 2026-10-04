@@ -2301,3 +2301,13 @@ Re-run on 2026-10-03 after the spec revision (emoji sequences, bookmark folders,
   - Settings Jars (`11-settings.png`, a second run, so new ids): the `Home` markers `#5b76`/`#1159` sit beside their fields; the `Wo<U+200B>rk` and `Pay<U+202E>roll` fields show the stored text, which looks like "Work" and "Payroll" (the hover is not captured).
   - Bookmarks list (`13-bookmarks.png`): folder headers and folder labels show `Re⟦200B⟧ading ⟦202E⟧list`; the long folder name wraps at the popup's width and, cut at 64 units with no ellipsis, ends "past the" / "w" on a line of its own.
 - Open, for the user: the display cap cuts with no ellipsis, so a capped name looks complete (the bookmark folder's lone "w", the Move to row's "travel and"); and the Recently Closed row has no hover naming its hidden characters.
+
+### Fix wave and open minors (2026-10-04)
+
+The final review's fix wave landed in a0d07e2..8271154: a 256-character budget beside the 64-cluster cap, valid flag tags only, a capped name ends in "…", Move to rows and saved-session buttons shortened, one-line bookmark folder headers, Recently Closed hover hints and member counts. The scoped re-review found nothing load-bearing. Parked minors:
+
+- `take_units` pushes an empty `Plain("")` before breaking, so a `Plain(" ")` just before it escapes the trim: `ab⟦200B⟧ …` shows a space before the ellipsis (mixed hidden-character and space names only).
+- `name_hover` runs `fits` on the already-cut text, so at `max` = 64 a raw 257+-character name in few clusters gets the generic hover. Latent: callers pass 20 or 32.
+- Recently Closed shows the member count as a bare "3" before the name, not "(3)" after it; a hidden character past the 64-unit cap is not named in the hover.
+- The "click to set folder" label under each bookmark still wraps (one `.truncate()`).
+- Still deferred from the final review: a typed look-alike marker is identical in plain text; the Settings jar field shows the stored text; the guard test's gaps (`.display()` matches `Path::display()`, test modules assumed last, destructured reads).
