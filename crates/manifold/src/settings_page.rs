@@ -968,7 +968,7 @@ mod tests {
         assert!(name.contains('X') && name.contains("Work") && name.len() == 5, "{name:?}");
         app.apply_settings_requests(&SettingsRequests { rename_jar: Some((id, name.clone())), ..Default::default() });
         assert_eq!(app.jar_defs[&w2].name, name, "stored as typed");
-        assert_eq!(app.jar_label(JarKey::Named(w1)), "Work", "no twin left");
+        assert_eq!(app.jar_label(JarKey::Named(w1)).to_string(), "Work", "no twin left");
     }
 
     #[test]

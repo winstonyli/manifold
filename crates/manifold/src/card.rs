@@ -145,14 +145,14 @@ pub(crate) fn paint_jar_chip(
     const R: f32 = JAR_CHIP_R;
     let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
     let arrow = jar_chip_arrow(painter, chip, font.clone(), text);
-    let name = painter.layout_no_wrap(chip.name.clone(), font.clone(), text);
+    let name = painter.layout_no_wrap(chip.name.to_string(), font.clone(), text);
     let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
     let fit = fit_jar_chip(max_width, lead, name.size().x)?;
     let name = fit.name.map(|room| {
         if room >= name.size().x {
             return name;
         }
-        let mut job = egui::text::LayoutJob::simple_singleline(chip.name.clone(), font, text);
+        let mut job = egui::text::LayoutJob::simple_singleline(chip.name.to_string(), font, text);
         job.wrap = egui::text::TextWrapping {
             max_width: room,
             max_rows: 1,

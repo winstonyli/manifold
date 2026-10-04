@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct JarChip {
     /// The jar's label (`App::jar_label`), shown on the chip and in Tab view's hover text.
-    pub(crate) name: String,
+    pub(crate) name: JarLabel,
     pub(crate) color: egui::Color32,
     /// Unset, and the nearest group default (`inherited_jar`) is this jar: the dot is outlined. An unset tab whose
     /// group default was cleared or is another jar (spec: "Clear default" leaves existing tabs alone) follows nothing,
@@ -95,14 +95,55 @@ pub(crate) fn jar_fragment(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Optio
     Some(own[..len].to_string())
 }
 
-/// Jar `id`'s label, what every view shows for it (spec "Names"); `None` when there is no jar `id`. The stored name
-/// when no other jar has it, else `"<name> · #<frag>"` (`jar_fragment`). Derived each time, never stored or synced.
-pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<String> {
-    let name = &defs.get(&id)?.name;
-    Some(match jar_fragment(id, defs) {
-        Some(frag) => format!("{name} · #{frag}"),
-        None => name.clone(),
-    })
+/// A jar's label (spec "Names"): its name, and a marker when the name alone may not say which jar it is. Derived each
+/// time, never stored or synced. Rich-text sites draw the marker in its own style (`layout_job`), so a name typed to
+/// look like a marker never looks like one; plain-text sites (tooltips, confirm dialogs) use `Display`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JarLabel {
+    pub(crate) name: String,
+    pub(crate) marker: Option<JarMarker>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum JarMarker {
+    /// Another jar has this name: the start of this one's id digest (`jar_fragment`).
+    Fragment(String),
+    /// The built-in Default jar, which a user jar may also be called.
+    BuiltIn,
+}
+
+impl JarLabel {
+    /// The built-in Default jar's label.
+    pub(crate) fn built_in() -> Self {
+        Self { name: "Default".into(), marker: Some(JarMarker::BuiltIn) }
+    }
+}
+
+/// A label with no marker, for tests that need one. Not for app code: a stored name's label comes from
+/// `named_jar_label`, which knows whether it needs a marker.
+#[cfg(test)]
+impl From<&str> for JarLabel {
+    fn from(name: &str) -> Self {
+        Self { name: name.into(), marker: None }
+    }
+}
+
+/// The plain string: `"Work"`, `"Work · #3f2a"`, or `"Default (built-in)"`.
+impl std::fmt::Display for JarLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.marker {
+            None => f.write_str(&self.name),
+            Some(JarMarker::Fragment(frag)) => write!(f, "{} · #{frag}", self.name),
+            Some(JarMarker::BuiltIn) => write!(f, "{} (built-in)", self.name),
+        }
+    }
+}
+
+/// Jar `id`'s label, what every view shows for it (spec "Names"); `None` when there is no jar `id`. The stored name,
+/// with a `Fragment` marker (`jar_fragment`) when another jar has that name.
+pub(crate) fn named_jar_label(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<JarLabel> {
+    let name = defs.get(&id)?.name.clone();
+    Some(JarLabel { name, marker: jar_fragment(id, defs).map(JarMarker::Fragment) })
 }
 
 impl App {
@@ -134,7 +175,7 @@ impl App {
         }
         if will_switch {
             let cleared = self.jar_reseed.contains(id);
-            let target = if cleared && was == key { "the empty jar".to_string() } else { name.clone() };
+            let target = if cleared && was == key { "the empty jar".to_string() } else { name.to_string() };
             tips.push(will_switch_tooltip(cleared, &target, can_switch_now));
         }
         Some(JarChip {
@@ -150,12 +191,12 @@ impl App {
         })
     }
 
-    /// "Default", or a named jar's label (`named_jar_label`; also "Default" once it is gone, as that is what its tabs
-    /// use).
-    pub(crate) fn jar_label(&self, key: JarKey) -> String {
+    /// The built-in jar's label (`JarLabel::built_in`), or a named jar's (`named_jar_label`; the built-in's once it is
+    /// gone, as that is what its tabs use).
+    pub(crate) fn jar_label(&self, key: JarKey) -> JarLabel {
         match key {
-            JarKey::Named(id) => named_jar_label(id, &self.jar_defs).unwrap_or_else(|| "Default".into()),
-            JarKey::Default => "Default".into(),
+            JarKey::Named(id) => named_jar_label(id, &self.jar_defs).unwrap_or_else(JarLabel::built_in),
+            JarKey::Default => JarLabel::built_in(),
         }
     }
 
@@ -192,7 +233,7 @@ impl App {
                     if n == 1 { "1 tab uses this; it'll".to_string() } else { format!("{n} tabs use this; they'll") };
                 Some((
                     format!("Delete jar {}?", self.jar_label(JarKey::Named(id))),
-                    format!("{uses} use Default."),
+                    format!("{uses} use {}.", JarLabel::built_in()),
                     "Delete",
                 ))
             }
@@ -224,7 +265,10 @@ impl App {
     /// compared exactly, after trimming `text`.
     pub(crate) fn jar_named(&self, text: &str) -> Option<NodeId> {
         let text = text.trim();
-        let label = self.jar_defs.keys().find(|&&id| named_jar_label(id, &self.jar_defs).as_deref() == Some(text));
+        let label = self
+            .jar_defs
+            .keys()
+            .find(|&&id| named_jar_label(id, &self.jar_defs).is_some_and(|l| l.to_string() == text));
         label.or_else(|| self.jar_defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 
@@ -591,7 +635,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{id_digest, jar_fragment, named_jar_label, JarConfirm};
+    use super::{id_digest, jar_fragment, named_jar_label, JarConfirm, JarLabel, JarMarker};
     use crate::card::DropEffect;
     use crate::jar::{JarChoice, JarKey};
     use crate::node::{GroupPayload, NodePayload};
@@ -787,7 +831,7 @@ mod tests {
         assert!(app.jar_chip(&t).is_none(), "default jar: no chip");
         app.set_tab_jar(&t, Some(work));
         let chip = app.jar_chip(&t).unwrap();
-        assert_eq!((chip.name.as_str(), chip.following, chip.missing), ("Work", false, false));
+        assert_eq!((chip.name.to_string().as_str(), chip.following, chip.missing), ("Work", false, false));
         assert!(chip.engine_ignores, "`sleeping_tab` is a Servo tab");
         assert_eq!(chip.tooltip.as_deref(), Some("This engine does not use jars yet"));
         app.follow_group_jar(&t); // no group default: back to the default jar
@@ -877,7 +921,7 @@ mod tests {
         assert!(w1 < w2, "made in order");
         let t = tab_in(&mut app, None);
         app.focused = Some(t.clone());
-        let l2 = app.jar_label(JarKey::Named(w2));
+        let l2 = app.jar_label(JarKey::Named(w2)).to_string();
         assert_eq!(app.jar_named(&l2), Some(w2));
         assert!(app.set_focused_tab_jar_named(&l2));
         assert_eq!(jar_of(&app, &t).jar, Some(w2), "by label");
@@ -931,16 +975,19 @@ mod tests {
         assert!(detail.starts_with("Tabs using it are signed out."), "{detail}");
         assert!(detail.contains("restart on the empty jar") && detail.contains("not kept"), "{detail}");
         let (title, _, _) = app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap();
-        assert_eq!(title, "Clear cookies in Default?");
+        assert_eq!(title, "Clear cookies in Default (built-in)?");
         let (title, detail, button) = app.jar_confirm_text(JarConfirm::Delete(work)).unwrap();
         assert_eq!(
             (title.as_str(), detail.as_str(), button),
-            ("Delete jar Work?", "1 tab uses this; it'll use Default.", "Delete")
+            ("Delete jar Work?", "1 tab uses this; it'll use Default (built-in).", "Delete")
         );
         tab_in(&mut app, None);
         let other = tab_in(&mut app, None);
         app.set_tab_jar(&other, Some(work));
-        assert_eq!(app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1, "2 tabs use this; they'll use Default.");
+        assert_eq!(
+            app.jar_confirm_text(JarConfirm::Delete(work)).unwrap().1,
+            "2 tabs use this; they'll use Default (built-in)."
+        );
         app.jar_defs.remove(&work);
         assert!(
             app.jar_confirm_text(JarConfirm::Delete(work)).is_none(),
@@ -964,19 +1011,59 @@ mod tests {
         let mut defs = BTreeMap::new();
         defs.insert(id(1), def("Work"));
         defs.insert(id(2), def("Home"));
-        assert_eq!(named_jar_label(id(1), &defs).as_deref(), Some("Work"));
+        let plain = |n, defs: &BTreeMap<NodeId, crate::JarDef>| named_jar_label(id(n), defs).map(|l| l.to_string());
+        assert_eq!(plain(1, &defs).as_deref(), Some("Work"));
         assert_eq!(jar_fragment(id(1), &defs), None);
         assert_eq!(named_jar_label(id(9), &defs), None, "no such jar");
         defs.insert(id(3), def(" work "));
         defs.insert(id(4), def("WORK"));
-        let labels: Vec<String> = [1, 3, 4].map(|n| named_jar_label(id(n), &defs).unwrap()).to_vec();
+        let labels: Vec<String> = [1, 3, 4].map(|n| plain(n, &defs).unwrap()).to_vec();
         for (n, (label, name)) in labels.iter().zip(["Work", " work ", "WORK"]).enumerate() {
             let frag = label.strip_prefix(&format!("{name} · #")).unwrap_or_else(|| panic!("{n}: {label}"));
             assert_eq!(frag.len(), 4, "{label}");
             assert!(frag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{label}");
         }
         assert_eq!(labels.iter().collect::<BTreeSet<_>>().len(), 3, "every clashing label differs: {labels:?}");
-        assert_eq!(named_jar_label(id(2), &defs).as_deref(), Some("Home"), "an unrelated jar stays plain");
+        assert_eq!(plain(2, &defs).as_deref(), Some("Home"), "an unrelated jar stays plain");
+    }
+
+    /// Styled jar label markers: a label is a name and an optional marker, and its plain string is the text every view
+    /// showed before the split ("Work", "Work · #frag").
+    #[test]
+    fn a_label_is_a_name_and_an_optional_marker() {
+        let mut defs = BTreeMap::new();
+        defs.insert(id(1), def("Work"));
+        defs.insert(id(2), def("Home"));
+        let unique = named_jar_label(id(1), &defs).unwrap();
+        assert_eq!(unique, JarLabel { name: "Work".into(), marker: None });
+        assert_eq!(unique.to_string(), "Work");
+        defs.insert(id(3), def("Work"));
+        let frag = jar_fragment(id(1), &defs).unwrap();
+        let clash = named_jar_label(id(1), &defs).unwrap();
+        assert_eq!(clash, JarLabel { name: "Work".into(), marker: Some(JarMarker::Fragment(frag.clone())) });
+        assert_eq!(clash.to_string(), format!("Work · #{frag}"));
+        assert_eq!(JarLabel::built_in(), JarLabel { name: "Default".into(), marker: Some(JarMarker::BuiltIn) });
+        assert_eq!(JarLabel::built_in().to_string(), "Default (built-in)");
+    }
+
+    /// A user jar named "Default" is shown as stored; the built-in jar (and a deleted jar's tabs, which use it) is
+    /// marked, and plain-text sites say "Default (built-in)".
+    #[test]
+    fn the_built_in_jar_is_marked_apart_from_a_user_jar_named_default() {
+        let mut app = App::default();
+        let user = app.create_jar("Default");
+        assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel { name: "Default".into(), marker: None });
+        assert_eq!(app.jar_label(JarKey::Default), JarLabel::built_in());
+        assert_eq!(
+            app.jar_confirm_text(JarConfirm::Clear(JarKey::Named(user))).unwrap().0,
+            "Clear cookies in Default?"
+        );
+        assert_eq!(
+            app.jar_confirm_text(JarConfirm::Clear(JarKey::Default)).unwrap().0,
+            "Clear cookies in Default (built-in)?"
+        );
+        app.jar_defs.remove(&user);
+        assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel::built_in(), "gone: its tabs use the built-in jar");
     }
 
     /// Two ids whose 4-character fragments collide get longer ones, just long enough to differ; a third jar with the
@@ -1006,7 +1093,7 @@ mod tests {
     fn a_label_is_stable_while_other_jars_come_and_go() {
         let mut app = App::default();
         let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
-        let label = |app: &App, j| app.jar_label(JarKey::Named(j));
+        let label = |app: &App, j| app.jar_label(JarKey::Named(j)).to_string();
         let (l1, l2) = (label(&app, w1), label(&app, w2));
         assert_ne!(l1, l2);
         let home = app.create_jar("Home");
@@ -1027,7 +1114,7 @@ mod tests {
         let mut app = App::default();
         let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
         let l2 = app.jar_label(JarKey::Named(w2));
-        assert!(l2.starts_with("Work · #"), "{l2}");
+        assert!(l2.to_string().starts_with("Work · #"), "{l2}");
         let t = tab_in(&mut app, None);
         app.set_tab_jar(&t, Some(w2));
         assert_eq!(app.jar_chip(&t).unwrap().name, l2);

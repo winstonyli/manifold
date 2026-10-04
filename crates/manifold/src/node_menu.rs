@@ -1,6 +1,7 @@
 //! The node context menu: its actions, config and the App methods that build and apply it.
 
 use super::*;
+use crate::jar_defs::JarLabel;
 use crate::sleep_state::SleepWhy;
 use crate::store::model::NodeId;
 
@@ -93,7 +94,7 @@ impl NodeAction {
 pub(crate) struct JarRow {
     /// `None`: the default jar (tab menus only).
     pub(crate) id: Option<NodeId>,
-    pub(crate) name: String,
+    pub(crate) name: JarLabel,
     pub(crate) color: Option<egui::Color32>,
     /// The tab's jar, or the group's default.
     pub(crate) ticked: bool,
@@ -662,7 +663,7 @@ impl App {
                 .iter()
                 .map(|(jid, d)| JarRow {
                     id: Some(*jid),
-                    name: crate::jar_defs::named_jar_label(*jid, &self.jar_defs).unwrap_or_else(|| d.name.clone()),
+                    name: self.jar_label(crate::jar::JarKey::Named(*jid)),
                     color: d.color,
                     ticked: ticked(*jid),
                     count: count(*jid),
@@ -675,7 +676,7 @@ impl App {
             let (key, _) = self.resolved_jar(&choice);
             let mut rows = vec![JarRow {
                 id: None,
-                name: "Default".into(),
+                name: JarLabel::built_in(),
                 color: None,
                 ticked: key == crate::jar::JarKey::Default,
                 count: None,
@@ -973,7 +974,7 @@ mod tests {
             "Open as Tab | Copy URL | Copy Text | <colors> | --- | Delete"
         );
         // Jars (per-tab jars plan, Task 7): tabs and groups list them ahead of the colours.
-        let rows = vec![JarRow { id: None, name: "Default".into(), color: None, ticked: true, count: None }];
+        let rows = vec![JarRow { id: None, name: JarLabel::built_in(), color: None, ticked: true, count: None }];
         let jars = |can_follow, will_switch, has_default| {
             Some(JarMenu { rows: rows.clone(), can_follow, will_switch, has_default })
         };
@@ -1029,12 +1030,18 @@ mod tests {
         let work = app.create_jar("Work");
         let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
         app.set_tab_jar(&t, Some(work));
-        let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
-        let shown: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect();
-        assert_eq!(shown, [("Default", false), ("Work", true)]);
+        let shown = |app: &App| {
+            let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
+            rows.into_iter().map(|r| (r.name, r.ticked)).collect::<Vec<_>>()
+        };
+        let plain = |name: &str| JarLabel { name: name.into(), marker: None };
+        assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true)]);
+        // Styled jar label markers: a user jar named "Default" is listed plainly, after the marked built-in one.
+        let user = app.create_jar("Default");
+        assert_eq!(shown(&app), [(JarLabel::built_in(), false), (plain("Work"), true), (plain("Default"), false)]);
+        app.jar_defs.remove(&user);
         app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
-        let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
-        assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect::<Vec<_>>(), [("Default", true)]);
+        assert_eq!(shown(&app), [(JarLabel::built_in(), true)]);
     }
 
     /// Jar name labels: the tab and group menus list two same-named jars by their labels, a unique one plainly.
@@ -1043,9 +1050,13 @@ mod tests {
         let mut app = App::default();
         let (w1, w2, home) = (app.create_jar("Work"), app.create_jar("Work"), app.create_jar("Home"));
         let label = |app: &App, j| app.jar_label(crate::jar::JarKey::Named(j));
-        let want = [label(&app, w1), label(&app, w2), "Home".to_string()];
-        assert!(want[0].starts_with("Work · #") && want[1].starts_with("Work · #") && want[0] != want[1], "{want:?}");
-        assert_eq!(label(&app, home), "Home");
+        let want = [label(&app, w1), label(&app, w2), label(&app, home)];
+        let plain = want.clone().map(|l| l.to_string());
+        assert!(
+            plain[0].starts_with("Work · #") && plain[1].starts_with("Work · #") && want[0] != want[1],
+            "{plain:?}"
+        );
+        assert_eq!(plain[2], "Home");
         let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()[1..], want);
@@ -1185,7 +1196,13 @@ mod tests {
         let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
         assert_eq!(
             menu.rows,
-            [JarRow { id: Some(work), name: "Work".into(), color: menu.rows[0].color, ticked: false, count: Some(1) }]
+            [JarRow {
+                id: Some(work),
+                name: JarLabel { name: "Work".into(), marker: None },
+                color: menu.rows[0].color,
+                ticked: false,
+                count: Some(1)
+            }]
         );
         assert!(!menu.has_default);
         app.apply_node_action(&ctx, &g, NodeAction::SetGroupDefaultJar(work));
