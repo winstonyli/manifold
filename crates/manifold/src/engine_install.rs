@@ -651,10 +651,12 @@ impl crate::App {
         Some((PathBuf::from(configured), verdict))
     }
 
-    /// Forget the cached verdict (and the states built on it) so the next read looks at the disk again.
+    /// Forget the cached verdict (and the states built on it, and the Settings page's disk reads) so the next
+    /// read looks at the disk again.
     pub(crate) fn invalidate_cef_dir_check(&self) {
         *self.cef_dir_check.borrow_mut() = None;
         self.engine_state_cache.borrow_mut().clear();
+        crate::settings_page::forget_disk_cache(&self.egui_ctx);
     }
 
     /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached

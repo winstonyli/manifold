@@ -618,7 +618,6 @@ impl App {
         if req.save_as_requested {
             let draft = self.session_name_draft.clone();
             self.save_named_session(&draft);
-            forget_disk_cache(&self.egui_ctx);
         }
         if let Some(name) = &req.open_session_name {
             self.load_named_session(name);
@@ -819,7 +818,6 @@ const DISK_CACHE: &str = "settings_disk_cache";
 fn cached<T: Clone + Send + Sync + 'static>(
     ctx: &egui::Context,
     key: impl std::hash::Hash + std::fmt::Debug, // egui 0.36's `Id::new` wants `Debug` too
-
     max_age: std::time::Duration,
     compute: impl FnOnce() -> T,
 ) -> T {
@@ -867,6 +865,23 @@ mod tests {
         forget_disk_cache(&ctx);
         cached(&ctx, "names", hour, read);
         assert_eq!(calls.get(), 2);
+    }
+
+    /// A CEF folder change (`invalidate_cef_dir_check`) and Save As, from Settings or headless, forget the
+    /// page's disk reads.
+    #[test]
+    fn a_cef_folder_change_or_save_as_forgets_the_disk_reads() {
+        let mut app = App::default();
+        let calls = std::cell::Cell::new(0);
+        let read = || calls.set(calls.get() + 1);
+        let hour = std::time::Duration::from_secs(3600);
+        cached(&app.egui_ctx, "x", hour, read);
+        app.set_cef_directory("");
+        cached(&app.egui_ctx, "x", hour, read);
+        assert_eq!(calls.get(), 2, "the folder change forgot it");
+        app.save_named_session("Trip");
+        cached(&app.egui_ctx, "x", hour, read);
+        assert_eq!(calls.get(), 3, "Save As forgot it");
     }
 
     /// Review C-B5: Escape in a Settings field reverts that field and keeps the page open.
