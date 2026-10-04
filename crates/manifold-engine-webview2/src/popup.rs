@@ -38,7 +38,7 @@ pub type PendingPopup = Rc<RefCell<Vec<(String, bool)>>>;
 /// says so *and* the page got a click or key press within the gesture
 /// window (`NavState::had_recent_input`): `IsUserInitiated` on navigations
 /// was true even for a `setTimeout` navigation in a tab that never got
-/// input (see `NavState::last_input`), so it isn't trusted alone.
+/// input (see `NavState::label`), so it isn't trusted alone.
 pub fn register(webview: &ICoreWebView2, nav_state: SharedNavState) -> PendingPopup {
     let pending: PendingPopup = Rc::new(RefCell::new(Vec::new()));
     let mut token = Default::default();

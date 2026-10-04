@@ -437,7 +437,7 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
 /// The *logical* key (what a DOM `KeyboardEvent.key` would read) for a
 /// `KeyDown`/`KeyUp` — used for arrow/enter/backspace/etc. shortcut
 /// handling, where the physical key's identity is what matters. Letters,
-/// digits, and space map to `Key::Named(NamedKey::Unidentified)` rather
+/// digits, and space (`KeyCode::produces_text`) map to `Key::Named(NamedKey::Unidentified)` rather
 /// than a guessed `Key::Character` — the *correct* produced text arrives
 /// separately via `InputEvent::Char` (see `translate_input_event`'s `Char`
 /// arm), and sending a guessed character here too double-inserts text
@@ -445,44 +445,10 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
 /// "hHeellllooo", before this was `Unidentified`). Shortcuts mostly key
 /// off `code` anyway, not `key`, so `Unidentified` here costs nothing real.
 fn key_to_servo_key(key: HostKeyCode) -> Key {
+    if key.produces_text() {
+        return Key::Named(NamedKey::Unidentified);
+    }
     match key {
-        HostKeyCode::KeyA => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyB => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyC => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyD => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyE => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyF => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyG => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyH => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyI => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyJ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyK => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyL => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyM => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyN => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyO => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyP => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyQ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyR => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyS => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyT => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyU => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyV => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyW => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyX => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyY => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyZ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit0 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit1 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit2 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit3 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit4 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit5 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit6 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit7 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit8 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit9 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Space => Key::Named(NamedKey::Unidentified),
         HostKeyCode::Enter => Key::Named(NamedKey::Enter),
         HostKeyCode::Backspace => Key::Named(NamedKey::Backspace),
         HostKeyCode::Tab => Key::Named(NamedKey::Tab),
@@ -499,6 +465,8 @@ fn key_to_servo_key(key: HostKeyCode) -> Key {
         HostKeyCode::ShiftLeft | HostKeyCode::ShiftRight => Key::Named(NamedKey::Shift),
         HostKeyCode::ControlLeft | HostKeyCode::ControlRight => Key::Named(NamedKey::Control),
         HostKeyCode::AltLeft | HostKeyCode::AltRight => Key::Named(NamedKey::Alt),
+        // Text keys returned above; a new non-text key lands here until it gets its own arm.
+        _ => Key::Named(NamedKey::Unidentified),
     }
 }
 

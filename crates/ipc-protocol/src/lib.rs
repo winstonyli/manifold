@@ -2,6 +2,7 @@ pub mod channel;
 pub mod downloads;
 pub mod frame_buffer;
 pub mod messages;
+pub mod nav_label;
 pub mod transport;
 
 pub use channel::MessageChannel;

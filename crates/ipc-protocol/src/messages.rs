@@ -143,6 +143,15 @@ impl KeyCode {
             vk => vk,
         }
     }
+
+    /// The key types a character of its own (letters, digits,
+    /// space): its DOM `key` is that one character. Engines send
+    /// such keys without text and let `InputEvent::Char` insert it.
+    /// A new key fails `text_keys_are_letters_digits_and_space`; check the WebKit and Servo key tables then.
+    pub fn produces_text(self) -> bool {
+        let mut chars = self.dom_key().chars();
+        chars.next().is_some() && chars.next().is_none()
+    }
 }
 
 /// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
@@ -540,6 +549,16 @@ pub enum EngineToHost {
 #[cfg(test)]
 mod key_code_tests {
     use super::*;
+
+    #[test]
+    fn text_keys_are_letters_digits_and_space() {
+        let text: Vec<KeyCode> = KeyCode::ALL.iter().copied().filter(|k| k.produces_text()).collect();
+        assert_eq!(text.len(), 26 + 10 + 1, "{text:?}");
+        assert!(KeyCode::KeyQ.produces_text() && KeyCode::Digit7.produces_text() && KeyCode::Space.produces_text());
+        assert!(
+            !KeyCode::Enter.produces_text() && !KeyCode::ShiftLeft.produces_text() && !KeyCode::Tab.produces_text()
+        );
+    }
 
     #[test]
     fn dom_code_is_the_variant_name_and_vk_codes_are_distinct_per_key() {

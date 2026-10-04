@@ -32,20 +32,6 @@ fn frame_due(size: (u32, u32), pixels: &[u8], last: Option<&SentFrame>, since_se
     }
 }
 
-/// One thing that happened to a download since the last poll -- mirrors
-/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
-/// type here (rather than depending on `ipc_protocol` from the GTK signal
-/// closures directly) so the polling loop below does the actual
-/// translation, same separation `manifold-engine-webview2`'s own `download::
-/// DownloadEvent`/`manifold-engine-cef`'s own `download_handler::DownloadEvent`
-/// use.
-enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
-    Progress { path: String, bytes_received: u64 },
-    Completed { path: String },
-    Failed { path: String },
-}
-
 fn main() {
     // Read (and required) so a missing env var fails fast with a clear
     // message, matching the other engine-hosts' contract with
@@ -123,7 +109,7 @@ fn main() {
     //
     // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
-    let pending_download: Rc<RefCell<Vec<DownloadEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let pending_download: Rc<RefCell<Vec<EngineToHost>>> = Rc::new(RefCell::new(Vec::new()));
     let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
     if let Some(context) = &web_context {
         let pending_for_started = pending_download.clone();
@@ -147,7 +133,7 @@ fn main() {
                 *dest_for_destination.borrow_mut() = Some(path.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
                 let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
-                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes, url });
+                pending_for_destination.borrow_mut().push(EngineToHost::DownloadStarted { path, total_bytes, url });
                 true
             });
 
@@ -156,7 +142,7 @@ fn main() {
             download.connect_received_data(move |download, _data_length_delta| {
                 if let Some(path) = dest_for_progress.borrow().clone() {
                     let bytes_received = download.received_data_length();
-                    pending_for_progress.borrow_mut().push(DownloadEvent::Progress { path, bytes_received });
+                    pending_for_progress.borrow_mut().push(EngineToHost::DownloadProgress { path, bytes_received });
                 }
             });
 
@@ -168,7 +154,7 @@ fn main() {
             download.connect_failed(move |_download, _error| {
                 failed_for_handler.set(true);
                 if let Some(path) = dest_for_failed.borrow().clone() {
-                    pending_for_failed.borrow_mut().push(DownloadEvent::Failed { path });
+                    pending_for_failed.borrow_mut().push(EngineToHost::DownloadFailed { path });
                 }
             });
 
@@ -184,7 +170,7 @@ fn main() {
                     return;
                 }
                 if let Some(path) = dest {
-                    pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
+                    pending_for_finished.borrow_mut().push(EngineToHost::DownloadCompleted { path });
                 }
             });
         });
@@ -530,20 +516,7 @@ fn main() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
-        let download_msgs: Vec<EngineToHost> = pending_download
-            .borrow_mut()
-            .drain(..)
-            .map(|event| match event {
-                DownloadEvent::Started { path, total_bytes, url } => {
-                    EngineToHost::DownloadStarted { path, total_bytes, url }
-                }
-                DownloadEvent::Progress { path, bytes_received } => {
-                    EngineToHost::DownloadProgress { path, bytes_received }
-                }
-                DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
-                DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-            })
-            .collect();
+        let download_msgs = std::mem::take(&mut *pending_download.borrow_mut());
         for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = to_host.send(&msg);
         }

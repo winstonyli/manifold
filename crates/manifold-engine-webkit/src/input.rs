@@ -142,7 +142,7 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
     state
 }
 
-/// Letters/digits/space deliberately do *not* map to their own real keyval
+/// Letters/digits/space (`KeyCode::produces_text`) deliberately do *not* map to their own real keyval
 /// here (`GDK_KEY_a` etc.) — GTK's input-method handling reads a
 /// `GdkEventKey`'s keyval directly to decide what text to insert, so a
 /// real letter keyval on `KeyDown` inserts text *in addition to* the
@@ -159,44 +159,10 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
 /// from "produced text".
 fn key_to_gdk_keyval(key: KeyCode) -> Option<u32> {
     use gdk::ffi::*;
+    if key.produces_text() {
+        return Some(GDK_KEY_VoidSymbol as u32);
+    }
     let keyval = match key {
-        KeyCode::KeyA
-        | KeyCode::KeyB
-        | KeyCode::KeyC
-        | KeyCode::KeyD
-        | KeyCode::KeyE
-        | KeyCode::KeyF
-        | KeyCode::KeyG
-        | KeyCode::KeyH
-        | KeyCode::KeyI
-        | KeyCode::KeyJ
-        | KeyCode::KeyK
-        | KeyCode::KeyL
-        | KeyCode::KeyM
-        | KeyCode::KeyN
-        | KeyCode::KeyO
-        | KeyCode::KeyP
-        | KeyCode::KeyQ
-        | KeyCode::KeyR
-        | KeyCode::KeyS
-        | KeyCode::KeyT
-        | KeyCode::KeyU
-        | KeyCode::KeyV
-        | KeyCode::KeyW
-        | KeyCode::KeyX
-        | KeyCode::KeyY
-        | KeyCode::KeyZ
-        | KeyCode::Digit0
-        | KeyCode::Digit1
-        | KeyCode::Digit2
-        | KeyCode::Digit3
-        | KeyCode::Digit4
-        | KeyCode::Digit5
-        | KeyCode::Digit6
-        | KeyCode::Digit7
-        | KeyCode::Digit8
-        | KeyCode::Digit9
-        | KeyCode::Space => GDK_KEY_VoidSymbol,
         KeyCode::Enter => GDK_KEY_Return,
         KeyCode::Backspace => GDK_KEY_BackSpace,
         KeyCode::Tab => GDK_KEY_Tab,
@@ -216,6 +182,8 @@ fn key_to_gdk_keyval(key: KeyCode) -> Option<u32> {
         KeyCode::ControlRight => GDK_KEY_Control_R,
         KeyCode::AltLeft => GDK_KEY_Alt_L,
         KeyCode::AltRight => GDK_KEY_Alt_R,
+        // Text keys returned above; a new non-text key lands here until it gets its own arm.
+        _ => GDK_KEY_VoidSymbol,
     };
     Some(keyval as u32)
 }

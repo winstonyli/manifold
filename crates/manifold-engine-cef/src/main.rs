@@ -65,20 +65,6 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
     }
 }
 
-/// The first control message, waiting up to `timeout` and pumping CEF meanwhile.
-fn wait_for_first_message(rx: &std::sync::mpsc::Receiver<HostToEngine>, timeout: Duration) -> Option<HostToEngine> {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        do_message_loop_work();
-        match rx.try_recv() {
-            Ok(msg) => return Some(msg),
-            Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(8)),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
-        }
-    }
-    None
-}
-
 fn main() {
     // Matches cefsimple's shared::load_cef(): initializes the CEF API
     // version before any other CEF call.
@@ -201,7 +187,7 @@ fn main() {
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
     let mut may_hold_cookies = false;
     if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
-        match wait_for_first_message(&rx, COOKIE_SEED_WAIT) {
+        match ipc_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
             Some(HostToEngine::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
             Some(other) => first_message = Some(other),
             None => eprintln!("jar: no seed received"),
@@ -254,20 +240,20 @@ fn main() {
         while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
-                    nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
+                    nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
                     }
                 }
                 HostToEngine::GoBack => {
                     if browser.can_go_back() != 0 {
-                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
+                        nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_back();
                     }
                 }
                 HostToEngine::GoForward => {
                     if browser.can_go_forward() != 0 {
-                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
+                        nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_forward();
                     }
                 }
@@ -289,7 +275,7 @@ fn main() {
                 }
                 HostToEngine::Input(event) => {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
-                        nav_state.borrow_mut().last_input = Some(std::time::Instant::now());
+                        nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
                     input::send_input(&browser, event);
                 }
@@ -431,10 +417,10 @@ fn main() {
                     can_go_back: nav.can_go_back,
                     can_go_forward: nav.can_go_forward,
                     loading: nav.loading,
-                    user_started: nav.user_started,
+                    user_started: nav.label.user_started,
                 });
-                if std::mem::take(&mut nav.finished) {
-                    nav.user_started = None;
+                if std::mem::take(&mut nav.label.finished) {
+                    nav.label.user_started = None;
                 }
             }
         }
@@ -489,21 +475,7 @@ fn main() {
             }
         }
 
-        let download_msgs: Vec<EngineToHost> = download_path
-            .borrow_mut()
-            .queue
-            .drain(..)
-            .map(|event| match event {
-                download_handler::DownloadEvent::Started { path, total_bytes, url } => {
-                    EngineToHost::DownloadStarted { path, total_bytes, url }
-                }
-                download_handler::DownloadEvent::Progress { path, bytes_received } => {
-                    EngineToHost::DownloadProgress { path, bytes_received }
-                }
-                download_handler::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
-                download_handler::DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-            })
-            .collect();
+        let download_msgs = std::mem::take(&mut download_path.borrow_mut().queue);
         for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = control.send(&msg);
         }

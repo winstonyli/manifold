@@ -4,21 +4,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
+use ipc_protocol::EngineToHost;
 
-/// One thing that happened to a download since the last poll -- mirrors
-/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
-/// type here (rather than building `ipc_protocol` messages in this leaf
-/// module, which uses only its `downloads` naming helpers) so `main.rs`
-/// does the actual translation, same separation
-/// `manifold-engine-webview2`'s own `download::DownloadEvent` uses.
-pub enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
-    Progress { path: String, bytes_received: u64 },
-    Completed { path: String },
-    Failed { path: String },
-}
-
-/// Download events, queued rather than a single slot -- two downloads
+/// Download messages for the host, queued rather than a single slot -- two downloads
 /// progressing within the same tick would otherwise silently clobber each
 /// other. `on_download_updated` fires repeatedly for the same item over its
 /// whole lifetime (not just once at completion) -- `started` dedupes it
@@ -26,7 +14,7 @@ pub enum DownloadEvent {
 /// `assigned` makes `Completed` or `Failed` the last message about it;
 /// every other call in between is a `Progress`.
 pub struct DownloadResults {
-    pub queue: Vec<DownloadEvent>,
+    pub queue: Vec<EngineToHost>,
     started: HashSet<u32>,
     /// The path `on_before_download` handed out, by item id, until the
     /// download ends. Every message reports this string, never
@@ -120,18 +108,19 @@ wrap_download_handler! {
                     let total = item.total_bytes();
                     let total_bytes = (total > 0).then_some(total as u64);
                     let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
-                    results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
+                    results.queue.push(EngineToHost::DownloadStarted { path: path.clone(), total_bytes, url });
                 }
                 let complete = item.is_complete() != 0;
                 if complete || item.is_canceled() != 0 || item.is_interrupted() != 0 {
                     results.assigned.remove(&id);
                     results.started.remove(&id);
-                    let event = if complete { DownloadEvent::Completed { path } } else { DownloadEvent::Failed { path } };
+                    let event =
+                        if complete { EngineToHost::DownloadCompleted { path } } else { EngineToHost::DownloadFailed { path } };
                     results.queue.push(event);
                 } else {
                     let received = item.received_bytes();
                     if received >= 0 {
-                        results.queue.push(DownloadEvent::Progress { path, bytes_received: received as u64 });
+                        results.queue.push(EngineToHost::DownloadProgress { path, bytes_received: received as u64 });
                     }
                 }
             }

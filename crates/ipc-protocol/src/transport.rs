@@ -267,9 +267,50 @@ pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<Remote
     Ok(channel)
 }
 
+/// The first message from manifold, waiting up to `timeout` and calling
+/// `pump` between polls so the engine's own loop keeps running (CEF work,
+/// window messages). `None` on timeout or a closed channel.
+pub fn wait_for_first_message(
+    rx: &mpsc::Receiver<HostToEngine>,
+    timeout: Duration,
+    mut pump: impl FnMut(),
+) -> Option<HostToEngine> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        pump();
+        match rx.try_recv() {
+            Ok(msg) => return Some(msg),
+            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(8)),
+            Err(mpsc::TryRecvError::Disconnected) => return None,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_message_wait_pumps_until_one_arrives() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut pumps = 0;
+        let got = wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {
+            pumps += 1;
+            if pumps == 3 {
+                tx.send(crate::HostToEngine::GetState).unwrap();
+            }
+        });
+        assert!(matches!(got, Some(crate::HostToEngine::GetState)));
+        assert_eq!(pumps, 3);
+    }
+
+    #[test]
+    fn the_first_message_wait_ends_on_a_closed_channel() {
+        let (tx, rx) = std::sync::mpsc::channel::<crate::HostToEngine>();
+        drop(tx);
+        assert!(wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {}).is_none());
+    }
 
     /// Regression test for the WebKit-engine-host hang: `accept_remote`
     /// used to call `TcpListener::accept()` directly, which blocks
