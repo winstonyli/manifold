@@ -676,6 +676,7 @@ impl App {
         // attempted this frame, and the request must survive to
         // retry on a later one instead of being silently dropped.
         let screenshot_path = self.pending_screenshot.clone();
+        let mut lost = None;
         if let Some(gpu) = &mut self.gpu {
             let outcome = match egui_output {
                 Some(output) => gpu.render(
@@ -686,6 +687,7 @@ impl App {
                 ),
                 None => gpu.render(&content_panes_px, content_on_top, None, screenshot_path.as_deref()),
             };
+            lost = gpu.take_device_lost();
             if outcome.surface_ok {
                 self.pending_screenshot = None;
                 // The PNG is written by now (`render` saves it). A headless
@@ -702,6 +704,9 @@ impl App {
                 let screenshot_path = screenshot_path.filter(|_| !headless);
                 self.handle_screenshot_result(screenshot_path, outcome.screenshot_result);
             }
+        }
+        if let Some(message) = lost {
+            self.queue_toast(format!("The graphics device was lost ({message}). Restart manifold to draw again."));
         }
     }
 

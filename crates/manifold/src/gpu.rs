@@ -197,6 +197,13 @@ pub struct GpuState {
     /// is removed.
     images: HashMap<String, ThumbTexture>,
     egui_renderer: egui_wgpu::Renderer,
+    /// Kept to recreate `surface` after `CurrentSurfaceTexture::Lost`.
+    instance: wgpu::Instance,
+    window: Arc<Window>,
+    /// The next `render` reconfigures before acquiring (set after `Suboptimal`).
+    reconfigure: bool,
+    /// Set by the device-lost callback; read once by `take_device_lost`.
+    device_lost: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// How many distinct origins' favicons `GpuState` keeps textures for before
@@ -246,6 +253,20 @@ impl GpuState {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("request wgpu device");
+        // wgpu's default handler panics. An error here (an oversize texture
+        // that slipped past `register_rgba`, a driver hiccup) should cost a
+        // frame, not the app and its unsaved state.
+        device.on_uncaptured_error(Arc::new(|err: wgpu::Error| eprintln!("wgpu error: {err}")));
+        let device_lost = Arc::new(std::sync::Mutex::new(None));
+        let lost = device_lost.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            eprintln!("wgpu device lost ({reason:?}): {message}");
+            // Also fired when the app drops its own device at exit.
+            if matches!(reason, wgpu::DeviceLostReason::Destroyed) {
+                return;
+            }
+            *lost.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{message} ({reason:?})"));
+        });
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format =
@@ -445,7 +466,29 @@ impl GpuState {
             favicon_order: std::collections::VecDeque::new(),
             images: HashMap::new(),
             egui_renderer,
+            instance,
+            window,
+            reconfigure: false,
+            device_lost,
         }
+    }
+
+    /// The device-lost message, once: the caller toasts it.
+    pub fn take_device_lost(&self) -> Option<String> {
+        self.device_lost.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Reconfigures the surface at the window's current size. Used when wgpu
+    /// reports the swapchain stale without a winit `Resized` having arrived,
+    /// so `config`'s size may itself be stale; a zero size (minimized) keeps
+    /// the last one, as `resize` does.
+    fn reconfigure_surface(&mut self) {
+        let size = self.window.inner_size();
+        if size.width > 0 && size.height > 0 {
+            self.config.width = size.width;
+            self.config.height = size.height;
+        }
+        self.surface.configure(&self.device, &self.config);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -1039,9 +1082,34 @@ impl GpuState {
             (ctx, full_output)
         });
 
+        if std::mem::take(&mut self.reconfigure) {
+            self.reconfigure_surface();
+        }
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            // Timeout/Occluded/Outdated/Lost/Validation: skip this frame and
+            wgpu::CurrentSurfaceTexture::Success(t) => t,
+            // Presentable now, but wgpu asks for a reconfigure; done before the next acquire.
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                self.reconfigure = true;
+                t
+            }
+            // The swapchain no longer matches the window (mode change, eGPU replug
+            // with no resize event): without a reconfigure every later acquire fails too.
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.reconfigure_surface();
+                return RenderOutcome { surface_ok: false, screenshot_result: None };
+            }
+            // The surface itself is gone: make a new one for the same window.
+            wgpu::CurrentSurfaceTexture::Lost => {
+                match self.instance.create_surface(self.window.clone()) {
+                    Ok(surface) => {
+                        self.surface = surface;
+                        self.reconfigure_surface();
+                    }
+                    Err(err) => eprintln!("wgpu: couldn't recreate the lost surface: {err}"),
+                }
+                return RenderOutcome { surface_ok: false, screenshot_result: None };
+            }
+            // Timeout/Occluded/Validation: skip this frame and
             // try again next redraw rather than treating it as fatal. A
             // requested screenshot was never attempted here -- the caller
             // must not drop it, only retry on a later frame whose surface
