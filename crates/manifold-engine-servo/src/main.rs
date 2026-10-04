@@ -202,8 +202,9 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
+    // `None` only while a recreate at a new size fails (retried before the next frame); the first one is fatal.
     let mut frame_buffer =
-        SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer");
+        Some(SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer"));
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
@@ -254,9 +255,12 @@ fn main() {
                     // that still has a mapped section open, and assignment
                     // below wouldn't drop the old value until after the
                     // right-hand side (the new create() call) already ran.
-                    drop(frame_buffer);
-                    frame_buffer =
-                        SharedFrameBuffer::create(&socket_id, w, h).expect("recreate shared frame buffer at new size");
+                    drop(frame_buffer.take());
+                    // Fails while the host still maps the old file (stalled on upload): retried before the next
+                    // frame is written.
+                    frame_buffer = SharedFrameBuffer::create(&socket_id, w, h)
+                        .inspect_err(|e| eprintln!("frame buffer: recreate at {w}x{h} failed, retrying: {e}"))
+                        .ok();
                 }
                 HostToEngine::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
@@ -354,15 +358,23 @@ fn main() {
         }
 
         if visible && *delegate.frame_ready.borrow() {
-            *delegate.frame_ready.borrow_mut() = false;
-            webview.paint();
-            let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
-            if let Some(image) = rendering_context.read_to_image(rect) {
-                frame_buffer.write_frame(image.as_raw());
-                frame_id += 1;
-                let _ = control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
+            if frame_buffer.is_none() {
+                frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
             }
-            rendering_context.present();
+            // With no buffer yet, `frame_ready` stays set, so the frame is retried on the next tick rather than
+            // lost until the page repaints.
+            if let Some(buffer) = frame_buffer.as_mut() {
+                *delegate.frame_ready.borrow_mut() = false;
+                webview.paint();
+                let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
+                if let Some(image) = rendering_context.read_to_image(rect) {
+                    buffer.write_frame(image.as_raw());
+                    frame_id += 1;
+                    let _ =
+                        control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
+                }
+                rendering_context.present();
+            }
         }
 
         std::thread::sleep(Duration::from_millis(8));

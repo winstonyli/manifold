@@ -54,6 +54,8 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// manifold without this). ~30fps is plenty for a tab preview/thumbnail
 /// use case and well below what caused the observed overload.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+/// How often the capture's D3D device is checked for removal (`Capture::device_lost`).
+const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
 const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 
@@ -270,6 +272,7 @@ fn main() {
     // unless enough wall time has passed, capping our own outgoing rate
     // independent of the compositor's.
     let mut last_frame_sent = std::time::Instant::now() - FRAME_INTERVAL;
+    let mut last_device_check = std::time::Instant::now();
 
     loop {
         window::pump_messages();
@@ -513,6 +516,17 @@ fn main() {
                     let _ =
                         control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
                 }
+            }
+        }
+
+        // `try_get_latest_frame` swallows the failures a removed device causes, so the tab would freeze silently:
+        // report it instead, and manifold respawns the host on a working device.
+        if last_device_check.elapsed() >= DEVICE_CHECK_INTERVAL {
+            last_device_check = std::time::Instant::now();
+            if let Some(reason) = capture.device_lost() {
+                eprintln!("[capture] graphics device lost: {reason}");
+                let _ = control.send(&EngineToHost::Crashed { reason: format!("graphics device lost: {reason}") });
+                return;
             }
         }
 

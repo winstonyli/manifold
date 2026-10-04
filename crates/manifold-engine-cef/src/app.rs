@@ -40,11 +40,12 @@ wrap_app! {
             // (CHROME_RESULT_CODE_EULA_REFUSED). An embedded engine has no
             // first run at all.
             command_line.append_switch(Some(&"no-first-run".into()));
-            command_line.append_switch_with_value(
-                Some(&"enable-logging".into()),
-                Some(&"stderr".into()),
-            );
-            command_line.append_switch_with_value(Some(&"v".into()), Some(&"1".into()));
+            command_line.append_switch_with_value(Some(&"enable-logging".into()), Some(&"stderr".into()));
+            // Chromium's verbose log is a debugging aid, and per-tab logs append across spawns:
+            // only on request.
+            if std::env::var_os("MANIFOLD_CEF_VERBOSE").is_some_and(|v| v == "1") {
+                command_line.append_switch_with_value(Some(&"v".into()), Some(&"1".into()));
+            }
         }
 
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {

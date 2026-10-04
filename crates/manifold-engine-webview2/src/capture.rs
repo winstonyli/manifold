@@ -27,6 +27,8 @@ use windows::UI::Composition::ContainerVisual;
 pub struct Capture {
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
+    /// `d3d_device` as WinRT sees it, made once in `new`: `resize` recreates the pool on it.
+    winrt_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
     frame_pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     latest: Arc<Mutex<Option<Direct3D11CaptureFrame>>>,
@@ -79,7 +81,7 @@ impl Capture {
 
         session.StartCapture()?;
 
-        Ok(Self { d3d_device, d3d_context, frame_pool, session, latest, staging: None })
+        Ok(Self { d3d_device, d3d_context, winrt_device, frame_pool, session, latest, staging: None })
     }
 
     /// Non-blocking: `None` most calls (no new frame since the last one --
@@ -167,17 +169,15 @@ impl Capture {
     /// its real size" step needed.
     pub fn resize(&mut self, width: u32, height: u32) {
         let size = windows::Graphics::SizeInt32 { Width: width as i32, Height: height as i32 };
-        let _ = self.frame_pool.Recreate(
-            &self
-                .d3d_device
-                .cast::<IDXGIDevice>()
-                .and_then(|d| unsafe { CreateDirect3D11DeviceFromDXGIDevice(&d) })
-                .and_then(|d| d.cast::<windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>())
-                .unwrap_or_else(|_| unreachable!("device was already valid at Capture::new")),
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
-            size,
-        );
+        // A lost device fails here; `device_lost` reports it on the next tick.
+        let _ = self.frame_pool.Recreate(&self.winrt_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
+    }
+
+    /// Why the D3D device was removed (eGPU unplugged, driver update, TDR),
+    /// or `None` while it works. Capture can't continue on a removed device.
+    pub fn device_lost(&self) -> Option<String> {
+        // SAFETY: a plain COM query on a live device interface.
+        unsafe { self.d3d_device.GetDeviceRemovedReason() }.err().map(|e| e.message())
     }
 }
 

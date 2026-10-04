@@ -150,10 +150,10 @@ fn main() {
         root_cache_path: cache_dir.as_str().into(),
         windowless_rendering_enabled: true as _,
         external_message_pump: true as _,
-        // We disabled the `sandbox` cargo feature (it needs a separate
-        // bootstrap-process bundling step we're not doing), so CEF must be
-        // told explicitly not to expect one — otherwise it CHECK()-fails
-        // almost immediately trying to initialize sandbox-dependent state.
+        // The `sandbox` cargo feature is off (it needs a separate bootstrap
+        // process this project doesn't bundle), so CEF must be told not to
+        // expect one, or it CHECK()-fails at startup. Renderers run
+        // unsandboxed: README, Known limitations.
         no_sandbox: true as _,
         ..Default::default()
     };
@@ -233,16 +233,20 @@ fn main() {
     .expect("create CEF browser");
 
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .expect("create shared frame buffer");
+    // `None` only while a recreate at a new size fails (retried on the next frame); the first one is fatal.
+    let mut frame_buffer = Some(
+        ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+            .expect("create shared frame buffer"),
+    );
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
     // Set once `HostToEngine::Shutdown` calls `close_browser` -- the loop
     // keeps pumping (`do_message_loop_work` below) until `closed` flips,
-    // which is what actually drives `on_before_close` to fire.
-    let mut shutting_down = false;
+    // which is what actually drives `on_before_close` to fire, or until
+    // `SHUTDOWN_GRACE` passes (`shutdown_due`).
+    let mut shutting_down: Option<std::time::Instant> = None;
 
     loop {
         do_message_loop_work();
@@ -396,7 +400,8 @@ fn main() {
                     if let Some(host) = browser.host() {
                         host.close_browser(true as _);
                     }
-                    shutting_down = true;
+                    // A repeated `Shutdown` does not restart the clock.
+                    shutting_down.get_or_insert_with(std::time::Instant::now);
                 }
             }
         }
@@ -504,30 +509,97 @@ fn main() {
         }
 
         if visible {
-            if let Some(frame) = latest_frame.borrow_mut().take() {
-                if buffer_size != (frame.width, frame.height) {
-                    drop(frame_buffer);
-                    frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
-                        .expect("recreate shared frame buffer to match painted frame size");
+            // Taken in its own statement: the `RefMut` would otherwise live through the block (edition 2021),
+            // and putting a frame back for the retry below would panic on a second borrow.
+            let painted = latest_frame.borrow_mut().take();
+            if let Some(frame) = painted {
+                if frame_buffer.is_none() || buffer_size != (frame.width, frame.height) {
+                    // Unmapped before `create` truncates the file by name.
+                    drop(frame_buffer.take());
+                    frame_buffer = match ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
+                    {
+                        Ok(buffer) => Some(buffer),
+                        Err(e) => {
+                            // The host still maps the old file (stalled on upload): retried on the next frame.
+                            eprintln!(
+                                "frame buffer: recreate at {}x{} failed, retrying: {e}",
+                                frame.width, frame.height
+                            );
+                            None
+                        }
+                    };
                     buffer_size = (frame.width, frame.height);
                 }
-                frame_buffer.write_frame(&frame.bgra);
-                frame_id += 1;
-                let _ = control.send(&EngineToHost::FrameReady {
-                    frame_id,
-                    width: frame.width,
-                    height: frame.height,
-                    damage: None,
-                    pixels: None,
-                });
+                if let Some(buffer) = frame_buffer.as_mut() {
+                    buffer.write_frame(&frame.bgra);
+                    frame_id += 1;
+                    let _ = control.send(&EngineToHost::FrameReady {
+                        frame_id,
+                        width: frame.width,
+                        height: frame.height,
+                        damage: None,
+                        pixels: None,
+                    });
+                } else {
+                    // Kept for the retry unless a newer paint already replaced it.
+                    latest_frame.borrow_mut().get_or_insert(frame);
+                }
             }
         }
 
-        if shutting_down && *closed.borrow() {
-            cef::shutdown();
-            return;
+        if let Some(since) = shutting_down {
+            match shutdown_due(since.elapsed(), *closed.borrow()) {
+                Some(ShutdownPath::Clean) => {
+                    cef::shutdown();
+                    return;
+                }
+                Some(ShutdownPath::Forced) => {
+                    // `cef::shutdown()` with the browser still alive can hang inside libcef:
+                    // leave instead, and let the job object take the subprocesses.
+                    eprintln!("shutdown: no on_before_close after {SHUTDOWN_GRACE:?}; exiting");
+                    std::process::exit(0);
+                }
+                None => {}
+            }
         }
 
         std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
+/// How long a `Shutdown` waits for `on_before_close` before the host exits
+/// anyway. It matters when manifold died: `spawn_host_reader` synthesizes
+/// the `Shutdown`, and a host that waited for ever would be the orphan.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownPath {
+    /// The browser closed: CEF's documented order, then `cef::shutdown()`.
+    Clean,
+    /// It never did within `SHUTDOWN_GRACE`.
+    Forced,
+}
+
+/// Which way a host that got `Shutdown` `elapsed` ago leaves, if it leaves yet: cleanly once the browser `closed`,
+/// forced once `SHUTDOWN_GRACE` passed without that.
+fn shutdown_due(elapsed: Duration, closed: bool) -> Option<ShutdownPath> {
+    if closed {
+        Some(ShutdownPath::Clean)
+    } else if elapsed >= SHUTDOWN_GRACE {
+        Some(ShutdownPath::Forced)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_waits_for_the_close_then_gives_up() {
+        assert_eq!(shutdown_due(Duration::ZERO, true), Some(ShutdownPath::Clean));
+        assert_eq!(shutdown_due(Duration::from_secs(1), false), None);
+        assert_eq!(shutdown_due(SHUTDOWN_GRACE, false), Some(ShutdownPath::Forced));
     }
 }

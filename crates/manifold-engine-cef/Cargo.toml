@@ -6,7 +6,7 @@ description.workspace = true
 
 [dependencies]
 serde_json = "1"
-cef = { version = "152.1.0", default-features = false, features = ["sandbox", "build-util", "resources"] }
+cef = { version = "152.1.0", default-features = false, features = ["build-util", "resources"] }
 ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
 
 [target.'cfg(windows)'.dependencies]

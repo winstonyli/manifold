@@ -2,7 +2,7 @@ mod input;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
@@ -13,6 +13,24 @@ use webkit2gtk::{
 
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
+
+/// What was last sent: the next frame goes only if it differs.
+struct SentFrame {
+    size: (u32, u32),
+    pixels: Vec<u8>,
+}
+
+/// At most one frame per this, as WebView2's own `FRAME_INTERVAL`: about 30 fps.
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Whether a frame of `size` and `pixels` should be sent: it differs from
+/// `last` (or nothing was sent yet) and `FRAME_INTERVAL` has passed.
+fn frame_due(size: (u32, u32), pixels: &[u8], last: Option<&SentFrame>, since_sent: Duration) -> bool {
+    match last {
+        None => true,
+        Some(last) => since_sent >= FRAME_INTERVAL && (last.size != size || last.pixels != pixels),
+    }
+}
 
 /// One thing that happened to a download since the last poll -- mirrors
 /// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
@@ -278,6 +296,9 @@ fn main() {
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
+    // The last frame sent and when (`frame_due`).
+    let mut last_sent: Option<SentFrame> = None;
+    let mut sent_at = Instant::now();
     // Last-sent NavigationStateChanged fields, compared each tick against
     // the WebView's live properties (`webview.uri()`/`title()`/
     // `is_loading()`/`can_go_back()`/`can_go_forward()`) rather than
@@ -344,6 +365,10 @@ fn main() {
                 }
                 HostToEngine::SetVisible(v) => {
                     visible = v;
+                    if v {
+                        // A tab shown again gets a frame at once, changed or not.
+                        last_sent = None;
+                    }
                 }
                 HostToEngine::GetState => {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
@@ -542,18 +567,23 @@ fn main() {
             // `FrameReady` message directly (no separate shared-memory
             // sizing contract for this RemoteTransport-based engine-host),
             // so there is no requirement that it match what was requested.
+            // Unchanged frames are not sent (`frame_due`).
             if let Some(pixbuf) = offscreen.pixbuf() {
                 let (pw, ph) = (pixbuf.width() as u32, pixbuf.height() as u32);
                 if pw > 0 && ph > 0 {
                     let pixels = tightly_packed_rgba(&pixbuf);
-                    frame_id += 1;
-                    let _ = to_host.send(&EngineToHost::FrameReady {
-                        frame_id,
-                        width: pw,
-                        height: ph,
-                        damage: None,
-                        pixels: Some(pixels),
-                    });
+                    if frame_due((pw, ph), &pixels, last_sent.as_ref(), sent_at.elapsed()) {
+                        frame_id += 1;
+                        let _ = to_host.send(&EngineToHost::FrameReady {
+                            frame_id,
+                            width: pw,
+                            height: ph,
+                            damage: None,
+                            pixels: Some(pixels.clone()),
+                        });
+                        last_sent = Some(SentFrame { size: (pw, ph), pixels });
+                        sent_at = Instant::now();
+                    }
                 }
             }
         }
@@ -591,4 +621,20 @@ fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_sent_only_when_it_changed_and_the_interval_passed() {
+        let last = SentFrame { size: (2, 1), pixels: vec![1; 8] };
+        let later = FRAME_INTERVAL;
+        assert!(frame_due((2, 1), &[1; 8], None, Duration::ZERO), "the first frame always goes");
+        assert!(!frame_due((2, 1), &[1; 8], Some(&last), later), "unchanged");
+        assert!(frame_due((2, 1), &[2; 8], Some(&last), later), "changed pixels");
+        assert!(frame_due((1, 2), &[1; 8], Some(&last), later), "changed size, same bytes");
+        assert!(!frame_due((2, 1), &[2; 8], Some(&last), Duration::from_millis(5)), "too soon");
+    }
 }

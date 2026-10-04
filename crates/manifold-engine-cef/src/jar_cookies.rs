@@ -127,18 +127,31 @@ pub struct JarPull {
 
 impl JarPull {
     /// The pull's state. `may_hold_cookies`: this host was seeded with cookies or has reported some, so a store that
-    /// stays silent past `EMPTY_PULL_TIMEOUT` (or a read that never started) may be slow rather than empty.
+    /// stays silent past `EMPTY_PULL_TIMEOUT` (or a read that never started) may be slow rather than empty. A pull
+    /// still incomplete at `PULL_DEADLINE` is given up even while cookies were arriving, and answers silence.
     pub fn poll(&self, may_hold_cookies: bool) -> PullState {
         if let Some(json) = self.done.borrow_mut().take() {
             return PullState::Answer(json);
         }
-        let timed_out = self.seen.borrow().is_empty() && self.started.elapsed() >= EMPTY_PULL_TIMEOUT;
-        no_callback_answer(self.failed || timed_out, may_hold_cookies)
+        let seen_any = !self.seen.borrow().is_empty();
+        // Some cookies seen means this host holds cookies: a stalled pull is silence, never `[]`.
+        no_callback_answer(given_up(self.failed, seen_any, self.started.elapsed()), may_hold_cookies || seen_any)
     }
 }
 
-/// What a pull whose visitor has not completed answers: nothing yet unless `given_up` (the read never started, or no
-/// callback came in time); then `[]` only for a host that never had a cookie (a genuinely empty store), else silence.
+/// The most a pull may stay unanswered, even while cookies are arriving:
+/// a visitor released part way never completes. Under the host's own 10 s
+/// pull timeout, so the engine resolves first.
+const PULL_DEADLINE: Duration = Duration::from_secs(8);
+
+/// Whether a pull with no complete answer is given up: the read never
+/// started, nothing came within `EMPTY_PULL_TIMEOUT`, or `PULL_DEADLINE` passed.
+fn given_up(failed: bool, seen_any: bool, elapsed: Duration) -> bool {
+    failed || (!seen_any && elapsed >= EMPTY_PULL_TIMEOUT) || elapsed >= PULL_DEADLINE
+}
+
+/// What a pull whose visitor has not completed answers: nothing yet unless `given_up` (the read never started, no
+/// callback came in time, or `PULL_DEADLINE` passed); then `[]` only for a host that never had a cookie (a genuinely empty store), else silence.
 fn no_callback_answer(given_up: bool, may_hold_cookies: bool) -> PullState {
     match (given_up, may_hold_cookies) {
         (false, _) => PullState::Pending,
@@ -283,6 +296,16 @@ mod tests {
         assert_eq!(no_callback_answer(false, true), PullState::Pending);
         assert_eq!(no_callback_answer(true, false), PullState::Answer("[]".into()), "a genuinely empty store");
         assert_eq!(no_callback_answer(true, true), PullState::Silent, "seeded: slow or failed, never []");
+    }
+
+    #[test]
+    fn a_pull_gives_up_when_nothing_comes_or_when_it_stalls_part_way() {
+        let s = Duration::from_secs;
+        assert!(!given_up(false, false, s(1)), "still waiting for the first cookie");
+        assert!(given_up(false, false, EMPTY_PULL_TIMEOUT), "a silent store");
+        assert!(!given_up(false, true, s(3)), "cookies arriving: keep waiting");
+        assert!(given_up(false, true, PULL_DEADLINE), "a visitor that stopped part way");
+        assert!(given_up(true, false, s(0)), "the read never started");
     }
 
     #[test]

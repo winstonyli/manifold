@@ -61,9 +61,9 @@ static ENGINE_JOB: std::sync::OnceLock<EngineJobHandle> = std::sync::OnceLock::n
 
 /// Creates (once) and returns the Job Object every engine-host child gets
 /// assigned to -- see `EngineJobHandle`'s own doc comment. A null handle
-/// (creation or configuration failed) is a silent no-op everywhere it's
-/// used: this is a crash-safety net, not a feature any spawn should fail
-/// over losing.
+/// (creation failed) is a silent no-op everywhere it's used, and a job whose
+/// kill-on-close setup failed is logged once and used anyway: this is a
+/// crash-safety net, not a feature any spawn should fail over losing.
 #[cfg(target_os = "windows")]
 fn engine_job() -> windows_sys::Win32::Foundation::HANDLE {
     use windows_sys::Win32::Foundation::HANDLE;
@@ -77,12 +77,16 @@ fn engine_job() -> windows_sys::Win32::Foundation::HANDLE {
             if !job.is_null() {
                 let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
                 info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                SetInformationJobObject(
+                let set = SetInformationJobObject(
                     job,
                     JobObjectExtendedLimitInformation,
                     &info as *const _ as *const core::ffi::c_void,
                     std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
                 );
+                if set == 0 {
+                    // Engines then outlive a crashed manifold: say so once.
+                    eprintln!("engine job: kill-on-close not set: {}", std::io::Error::last_os_error());
+                }
             }
             EngineJobHandle(job as HANDLE)
         })
