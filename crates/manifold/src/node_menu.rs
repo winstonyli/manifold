@@ -97,7 +97,8 @@ pub(crate) struct JarRow {
     pub(crate) color: Option<egui::Color32>,
     /// The tab's jar, or the group's default.
     pub(crate) ticked: bool,
-    /// Group menus: how many tabs picking it would change (`App::cascade_count`).
+    /// Group menus: how many tabs picking it would change (`App::cascade_count`); `None` when none would, so no
+    /// "(0)" shows.
     pub(crate) count: Option<usize>,
 }
 
@@ -692,7 +693,7 @@ impl App {
             return None; // nothing to pick: jars are made from a tab's menu
         }
         Some(JarMenu {
-            rows: named(&|j| g.default_jar == Some(j), &|j| Some(self.cascade_count(id, j))),
+            rows: named(&|j| g.default_jar == Some(j), &|j| Some(self.cascade_count(id, j)).filter(|&n| n > 0)),
             can_follow: false,
             will_switch: false,
             has_default: g.default_jar.is_some(),
@@ -1173,7 +1174,7 @@ mod tests {
         app.apply_node_action(&ctx, &g, NodeAction::SetGroupDefaultJar(work));
         let menu = app.node_menu_view(&g).unwrap().jars.unwrap();
         assert!(menu.has_default && menu.rows[0].ticked);
-        assert_eq!(menu.rows[0].count, Some(0), "the tab already took it");
+        assert_eq!(menu.rows[0].count, None, "the tab already took it: no \"(0)\"");
         assert!(!app.node_menu_view(&t).unwrap().jars.unwrap().can_follow, "an unset tab already follows");
         app.apply_node_action(&ctx, &t, NodeAction::SetJar(None));
         assert!(app.node_menu_view(&t).unwrap().jars.unwrap().can_follow);

@@ -16,7 +16,9 @@ use std::collections::BTreeSet;
 pub(crate) struct JarChip {
     pub(crate) name: String,
     pub(crate) color: egui::Color32,
-    /// Unset: follows its group's default. The dot is outlined.
+    /// Unset, and the nearest group default (`inherited_jar`) is this jar: the dot is outlined. An unset tab whose
+    /// group default was cleared or is another jar (spec: "Clear default" leaves existing tabs alone) follows nothing,
+    /// so its dot is plain.
     pub(crate) following: bool,
     /// Names a jar that no longer exists; it uses the default jar. The dot takes the warning colour.
     pub(crate) missing: bool,
@@ -77,6 +79,8 @@ impl App {
             _ => return None,
         };
         let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;
+        let group = self.nodes.get(id).and_then(|n| n.group.as_deref());
+        let following = !choice.set && self.inherited_jar(group) == choice.jar;
         if key == JarKey::Default && !missing && !will_switch {
             return None;
         }
@@ -98,7 +102,7 @@ impl App {
             color: self.jar_color(key),
             was_color: self.jar_color(was),
             name,
-            following: !choice.set,
+            following,
             missing,
             will_switch,
             can_switch_now,
@@ -770,6 +774,30 @@ mod tests {
         assert_eq!(distinct(&app).len(), TAG_COLOR_PALETTE.len(), "every palette colour once");
         let extra = app.create_jar("Extra");
         assert!(TAG_COLOR_PALETTE.contains(&colour(&app, extra)), "all taken: still a palette colour");
+    }
+
+    /// Fix batch A4: the dot is outlined ("following") only while the tab's nearest group default is its jar. After
+    /// "Clear Default Jar" the tab keeps its jar, unset, but follows nothing, so the dot is plain.
+    #[test]
+    fn the_chip_follows_only_while_a_group_default_names_its_jar() {
+        let mut app = App::default();
+        let (work, home) = (app.create_jar("Work"), app.create_jar("Home"));
+        let g = group_in(&mut app, None);
+        app.set_group_default_jar(&g, work);
+        let t = tab_in(&mut app, Some(&g));
+        app.refollow(&t);
+        assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false });
+        assert!(app.jar_chip(&t).unwrap().following, "follows its group's Work");
+        app.clear_group_default_jar(&g);
+        assert_eq!(jar_of(&app, &t), JarChoice { jar: Some(work), set: false }, "stored values unchanged");
+        assert!(!app.jar_chip(&t).unwrap().following, "no group default: a plain dot");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = Some(home); // a remote edit, uncascaded
+        assert!(!app.jar_chip(&t).unwrap().following, "the group's default is another jar");
+        let outer = group_in(&mut app, None);
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().default_jar = None;
+        app.nodes.get_mut(&g).unwrap().group = Some(outer.clone());
+        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().default_jar = Some(work);
+        assert!(app.jar_chip(&t).unwrap().following, "an outer group's default counts when it is the nearest");
     }
 
     /// `SETJAR` (Task 8 review): makes a jar only for a focused tab, reuses one by name, and "default" picks Default.

@@ -132,11 +132,12 @@ action) and the settings page's sections.
   group rename, where a click away commits). "Follow group's jar" appears only for a set tab whose group has a default.
   New actions: `SetJar(Option<NodeId>)`, `NewJar(String)`, `FollowGroupJar`, `SwitchJarNow`.
 - **Group menu:** the same list under "Default jar for new tabs" with a tick on the current default, and "Clear default". The
-  entry shows how many tabs the cascade will change; no confirm dialog (sleeping a background tab loses nothing, and setting the
-  default back re-cascades to the tabs that are still unset).
+  entry shows how many tabs the cascade will change (nothing when none); no confirm dialog (sleeping a background tab loses
+  nothing, and setting the default back re-cascades to the tabs that are still unset).
 - **Chip:** a coloured dot with the jar name on a tab's card, only for a non-default jar. An outlined dot means following the
-  group; a warning colour means a missing jar; a second dot with an arrow means "will switch", its tooltip offering "switch
-  now". The same dot sits beside the address bar in Tab view.
+  group (unset, and its nearest group default is that jar; after "Clear default" the dot is plain); a warning colour means a
+  missing jar; a second dot with an arrow means "will switch", its tooltip offering "switch now". The same dot sits beside
+  the address bar in Tab view.
 - **Settings, "Jars" section:** one row per jar: swatch, editable name, count of tabs using it, ephemeral toggle, "Clear
   cookies" (confirm) and "Delete" (shows "N tabs use this; they'll use Default." and deletes on confirm; the file goes with
   it). The default jar is listed first and cannot be renamed or deleted; "Clear cookies" is available on it.
