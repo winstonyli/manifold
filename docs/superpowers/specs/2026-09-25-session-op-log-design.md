@@ -454,9 +454,13 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   placeholder, which isn't shown. Id-valued registers (`parent`) are not
   counted: they may name a pruned node, which reads as deleted.
 - **Two instances on one profile**: each append takes an exclusive lock
-  on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
+  on a separate `session.mnf.lock` file (`std::fs::File::try_lock`; a lock on
   the journal itself would be lost when compaction renames a new file
-  over it). Under the lock it opens `session.mnf` by path; if its
+  over it). It waits at most 5 seconds (`LOCK_WAIT`) for an instance
+  holding the lock, then fails with a "busy" error, which the caller
+  reports like any failed save, rather than freezing its window. Under
+  the lock it opens `session.mnf` by path, reading its header and the
+  bytes past its last offset; if its
   header's generation differs from the one it read last, or the file is
   shorter than its offset (another instance compacted), it re-reads the
   file from scratch, otherwise it reads only the frames
