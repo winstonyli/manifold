@@ -277,11 +277,11 @@ pub(crate) struct ImagePayload {
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
 /// kind built on the unified model. Unlike an image, rendering a PDF page
-/// is genuinely slow the first time (`pdf_fetch::PdfFetcher` may need to
+/// is genuinely slow the first time (`pdf_render::PdfRenderer` may need to
 /// download and cache a real `pdfium.dll` before it can render anything at
 /// all), so this can't decode synchronously at creation the way
 /// `ImagePayload` does -- `outcome` starts `None` (rendering in the
-/// background) and is filled in once `PdfFetcher::tick` reports a result
+/// background) and is filled in once `PdfRenderer::tick` reports a result
 /// for this node's own id, the same "spawn a thread, `mpsc` channel, main
 /// loop `tick()`s it" pattern `SuggestionFetcher`/`FaviconFetcher` already
 /// use. Only the first page is ever rendered -- no page-navigation UI yet,

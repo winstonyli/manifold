@@ -32,16 +32,16 @@ struct Request {
     path: String,
 }
 
-/// Ids whose node was deleted before their render ran (`PdfFetcher::cancel`).
+/// Ids whose node was deleted before their render ran (`PdfRenderer::cancel`).
 type CancelSet = Arc<Mutex<HashSet<String>>>;
 
-pub struct PdfFetcher {
+pub struct PdfRenderer {
     tx: mpsc::Sender<Request>,
     rx: mpsc::Receiver<(String, Result<PdfRenderResult, String>)>,
     cancelled: CancelSet,
 }
 
-impl PdfFetcher {
+impl PdfRenderer {
     pub fn new() -> Self {
         let (tx, thread_rx) = mpsc::channel::<Request>();
         let (result_tx, rx) = mpsc::channel();
@@ -175,10 +175,10 @@ mod tests {
     fn a_new_request_clears_a_stale_cancel() {
         let (tx, thread_rx) = mpsc::channel();
         let (_result_tx, rx) = mpsc::channel();
-        let fetcher = PdfFetcher { tx, rx, cancelled: Default::default() };
-        fetcher.cancel("a");
-        fetcher.request("a".to_string(), "a.pdf".to_string());
+        let renderer = PdfRenderer { tx, rx, cancelled: Default::default() };
+        renderer.cancel("a");
+        renderer.request("a".to_string(), "a.pdf".to_string());
         assert_eq!(thread_rx.try_recv().map(|r| r.id), Ok("a".to_string()));
-        assert!(!take_cancelled(&fetcher.cancelled, "a"));
+        assert!(!take_cancelled(&renderer.cancelled, "a"));
     }
 }

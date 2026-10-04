@@ -35,7 +35,7 @@ mod net;
 mod node;
 mod node_menu;
 mod pdf;
-mod pdf_fetch;
+mod pdf_render;
 mod popup_gate;
 mod popups;
 mod process_manager;
@@ -66,7 +66,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
-use pdf_fetch::PdfFetcher;
+use pdf_render::PdfRenderer;
 use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
@@ -1089,7 +1089,7 @@ struct App {
     /// native favicon API.
     favicon_fetcher: FaviconFetcher,
     /// See `PdfPayload::outcome`'s own doc comment.
-    pdf_fetcher: PdfFetcher,
+    pdf_renderer: PdfRenderer,
     /// See `redirect_fetch`'s own module doc comment.
     redirect_fetcher: RedirectFetcher,
     /// Origins already resolved (successfully or not) by `favicon_fetcher`
@@ -1535,7 +1535,7 @@ impl Default for App {
             egui_state: None,
             address_bar: AddressBar::new(settings.home_page.clone()),
             favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
-            pdf_fetcher: PdfFetcher::new(),
+            pdf_renderer: PdfRenderer::new(),
             redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
             dragging: None,
@@ -2164,7 +2164,7 @@ impl App {
     fn remove_node(&mut self, id: &str) {
         let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
-            self.pdf_fetcher.cancel(id);
+            self.pdf_renderer.cancel(id);
         }
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(removed.and_then(|n| n.group));

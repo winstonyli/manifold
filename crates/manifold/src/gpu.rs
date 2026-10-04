@@ -1021,6 +1021,34 @@ impl GpuState {
         renderer.render(&mut pass.forget_lifetime(), clipped_primitives, screen_descriptor);
     }
 
+    /// Records one frame's layers into `view`: the content quads, then egui
+    /// on top; or, during a Tab<->Graph transition (`content_on_top`), egui
+    /// as the base and the shrinking/expanding content quad over it. The
+    /// screen and a screenshot both draw through here, so they can't differ.
+    #[allow(clippy::too_many_arguments)] // Disjoint borrows of `GpuState` fields: `self` can't be passed whole.
+    fn record_scene(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        panes: &[(PanePx, Option<&TabTexture>)],
+        target: (u32, u32),
+        pipeline: &wgpu::RenderPipeline,
+        renderer: &mut egui_wgpu::Renderer,
+        egui_draw: Option<&(Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor)>,
+        content_on_top: bool,
+    ) {
+        match (egui_draw, content_on_top) {
+            (Some((primitives, screen)), true) => {
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, true);
+                Self::record_content_layers(encoder, view, panes, target, pipeline, false);
+            }
+            (Some((primitives, screen)), false) => {
+                Self::record_content_layers(encoder, view, panes, target, pipeline, true);
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, false);
+            }
+            (None, _) => Self::record_content_layers(encoder, view, panes, target, pipeline, true),
+        }
+    }
+
     /// `panes` is 0, 1, or 2 `(viewport_px, tab_id)` pairs -- empty for
     /// plain Graph view (nothing to composite, `record_content_layers`
     /// still clears the screen), one for ordinary Tab view or a `Transition`
@@ -1156,39 +1184,16 @@ impl GpuState {
             None
         };
 
-        // Normally the content quad is the base layer and egui (chrome, any
-        // dropdown) draws on top of it, unclipped. During a Tab<->Graph
-        // transition the order flips: the graph (egui) is the base layer
-        // and the transitioning tab's content quad draws over it, since
-        // that quad is what's supposed to visually shrink/expand in front
-        // of the graph, not get hidden underneath its nodes/edges.
-        if content_on_top {
-            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                Self::record_egui_pass(
-                    &mut encoder,
-                    &view,
-                    &mut self.egui_renderer,
-                    clipped_primitives,
-                    screen_descriptor,
-                    true,
-                );
-                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, false);
-            } else {
-                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
-            }
-        } else {
-            Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
-            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                Self::record_egui_pass(
-                    &mut encoder,
-                    &view,
-                    &mut self.egui_renderer,
-                    clipped_primitives,
-                    screen_descriptor,
-                    false,
-                );
-            }
-        }
+        Self::record_scene(
+            &mut encoder,
+            &view,
+            &panes,
+            (width, height),
+            &self.pipeline,
+            &mut self.egui_renderer,
+            egui_draw.as_ref(),
+            content_on_top,
+        );
 
         let pending_screenshot = screenshot_path.map(|path| {
             let readback_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1202,54 +1207,16 @@ impl GpuState {
                 view_formats: &[],
             });
             let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            if content_on_top {
-                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                    Self::record_egui_pass(
-                        &mut encoder,
-                        &readback_view,
-                        &mut self.egui_renderer,
-                        clipped_primitives,
-                        screen_descriptor,
-                        true,
-                    );
-                    Self::record_content_layers(
-                        &mut encoder,
-                        &readback_view,
-                        &panes,
-                        (width, height),
-                        &self.pipeline,
-                        false,
-                    );
-                } else {
-                    Self::record_content_layers(
-                        &mut encoder,
-                        &readback_view,
-                        &panes,
-                        (width, height),
-                        &self.pipeline,
-                        true,
-                    );
-                }
-            } else {
-                Self::record_content_layers(
-                    &mut encoder,
-                    &readback_view,
-                    &panes,
-                    (width, height),
-                    &self.pipeline,
-                    true,
-                );
-                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                    Self::record_egui_pass(
-                        &mut encoder,
-                        &readback_view,
-                        &mut self.egui_renderer,
-                        clipped_primitives,
-                        screen_descriptor,
-                        false,
-                    );
-                }
-            }
+            Self::record_scene(
+                &mut encoder,
+                &readback_view,
+                &panes,
+                (width, height),
+                &self.pipeline,
+                &mut self.egui_renderer,
+                egui_draw.as_ref(),
+                content_on_top,
+            );
 
             let unpadded_bytes_per_row = width * 4;
             let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)

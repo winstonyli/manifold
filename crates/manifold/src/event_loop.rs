@@ -1441,7 +1441,7 @@ impl App {
             }
         }
 
-        for (id, result) in self.pdf_fetcher.tick() {
+        for (id, result) in self.pdf_renderer.tick() {
             // The node may have been deleted while this render was still
             // in flight -- skip a late-arriving result entirely rather
             // than uploading a texture nothing will ever free (`delete`'s

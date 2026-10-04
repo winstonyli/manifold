@@ -214,7 +214,7 @@ impl App {
         if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
             if matches!(pdf.outcome, Some(Err(_))) {
                 pdf.outcome = None;
-                self.pdf_fetcher.request(id.to_string(), pdf.path.clone());
+                self.pdf_renderer.request(id.to_string(), pdf.path.clone());
             }
             return;
         }
@@ -549,7 +549,7 @@ impl App {
     /// file surfaces later as a `Some(Err(_))` outcome instead of the node
     /// never having existed the way a bad image file does.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
-        self.pdf_fetcher.request(id.clone(), path.clone());
+        self.pdf_renderer.request(id.clone(), path.clone());
         self.place_node(
             Some(id),
             NodePayload::Pdf(PdfPayload { path, outcome: None, url: None }),
