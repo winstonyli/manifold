@@ -27,7 +27,7 @@ egui_commonmark = { version = "0.25.0", default-features = false, features = ["p
 # when this project ports off Windows-only.
 etcetera = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
-ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+ipc-protocol = { version = "0.2.0", path = "../ipc-protocol" }
 # PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
 # version `pdfium-auto` itself depends on exactly (`0.3.1` -> `0.8.37`, one
 # version older than this crate's own latest `0.9.4`) -- a mismatched pin
