@@ -106,33 +106,42 @@ const JAR_CHIP_SCRIM_ALPHA: u8 = 240;
 /// Narrower than this, a chip's name (about one letter and "…") is left out rather than squeezed.
 const JAR_CHIP_MIN_NAME: f32 = 14.0;
 
+/// The gap between a jar's name and its marker (`JarLabel::marker_text`).
+const JAR_CHIP_MARKER_GAP: f32 = 4.0;
+
 /// What of a jar chip fits `max` screen points (`fit_jar_chip`): whether the old jar's dot and arrow are drawn
-/// (`lead`), and the width the name gets (`None`: no name).
+/// (`lead`), the width the name gets (`None`: no name), and whether the marker is drawn (always whole, with the name).
 #[derive(Debug, PartialEq)]
 struct ChipFit {
     lead: bool,
     name: Option<f32>,
+    marker: bool,
 }
 
-/// Fits a chip whose lead is `lead` and name `name` points wide into `max`: whole if it fits, else the name
-/// ellipsized, else just the dots, else just the jar's dot (a waiting switch's cue goes last but one), else nothing.
-fn fit_jar_chip(max: f32, lead: f32, name: f32) -> Option<ChipFit> {
+/// Fits a chip whose lead is `lead`, name `name` and marker `marker` points wide (0: no marker) into `max`: whole if it
+/// fits, else the name ellipsized (never the marker), else just the dots, else just the jar's dot (a waiting switch's
+/// cue goes last but one), else nothing.
+fn fit_jar_chip(max: f32, lead: f32, name: f32, marker: f32) -> Option<ChipFit> {
     let dots = |lead: f32| JAR_CHIP_PAD + lead + 2.0 * JAR_CHIP_R;
-    let room = max - dots(lead) - JAR_CHIP_NAME_GAP - JAR_CHIP_NAME_END;
+    let tail = if marker > 0.0 { JAR_CHIP_MARKER_GAP + marker } else { 0.0 };
+    let room = max - dots(lead) - JAR_CHIP_NAME_GAP - tail - JAR_CHIP_NAME_END;
     if room >= name.min(JAR_CHIP_MIN_NAME) {
-        Some(ChipFit { lead: lead > 0.0, name: Some(name.min(room)) })
+        Some(ChipFit { lead: lead > 0.0, name: Some(name.min(room)), marker: marker > 0.0 })
     } else if dots(lead) + JAR_CHIP_PAD <= max {
-        Some(ChipFit { lead: lead > 0.0, name: None })
+        Some(ChipFit { lead: lead > 0.0, name: None, marker: false })
     } else if dots(0.0) + JAR_CHIP_PAD <= max {
-        Some(ChipFit { lead: false, name: None })
+        Some(ChipFit { lead: false, name: None, marker: false })
     } else {
         None
     }
 }
 
 /// A jar chip with its top-left at `at` (screen), at most `max_width` wide (`fit_jar_chip`): a dot (outlined when
-/// following the group, `warn`-coloured for a missing jar) and the name on a dark scrim, after the old jar's dot and an
-/// arrow while the tab waits to switch. Its hover text goes through `CardBody::tooltip`. Returns the scrim drawn.
+/// following the group, `warn`-coloured for a missing jar), the name and its marker on a dark scrim, after the old
+/// jar's dot and an arrow while the tab waits to switch. The marker is styled as everywhere else
+/// (`JarLabel::marker_format`), in `text` dimmed by the theme's weak text alpha: the scrim is always near-black, so
+/// the panel's own weak colour would not suit it. Its hover text goes through `CardBody::tooltip`. Returns the scrim
+/// drawn.
 pub(crate) fn paint_jar_chip(
     painter: &egui::Painter,
     at: egui::Pos2,
@@ -145,33 +154,48 @@ pub(crate) fn paint_jar_chip(
     const R: f32 = JAR_CHIP_R;
     let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
     let arrow = jar_chip_arrow(painter, chip, font.clone(), text);
-    let name = painter.layout_no_wrap(chip.name.to_string(), font.clone(), text);
-    let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
-    let fit = fit_jar_chip(max_width, lead, name.size().x)?;
-    let name = fit.name.map(|room| {
-        if room >= name.size().x {
-            return name;
+    let name_job = |wrap: Option<f32>| {
+        let mut job =
+            egui::text::LayoutJob::single_section(chip.name.name.clone(), chip.name.name_format(font.clone()));
+        if let Some(room) = wrap {
+            job.wrap = egui::text::TextWrapping {
+                max_width: room,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
         }
-        let mut job = egui::text::LayoutJob::simple_singleline(chip.name.to_string(), font, text);
-        job.wrap = egui::text::TextWrapping {
-            max_width: room,
-            max_rows: 1,
-            break_anywhere: true,
-            overflow_character: Some('…'),
-        };
         painter.layout_job(job)
+    };
+    let name = name_job(None);
+    let marker = chip.name.marker_text().map(|m| {
+        let weak = text.gamma_multiply(painter.ctx().global_style().visuals.weak_text_alpha);
+        painter.layout_job(egui::text::LayoutJob::single_section(
+            m,
+            crate::jar_defs::JarLabel::marker_format(font.size, weak),
+        ))
     });
+    let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
+    let fit = fit_jar_chip(max_width, lead, name.size().x, marker.as_ref().map_or(0.0, |m| m.size().x))?;
+    let name = fit.name.map(|room| if room >= name.size().x { name } else { name_job(Some(room)) });
+    let marker = marker.filter(|_| fit.marker);
     let lead = if fit.lead { lead } else { 0.0 };
+    let tail = marker.as_ref().map_or(0.0, |m| JAR_CHIP_MARKER_GAP + m.size().x);
     let width = match &name {
-        Some(name) => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_NAME_GAP + name.size().x + JAR_CHIP_NAME_END,
+        Some(name) => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_NAME_GAP + name.size().x + tail + JAR_CHIP_NAME_END,
         None => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_PAD,
     };
     let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
     painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(JAR_CHIP_SCRIM_ALPHA));
     let x = paint_jar_dots(painter, at.x + JAR_CHIP_PAD, cy, chip, arrow.filter(|_| fit.lead), text, warn);
     if let Some(name) = name {
+        let x = x + JAR_CHIP_NAME_GAP;
         let size = name.size();
-        painter.galley(egui::pos2(x + JAR_CHIP_NAME_GAP, cy - size.y / 2.0), name, text);
+        painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
+        if let Some(marker) = marker {
+            let m = marker.size();
+            painter.galley(egui::pos2(x + size.x + JAR_CHIP_MARKER_GAP, cy - m.y / 2.0), marker, text);
+        }
     }
     Some(scrim)
 }
@@ -2132,17 +2156,95 @@ mod tests {
     /// and arrow; it never runs past `max`.
     #[test]
     fn a_jar_chip_shrinks_to_fit_its_card() {
-        let fit = |max, lead, name| fit_jar_chip(max, lead, name);
+        let fit = |max, lead, name| fit_jar_chip(max, lead, name, 0.0);
         let whole = JAR_CHIP_PAD + 2.0 * JAR_CHIP_R + JAR_CHIP_NAME_GAP + 30.0 + JAR_CHIP_NAME_END;
-        assert_eq!(fit(whole, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(30.0) }));
-        assert_eq!(fit(whole - 10.0, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(20.0) }));
-        assert_eq!(fit(whole + 20.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(30.0) }));
-        assert_eq!(fit(whole + 5.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(15.0) }));
-        assert_eq!(fit(40.0, 20.0, 30.0), Some(ChipFit { lead: true, name: None }));
-        assert_eq!(fit(30.0, 20.0, 30.0), Some(ChipFit { lead: false, name: None }));
+        assert_eq!(fit(whole, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(30.0), marker: false }));
+        assert_eq!(fit(whole - 10.0, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(20.0), marker: false }));
+        assert_eq!(fit(whole + 20.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(30.0), marker: false }));
+        assert_eq!(fit(whole + 5.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(15.0), marker: false }));
+        assert_eq!(fit(40.0, 20.0, 30.0), Some(ChipFit { lead: true, name: None, marker: false }));
+        assert_eq!(fit(30.0, 20.0, 30.0), Some(ChipFit { lead: false, name: None, marker: false }));
         assert_eq!(fit(10.0, 20.0, 30.0), None);
         // A name already narrower than the minimum is kept whole when it fits.
-        assert_eq!(fit(whole - 20.0, 0.0, 10.0), Some(ChipFit { lead: false, name: Some(10.0) }));
+        assert_eq!(fit(whole - 20.0, 0.0, 10.0), Some(ChipFit { lead: false, name: Some(10.0), marker: false }));
+    }
+
+    /// Styled jar label markers: a chip whose label has a marker keeps all of the marker and ellipsizes only the name;
+    /// with no room for the marker and a short name, it falls back to the dots as one without a marker does.
+    #[test]
+    fn a_jar_chip_keeps_its_marker_while_the_name_shrinks() {
+        let (name, marker) = (30.0, 20.0);
+        let whole = JAR_CHIP_PAD
+            + 2.0 * JAR_CHIP_R
+            + JAR_CHIP_NAME_GAP
+            + name
+            + JAR_CHIP_MARKER_GAP
+            + marker
+            + JAR_CHIP_NAME_END;
+        let fit = |max, lead| fit_jar_chip(max, lead, name, marker);
+        let shown = |lead, name| Some(ChipFit { lead, name: Some(name), marker: true });
+        assert_eq!(fit(whole, 0.0), shown(false, 30.0));
+        assert_eq!(fit(whole - 10.0, 0.0), shown(false, 20.0), "the name gives way, the marker stays whole");
+        assert_eq!(fit(whole - 16.0, 0.0), shown(false, JAR_CHIP_MIN_NAME));
+        assert_eq!(fit(whole + 15.0, 20.0), shown(true, 25.0));
+        let dots = Some(ChipFit { lead: false, name: None, marker: false });
+        assert_eq!(fit(whole - 17.0, 0.0), dots, "no room for a short name and the marker: just the dots");
+        assert_eq!(fit(30.0, 20.0), dots);
+        assert_eq!(fit(10.0, 20.0), None);
+    }
+
+    /// The painted chip shows the marker as text of its own, whole, next to an ellipsized name.
+    #[test]
+    fn a_painted_jar_chip_draws_the_marker_whole() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: crate::jar_defs::JarLabel {
+                name: "A rather long jar name".into(),
+                marker: Some(crate::jar_defs::JarMarker::Fragment("3f2a".into())),
+            },
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: false,
+            can_switch_now: false,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        for (max, full) in [(300.0, true), (90.0, false), (20.0, false)] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let font = egui::FontId::proportional(11.0);
+                let painted = paint_jar_chip(
+                    ui.painter(),
+                    egui::Pos2::ZERO,
+                    max,
+                    &chip,
+                    font,
+                    egui::Color32::WHITE,
+                    egui::Color32::YELLOW,
+                );
+                assert!(painted.is_some_and(|r| r.width() <= max), "{max}: {painted:?}");
+            });
+            output.textures_delta.clear();
+            let galleys: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.clone()),
+                    _ => None,
+                })
+                .collect();
+            let texts: Vec<String> = galleys.iter().map(|g| g.text().to_string()).collect();
+            if max < 30.0 {
+                assert!(texts.is_empty(), "{max}: just the dot: {texts:?}");
+                continue;
+            }
+            assert_eq!(texts.len(), 2, "{max}: name and marker: {texts:?}");
+            assert_eq!((texts[0].as_str(), texts[1].as_str()), ("A rather long jar name", "#3f2a"), "{max}");
+            assert!(!galleys[1].elided, "{max}: the marker is whole");
+            assert_eq!(galleys[0].elided, !full, "{max}: the name is ellipsized only when narrow");
+        }
     }
 
     /// Fix batch B4: the dots the card chip and Tab view share show a waiting switch as the old jar's dot, an arrow,
