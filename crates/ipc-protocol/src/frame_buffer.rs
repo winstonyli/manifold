@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use memmap2::MmapMut;
 
@@ -20,6 +20,12 @@ pub struct SharedFrameBuffer {
     path: PathBuf,
     width: u32,
     height: u32,
+    /// Unix only: the frame file, held open with a shared `flock` for the
+    /// buffer's life so another manifold's sweep can tell the file is in use
+    /// (see `unused`). Windows needs none: the mapping itself refuses the
+    /// sweep's exclusive open.
+    #[cfg(unix)]
+    _lock: std::fs::File,
 }
 
 /// Deterministic from `name` alone so manifold can re-derive the path of
@@ -27,6 +33,81 @@ pub struct SharedFrameBuffer {
 /// send the path over the control channel.
 pub fn frame_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("manifold-frame-{name}.bin"))
+}
+
+/// Deletes `name`'s frame file (errors ignored). Only call once its engine-host
+/// has exited and before anything can create a new file under the same name:
+/// Windows deletes a file another process still maps (measured, Windows 11
+/// 26200), so a late call would take a successor's file out from under it.
+pub fn remove_frame_file(name: &str) {
+    let _ = std::fs::remove_file(frame_path(name));
+}
+
+/// Deletes `manifold-frame-*.bin` files in `dir` last modified more than
+/// `older_than` ago and not in use. A live engine-host keeps its file
+/// mapped. On Windows that makes an exclusive open fail, so a file that opens
+/// with `share_mode(0)` belongs to no one. On Unix a mapping blocks nothing,
+/// so every `SharedFrameBuffer` holds a shared `flock` on its file instead,
+/// and a file whose exclusive lock can be taken belongs to no one.
+pub fn sweep_stale_frames_in(dir: &Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("manifold-frame-") && name.ends_with(".bin")) {
+            continue;
+        }
+        let path = entry.path();
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= older_than);
+        if old && unused(&path) && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg(windows)]
+fn unused(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Dropped before the delete below; only the open's success matters.
+    OpenOptions::new().read(true).share_mode(0).open(path).is_ok()
+}
+
+/// `flock` locks (`File::try_lock`) belong to an open file and go when its
+/// holder exits, so a crashed host's file locks again. A file that can't be
+/// opened is left alone.
+#[cfg(not(windows))]
+fn unused(path: &Path) -> bool {
+    OpenOptions::new().read(true).open(path).is_ok_and(|file| lock_probe_unused(file.try_lock()))
+}
+
+/// Reads a `try_lock` result: only `WouldBlock` means a live holder. On a filesystem
+/// without `flock` (`Unsupported`) no file is ever locked, so the sweep's age limit
+/// alone decides; any other error leaves the file alone.
+#[cfg(not(windows))]
+fn lock_probe_unused(result: Result<(), std::fs::TryLockError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(std::fs::TryLockError::WouldBlock) => false,
+        Err(std::fs::TryLockError::Error(err)) => err.kind() == io::ErrorKind::Unsupported,
+    }
+}
+
+/// Takes the shared lock `unused` probes for. On a filesystem without `flock`
+/// (`Unsupported`) the file stays unlocked, as before locks existed, and `unused`
+/// treats such files as free, so the sweep's age limit is the only guard.
+#[cfg(unix)]
+fn lock_shared(file: &std::fs::File) -> io::Result<()> {
+    match file.lock_shared() {
+        Err(err) if err.kind() == io::ErrorKind::Unsupported => Ok(()),
+        other => other,
+    }
 }
 
 impl SharedFrameBuffer {
@@ -81,12 +162,20 @@ impl SharedFrameBuffer {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&open_path)?;
         file.set_len(len)?;
         let mmap = unsafe { MmapMut::map_mut(&file)? };
+        // Locked before the rename, so the file is never at `path` unlocked.
         #[cfg(unix)]
-        if let Err(err) = std::fs::rename(&open_path, &path) {
+        if let Err(err) = lock_shared(&file).and_then(|()| std::fs::rename(&open_path, &path)) {
             let _ = std::fs::remove_file(&open_path);
             return Err(err);
         }
-        Ok(Self { mmap, path, width, height })
+        Ok(Self {
+            mmap,
+            path,
+            width,
+            height,
+            #[cfg(unix)]
+            _lock: file,
+        })
     }
 
     /// `InvalidData` when the file isn't `width * height * 4` bytes: on resize the
@@ -102,7 +191,18 @@ impl SharedFrameBuffer {
             ));
         }
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        Ok(Self { mmap, path, width, height })
+        // Best-effort: the host's own lock is what protects the file from the sweep, and
+        // a reader failing here (e.g. ENOLCK) would blank the tab for nothing.
+        #[cfg(unix)]
+        let _ = file.lock_shared();
+        Ok(Self {
+            mmap,
+            path,
+            width,
+            height,
+            #[cfg(unix)]
+            _lock: file,
+        })
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -130,6 +230,106 @@ impl SharedFrameBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn lock_probe_treats_only_wouldblock_and_other_errors_as_in_use() {
+        use std::fs::TryLockError;
+        assert!(lock_probe_unused(Ok(())));
+        assert!(lock_probe_unused(Err(TryLockError::Error(io::ErrorKind::Unsupported.into()))));
+        assert!(!lock_probe_unused(Err(TryLockError::WouldBlock)));
+        assert!(!lock_probe_unused(Err(TryLockError::Error(io::ErrorKind::PermissionDenied.into()))));
+    }
+
+    /// A unique directory per test, so no test sweeps the real temp dir, where
+    /// a running manifold's frame files live.
+    fn sweep_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("manifold-frame-sweep-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_sweep_removes_only_old_frame_files() {
+        let dir = sweep_dir("old");
+        std::fs::write(dir.join("manifold-frame-a.bin"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("manifold-store-x"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("other.bin"), [0u8; 8]).unwrap();
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::from_secs(3600)), 0, "too new");
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
+        assert!(!dir.join("manifold-frame-a.bin").exists());
+        assert!(dir.join("manifold-store-x").exists() && dir.join("other.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live engine keeps its frame file mapped; Windows refuses an exclusive
+    /// open of a mapped file, which is how the sweep tells it apart. The file is
+    /// mapped the way `SharedFrameBuffer::create` maps it (the file handle
+    /// dropped, only the mapping kept), but in a private directory.
+    #[cfg(windows)]
+    #[test]
+    fn the_sweep_spares_a_mapped_frame_file() {
+        let dir = sweep_dir("live");
+        let path = dir.join("manifold-frame-live.bin");
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).unwrap();
+        file.set_len(64).unwrap();
+        let live = unsafe { MmapMut::map_mut(&file).unwrap() };
+        drop(file);
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 0);
+        assert!(path.exists(), "a mapped file survives");
+        drop(live);
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
+        assert!(!path.exists(), "an unmapped one goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// On Unix a mapping blocks nothing, so the sweep goes by the shared lock a
+    /// live `SharedFrameBuffer` holds: while one is open the file stays, once it
+    /// drops the file goes. `unused` opens its own handle, as another
+    /// manifold's sweep would.
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_spares_a_locked_frame_file() {
+        let dir = sweep_dir("locked");
+        let path = dir.join("manifold-frame-locked.bin");
+        std::fs::write(&path, [0u8; 64]).unwrap();
+        let live = SharedFrameBuffer::open_existing(path.clone(), 4, 4).unwrap();
+        assert!(!unused(&path), "held");
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 0);
+        assert!(path.exists(), "a locked file survives");
+        drop(live);
+        assert!(unused(&path), "released");
+        assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
+        assert!(!path.exists(), "an unlocked one goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `create` locks the file it renames into place, and a resize's new file
+    /// is locked by its own buffer.
+    #[cfg(unix)]
+    #[test]
+    fn a_created_buffer_holds_its_lock_across_a_resize() {
+        let name = format!("test-create-lock-{}", std::process::id());
+        let first = SharedFrameBuffer::create(&name, 4, 4).unwrap();
+        assert!(!unused(&frame_path(&name)));
+        let second = SharedFrameBuffer::create(&name, 2, 2).unwrap();
+        drop(first);
+        assert!(!unused(&frame_path(&name)), "the resized file is locked");
+        drop(second);
+        assert!(unused(&frame_path(&name)));
+        let _ = std::fs::remove_file(frame_path(&name));
+    }
+
+    #[test]
+    fn remove_frame_file_deletes_a_released_buffer() {
+        let name = format!("test-remove-frame-{}", std::process::id());
+        drop(SharedFrameBuffer::create(&name, 4, 4).unwrap());
+        assert!(frame_path(&name).exists());
+        remove_frame_file(&name);
+        assert!(!frame_path(&name).exists());
+    }
 
     #[test]
     fn open_existing_refuses_a_file_of_the_wrong_size() {

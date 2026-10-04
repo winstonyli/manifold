@@ -95,7 +95,9 @@ card's position. **Relayout** in the bar clears every saved `pos`.
   scalar values across the whole value, including unrevealed pages.
   Matches keep their ancestors. Enter or ↓ steps to the next match, and
   matching cards are highlighted. A value of more than about 100k nodes
-  is searched on a worker thread.
+  is searched on a worker thread; a newer query cancels it, and no
+  matches show until it answers. A search stops at 10,000 matches, and
+  the status then reads "First 10000 matches".
 
 ### Copy
 

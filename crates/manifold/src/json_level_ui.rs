@@ -741,10 +741,11 @@ impl App {
     /// moves: Up/Down select the previous/next outline row, Enter expands or collapses the
     /// selected card, Right/Left open/close its outline row (Left on a closed one selects the
     /// parent), copy (plan ruling 13) and Escape to clear the selection (Ctrl+F is
-    /// `focus_json_search`). Skipped while a text field has the
-    /// keyboard.
-    pub(crate) fn handle_json_keys(&mut self, ui: &egui::Ui) {
-        if ui.ctx().egui_wants_keyboard_input() {
+    /// `focus_json_search`). Skipped while a text field has this pass's keys (`typing`, from
+    /// `shortcuts::text_field_has_keys` at the frame's start: on the Escape frame the field has
+    /// already let go) or any widget has focus.
+    pub(crate) fn handle_json_keys(&mut self, ui: &egui::Ui, typing: bool) {
+        if typing || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
         let copy = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)).then_some(i.modifiers.shift));
@@ -802,6 +803,7 @@ impl App {
             (Some(_), _) => Some("Searching…".to_string()),
             (None, Some(result)) if result.matches.is_empty() => Some("No matches".to_string()),
             (None, Some(result)) if result.matches.len() == 1 => Some("1 match".to_string()),
+            (None, Some(result)) if result.truncated => Some(format!("First {} matches", result.matches.len())),
             (None, Some(result)) => Some(format!("{} matches", result.matches.len())),
             (None, None) => None,
         };

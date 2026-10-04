@@ -202,8 +202,9 @@ fn main() {
         .delegate(delegate.clone())
         .build();
 
+    // `None` only while a recreate at a new size fails (retried before the next frame); the first one is fatal.
     let mut frame_buffer =
-        SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer");
+        Some(SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create shared frame buffer"));
     let mut frame_id: u64 = 0;
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
@@ -254,9 +255,12 @@ fn main() {
                     // that still has a mapped section open, and assignment
                     // below wouldn't drop the old value until after the
                     // right-hand side (the new create() call) already ran.
-                    drop(frame_buffer);
-                    frame_buffer =
-                        SharedFrameBuffer::create(&socket_id, w, h).expect("recreate shared frame buffer at new size");
+                    drop(frame_buffer.take());
+                    // Fails while the host still maps the old file (stalled on upload): retried before the next
+                    // frame is written.
+                    frame_buffer = SharedFrameBuffer::create(&socket_id, w, h)
+                        .inspect_err(|e| eprintln!("frame buffer: recreate at {w}x{h} failed, retrying: {e}"))
+                        .ok();
                 }
                 HostToEngine::Input(event) => {
                     if let Some(servo_event) = translate_input_event(event) {
@@ -283,13 +287,12 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    // Zoom still deferred (see the SetZoom TODO above) — url
-                    // is the only piece M2's swap sequence actually replays.
+                    // The url is the only piece the swap sequence replays.
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState {
                         url: delegate.nav.borrow().url.clone(),
-                        zoom: 1.0,
                     }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.evaluate_javascript(ipc_protocol::PAGE_STATE_SCRIPT, move |result| {
@@ -355,15 +358,23 @@ fn main() {
         }
 
         if visible && *delegate.frame_ready.borrow() {
-            *delegate.frame_ready.borrow_mut() = false;
-            webview.paint();
-            let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
-            if let Some(image) = rendering_context.read_to_image(rect) {
-                frame_buffer.write_frame(image.as_raw());
-                frame_id += 1;
-                let _ = control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
+            if frame_buffer.is_none() {
+                frame_buffer = SharedFrameBuffer::create(&socket_id, width, height).ok();
             }
-            rendering_context.present();
+            // With no buffer yet, `frame_ready` stays set, so the frame is retried on the next tick rather than
+            // lost until the page repaints.
+            if let Some(buffer) = frame_buffer.as_mut() {
+                *delegate.frame_ready.borrow_mut() = false;
+                webview.paint();
+                let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
+                if let Some(image) = rendering_context.read_to_image(rect) {
+                    buffer.write_frame(image.as_raw());
+                    frame_id += 1;
+                    let _ =
+                        control.send(&EngineToHost::FrameReady { frame_id, width, height, damage: None, pixels: None });
+                }
+                rendering_context.present();
+            }
         }
 
         std::thread::sleep(Duration::from_millis(8));
@@ -426,7 +437,7 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
 /// The *logical* key (what a DOM `KeyboardEvent.key` would read) for a
 /// `KeyDown`/`KeyUp` — used for arrow/enter/backspace/etc. shortcut
 /// handling, where the physical key's identity is what matters. Letters,
-/// digits, and space map to `Key::Named(NamedKey::Unidentified)` rather
+/// digits, and space (`KeyCode::produces_text`) map to `Key::Named(NamedKey::Unidentified)` rather
 /// than a guessed `Key::Character` — the *correct* produced text arrives
 /// separately via `InputEvent::Char` (see `translate_input_event`'s `Char`
 /// arm), and sending a guessed character here too double-inserts text
@@ -434,44 +445,10 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
 /// "hHeellllooo", before this was `Unidentified`). Shortcuts mostly key
 /// off `code` anyway, not `key`, so `Unidentified` here costs nothing real.
 fn key_to_servo_key(key: HostKeyCode) -> Key {
+    if key.produces_text() {
+        return Key::Named(NamedKey::Unidentified);
+    }
     match key {
-        HostKeyCode::KeyA => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyB => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyC => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyD => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyE => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyF => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyG => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyH => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyI => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyJ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyK => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyL => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyM => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyN => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyO => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyP => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyQ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyR => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyS => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyT => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyU => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyV => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyW => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyX => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyY => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::KeyZ => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit0 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit1 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit2 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit3 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit4 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit5 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit6 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit7 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit8 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Digit9 => Key::Named(NamedKey::Unidentified),
-        HostKeyCode::Space => Key::Named(NamedKey::Unidentified),
         HostKeyCode::Enter => Key::Named(NamedKey::Enter),
         HostKeyCode::Backspace => Key::Named(NamedKey::Backspace),
         HostKeyCode::Tab => Key::Named(NamedKey::Tab),
@@ -488,6 +465,8 @@ fn key_to_servo_key(key: HostKeyCode) -> Key {
         HostKeyCode::ShiftLeft | HostKeyCode::ShiftRight => Key::Named(NamedKey::Shift),
         HostKeyCode::ControlLeft | HostKeyCode::ControlRight => Key::Named(NamedKey::Control),
         HostKeyCode::AltLeft | HostKeyCode::AltRight => Key::Named(NamedKey::Alt),
+        // Text keys returned above; a new non-text key lands here until it gets its own arm.
+        _ => Key::Named(NamedKey::Unidentified),
     }
 }
 

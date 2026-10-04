@@ -24,9 +24,9 @@ pub fn store_path() -> Option<PathBuf> {
 /// Where a named "Save Session As..." save lands — a subdirectory of the
 /// same app-data folder the session store already lives in,
 /// so both are covered by the same "just a file, back it up/delete it
-/// yourself" posture. `name` is trusted to already be sanitized by the
-/// caller (see `App::sanitize_session_name`) — this only joins it onto the
-/// directory. A named save is a full store file (spec "Named sessions"):
+/// yourself" posture. A name only joins onto it through
+/// `named_session_path`, which refuses one that could leave it
+/// (`session_name_is_safe`). A named save is a full store file (spec "Named sessions"):
 /// same `.mnf`/`.mnf.local`/`.mnf.prev` layout as the running session's
 /// own `session.mnf`, just under a name instead of the fixed one.
 pub(crate) fn named_sessions_dir() -> Option<PathBuf> {
@@ -65,7 +65,31 @@ pub(crate) fn content_names(dir: &Path) -> Option<HashSet<String>> {
     Some(names)
 }
 
+/// The longest name `session_name_is_safe` accepts, in chars; with `sessions\`
+/// and `.mnf.<suffix>` it stays well inside Windows' 255-unit file name.
+const MAX_SESSION_NAME: usize = 200;
+
+/// Whether `name` can be a file stem in `sessions/` on every platform: not
+/// empty, `.`/`..` or over `MAX_SESSION_NAME` chars; no separator, drive
+/// or stream colon, control character or other character Windows refuses
+/// (`<>"|?*`); not a Windows device name (`is_windows_device_name`, shared
+/// with download names in `ipc_protocol::downloads`).
+/// "Save As" names are already filtered by `sanitize_session_name`, which
+/// lets a device name through; this guards every way in (`OPENSESSION`).
+pub(crate) fn session_name_is_safe(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.chars().count() <= MAX_SESSION_NAME
+        && !name.chars().any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
+        && !ipc_protocol::downloads::is_windows_device_name(name)
+}
+
+/// `None` without a profile, or for a name that isn't `session_name_is_safe`.
 pub(crate) fn named_session_path(name: &str) -> Option<PathBuf> {
+    if !session_name_is_safe(name) {
+        return None;
+    }
     Some(named_sessions_dir()?.join(format!("{name}.mnf")))
 }
 
@@ -86,12 +110,111 @@ pub fn list_named() -> Vec<String> {
     names
 }
 
-/// Deletes a named save — the "Open Session" list's own delete button.
-/// Removes the store file and its personal-state/previous-copy
-/// companions; a missing one is not an error.
+/// Deletes a named save: the store file and every file the store keeps
+/// beside it (`<name>.mnf.*`: personal state, `.prev`, lock, temps and
+/// `.damaged-*` copies, which are whole sessions too). A missing one is
+/// not an error. A `<name>.mnf.<more>.mnf` is another named save
+/// (`list_named` shows it), so it and its own `.mnf.*` files stay.
+pub(crate) fn delete_session_files(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else { return };
+    let ours = |n: &str| {
+        n.strip_prefix(file)
+            .is_some_and(|tail| tail.starts_with('.') && !tail.ends_with(".mnf") && !tail.contains(".mnf."))
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(ours) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The "Open Session" list's delete, after its confirm
+/// (`App::build_session_delete_popup`).
 pub fn delete_named(name: &str) {
-    let Some(path) = named_session_path(name) else { return };
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(crate::store::journal::with_suffix(&path, ".local"));
-    let _ = std::fs::remove_file(crate::store::journal::with_suffix(&path, ".prev"));
+    if let Some(path) = named_session_path(name) {
+        delete_session_files(&path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::testutil::temp_dir;
+
+    #[test]
+    fn deleting_a_session_removes_every_copy_and_nothing_else() {
+        let dir = temp_dir("delete-session");
+        let names = [
+            "a.mnf",
+            "a.mnf.local",
+            "a.mnf.prev",
+            "a.mnf.lock",
+            "a.mnf.123-4.tmp",
+            "a.mnf.damaged-00ff",
+            "ab.mnf",
+            "a b.mnf",
+            "a.mnf.old.mnf",
+            "a.mnf.old.mnf.local",
+            "a.mnf.mnf",
+        ];
+        for n in names {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        delete_session_files(&dir.join("a.mnf"));
+        let left: std::collections::BTreeSet<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let kept = ["a b.mnf", "a.mnf.mnf", "a.mnf.old.mnf", "a.mnf.old.mnf.local", "ab.mnf"];
+        assert_eq!(left, kept.map(String::from).into(), "other saves and their files are kept");
+    }
+
+    #[test]
+    fn a_session_name_cannot_leave_the_sessions_folder() {
+        let longest = "x".repeat(200);
+        for ok in ["work", "a b", "x-1_2", "名前", "console", "COM10", "LPTX", "nul-ish", "CONIN", "a.con", &longest]
+        {
+            assert!(session_name_is_safe(ok), "{ok}");
+        }
+        let too_long = "x".repeat(201);
+        let bad_names = [
+            "",
+            ".",
+            "..",
+            "..\\..\\x",
+            "../x",
+            "a/b",
+            "c:x",
+            "a\0b",
+            "a\tb",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "CON",
+            "con",
+            "Prn",
+            "aux",
+            "NUL",
+            "nul.txt",
+            "CON.backup",
+            "com1",
+            "COM9",
+            "lpt1",
+            "LPT9",
+            "COM\u{b9}",
+            "lpt\u{b2}",
+            "COM\u{b3}",
+            "CON ",
+            "LPT0",
+            "conin$",
+            "CONOUT$",
+            &too_long,
+        ];
+        for bad in bad_names {
+            assert!(!session_name_is_safe(bad), "{bad:?}");
+        }
+    }
 }

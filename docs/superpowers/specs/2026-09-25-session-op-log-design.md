@@ -190,6 +190,18 @@ When it is written (Plan B):
   alone can't be recomputed;
 - at exit.
 
+Never while it is unread: when startup's read fails (another instance
+held the lock past its 5 s wait, or an I/O error), the file is not
+written, even at exit, and the read is retried about every second
+without waiting on the lock. Once read, it is applied as at startup,
+with anything closed since kept after its Recently Closed entries; if
+Open/Import Session replaced the content meanwhile, only its Recently
+Closed is taken. A late read that finds nothing to apply (no file, or a
+damaged one) leaves the live view alone. Exit's read applies without
+waking a tab. A failure other than a busy lock is logged once. No
+file, another document's, a newer format's, or a damaged one is a fresh
+start, and the next write replaces it: nothing in it can be read.
+
 Settled positions count as changed only past 1 px, so physics jitter
 never causes a write.
 
@@ -454,9 +466,13 @@ CRC-32C is hand-rolled (table-driven), with an optional SSE4.2 path via
   placeholder, which isn't shown. Id-valued registers (`parent`) are not
   counted: they may name a pruned node, which reads as deleted.
 - **Two instances on one profile**: each append takes an exclusive lock
-  on a separate `session.mnf.lock` file (`std::fs::File::lock`; a lock on
+  on a separate `session.mnf.lock` file (`std::fs::File::try_lock`; a lock on
   the journal itself would be lost when compaction renames a new file
-  over it). Under the lock it opens `session.mnf` by path; if its
+  over it). It waits at most 5 seconds (`LOCK_WAIT`) for an instance
+  holding the lock, then fails with a "busy" error, which the caller
+  reports like any failed save, rather than freezing its window. Under
+  the lock it opens `session.mnf` by path, reading its header and the
+  bytes past its last offset; if its
   header's generation differs from the one it read last, or the file is
   shorter than its offset (another instance compacted), it re-reads the
   file from scratch, otherwise it reads only the frames
@@ -483,6 +499,12 @@ The same model through serde, with no history:
 - **Export Session / Import Session** (file dialogs) and
   **Export Group / Import Group**. A group export lists the group first,
   then its subtree. Import creates fresh nodes (see Semantics).
+- **Trust** (`store::json::Trust`, 2026-10-04). Files this app wrote for
+  this profile (Recently Closed, a named session) are `Own`: every field
+  is kept. Import Session, Import Group and `--import-json` are
+  `Foreign`: a Download's machine-local `path` is dropped, and a tab's
+  `jar` or a group's `default_jar` is kept only when it names a jar in
+  the same file.
 - **`EXPORTSESSION`** keeps writing this JSON, so probes keep reading it.
 - **CLI**: `manifold --dump <file.mnf>` prints frames and the
   materialized document as JSON; `manifold --check <file.mnf>` reports

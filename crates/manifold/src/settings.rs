@@ -176,11 +176,24 @@ pub fn fingerprint() -> Option<u64> {
 }
 
 /// Where a save that lost a fingerprint race lands instead of overwriting
-/// the real `settings.json`. Unix-seconds-suffixed, so a second conflict
-/// later in the same run can't overwrite the first one's unreviewed data.
+/// the real `settings.json`. Unix-seconds-suffixed, and numbered within a
+/// second, so a second conflict later in the same run can't overwrite the
+/// first one's unreviewed data.
 pub fn conflict_path() -> Option<PathBuf> {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    Some(crate::profile::dir()?.join(format!("settings.conflict-{secs}.json")))
+    Some(conflict_path_in(&crate::profile::dir()?, secs))
+}
+
+/// `settings.conflict-<secs>.json`, or `-<n>` after the seconds when that
+/// name is taken, so a second conflict in the same second keeps the first.
+fn conflict_path_in(dir: &std::path::Path, secs: u64) -> PathBuf {
+    (0u32..)
+        .map(|n| match n {
+            0 => dir.join(format!("settings.conflict-{secs}.json")),
+            n => dir.join(format!("settings.conflict-{secs}-{n}.json")),
+        })
+        .find(|p| !p.exists())
+        .expect("an unbounded range finds a free name")
 }
 
 impl Settings {
@@ -216,6 +229,18 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_conflict_in_one_second_gets_its_own_name() {
+        let dir = crate::store::testutil::temp_dir("settings_conflict");
+        let first = conflict_path_in(&dir, 7);
+        assert_eq!(first, dir.join("settings.conflict-7.json"));
+        std::fs::write(&first, "{}").unwrap();
+        let second = conflict_path_in(&dir, 7);
+        assert_eq!(second, dir.join("settings.conflict-7-1.json"));
+        std::fs::write(&second, "{}").unwrap();
+        assert_eq!(conflict_path_in(&dir, 7), dir.join("settings.conflict-7-2.json"));
+    }
 
     #[test]
     fn cef_directory_defaults_when_missing_and_round_trips() {

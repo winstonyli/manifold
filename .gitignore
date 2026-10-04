@@ -4,3 +4,4 @@
 *.log
 webkit_swap_test.png
 .superpowers/
+/dist

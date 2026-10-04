@@ -2,7 +2,6 @@
 
 use super::*;
 
-/// One "Recently Closed" entry: a store-shaped JSON snapshot of the
 /// Prunes `dir` of files neither `keep` nor any named session in
 /// `sessions` names. `None`, deleting nothing, when a session can't be
 /// read whole (`session::content_names`).
@@ -105,6 +104,23 @@ impl App {
         }
     }
 
+    /// The in-flight download node an engine's progress, failure or
+    /// completion for `path` is about: one `tab_id` started if there is one,
+    /// else the newest. A finished node with the same path (a restored one,
+    /// or an earlier download of the same file) is never matched.
+    pub(crate) fn in_flight_download_id(&self, tab_id: &str, path: &str) -> Option<String> {
+        let in_flight = |id: &String| {
+            self.nodes
+                .get(id)
+                .and_then(|n| n.as_download())
+                .is_some_and(|d| d.path == path && !d.completed && !d.failed)
+        };
+        let from_tab = |id: &&String| self.nodes.get(*id).is_some_and(|n| n.parent.as_deref() == Some(tab_id));
+        let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(id));
+        let first = newest_first.clone().next();
+        newest_first.find(from_tab).or(first).cloned()
+    }
+
     /// Inserts a node showing `payload` at `pos`, top level and uncolored:
     /// `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see
@@ -178,7 +194,9 @@ impl App {
             // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
             // install the engine instead (the card's Download).
             match pick_outcome(kind, &self.engine_state(kind)) {
-                PickOutcome::AskInstall(kind) => self.pending_engine_confirm = Some(EngineConfirm::Download(kind)),
+                PickOutcome::AskInstall(kind) => {
+                    self.offer_engine_confirm(EngineConfirm::Download(kind));
+                }
                 PickOutcome::AlreadyInstalling(kind) => {
                     self.queue_toast(format!("{} is already installing", engine_label(kind)))
                 }
@@ -196,7 +214,7 @@ impl App {
         if let Some(pdf) = self.nodes.get_mut(id).and_then(|n| n.as_pdf_mut()) {
             if matches!(pdf.outcome, Some(Err(_))) {
                 pdf.outcome = None;
-                self.pdf_fetcher.request(id.to_string(), pdf.path.clone());
+                self.pdf_renderer.request(id.to_string(), pdf.path.clone());
             }
             return;
         }
@@ -296,7 +314,7 @@ impl App {
                 K::Pdf => NodePayload::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())), url: Some(url) }),
                 K::Json => NodePayload::Json(JsonPayload {
                     path,
-                    value: serde_json::Value::Null,
+                    value: Default::default(),
                     key: None,
                     error: Some(error.clone()),
                     url: Some(url),
@@ -489,7 +507,8 @@ impl App {
                 return Err(err);
             }
         };
-        let rgba = img.to_rgba8();
+        // `into_rgba8` moves when the image is already RGBA8; `to_rgba8` copied it.
+        let rgba = crate::rgba::fit_image(img.into_rgba8(), crate::rgba::MAX_TEXTURE_SIDE);
         let (width, height) = rgba.dimensions();
         if let Some(gpu) = &mut self.gpu {
             gpu.upload_image(&id, rgba.as_raw(), width, height);
@@ -530,7 +549,7 @@ impl App {
     /// file surfaces later as a `Some(Err(_))` outcome instead of the node
     /// never having existed the way a bad image file does.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: String, path: String, pos: egui::Vec2, group: Option<String>) {
-        self.pdf_fetcher.request(id.clone(), path.clone());
+        self.pdf_renderer.request(id.clone(), path.clone());
         self.place_node(
             Some(id),
             NodePayload::Pdf(PdfPayload { path, outcome: None, url: None }),
@@ -564,7 +583,7 @@ impl App {
         };
         let payload = NodePayload::Json(JsonPayload {
             path,
-            value,
+            value: value.into(),
             key: None,
             error: None,
             url: None,
@@ -779,20 +798,35 @@ mod tests {
         let dir = crate::store::testutil::temp_dir("resolve_content");
         write_aged(&dir.join("5-9.png"), std::time::Duration::from_secs(60));
         let elsewhere = r"Z:\nowhere\5-9.png";
-        assert_eq!(resolve_content_path(Some(&dir), "5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
-        assert_eq!(resolve_content_path(Some(&dir), "5-8", elsewhere), elsewhere);
-        assert_eq!(resolve_content_path(None, "5-9", elsewhere), elsewhere);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
+        assert_eq!(index.resolve("5-8", elsewhere), elsewhere);
+        assert_eq!(crate::ContentIndex::scan(None).resolve("5-9", elsewhere), elsewhere);
         // A stored file that exists (a re-id'd node's old copy) still loses
         // to the node's own fetch, and a Refresh's newer extension wins.
         let old = dir.join("5-1.png");
         write_aged(&old, std::time::Duration::from_secs(60));
         let old = old.to_string_lossy().into_owned();
         write_aged(&dir.join("5-9.jpg"), std::time::Duration::ZERO);
-        assert_eq!(resolve_content_path(Some(&dir), "5-9", &old), dir.join("5-9.jpg").to_string_lossy());
-        assert_eq!(resolve_content_path(Some(&dir), "5-1", &old), old);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", &old), dir.join("5-9.jpg").to_string_lossy());
+        assert_eq!(index.resolve("5-1", &old), old);
         // An unfinished save is never a node's file.
         write_aged(&dir.join("5-2.png.1234.tmp"), std::time::Duration::ZERO);
-        assert_eq!(resolve_content_path(Some(&dir), "5-2", elsewhere), elsewhere);
+        assert_eq!(crate::ContentIndex::scan(Some(&dir)).resolve("5-2", elsewhere), elsewhere);
+    }
+
+    #[test]
+    fn one_index_answers_every_node_of_a_pass() {
+        use crate::content::tests::write_aged;
+        let dir = crate::store::testutil::temp_dir("content_index");
+        write_aged(&dir.join("5-9.png"), std::time::Duration::from_secs(60));
+        write_aged(&dir.join("5-9.jpg"), std::time::Duration::ZERO);
+        write_aged(&dir.join("5-10.json"), std::time::Duration::ZERO);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", "x"), dir.join("5-9.jpg").to_string_lossy(), "the newest wins");
+        assert_eq!(index.resolve("5-10", "x"), dir.join("5-10.json").to_string_lossy());
+        assert_eq!(index.resolve("5-1", "x"), "x", "an id that is a prefix of another's isn't matched");
     }
 
     #[test]
@@ -820,7 +854,7 @@ mod tests {
             egui::Vec2::ZERO,
             NodePayload::Json(JsonPayload {
                 path: r"Z:\x.json".into(),
-                value: serde_json::Value::Null,
+                value: Default::default(),
                 key: None,
                 error: None,
                 url: None,
@@ -942,6 +976,19 @@ mod tests {
         assert!(!app.may_prune_content());
     }
 
+    /// Review fix: a store that wasn't a journal is set aside and a new one started; that launch must not prune
+    /// the old session's content against the new, empty one.
+    #[test]
+    fn a_store_set_aside_is_never_pruned_against() {
+        let path = crate::store::testutil::temp_dir("prune_aside").join("session.mnf");
+        std::fs::write(&path, b"not a session").unwrap();
+        let mut app = App::default();
+        app.open_store_at(&path);
+        assert!(app.journal.is_some());
+        assert!(app.store_recovered);
+        assert!(!app.may_prune_content());
+    }
+
     #[test]
     fn a_refresh_keeps_its_old_file_while_another_node_names_it() {
         let dir = crate::store::testutil::temp_dir("refresh_shared_file");
@@ -1015,7 +1062,7 @@ mod tests {
             crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[2]".to_vec()).unwrap();
         app.reload_fetched_node("r", second);
         let node = &app.nodes["r"];
-        assert_eq!(node.as_json().unwrap().value, serde_json::json!([2]));
+        assert_eq!(*node.as_json().unwrap().value, serde_json::json!([2]));
         assert_eq!(
             (node.pos, node.color, node.source_url()),
             (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("https://x.test/j"))

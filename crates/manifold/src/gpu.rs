@@ -197,6 +197,13 @@ pub struct GpuState {
     /// is removed.
     images: HashMap<String, ThumbTexture>,
     egui_renderer: egui_wgpu::Renderer,
+    /// Kept to recreate `surface` after `CurrentSurfaceTexture::Lost`.
+    instance: wgpu::Instance,
+    window: Arc<Window>,
+    /// The next `render` reconfigures before acquiring (set after `Suboptimal`).
+    reconfigure: bool,
+    /// Set by the device-lost callback; read once by `take_device_lost`.
+    device_lost: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// How many distinct origins' favicons `GpuState` keeps textures for before
@@ -246,6 +253,20 @@ impl GpuState {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("request wgpu device");
+        // wgpu's default handler panics. An error here (an oversize texture
+        // that slipped past `register_rgba`, a driver hiccup) should cost a
+        // frame, not the app and its unsaved state.
+        device.on_uncaptured_error(Arc::new(|err: wgpu::Error| eprintln!("wgpu error: {err}")));
+        let device_lost = Arc::new(std::sync::Mutex::new(None));
+        let lost = device_lost.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            eprintln!("wgpu device lost ({reason:?}): {message}");
+            // Also fired when the app drops its own device at exit.
+            if matches!(reason, wgpu::DeviceLostReason::Destroyed) {
+                return;
+            }
+            *lost.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{message} ({reason:?})"));
+        });
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format =
@@ -445,7 +466,29 @@ impl GpuState {
             favicon_order: std::collections::VecDeque::new(),
             images: HashMap::new(),
             egui_renderer,
+            instance,
+            window,
+            reconfigure: false,
+            device_lost,
         }
+    }
+
+    /// The device-lost message, once: the caller toasts it.
+    pub fn take_device_lost(&self) -> Option<String> {
+        self.device_lost.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Reconfigures the surface at the window's current size. Used when wgpu
+    /// reports the swapchain stale without a winit `Resized` having arrived,
+    /// so `config`'s size may itself be stale; a zero size (minimized) keeps
+    /// the last one, as `resize` does.
+    fn reconfigure_surface(&mut self) {
+        let size = self.window.inner_size();
+        if size.width > 0 && size.height > 0 {
+            self.config.width = size.width;
+            self.config.height = size.height;
+        }
+        self.surface.configure(&self.device, &self.config);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -745,15 +788,25 @@ impl GpuState {
         self.tab_textures.contains_key(tab_id)
     }
 
-    /// `rgba` is already tightly-packed RGBA -- registered the same way as
-    /// a thumbnail, in its own map since a favicon and a tab's content
-    /// thumbnail are unrelated sizes and update independently. `key` is an
-    /// *origin* (see `favicons`' own doc comment), not a tab id.
-    pub fn upload_favicon(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+    /// One texture for tightly packed RGBA8, or `None` (logged) when it can't
+    /// be one: a wrong byte count, or a side past the device limit. Callers
+    /// downscale with `rgba::fit_image` first; this is the last guard, since
+    /// wgpu's default error handler panics on an oversize texture.
+    fn register_rgba(
+        &mut self,
+        label: &str,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        if !frame_is_valid(rgba.len(), width, height, self.device.limits().max_texture_dimension_2d) {
+            eprintln!("{label}: refusing a {width}x{height} texture ({} bytes)", rgba.len());
+            return None;
+        }
         let texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
-                label: Some("favicon texture"),
+                label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -766,6 +819,15 @@ impl GpuState {
             rgba,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Some((texture, view))
+    }
+
+    /// `rgba` is already tightly-packed RGBA -- registered the same way as
+    /// a thumbnail, in its own map since a favicon and a tab's content
+    /// thumbnail are unrelated sizes and update independently. `key` is an
+    /// *origin* (see `favicons`' own doc comment), not a tab id.
+    pub fn upload_favicon(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+        let Some((texture, view)) = self.register_rgba("favicon texture", rgba, width, height) else { return };
         if let Some(existing) = self.favicons.get(key) {
             self.egui_renderer.update_egui_texture_from_wgpu_texture(
                 &self.device,
@@ -798,26 +860,14 @@ impl GpuState {
     /// `create_texture_with_data` registration as `upload_favicon`, in its
     /// own map since an image node's picture is unrelated in size/lifetime
     /// to a favicon or a tab's content thumbnail. `key` is a *node id* (see
-    /// `images`' own doc comment), called at creation, restore or after a
-    /// Refresh (which frees the old one first), not every frame like a
-    /// tab's thumbnail.
+    /// `images`' own doc comment), called at creation, restore or Refresh,
+    /// not every frame like a tab's thumbnail. Uploading over an existing
+    /// key frees the old registration itself.
     pub fn upload_image(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
-        let texture = self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("image node texture"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            rgba,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let Some((texture, view)) = self.register_rgba("image node texture", rgba, width, height) else { return };
+        // A second upload for one key (a PDF re-rendered before its first
+        // render landed) must not leak the first registration.
+        self.free_image(key);
         let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
         self.images.insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
     }
@@ -971,6 +1021,34 @@ impl GpuState {
         renderer.render(&mut pass.forget_lifetime(), clipped_primitives, screen_descriptor);
     }
 
+    /// Records one frame's layers into `view`: the content quads, then egui
+    /// on top; or, during a Tab<->Graph transition (`content_on_top`), egui
+    /// as the base and the shrinking/expanding content quad over it. The
+    /// screen and a screenshot both draw through here, so they can't differ.
+    #[allow(clippy::too_many_arguments)] // Disjoint borrows of `GpuState` fields: `self` can't be passed whole.
+    fn record_scene(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        panes: &[(PanePx, Option<&TabTexture>)],
+        target: (u32, u32),
+        pipeline: &wgpu::RenderPipeline,
+        renderer: &mut egui_wgpu::Renderer,
+        egui_draw: Option<&(Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor)>,
+        content_on_top: bool,
+    ) {
+        match (egui_draw, content_on_top) {
+            (Some((primitives, screen)), true) => {
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, true);
+                Self::record_content_layers(encoder, view, panes, target, pipeline, false);
+            }
+            (Some((primitives, screen)), false) => {
+                Self::record_content_layers(encoder, view, panes, target, pipeline, true);
+                Self::record_egui_pass(encoder, view, renderer, primitives, screen, false);
+            }
+            (None, _) => Self::record_content_layers(encoder, view, panes, target, pipeline, true),
+        }
+    }
+
     /// `panes` is 0, 1, or 2 `(viewport_px, tab_id)` pairs -- empty for
     /// plain Graph view (nothing to composite, `record_content_layers`
     /// still clears the screen), one for ordinary Tab view or a `Transition`
@@ -1032,9 +1110,34 @@ impl GpuState {
             (ctx, full_output)
         });
 
+        if std::mem::take(&mut self.reconfigure) {
+            self.reconfigure_surface();
+        }
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            // Timeout/Occluded/Outdated/Lost/Validation: skip this frame and
+            wgpu::CurrentSurfaceTexture::Success(t) => t,
+            // Presentable now, but wgpu asks for a reconfigure; done before the next acquire.
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                self.reconfigure = true;
+                t
+            }
+            // The swapchain no longer matches the window (mode change, eGPU replug
+            // with no resize event): without a reconfigure every later acquire fails too.
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.reconfigure_surface();
+                return RenderOutcome { surface_ok: false, screenshot_result: None };
+            }
+            // The surface itself is gone: make a new one for the same window.
+            wgpu::CurrentSurfaceTexture::Lost => {
+                match self.instance.create_surface(self.window.clone()) {
+                    Ok(surface) => {
+                        self.surface = surface;
+                        self.reconfigure_surface();
+                    }
+                    Err(err) => eprintln!("wgpu: couldn't recreate the lost surface: {err}"),
+                }
+                return RenderOutcome { surface_ok: false, screenshot_result: None };
+            }
+            // Timeout/Occluded/Validation: skip this frame and
             // try again next redraw rather than treating it as fatal. A
             // requested screenshot was never attempted here -- the caller
             // must not drop it, only retry on a later frame whose surface
@@ -1081,39 +1184,16 @@ impl GpuState {
             None
         };
 
-        // Normally the content quad is the base layer and egui (chrome, any
-        // dropdown) draws on top of it, unclipped. During a Tab<->Graph
-        // transition the order flips: the graph (egui) is the base layer
-        // and the transitioning tab's content quad draws over it, since
-        // that quad is what's supposed to visually shrink/expand in front
-        // of the graph, not get hidden underneath its nodes/edges.
-        if content_on_top {
-            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                Self::record_egui_pass(
-                    &mut encoder,
-                    &view,
-                    &mut self.egui_renderer,
-                    clipped_primitives,
-                    screen_descriptor,
-                    true,
-                );
-                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, false);
-            } else {
-                Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
-            }
-        } else {
-            Self::record_content_layers(&mut encoder, &view, &panes, (width, height), &self.pipeline, true);
-            if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                Self::record_egui_pass(
-                    &mut encoder,
-                    &view,
-                    &mut self.egui_renderer,
-                    clipped_primitives,
-                    screen_descriptor,
-                    false,
-                );
-            }
-        }
+        Self::record_scene(
+            &mut encoder,
+            &view,
+            &panes,
+            (width, height),
+            &self.pipeline,
+            &mut self.egui_renderer,
+            egui_draw.as_ref(),
+            content_on_top,
+        );
 
         let pending_screenshot = screenshot_path.map(|path| {
             let readback_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1127,54 +1207,16 @@ impl GpuState {
                 view_formats: &[],
             });
             let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            if content_on_top {
-                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                    Self::record_egui_pass(
-                        &mut encoder,
-                        &readback_view,
-                        &mut self.egui_renderer,
-                        clipped_primitives,
-                        screen_descriptor,
-                        true,
-                    );
-                    Self::record_content_layers(
-                        &mut encoder,
-                        &readback_view,
-                        &panes,
-                        (width, height),
-                        &self.pipeline,
-                        false,
-                    );
-                } else {
-                    Self::record_content_layers(
-                        &mut encoder,
-                        &readback_view,
-                        &panes,
-                        (width, height),
-                        &self.pipeline,
-                        true,
-                    );
-                }
-            } else {
-                Self::record_content_layers(
-                    &mut encoder,
-                    &readback_view,
-                    &panes,
-                    (width, height),
-                    &self.pipeline,
-                    true,
-                );
-                if let Some((clipped_primitives, screen_descriptor)) = &egui_draw {
-                    Self::record_egui_pass(
-                        &mut encoder,
-                        &readback_view,
-                        &mut self.egui_renderer,
-                        clipped_primitives,
-                        screen_descriptor,
-                        false,
-                    );
-                }
-            }
+            Self::record_scene(
+                &mut encoder,
+                &readback_view,
+                &panes,
+                (width, height),
+                &self.pipeline,
+                &mut self.egui_renderer,
+                egui_draw.as_ref(),
+                content_on_top,
+            );
 
             let unpadded_bytes_per_row = width * 4;
             let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)

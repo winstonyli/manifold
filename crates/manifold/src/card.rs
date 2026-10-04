@@ -6,13 +6,18 @@ use super::*;
 pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
 /// What a card's header says (`App::paint_card_header`).
-pub(crate) struct CardHeader {
-    pub(crate) glyph: &'static str,
+pub(crate) struct CardHeader<'a> {
+    /// `None`: the caller draws its own icon in the glyph's place (a live tab's favicon or engine dot).
+    pub(crate) glyph: Option<&'static str>,
     /// The glyph's color; the dim text color if `None`.
     pub(crate) glyph_color: Option<egui::Color32>,
     /// Drawn in the glyph's place, if the card has one (a favicon).
     pub(crate) icon_image: Option<egui::TextureId>,
+    /// A title from a page or a file, drawn as it is. Unused when `user_name` is set.
     pub(crate) name: String,
+    /// A stored group name, already through the display rule (`names::display_name`), so a hidden character shows
+    /// as a placeholder. The caller keeps the segments, so the rule runs once a frame for the tooltip and the header.
+    pub(crate) user_name: Option<&'a [crate::names::NameSeg<'a>]>,
     pub(crate) source: String,
     /// `source` is a local path, so it is elided at the start (a web address, at the end).
     pub(crate) source_is_path: bool,
@@ -30,20 +35,15 @@ pub(crate) fn file_header_text(path: &str, url: Option<&str>) -> (String, String
 }
 
 /// `text` cut to `max_width` screen points at the start ("…\\Trips\\a.jpg"), so a path's file name
-/// stays visible. Cut as `truncate_to_width` cuts the reversed text, which shares its cache.
-fn truncate_start_to_width(
-    cache: &mut HashMap<TruncateCacheKey, String>,
+/// stays visible. Shares `truncate_to_width`'s cache.
+pub(crate) fn truncate_start_to_width(
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
     ctx: &egui::Context,
     text: &str,
     font_id: &egui::FontId,
     max_width: f32,
 ) -> String {
-    let reversed: String = text.chars().rev().collect();
-    let cut = truncate_to_width(cache, ctx, &reversed, font_id, max_width);
-    match cut.strip_suffix('\u{2026}') {
-        Some(kept) if kept.len() < reversed.len() => format!("\u{2026}{}", kept.chars().rev().collect::<String>()),
-        _ => cut.chars().rev().collect(),
-    }
+    truncate_core(cache, ctx, text, font_id, max_width, true)
 }
 
 /// Height of a card's header F (glyph or favicon, title, source line), in screen points.
@@ -62,6 +62,29 @@ pub(crate) const HEADER_TITLE_SIZE: f32 = 13.0;
 pub(crate) const HEADER_SOURCE_SIZE: f32 = 11.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
 const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
+/// Kept clear at a header's right edge, mirroring `HEADER_TEXT_X` at its left: the corner controls
+/// (the audio indicator, the hover-revealed close button) sit there.
+const HEADER_RIGHT_RESERVE: f32 = HEADER_TEXT_X;
+
+/// The whole texture: UVs for an image drawn uncropped.
+pub(crate) const FULL_UV: egui::Rect = egui::Rect { min: egui::Pos2::ZERO, max: egui::pos2(1.0, 1.0) };
+
+/// Behind a header's text drawn over a picture: dark enough to read light text on any image.
+const IMAGE_TEXT_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
+
+/// Behind a short card's title strip along its bottom: a lighter scrim, the strip is small.
+const TITLE_STRIP_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(160);
+
+/// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`).
+const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
+
+/// An audio card control's waveform while the tab plays. A warm sage rather than a minty green:
+/// still unambiguously "active/live" (the universal recording-light color family), just shifted to
+/// sit with the rest of this app's warm palette instead of against it.
+const WAVEFORM_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
+
+/// A note's text on its pale paper.
+const NOTE_TEXT: egui::Color32 = egui::Color32::from_black_alpha(220);
 
 /// Whether a Tab card of `rect` (world units, `inv_zoom` world units per screen point) is tall
 /// enough on screen to show its header.
@@ -90,13 +113,193 @@ fn push_centered_text(
     }));
 }
 
+/// A jar chip's height in screen points.
+const JAR_CHIP_HEIGHT: f32 = 16.0;
+
+/// A jar chip's dot radius, and its padding: before the first dot, after the name (or the last dot, with no name).
+const JAR_CHIP_R: f32 = 4.0;
+const JAR_CHIP_PAD: f32 = 5.0;
+const JAR_CHIP_NAME_END: f32 = 6.0;
+/// The gap between the jar's dot and its name.
+const JAR_CHIP_NAME_GAP: f32 = 4.0;
+/// The chip's black scrim, so its light name reads on a white page. The frame blends in linear light, which makes a
+/// scrim look far thinner than its alpha suggests: measured on a white thumbnail (2026-10-03), alpha 210 came out
+/// sRGB grey 123 (about 3.7:1 against the name), so it is 240 (about grey 69, 8:1).
+const JAR_CHIP_SCRIM_ALPHA: u8 = 240;
+/// Narrower than this, a chip's name (about one letter and "…") is left out rather than squeezed.
+const JAR_CHIP_MIN_NAME: f32 = 14.0;
+
+/// The gap between a jar's name and its marker (`JarLabel::marker_text`).
+const JAR_CHIP_MARKER_GAP: f32 = 4.0;
+
+/// What of a jar chip fits `max` screen points (`fit_jar_chip`): whether the old jar's dot and arrow are drawn
+/// (`lead`), the width the name gets (`None`: no name), and whether the marker is drawn (always whole, with the name).
+#[derive(Debug, PartialEq)]
+struct ChipFit {
+    lead: bool,
+    name: Option<f32>,
+    marker: bool,
+}
+
+/// Fits a chip whose lead is `lead`, name `name` and marker `marker` points wide (0: no marker) into `max`: whole if it
+/// fits, else the name ellipsized (never the marker), else just the dots, else just the jar's dot (a waiting switch's
+/// cue goes last but one), else nothing.
+fn fit_jar_chip(max: f32, lead: f32, name: f32, marker: f32) -> Option<ChipFit> {
+    let dots = |lead: f32| JAR_CHIP_PAD + lead + 2.0 * JAR_CHIP_R;
+    let tail = if marker > 0.0 { JAR_CHIP_MARKER_GAP + marker } else { 0.0 };
+    let room = max - dots(lead) - JAR_CHIP_NAME_GAP - tail - JAR_CHIP_NAME_END;
+    if room >= name.min(JAR_CHIP_MIN_NAME) {
+        Some(ChipFit { lead: lead > 0.0, name: Some(name.min(room)), marker: marker > 0.0 })
+    } else if dots(lead) + JAR_CHIP_PAD <= max {
+        Some(ChipFit { lead: lead > 0.0, name: None, marker: false })
+    } else if dots(0.0) + JAR_CHIP_PAD <= max {
+        Some(ChipFit { lead: false, name: None, marker: false })
+    } else {
+        None
+    }
+}
+
+/// A jar chip with its top-left at `at` (screen), at most `max_width` wide (`fit_jar_chip`): a dot (outlined when
+/// following the group, `warn`-coloured for a missing jar), the name and its marker on a dark scrim, after the old
+/// jar's dot and an arrow while the tab waits to switch. The marker is styled as everywhere else
+/// (`JarLabel::marker_format`), in `text` dimmed by the theme's weak text alpha: the scrim is always near-black, so
+/// the panel's own weak colour would not suit it. Its hover text goes through `CardBody::tooltip`. Returns the scrim
+/// drawn.
+pub(crate) fn paint_jar_chip(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    max_width: f32,
+    chip: &crate::jar_defs::JarChip,
+    font: egui::FontId,
+    text: egui::Color32,
+    warn: egui::Color32,
+) -> Option<egui::Rect> {
+    const R: f32 = JAR_CHIP_R;
+    let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
+    let arrow = jar_chip_arrow(painter, chip, font.clone(), text);
+    let weak = text.gamma_multiply(painter.ctx().global_style().visuals.weak_text_alpha);
+    let (segs, name_format) = (chip.name.display(), chip.name.name_format(font.clone()));
+    let name_job = |wrap: Option<f32>| {
+        let mut job = egui::text::LayoutJob::default();
+        crate::names::append_name(&mut job, &segs, &name_format, weak);
+        if let Some(room) = wrap {
+            job.wrap = egui::text::TextWrapping {
+                max_width: room,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+        }
+        painter.layout_job(job)
+    };
+    let name = name_job(None);
+    let marker = chip.name.marker_text().map(|m| {
+        painter.layout_job(egui::text::LayoutJob::single_section(
+            m,
+            crate::jar_defs::JarLabel::marker_format(font.size, weak),
+        ))
+    });
+    let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
+    let fit = fit_jar_chip(max_width, lead, name.size().x, marker.as_ref().map_or(0.0, |m| m.size().x))?;
+    // name rule: a fitted width, not text
+    let name = fit.name.map(|room| if room >= name.size().x { name } else { name_job(Some(room)) });
+    let marker = marker.filter(|_| fit.marker);
+    let lead = if fit.lead { lead } else { 0.0 };
+    let tail = marker.as_ref().map_or(0.0, |m| JAR_CHIP_MARKER_GAP + m.size().x);
+    let width = match &name {
+        Some(name) => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_NAME_GAP + name.size().x + tail + JAR_CHIP_NAME_END,
+        None => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_PAD,
+    };
+    let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
+    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(JAR_CHIP_SCRIM_ALPHA));
+    let x = paint_jar_dots(painter, at.x + JAR_CHIP_PAD, cy, chip, arrow.filter(|_| fit.lead), text, warn);
+    if let Some(name) = name {
+        let x = x + JAR_CHIP_NAME_GAP;
+        let size = name.size();
+        painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
+        if let Some(marker) = marker {
+            let m = marker.size();
+            painter.galley(egui::pos2(x + size.x + JAR_CHIP_MARKER_GAP, cy - m.y / 2.0), marker, text);
+        }
+    }
+    Some(scrim)
+}
+
+/// The arrow between a waiting switch's two dots (`paint_jar_dots`); `None` unless the tab waits to switch.
+pub(crate) fn jar_chip_arrow(
+    painter: &egui::Painter,
+    chip: &crate::jar_defs::JarChip,
+    font: egui::FontId,
+    text: egui::Color32,
+) -> Option<std::sync::Arc<egui::Galley>> {
+    chip.will_switch.then(|| painter.layout_no_wrap(egui_phosphor::light::ARROW_RIGHT.into(), font, text))
+}
+
+/// How wide `paint_jar_dots` paints, with `arrow` (`jar_chip_arrow`) or without.
+pub(crate) fn jar_dots_width(arrow: Option<&egui::Galley>) -> f32 {
+    arrow.map_or(0.0, |a| 2.0 * JAR_CHIP_R + 3.0 + a.size().x + 3.0) + 2.0 * JAR_CHIP_R
+}
+
+/// A jar's dots from `x` (screen) on the line `cy`, shared by the card chip and Tab view: with `arrow`, the jar the
+/// live tab still runs on (`was_color`) and the arrow first; then its jar's dot, outlined when following the group and
+/// `warn`-coloured for a missing jar. Returns the x after the last dot.
+pub(crate) fn paint_jar_dots(
+    painter: &egui::Painter,
+    mut x: f32,
+    cy: f32,
+    chip: &crate::jar_defs::JarChip,
+    arrow: Option<std::sync::Arc<egui::Galley>>,
+    text: egui::Color32,
+    warn: egui::Color32,
+) -> f32 {
+    const R: f32 = JAR_CHIP_R;
+    if let Some(arrow) = arrow {
+        painter.circle_filled(egui::pos2(x + R, cy), R, chip.was_color);
+        x += 2.0 * R + 3.0;
+        let size = arrow.size();
+        painter.galley(egui::pos2(x, cy - size.y / 2.0), arrow, text);
+        x += size.x + 3.0;
+    }
+    let color = if chip.missing { warn } else { chip.color };
+    if chip.following {
+        painter.circle_stroke(egui::pos2(x + R, cy), R - 0.75, egui::Stroke::new(1.5, color));
+    } else {
+        painter.circle_filled(egui::pos2(x + R, cy), R, color);
+    }
+    x + 2.0 * R
+}
+
+/// Queues tab `chip` at world point `world` (the card's corner it hangs from), moved by `offset` screen points, at
+/// most `max_width` screen points wide: the card's width less the chip's inset on both sides.
+fn push_jar_chip(
+    deferred_overlays: &mut DeferredOverlays,
+    world: egui::Pos2,
+    offset: egui::Vec2,
+    max_width: f32,
+    chip: crate::jar_defs::JarChip,
+    warn: egui::Color32,
+) {
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        let font = egui::FontId::proportional(11.0);
+        let text = egui::Color32::from_gray(240);
+        paint_jar_chip(overlay_painter, project(world) + offset, max_width, &chip, font, text, warn);
+    }));
+}
+
+/// `tooltip`, with `more` on a line of its own when both exist.
+fn chain_tooltip(tooltip: Option<String>, more: Option<String>) -> Option<String> {
+    match (tooltip, more) {
+        (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The part of a `src`-sized texture (as a uv rect) that fills a `dst`-shaped rect without
 /// stretching: the full width or height, cropped on the other axis around the top-center, so a
 /// page's header stays in view.
 pub(crate) fn cover_uv(src: (u32, u32), dst: egui::Vec2) -> egui::Rect {
-    let full = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
     if src.0 == 0 || src.1 == 0 || dst.x <= 0.0 || dst.y <= 0.0 {
-        return full;
+        return FULL_UV;
     }
     let src_aspect = src.0 as f32 / src.1 as f32;
     let dst_aspect = dst.x / dst.y;
@@ -175,7 +378,7 @@ pub(crate) fn dim_if_filtered_out(
             overlay_painter.rect_filled(
                 egui::Rect::from_min_max(project(rect.min), project(rect.max)),
                 rounding,
-                egui::Color32::from_black_alpha(190),
+                FILTER_DIM_SCRIM,
             );
         }));
     }
@@ -390,6 +593,8 @@ pub(crate) struct CardPass<'a> {
     pub(crate) order: &'a [String],
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
+    /// Every group's members (`App::group_members`), built once before the pass.
+    pub(crate) members: &'a HashMap<String, Vec<String>>,
 }
 
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
@@ -407,6 +612,7 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 /// Returns its response: the frame turns a click into
 /// `control.action(kind)` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
+// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_card_control(
     ui: &egui::Ui,
@@ -447,16 +653,7 @@ pub(crate) fn paint_card_control(
         CardControl::Pin => {
             let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
             if !lod_simplified {
-                let pin_icon_pos = rect.center();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(pin_icon_pos),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::light::PUSH_PIN,
-                        egui::FontId::proportional(14.0),
-                        pin_color,
-                    );
-                }));
+                push_centered_text(deferred_overlays, rect.center(), egui_phosphor::light::PUSH_PIN, 14.0, pin_color);
             }
         }
         // Audio-playing/muted indicator: shown while playing so audio
@@ -479,16 +676,13 @@ pub(crate) fn paint_card_control(
                 // eject icons, not `ui.painter()` like the
                 // waveform's own vector bars below.
                 if !lod_simplified {
-                    let icon_pos = rect.center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::SPEAKER_X,
-                            egui::FontId::proportional(12.0),
-                            DANGER_COLOR,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::SPEAKER_X,
+                        12.0,
+                        DANGER_COLOR,
+                    );
                 }
             } else {
                 // Actually playing: a tiny 3-bar waveform
@@ -510,12 +704,6 @@ pub(crate) fn paint_card_control(
                 // the end of every frame (see `RedrawRequested`'s
                 // own handling), so nothing further is needed
                 // to keep it animating on its own.
-                // A warm sage rather than a minty green -- still
-                // unambiguously "active/live" (the universal
-                // recording-light color family), just shifted to
-                // sit with the rest of this app's warm palette
-                // instead of against it.
-                let waveform_color = egui::Color32::from_rgb(150, 190, 90);
                 // An idle window draws at a lower rate than the bars need.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
                 let t = std::time::SystemTime::now()
@@ -535,7 +723,7 @@ pub(crate) fn paint_card_control(
                     let x = base_x + i as f32 * (bar_w + gap);
                     let bar_rect =
                         egui::Rect::from_min_max(egui::Pos2::new(x, base_y - h), egui::Pos2::new(x + bar_w, base_y));
-                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
+                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, WAVEFORM_COLOR);
                 }
             }
         }
@@ -569,6 +757,7 @@ pub(crate) fn paint_card_control(
 
 /// The ✕ and eject buttons' look: a small square in the card's close
 /// colors (`card_style`), filled `hover_fill` while hovered.
+// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_control_square(
     ui: &egui::Ui,
@@ -587,17 +776,7 @@ pub(crate) fn paint_control_square(
         egui::Stroke::new(1.0 * inv_zoom, style.close_border),
         egui::StrokeKind::Inside,
     );
-    let icon_pos = rect.center();
-    let icon_color = style.close_icon;
-    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(
-            project(icon_pos),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            egui::FontId::proportional(14.0),
-            icon_color,
-        );
-    }));
+    push_centered_text(deferred_overlays, rect.center(), icon, 14.0, style.close_icon);
 }
 
 /// An image node's own card size: `width`x`height` scaled down (never up)
@@ -664,7 +843,7 @@ pub(crate) fn card_filter_text(payload: &NodePayload) -> Vec<&str> {
         NodePayload::Image(image) => vec![download_filename(&image.path)],
         NodePayload::Pdf(pdf) => vec![download_filename(&pdf.path)],
         NodePayload::Json(json) => vec![download_filename(&json.path)],
-        NodePayload::Group(group) => vec![&group.name],
+        NodePayload::Group(group) => vec![&group.name], // name rule: the filter matches the stored text
     }
 }
 
@@ -678,20 +857,48 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
     }
 }
 
+/// How a failed card whose engine can't run names why: (tooltip phrase, card-body phrase), after the
+/// engine's label. A runtime that is there but out of date needs an update; anything else is not installed.
+fn missing_engine_phrases(state: &crate::engine_install::EngineState) -> (&'static str, &'static str) {
+    match state {
+        crate::engine_install::EngineState::UpdateNeeded { .. } => ("needs an update", "needs an update"),
+        _ => ("is not installed", "not installed"),
+    }
+}
+
 impl App {
-    /// `id`'s `CardView`, or `None` when the node is gone.
-    pub(crate) fn card_view(&self, id: &str) -> Option<CardView> {
+    /// Ends every note edit, saving if one was on. A note's TextEdit that
+    /// stops being laid out (its level left, the view changed) loses focus
+    /// without `lost_focus()` ever firing, so `editing` would stay on.
+    pub(crate) fn end_note_edits(&mut self) -> bool {
+        let mut ended = false;
+        for note in self.nodes.values_mut().filter_map(|n| n.as_note_mut()) {
+            ended |= std::mem::take(&mut note.editing);
+        }
+        if ended {
+            self.save_session();
+        }
+        ended
+    }
+
+    /// Every group's members, in `node_order`: built once per card pass.
+    pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        for id in &self.node_order {
+            if let Some(group) = self.nodes.get(id).and_then(|n| n.group.as_ref()) {
+                members.entry(group.clone()).or_default().push(id.clone());
+            }
+        }
+        members
+    }
+
+    /// `id`'s `CardView`, or `None` when the node is gone. `members` is
+    /// `group_members`, built once for the whole pass.
+    pub(crate) fn card_view(&self, id: &str, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
         let node = self.nodes.get(id)?;
         let kind = item_node_kind(&node.payload);
-        let members: Vec<String> = if kind == ItemNodeKind::Group {
-            self.nodes
-                .iter()
-                .filter(|(_, n)| n.group.as_deref() == Some(id))
-                .map(|(member, _)| member.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let members =
+            if kind == ItemNodeKind::Group { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
         Some(CardView {
             kind,
@@ -715,8 +922,7 @@ impl App {
     /// culled. The caller applies the kind's own click action from the
     /// returned response.
     pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
-        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
-        let deferred_overlays = &mut *pass.deferred_overlays;
+        let inv_zoom = pass.inv_zoom;
         let rect = node_card_rect(self.nodes.get(id)?);
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
@@ -728,18 +934,21 @@ impl App {
         // frame, so skipping it mid-drag would freeze the node
         // in place the instant it crossed the visible edge.
         // The Tab entry (first card) and the card holding keyboard focus stay registered too, so
-        // Tab can reach them and focus survives a pan that hasn't brought them into view yet.
+        // Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
+        // a note being edited, whose editor must stay laid out to keep its focus.
         let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
-            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))));
+            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))))
+            || ui.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
         if self.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
             return None;
         }
-        let view = self.card_view(id)?;
+        let view = self.card_view(id, pass.members)?;
         // Glow and fill go under the body, but hover is only known after
         // the interacts, which must follow the body (below). This slot is
         // filled in once it is.
         let background = ui.painter().add(egui::Shape::Noop);
-        let body = self.paint_card_body(ui, deferred_overlays, id, &view, rect, inv_zoom, zoom_scale);
+        let body = self.paint_card_body(ui, pass, id, &view, rect);
+        let deferred_overlays = &mut *pass.deferred_overlays;
 
         // Both interacts are registered *after* the body, never before:
         // egui (0.36, `interaction.rs`) gives the pointer to the
@@ -950,24 +1159,23 @@ impl App {
     /// A graph card's own content, per kind -- everything under the
     /// shared frame's border (see `draw_graph_card`). Returns which part
     /// of the card is the click/drag handle and an optional tooltip.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_card_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
         view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         match view.kind {
             ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
-            ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::Group => self.paint_group_body(ui, pass, id, view, rect),
             ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Unloaded => {
                 self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
@@ -1005,9 +1213,10 @@ impl App {
                     (crate::engine_install::EngineState::Unavailable(reason), _) => {
                         PickOutcome::unavailable_toast(kind, &reason)
                     }
-                    (_, Some(pin)) => format!(
-                        "{} is not installed\nClick to download it ({}).",
+                    (state, Some(pin)) => format!(
+                        "{} {}\nClick to download it ({}).",
                         engine_label(kind),
+                        missing_engine_phrases(&state).0,
                         crate::engine_info::megabytes(pin.size)
                     ),
                     (_, None) => PickOutcome::unavailable_toast(kind, crate::engine_install::NO_PIN_REASON),
@@ -1018,6 +1227,8 @@ impl App {
             }
             UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
+        let chip = self.jar_chip(id);
+        body.tooltip = chain_tooltip(body.tooltip, chip.as_ref().and_then(|c| c.tooltip.clone()));
         if self.graph_lod_simplified {
             return body;
         }
@@ -1034,10 +1245,11 @@ impl App {
         }
         let failed = matches!(state, UnloadedState::Failed(_));
         let header = CardHeader {
-            glyph: if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON },
+            glyph: Some(if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON }),
             glyph_color: failed.then_some(DANGER_COLOR),
             icon_image: if failed { None } else { favicon },
             name: if title.is_empty() { url.clone() } else { title },
+            user_name: None,
             source: url,
             source_is_path: false,
             scrim: false,
@@ -1057,7 +1269,8 @@ impl App {
                     24.0,
                     DANGER_COLOR,
                 );
-                let text = format!("{} not installed (click to download)", engine_label(kind));
+                let phrase = missing_engine_phrases(&self.engine_state(kind)).1;
+                let text = format!("{} {phrase} (click to download)", engine_label(kind));
                 push_centered_text(deferred_overlays, middle + up * 2.5, text, 11.0, DANGER_COLOR);
             }
             UnloadedState::Failed(_) => {
@@ -1078,6 +1291,14 @@ impl App {
                     ui.visuals().weak_text_color(),
                 );
             }
+        }
+        // The jar chip just below the title: under the header, or at the top of a short card (whose title is on
+        // the bottom strip).
+        if let Some(chip) = chip.filter(|_| rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH) {
+            let body_rect = card_body_rect(rect, tall, inv_zoom);
+            let max_width = body_rect.width() * zoom_scale - 8.0;
+            let warn = ui.visuals().warn_fg_color;
+            push_jar_chip(deferred_overlays, body_rect.left_top(), egui::vec2(4.0, 4.0), max_width, chip, warn);
         }
         body
     }
@@ -1107,10 +1328,11 @@ impl App {
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
             let header = CardHeader {
-                glyph: egui_phosphor::light::DOWNLOAD_SIMPLE,
+                glyph: Some(egui_phosphor::light::DOWNLOAD_SIMPLE),
                 glyph_color: None,
                 icon_image: None,
                 name: filename.to_owned(),
+                user_name: None,
                 source_is_path: download_url.is_none(),
                 source: download_url.unwrap_or_else(|| download_path.clone()),
                 scrim: false,
@@ -1201,10 +1423,11 @@ impl App {
         if !self.graph_lod_simplified {
             let words = self.nodes.get(id).and_then(|n| n.as_note()).map_or(0, |n| n.text.split_whitespace().count());
             let header = CardHeader {
-                glyph: egui_phosphor::light::NOTE_PENCIL,
+                glyph: Some(egui_phosphor::light::NOTE_PENCIL),
                 glyph_color: None,
                 icon_image: None,
                 name: "Note".to_owned(),
+                user_name: None,
                 source: format!("{words} word{}", if words == 1 { "" } else { "s" }),
                 source_is_path: false,
                 scrim: false,
@@ -1224,7 +1447,7 @@ impl App {
                             .id(egui::Id::new(("note_edit", id)))
                             .frame(egui::Frame::NONE)
                             .font(egui::FontId::proportional(13.0))
-                            .text_color(egui::Color32::from_black_alpha(220))
+                            .text_color(NOTE_TEXT)
                             .hint_text("Type a note..."),
                     )
                     .lost_focus();
@@ -1247,12 +1470,6 @@ impl App {
                 self.save_session();
             }
         } else if !self.graph_lod_simplified {
-            // `text` is cloned out before the closure below --
-            // `ui.scope_builder`'s closure borrows `self.
-            // commonmark_cache` mutably, which the borrow
-            // checker only allows alongside a *finished*
-            // borrow of `self.nodes`, not one still live inside
-            // the same closure.
             // LOD: skip the markdown render (real parsing +
             // rich text layout, one of the pricier per-node
             // widgets in this whole view) once simplified --
@@ -1262,12 +1479,15 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            let text = self.nodes.get(id).and_then(|n| n.as_note()).map(|n| n.text.clone()).unwrap_or_default();
+            // Borrowed, not cloned: `text` borrows `self.nodes` and `cache` `self.commonmark_cache`, two
+            // disjoint fields.
+            let text = self.nodes.get(id).and_then(|n| n.as_note()).map_or("", |n| n.text.as_str());
+            let cache = &mut self.commonmark_cache;
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
                 |ui| {
-                    ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_black_alpha(220));
-                    egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.commonmark_cache, &text);
+                    ui.style_mut().visuals.override_text_color = Some(NOTE_TEXT);
+                    egui_commonmark::CommonMarkViewer::new().show(ui, cache, text);
                 },
             );
         }
@@ -1290,10 +1510,11 @@ impl App {
             return;
         }
         let header = CardHeader {
-            glyph: egui_phosphor::light::FILE_X,
+            glyph: Some(egui_phosphor::light::FILE_X),
             glyph_color: Some(DANGER_COLOR),
             icon_image: None,
             name,
+            user_name: None,
             source,
             source_is_path,
             scrim: false,
@@ -1345,19 +1566,15 @@ impl App {
         if !self.graph_lod_simplified {
             match tex_id {
                 Some(tex_id) => {
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
                         let (name, source, source_is_path) = file_header_text(&image.path, image.url.as_deref());
                         let header = CardHeader {
-                            glyph: egui_phosphor::light::IMAGE,
+                            glyph: Some(egui_phosphor::light::IMAGE),
                             glyph_color: None,
                             icon_image: None,
                             name,
+                            user_name: None,
                             source,
                             source_is_path,
                             scrim: true,
@@ -1373,17 +1590,13 @@ impl App {
                 // placeholder uses, since this picture isn't *about*
                 // to arrive the way a first frame or fetch is.
                 None => {
-                    let broken_icon_pos = rect.center();
-                    let broken_icon_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(broken_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::IMAGE_BROKEN,
-                            egui::FontId::proportional(24.0),
-                            broken_icon_color,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::IMAGE_BROKEN,
+                        24.0,
+                        ui.visuals().weak_text_color(),
+                    );
                 }
             }
         }
@@ -1433,20 +1646,16 @@ impl App {
         if !self.graph_lod_simplified {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
                         let (name, source, source_is_path) = file_header_text(&pdf.path, pdf.url.as_deref());
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
                         let header = CardHeader {
-                            glyph: egui_phosphor::light::FILE_PDF,
+                            glyph: Some(egui_phosphor::light::FILE_PDF),
                             glyph_color: None,
                             icon_image: None,
                             name,
+                            user_name: None,
                             source,
                             source_is_path,
                             scrim: true,
@@ -1475,29 +1684,22 @@ impl App {
                 // Reachable the same rare way an `Image` node's own
                 // `None` case is -- the node outlived its texture.
                 Some(Ok((None, _))) => {
-                    let broken_icon_pos = rect.center();
-                    let broken_icon_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(broken_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::IMAGE_BROKEN,
-                            egui::FontId::proportional(24.0),
-                            broken_icon_color,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::IMAGE_BROKEN,
+                        24.0,
+                        ui.visuals().weak_text_color(),
+                    );
                 }
                 Some(Err(_)) => {
-                    let error_icon_pos = rect.center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(error_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::FILE_X,
-                            egui::FontId::proportional(24.0),
-                            DANGER_COLOR,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::FILE_X,
+                        24.0,
+                        DANGER_COLOR,
+                    );
                 }
                 None => {
                     ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
@@ -1542,17 +1744,7 @@ impl App {
                 if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
             let summary = format!("{key_display}: {}", json_summary(&json.value));
             if text {
-                let center = rect.center();
-                let color = ui.visuals().text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(center),
-                        egui::Align2::CENTER_CENTER,
-                        summary,
-                        egui::FontId::proportional(12.0),
-                        color,
-                    );
-                }));
+                push_centered_text(deferred_overlays, rect.center(), summary, 12.0, ui.visuals().text_color());
             }
             return body;
         }
@@ -1581,8 +1773,9 @@ impl App {
             // The folder, cut at the start so its last part stays visible, as a download's path is.
             let folder = file_header_text(&json.path, None).1;
             let folder = folder.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
-            let width =
-                (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale - 28.0;
+            // `paint_json_content`'s text width: the source starts at `HEADER_TEXT_X`.
+            let width = (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale
+                - HEADER_TEXT_X;
             header.source = folder.map(|dir| {
                 let font = egui::FontId::proportional(11.0);
                 truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &dir, &font, width.max(0.0))
@@ -1617,28 +1810,31 @@ impl App {
     /// Header F (folder glyph, name, item count) over a member thumbnail grid (header only when
     /// empty or with "Collapse Groups" on). LOD: skipped once simplified, leaving the frame's
     /// plain card.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_group_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
         view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
-        let body = CardBody { interact_rect: rect, tooltip: None };
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
         let member_ids = &view.members;
         let member_count = member_ids.len();
         if !self.graph_lod_simplified {
-            if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
-                let name = node.name.clone();
+            // Owned, so the header can borrow it while `paint_card_header` borrows `self`.
+            // name rule: drawn by display_name just below
+            if let Some(stored) = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()) {
+                let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
+                body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
-                    glyph: egui_phosphor::light::FOLDER,
+                    glyph: Some(egui_phosphor::light::FOLDER),
                     glyph_color: None,
                     icon_image: None,
-                    name,
+                    name: String::new(),
+                    user_name: Some(&segs),
                     source: format!("{member_count} item{}", if member_count == 1 { "" } else { "s" }),
                     source_is_path: false,
                     scrim: false,
@@ -1663,12 +1859,7 @@ impl App {
                         let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
                         match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
                             Some(tex_id) => {
-                                ui.painter().image(
-                                    tex_id,
-                                    cell_rect,
-                                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                    egui::Color32::WHITE,
-                                );
+                                ui.painter().image(tex_id, cell_rect, FULL_UV, egui::Color32::WHITE);
                             }
                             None => {
                                 ui.painter().rect_filled(
@@ -1709,13 +1900,14 @@ impl App {
         rect: egui::Rect,
         inv_zoom: f32,
         zoom_scale: f32,
-        header: CardHeader,
+        header: CardHeader<'_>,
     ) -> bool {
         let tall = tab_has_header(rect, inv_zoom);
         if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
             return tall;
         }
-        let CardHeader { glyph, glyph_color, icon_image, name, source, source_is_path, scrim, right_margin } = header;
+        let CardHeader { glyph, glyph_color, icon_image, name, user_name, source, source_is_path, scrim, right_margin } =
+            header;
         let band_height = if tall { TAB_HEADER_POINTS } else { TAB_STRIP_POINTS } * inv_zoom;
         let band = if tall {
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
@@ -1729,17 +1921,39 @@ impl App {
             } else {
                 egui::CornerRadius { nw: 0, ne: 0, sw: radius, se: radius }
             };
-            ui.painter().rect_filled(band, corners, egui::Color32::from_black_alpha(if tall { 190 } else { 160 }));
+            ui.painter().rect_filled(band, corners, if tall { IMAGE_TEXT_SCRIM } else { TITLE_STRIP_SCRIM });
         }
         let light = scrim || !tall;
         let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
         let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
         let glyph_color = glyph_color.unwrap_or(source_color);
-        let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
+        // One size for measuring and drawing the title, so a strip's plain and rich (hidden-character) titles match.
+        let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
+        let title_font = egui::FontId::proportional(title_size);
         let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
         let text_left = if tall { HEADER_TEXT_X } else { 8.0 };
-        let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
-        let title = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width);
+        let max_width = (rect.width() * zoom_scale - text_left - HEADER_RIGHT_RESERVE - right_margin).max(0.0);
+        // A stored group name with a hidden character is a styled job (placeholders in the marker style, truncated
+        // by the layout); any other title is cut text, as before (`truncate_to_width`'s cache).
+        let rich = user_name.filter(|segs| crate::names::has_hidden(segs)).map(|segs| {
+            let mut job = egui::text::LayoutJob::default();
+            let format = egui::TextFormat::simple(title_font.clone(), title_color);
+            crate::names::append_name(&mut job, segs, &format, source_color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+            job
+        });
+        let title = match (&rich, user_name) {
+            (Some(_), _) => String::new(),
+            // A clean name is one borrowed segment: cut it without copying (spaces collapsed need `to_plain`).
+            (None, Some([crate::names::NameSeg::Plain(p)])) => {
+                truncate_to_width(&mut self.truncate_cache, ui.ctx(), p, &title_font, max_width)
+            }
+            (None, Some(segs)) => {
+                let plain = crate::names::to_plain(segs);
+                truncate_to_width(&mut self.truncate_cache, ui.ctx(), &plain, &title_font, max_width)
+            }
+            (None, None) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width),
+        };
         let source = match (tall, source_is_path) {
             (false, _) => String::new(),
             (true, true) => {
@@ -1749,7 +1963,7 @@ impl App {
         };
         if let (true, Some(tex_id)) = (tall, icon_image) {
             let center = band.left_top() + egui::vec2(18.0, HEADER_CENTER_Y) * inv_zoom;
-            let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+            let uv = FULL_UV;
             ui.painter().image(
                 tex_id,
                 egui::Rect::from_center_size(center, FAVICON_SIZE * inv_zoom),
@@ -1759,11 +1973,11 @@ impl App {
         }
         let origin = band.left_top();
         let band_screen_height = band_height * zoom_scale;
-        let draw_glyph = tall && icon_image.is_none();
+        let glyph = glyph.filter(|_| tall && icon_image.is_none());
         deferred_overlays.push(Box::new(move |overlay_painter, project| {
             let base = project(origin);
             if tall {
-                if draw_glyph {
+                if let Some(glyph) = glyph {
                     overlay_painter.text(
                         base + egui::vec2(HEADER_GLYPH_X, HEADER_CENTER_Y),
                         egui::Align2::LEFT_CENTER,
@@ -1772,9 +1986,10 @@ impl App {
                         glyph_color,
                     );
                 }
-                overlay_painter.text(
+                paint_card_title(
+                    overlay_painter,
                     base + egui::vec2(text_left, HEADER_TITLE_Y),
-                    egui::Align2::LEFT_CENTER,
+                    rich,
                     title,
                     title_font,
                     title_color,
@@ -1787,13 +2002,8 @@ impl App {
                     source_color,
                 );
             } else {
-                overlay_painter.text(
-                    base + egui::vec2(text_left, band_screen_height / 2.0),
-                    egui::Align2::LEFT_CENTER,
-                    title,
-                    egui::FontId::proportional(12.0),
-                    title_color,
-                );
+                let pos = base + egui::vec2(text_left, band_screen_height / 2.0);
+                paint_card_title(overlay_painter, pos, rich, title, title_font, title_color);
             }
         }));
         tall
@@ -1811,12 +2021,14 @@ impl App {
         inv_zoom: f32,
         zoom_scale: f32,
     ) -> CardBody {
-        let body = CardBody { interact_rect: rect, tooltip: None };
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some((title, url, engine_kind)) =
             self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.title.clone(), t.url.clone(), t.tab.kind))
         else {
             return body;
         };
+        let chip = self.jar_chip(id);
+        body.tooltip = chip.as_ref().and_then(|c| c.tooltip.clone());
         // LOD: the thumbnail texture blit and the title/
         // favicon text below are this card's two genuinely
         // expensive parts (a real GPU texture sample, and
@@ -1834,9 +2046,7 @@ impl App {
                     .gpu
                     .as_ref()
                     .and_then(|g| g.thumbnail_size(id))
-                    .map_or(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), |size| {
-                        cover_uv(size, thumb_rect.size())
-                    });
+                    .map_or(FULL_UV, |size| cover_uv(size, thumb_rect.size()));
                 ui.painter().image(tex_id, thumb_rect, uv, egui::Color32::WHITE);
             } else {
                 ui.put(
@@ -1861,7 +2071,7 @@ impl App {
                         ui.painter().image(
                             tex_id,
                             egui::Rect::from_center_size(icon_center, FAVICON_SIZE * inv_zoom),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            FULL_UV,
                             egui::Color32::WHITE,
                         );
                     }
@@ -1869,44 +2079,26 @@ impl App {
                         ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, engine_color(engine_kind));
                     }
                 }
-                if show_text {
-                    // Screen-constant text: the header is 40 screen points tall at any zoom.
-                    let text_left = GRAPH_THUMB_MARGIN + 22.0;
-                    // Leave room for the audio indicator at the top-right corner.
-                    let max_width = (rect.width() * zoom_scale - text_left - 28.0).max(0.0);
-                    let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
-                    let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
-                    let title_text =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &title_font, max_width);
-                    let source_text =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &source_font, max_width);
-                    let (title_color, source_color) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
-                    let origin = rect.left_top();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        let base = project(origin) + egui::vec2(text_left, 0.0);
-                        overlay_painter.text(
-                            base + egui::vec2(0.0, 12.0),
-                            egui::Align2::LEFT_CENTER,
-                            title_text,
-                            title_font,
-                            title_color,
-                        );
-                        overlay_painter.text(
-                            base + egui::vec2(0.0, 28.0),
-                            egui::Align2::LEFT_CENTER,
-                            source_text,
-                            source_font,
-                            source_color,
-                        );
-                    }));
-                }
+                // Title and source line: the shared header, which leaves the icon above to this card.
+                let card_header = CardHeader {
+                    glyph: None,
+                    glyph_color: None,
+                    icon_image: None,
+                    name: label.to_owned(),
+                    user_name: None,
+                    source: url.clone(),
+                    source_is_path: false,
+                    scrim: false,
+                    right_margin: 0.0,
+                };
+                self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, card_header);
             } else {
                 // A flat scrim behind the title strip so it stays legible over a light thumbnail.
                 let title_strip = egui::Rect::from_min_max(
                     egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - TAB_STRIP_POINTS * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
-                ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
+                ui.painter().rect_filled(title_strip, 0.0, TITLE_STRIP_SCRIM);
                 // Engine identity as a small colored dot; the strip is too small for more.
                 ui.painter().circle_filled(
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
@@ -1936,22 +2128,408 @@ impl App {
                         rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
                         FAVICON_SIZE * inv_zoom,
                     );
-                    ui.painter().image(
-                        tex_id,
-                        favicon_rect,
-                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, favicon_rect, FULL_UV, egui::Color32::WHITE);
                 }
+            }
+            // The jar chip at the thumbnail's bottom-left, above a short card's title strip.
+            if let Some(chip) = chip.filter(|_| show_text) {
+                let strip = if header { 0.0 } else { TAB_STRIP_POINTS * inv_zoom };
+                let corner = thumb_rect.left_bottom() + egui::vec2(0.0, -strip);
+                let offset = egui::vec2(4.0, -4.0 - JAR_CHIP_HEIGHT);
+                let max_width = thumb_rect.width() * zoom_scale - 8.0;
+                push_jar_chip(deferred_overlays, corner, offset, max_width, chip, ui.visuals().warn_fg_color);
             }
         }
         body
     }
 }
 
+/// A card title, left-centred at `pos`: the styled `rich` job when there is one, else the plain `title`.
+fn paint_card_title(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    rich: Option<egui::text::LayoutJob>,
+    title: String,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    match rich {
+        Some(job) => {
+            let galley = painter.layout_job(job);
+            let y = pos.y - galley.size().y / 2.0;
+            painter.galley(egui::pos2(pos.x, y), galley, color);
+        }
+        None => {
+            painter.text(pos, egui::Align2::LEFT_CENTER, title, font, color);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fix batch B3: a chip on a narrow card gives up, in turn, the end of its name, its name, then the old jar's dot
+    /// and arrow; it never runs past `max`.
+    #[test]
+    fn a_jar_chip_shrinks_to_fit_its_card() {
+        let fit = |max, lead, name| fit_jar_chip(max, lead, name, 0.0);
+        let whole = JAR_CHIP_PAD + 2.0 * JAR_CHIP_R + JAR_CHIP_NAME_GAP + 30.0 + JAR_CHIP_NAME_END;
+        assert_eq!(fit(whole, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(30.0), marker: false }));
+        assert_eq!(fit(whole - 10.0, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(20.0), marker: false }));
+        assert_eq!(fit(whole + 20.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(30.0), marker: false }));
+        assert_eq!(fit(whole + 5.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(15.0), marker: false }));
+        assert_eq!(fit(40.0, 20.0, 30.0), Some(ChipFit { lead: true, name: None, marker: false }));
+        assert_eq!(fit(30.0, 20.0, 30.0), Some(ChipFit { lead: false, name: None, marker: false }));
+        assert_eq!(fit(10.0, 20.0, 30.0), None);
+        // A name already narrower than the minimum is kept whole when it fits.
+        assert_eq!(fit(whole - 20.0, 0.0, 10.0), Some(ChipFit { lead: false, name: Some(10.0), marker: false }));
+    }
+
+    /// Styled jar label markers: a chip whose label has a marker keeps all of the marker and ellipsizes only the name;
+    /// with no room for the marker and a short name, it falls back to the dots as one without a marker does.
+    #[test]
+    fn a_jar_chip_keeps_its_marker_while_the_name_shrinks() {
+        let (name, marker) = (30.0, 20.0);
+        let whole = JAR_CHIP_PAD
+            + 2.0 * JAR_CHIP_R
+            + JAR_CHIP_NAME_GAP
+            + name
+            + JAR_CHIP_MARKER_GAP
+            + marker
+            + JAR_CHIP_NAME_END;
+        let fit = |max, lead| fit_jar_chip(max, lead, name, marker);
+        let shown = |lead, name| Some(ChipFit { lead, name: Some(name), marker: true });
+        assert_eq!(fit(whole, 0.0), shown(false, 30.0));
+        assert_eq!(fit(whole - 10.0, 0.0), shown(false, 20.0), "the name gives way, the marker stays whole");
+        assert_eq!(fit(whole - 16.0, 0.0), shown(false, JAR_CHIP_MIN_NAME));
+        assert_eq!(fit(whole + 15.0, 20.0), shown(true, 25.0));
+        let dots = Some(ChipFit { lead: false, name: None, marker: false });
+        assert_eq!(fit(whole - 17.0, 0.0), dots, "no room for a short name and the marker: just the dots");
+        assert_eq!(fit(30.0, 20.0), dots);
+        assert_eq!(fit(10.0, 20.0), None);
+    }
+
+    /// The painted chip shows the marker as text of its own, whole, next to an ellipsized name.
+    #[test]
+    fn a_painted_jar_chip_draws_the_marker_whole() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: crate::jar_defs::JarLabel {
+                name: "A rather long jar name".into(),
+                marker: Some(crate::jar_defs::JarMarker::Fragment("3f2a".into())),
+            },
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: false,
+            can_switch_now: false,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        for (max, full) in [(300.0, true), (90.0, false), (20.0, false)] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let font = egui::FontId::proportional(11.0);
+                let painted = paint_jar_chip(
+                    ui.painter(),
+                    egui::Pos2::ZERO,
+                    max,
+                    &chip,
+                    font,
+                    egui::Color32::WHITE,
+                    egui::Color32::YELLOW,
+                );
+                assert!(painted.is_some_and(|r| r.width() <= max), "{max}: {painted:?}");
+            });
+            output.textures_delta.clear();
+            let galleys: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.clone()),
+                    _ => None,
+                })
+                .collect();
+            let texts: Vec<String> = galleys.iter().map(|g| g.text().to_string()).collect();
+            if max < 30.0 {
+                assert!(texts.is_empty(), "{max}: just the dot: {texts:?}");
+                continue;
+            }
+            assert_eq!(texts.len(), 2, "{max}: name and marker: {texts:?}");
+            assert_eq!((texts[0].as_str(), texts[1].as_str()), ("A rather long jar name", "#3f2a"), "{max}");
+            assert!(!galleys[1].elided, "{max}: the marker is whole");
+            assert_eq!(galleys[0].elided, !full, "{max}: the name is ellipsized only when narrow");
+        }
+    }
+
+    /// Fix batch B4: the dots the card chip and Tab view share show a waiting switch as the old jar's dot, an arrow,
+    /// then the new jar's; one dot otherwise. Tab view drew only the new jar's dot.
+    #[test]
+    fn the_jar_dots_show_a_waiting_switch() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        for will_switch in [false, true] {
+            let chip = crate::jar_defs::JarChip {
+                name: "Home".into(),
+                color: egui::Color32::RED,
+                following: false,
+                missing: false,
+                will_switch,
+                can_switch_now: true,
+                was_color: egui::Color32::GRAY,
+                engine_ignores: false,
+                tooltip: None,
+            };
+            let mut end = 0.0;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let arrow = jar_chip_arrow(ui.painter(), &chip, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+                assert_eq!(arrow.is_some(), will_switch);
+                let width = jar_dots_width(arrow.as_deref());
+                end = paint_jar_dots(ui.painter(), 0.0, 8.0, &chip, arrow, egui::Color32::WHITE, egui::Color32::YELLOW);
+                assert_eq!(end, width, "jar_dots_width matches what is painted");
+            });
+            output.textures_delta.clear();
+            let circles: Vec<egui::Color32> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Circle(c) => Some(c.fill),
+                    _ => None,
+                })
+                .collect();
+            let texts = output.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Text(_))).count();
+            if will_switch {
+                assert_eq!((circles, texts), (vec![egui::Color32::GRAY, egui::Color32::RED], 1));
+            } else {
+                assert_eq!((circles, texts), (vec![egui::Color32::RED], 0));
+            }
+        }
+    }
+
+    /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.
+    #[test]
+    fn a_painted_jar_chip_stays_inside_its_width() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: "A rather long jar name".into(),
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: true,
+            can_switch_now: true,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        for max in [200.0, 80.0, 40.0, 20.0, 10.0] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let font = egui::FontId::proportional(11.0);
+                let painted = paint_jar_chip(
+                    ui.painter(),
+                    egui::Pos2::ZERO,
+                    max,
+                    &chip,
+                    font,
+                    egui::Color32::WHITE,
+                    egui::Color32::YELLOW,
+                );
+                assert!(painted.is_none_or(|r| r.width() <= max), "{max}: {painted:?}");
+                assert_eq!(painted.is_none(), max < 20.0, "{max}");
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    /// Name rules: a chip draws a hidden character in its jar's name as a placeholder, in the marker style.
+    #[test]
+    fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: crate::jar_defs::JarLabel { name: "Wo\u{200B}rk".into(), marker: None },
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: false,
+            can_switch_now: false,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::FontId::proportional(11.0);
+            paint_jar_chip(
+                ui.painter(),
+                egui::Pos2::ZERO,
+                300.0,
+                &chip,
+                font,
+                egui::Color32::WHITE,
+                egui::Color32::YELLOW,
+            );
+        });
+        output.textures_delta.clear();
+        let galleys: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        let name = galleys.iter().find(|g| g.text() == "Wo⟦200B⟧rk");
+        let name = name.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
+        let hidden = name.job.sections.iter().find(|s| s.format.font_id.family == egui::FontFamily::Monospace);
+        assert_eq!(hidden.expect("a monospace placeholder").format.font_id.size, 11.0 * crate::jar_defs::MARKER_SCALE);
+    }
+
+    /// Name rules: a group card's header draws its stored name through the display rule (placeholders, collapsed
+    /// spaces, the fallback); another card's title is drawn as before.
+    #[test]
+    fn a_group_header_draws_its_name_by_the_display_rule() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        for (name, user_name, want) in [
+            ("Re\u{200B}ading", true, "Re⟦200B⟧ading"),
+            ("  Two\u{00A0}\u{00A0}spaces ", true, "Two spaces"),
+            ("", true, "Untitled"),
+            ("Re\u{200B}ading", false, "Re\u{200B}ading"),
+        ] {
+            let segs = crate::names::display_name(name, crate::names::UNTITLED);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut overlays: DeferredOverlays = Vec::new();
+                let header = CardHeader {
+                    glyph: Some(egui_phosphor::light::FOLDER),
+                    glyph_color: None,
+                    icon_image: None,
+                    name: if user_name { String::new() } else { name.into() },
+                    user_name: user_name.then_some(&segs[..]),
+                    source: "3 items".into(),
+                    source_is_path: false,
+                    scrim: false,
+                    right_margin: 0.0,
+                };
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+                app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header);
+                for overlay in overlays {
+                    overlay(ui.painter(), &|p| p);
+                }
+            });
+            output.textures_delta.clear();
+            let galleys: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.clone()),
+                    _ => None,
+                })
+                .collect();
+            let title = galleys.iter().find(|g| g.text() == want);
+            let title =
+                title.unwrap_or_else(|| panic!("{want}: {:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
+            let mono = title.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace);
+            assert_eq!(mono, want.contains('⟦'), "{want}");
+        }
+    }
+
+    /// A header with no glyph (a live tab's: the card draws its own favicon or engine dot) draws only its title and
+    /// source line, left-aligned at `HEADER_TEXT_X` and centred on `HEADER_TITLE_Y` and `HEADER_SOURCE_Y`, where the
+    /// tab card drew them by hand before it went through `CardHeader`.
+    #[test]
+    fn a_header_without_a_glyph_draws_title_and_source_at_the_header_lines() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut overlays: DeferredOverlays = Vec::new();
+            let header = CardHeader {
+                glyph: None,
+                glyph_color: None,
+                icon_image: None,
+                name: "Title".into(),
+                user_name: None,
+                source: "example.com".into(),
+                source_is_path: false,
+                scrim: false,
+                right_margin: 0.0,
+            };
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+            assert!(app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header));
+            for overlay in overlays {
+                overlay(ui.painter(), &|p| p);
+            }
+        });
+        output.textures_delta.clear();
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
+                _ => None,
+            })
+            .collect();
+        let names: Vec<_> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(names, ["Title", "example.com"]);
+        for ((_, at), y) in texts.iter().zip([HEADER_TITLE_Y, HEADER_SOURCE_Y]) {
+            assert!((at.left() - HEADER_TEXT_X).abs() <= 0.5, "{at:?}");
+            assert!((at.center().y - y).abs() <= 0.5, "{at:?} vs {y}");
+        }
+    }
+
+    /// Name rules: a group card's hover names the hidden characters in its stored name; a clean name has none. Its
+    /// header draws the same segments the hover came from.
+    #[test]
+    fn a_group_card_tooltip_names_a_hidden_character() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        for (name, want, title) in [
+            ("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space"), "Re⟦200B⟧ading"),
+            ("Reading", None, "Reading"),
+        ] {
+            app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = name.into();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut overlays: DeferredOverlays = Vec::new();
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+                let view = test_view(ItemNodeKind::Group);
+                let mut actions = Vec::new();
+                let drop_preview = None;
+                let members = HashMap::new();
+                let mut pass = CardPass {
+                    deferred_overlays: &mut overlays,
+                    actions: &mut actions,
+                    inv_zoom: 1.0,
+                    zoom_scale: 1.0,
+                    drop_preview: &drop_preview,
+                    show_order: false,
+                    order: &[],
+                    any_focused: false,
+                    members: &members,
+                };
+                let body = app.paint_group_body(ui, &mut pass, &g, &view, rect);
+                assert_eq!(body.tooltip.as_deref(), want, "{name:?}");
+                for overlay in overlays {
+                    overlay(ui.painter(), &|p| p);
+                }
+            });
+            output.textures_delta.clear();
+            let texts: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            assert!(texts.iter().any(|t| t == title), "{title}: {texts:?}");
+        }
+    }
 
     /// Header F is on every card kind: each kind's body painter reaches the shared header (or, for
     /// the tab card and the JSON preview, the code that draws the same 40-point one). Source-text
@@ -2032,7 +2610,7 @@ mod tests {
     fn cover_uv_crops_the_longer_axis_and_never_stretches() {
         let uv = |src, w, h| cover_uv(src, egui::vec2(w, h));
         // Same shape: the whole texture.
-        assert_eq!(uv((256, 192), 128.0, 96.0), egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)));
+        assert_eq!(uv((256, 192), 128.0, 96.0), FULL_UV);
         // Wider source: sides cropped evenly.
         let wide = uv((200, 100), 100.0, 100.0);
         assert_eq!((wide.min.x, wide.max.x, wide.min.y, wide.max.y), (0.25, 0.75, 0.0, 1.0));
@@ -2182,14 +2760,11 @@ mod tests {
             node_card_size(&NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None })),
             NOTE_NODE_SIZE
         );
-        assert_eq!(
-            node_card_size(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
-            GROUP_NODE_SIZE
-        );
+        assert_eq!(node_card_size(&NodePayload::Group(GroupPayload::named("g"))), GROUP_NODE_SIZE);
         let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
             NodePayload::Json(JsonPayload {
                 path: "a.json".into(),
-                value,
+                value: value.into(),
                 key: key.map(Into::into),
                 error: error.map(Into::into),
                 url: None,
@@ -2211,6 +2786,7 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             GRAPH_NODE_SIZE
         );
@@ -2274,7 +2850,7 @@ mod tests {
         assert_eq!(
             card_filter_text(&NodePayload::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
-                value: serde_json::json!(1),
+                value: std::sync::Arc::new(serde_json::json!(1)),
                 key: None,
                 error: None,
                 url: None,
@@ -2282,10 +2858,7 @@ mod tests {
             })),
             ["x.json"]
         );
-        assert_eq!(
-            card_filter_text(&NodePayload::Group(GroupPayload { name: "Reading".into(), from_json: false })),
-            ["Reading"]
-        );
+        assert_eq!(card_filter_text(&NodePayload::Group(GroupPayload::named("Reading"))), ["Reading"]);
         // Like a live tab: title and url, so the Graph filter can match a
         // sleeping card by its saved title, not just its url.
         assert_eq!(
@@ -2297,6 +2870,7 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             ["Example", "https://example.org/"]
         );
@@ -2309,14 +2883,58 @@ mod tests {
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             })),
             ["", "https://example.org/"]
         );
+    }
+
+    /// A CEF runtime with an older marker (Update needed) is named as needing an update, not as missing.
+    #[test]
+    fn a_failed_card_names_an_outdated_engine_as_needing_an_update() {
+        use crate::engine_install::EngineState;
+        assert_eq!(
+            missing_engine_phrases(&EngineState::UpdateNeeded { size: 1 }),
+            ("needs an update", "needs an update")
+        );
+        assert_eq!(
+            missing_engine_phrases(&EngineState::NotInstalled { size: 1 }),
+            ("is not installed", "not installed")
+        );
+        assert_eq!(missing_engine_phrases(&EngineState::Failed("x".into())), ("is not installed", "not installed"));
     }
 
     #[test]
     fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Sleeping), "Sleeping — click to load");
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Waking), "Loading…");
+    }
+
+    /// Review C-B3: leaving a level ends a note edit there.
+    #[test]
+    fn leaving_the_level_ends_a_note_edit() {
+        let mut app = App::default();
+        app.new_note_shortcut();
+        let id = app.node_order[0].clone();
+        app.nodes.get_mut(&id).unwrap().as_note_mut().unwrap().editing = true;
+        app.switch_group_level(None);
+        assert!(!app.nodes[&id].as_note().unwrap().editing);
+    }
+
+    /// Review C-B8: a group's members come in creation order, every time.
+    #[test]
+    fn group_members_follow_node_order() {
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        let mut made = Vec::new();
+        for _ in 0..20 {
+            app.new_note_shortcut();
+            let id = app.node_order.last().unwrap().clone();
+            app.nodes.get_mut(&id).unwrap().group = Some(g.clone());
+            made.push(id);
+        }
+        assert_eq!(app.group_members()[&g], made);
+        assert_eq!(app.card_view(&g, &app.group_members()).unwrap().members, made);
     }
 }

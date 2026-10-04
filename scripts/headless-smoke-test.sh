@@ -63,6 +63,13 @@ mkdir -p "$profile/manifold"
 echo '{"has_shown_first_launch_demo": true}' >"$profile/manifold/settings.json"
 export APPDATA="$(cygpath -w "$profile")"
 
+# Address-bar suggestions come from a local server (probe_server.py's /ac/), not DuckDuckGo, so those checks
+# don't depend on the network. Its lifetime covers the whole run; `cleanup` kills it.
+python -P "$repo_root/scripts/probe_server.py" "$(cygpath -w "$profile/port")" "$(cygpath -w "$profile/page.log")" 1800 </dev/null >/dev/null 2>&1 &
+probe_pid=$!
+for _ in $(seq 50); do [ -s "$profile/port" ] && break; sleep 0.1; done
+export MANIFOLD_SUGGESTIONS_URL="http://127.0.0.1:$(cat "$profile/port")/ac/"
+
 fail=0
 pass() { echo "PASS: $1"; }
 failed() {
@@ -136,9 +143,9 @@ check_state() {
     fi
 }
 
-# Polls until EXPR holds, for up to ~15 s: suggestions come from
-# DuckDuckGo over the network, so a fixed sleep either wastes time or
-# (seen about once in 15 runs at 3 s) isn't enough.
+# Polls until EXPR holds, for up to ~15 s: suggestions are fetched on a
+# background thread after a debounce, so a fixed sleep either wastes time or
+# isn't enough.
 wait_state() {
     local name="$1" label="$2" expr="$3" i
     for i in $(seq 1 30); do
@@ -161,7 +168,7 @@ browser_pid=$BROWSER_PID
 send() { echo "$1" >&"${BROWSER[1]}"; }
 
 cleanup() {
-    kill "$browser_pid" 2>/dev/null || true
+    kill "$browser_pid" "$probe_pid" 2>/dev/null || true
     wait "$browser_pid" 2>/dev/null
     rm -rf "$profile"
 }
@@ -263,7 +270,12 @@ EOF
 }
 
 check_query() {
-    if [ "$(query "$1" "bool($3)")" = True ]; then pass "$2"; else failed "$2: \`$3\` is false in $1.json"; fi
+    if [ "$(query "$1" "bool($3)")" = True ]; then
+        pass "$2"
+    else
+        # What the state actually was, so a flake explains itself without a rerun (the next run wipes the JSON).
+        failed "$2: \`$3\` is false in $1.json (saw: $(query "$1" '"tab_view=%s group=%s tabs=%s groups=%s" % (s["tab_view"], s["current_group"], tabs, groups)' 2>&1 | tail -1))"
+    fi
 }
 
 # Exports until two exports in a row agree on every card's rect, leaving
@@ -467,10 +479,15 @@ json_id=$(BEFORE="$before_drop_ids" query after_drop \
     '([i for i, c in cards.items() if c["kind"] == "Json" and i not in eval(env["BEFORE"])] or ["none"])[0]')
 check_query after_drop "a dropped .txt becomes a Note card" "'$note_id' != 'none'"
 check_query after_drop "a dropped .json becomes a Json card" "'$json_id' != 'none'"
-check_query after_drop "the dropped note's screen center is within 60px of (400, 300)" \
-    "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
-check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
-    "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
+# Both land on one point, so the layout eases them about a card apart
+# (graph_layout's REPULSION_SOFT_DISTANCE): each moves half a card or so
+# (~120px at this zoom), not off-canvas (~700px each before that cap).
+check_query after_drop "the dropped note's screen center is within 200px of (400, 300)" \
+    "abs(cards['$note_id']['screen'][0] - 400) < 200 and abs(cards['$note_id']['screen'][1] - 300) < 200"
+check_query after_drop "the dropped json's screen center is within 200px of (400, 300)" \
+    "abs(cards['$json_id']['screen'][0] - 400) < 200 and abs(cards['$json_id']['screen'][1] - 300) < 200"
+check_query after_drop "the two cards dropped on one point no longer overlap" \
+    "(lambda a, b: a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])(cards['$note_id']['rect'], cards['$json_id']['rect'])"
 
 # Entering the dropped JSON file: its level, driven by the JSON commands,
 # then back out. `{"a": 1}` is one root card with one row.

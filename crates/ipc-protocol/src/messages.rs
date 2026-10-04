@@ -11,38 +11,37 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TabState {
     pub url: String,
-    pub zoom: f64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {
     Left,
     Right,
     Middle,
 }
 
-/// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
-/// (not guaranteed FFI/serialization-stable across winit versions) or any
-/// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
-/// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
-/// winit's key into this; each engine-host translates this into whatever
-/// its own embedding API wants. Two encodings are standards rather than one
-/// engine's own, so they live here with the table (`key_codes!`): the DOM
-/// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
-/// Servo's `Code`/`Key` stay in their engine crates.
-///
-/// Deliberately not exhaustive — common keys only (letters, digits,
-/// navigation, the usual modifiers and editing keys) covers real usage
-/// (typing into a page's form fields, basic shortcuts) without trying to
-/// enumerate every key on every keyboard layout.
-/// One row per key: the variant (which is also its DOM `KeyboardEvent.code`),
-/// its Windows virtual-key code, and its DOM `KeyboardEvent.key`. Generates
-/// the enum, `KeyCode::ALL` and the accessors, so the table exists once.
+// One row per key: the variant (which is also its DOM `KeyboardEvent.code`), its Windows virtual-key
+// code, and its DOM `KeyboardEvent.key`. Generates the enum, `KeyCode::ALL` and the accessors, so the
+// table exists once. A doc comment on a row lands on its variant.
 macro_rules! key_codes {
-    ($($name:ident $vk:literal $key:literal;)*) => {
+    ($($(#[$m:meta])* $name:ident $vk:literal $key:literal;)*) => {
+        /// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
+        /// (not guaranteed FFI/serialization-stable across winit versions) or any
+        /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
+        /// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
+        /// winit's key into this; each engine-host translates this into whatever
+        /// its own embedding API wants. Two encodings are standards rather than one
+        /// engine's own, so they live here with the table (`key_codes!`): the DOM
+        /// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
+        /// Servo's `Code`/`Key` stay in their engine crates.
+        ///
+        /// Deliberately not exhaustive — common keys only (letters, digits,
+        /// navigation, the usual modifiers and editing keys) covers real usage
+        /// (typing into a page's form fields, basic shortcuts) without trying to
+        /// enumerate every key on every keyboard layout.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
         pub enum KeyCode {
-            $($name,)*
+            $($(#[$m])* $name,)*
         }
 
         impl KeyCode {
@@ -144,6 +143,15 @@ impl KeyCode {
             vk => vk,
         }
     }
+
+    /// The key types a character of its own (letters, digits,
+    /// space): its DOM `key` is that one character. Engines send
+    /// such keys without text and let `InputEvent::Char` insert it.
+    /// A new key fails `text_keys_are_letters_digits_and_space`; check the WebKit and Servo key tables then.
+    pub fn produces_text(self) -> bool {
+        let mut chars = self.dom_key().chars();
+        chars.next().is_some() && chars.next().is_none()
+    }
 }
 
 /// Bitflags for `InputEvent::KeyDown`/`KeyUp`'s `modifiers` field — the
@@ -184,13 +192,14 @@ pub mod modifiers {
 #[rustfmt::skip]
 pub enum InputEvent {
     /// `modifiers` (see the `modifiers` module) are the modifier keys held
-    /// *at the time of* this mouse event — added so a native-input-
-    /// injection engine (currently only CEF; the others are script-driven
-    /// and read modifier state some other way) can forward e.g. Ctrl+click/
-    /// Shift+click to the page instead of always injecting a bare click.
+    /// at the time of this mouse event; every engine forwards them, so
+    /// Ctrl+click/Shift+click reach the page instead of a bare click.
     MouseMove { x: f64, y: f64, modifiers: u8 },
-    MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8 },
-    MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8 },
+    /// `click_count` is 1 for a single press, 2 for the second of a double
+    /// click, and so on (`manifold`'s `ClickCounter`); `MouseUp` repeats
+    /// its press's count.
+    MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
+    MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: u8 },
     KeyDown { key: KeyCode, modifiers: u8 },
     KeyUp { key: KeyCode, modifiers: u8 },
@@ -231,6 +240,16 @@ pub enum HostToEngine {
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
+    /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
+    /// hosts started with `ENGINE_AWAIT_COOKIES=1`, which wait for it before their first navigation.
+    ///
+    /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
+    /// this message (or `EngineToHost::Cookies`) with `{:?}`.
+    SetCookies(String),
+    /// Asks for every cookie in the engine's jar; the engine answers with `EngineToHost::Cookies`.
+    /// An engine that cannot answer, or whose read failed or may be incomplete, stays silent: an answer is only ever a
+    /// complete read, since a cookie missing from it can be taken as deleted.
+    GetCookies,
     /// Scrolls the page to `(x, y)` once, with retries (`restore_scroll_script`).
     /// Sent after a woken tab's first load.
     RestoreScroll { x: f64, y: f64 },
@@ -385,6 +404,9 @@ pub enum EngineToHost {
     },
     StateSnapshot(TabState),
     PageState(PageState),
+    /// The engine's whole cookie jar as a JSON array of `jar::Cookie` (name, value, domain, path, expires,
+    /// secure, http_only, same_site), the answer to `HostToEngine::GetCookies`.
+    Cookies(String),
     Crashed { reason: String },
     /// The page asked to open a new tab (`target=_blank`, `window.open()`,
     /// ctrl+click) and the engine-host intercepted and cancelled it in
@@ -398,7 +420,9 @@ pub enum EngineToHost {
     /// doesn't fit this project's one-process-per-tab architecture, so
     /// Servo tabs don't send this (page-triggered popups fall back to
     /// whatever Servo's own unhandled-request default behavior is).
-    OpenTabRequested { url: String },
+    /// `user_gesture`: the engine saw a user action (click, key) behind the
+    /// request; the host drops requests without one (`popup_gate.rs`).
+    OpenTabRequested { url: String, user_gesture: bool },
     /// A find-in-page result update for the current search term: `count`
     /// matches found, `active_index` the 1-based position of the currently
     /// selected match among them (0 if `count` is 0). WebKitGTK's
@@ -455,11 +479,10 @@ pub enum EngineToHost {
     /// menu" outcome the other three engines reach by different means.
     ContextMenuLink { x: f64, y: f64, href: String },
     /// A download started -- `path` is where the engine will save it (this
-    /// project never prompts for a save location; each engine picks its own
-    /// default: WebView2's own real Downloads-folder default, CEF's
-    /// `%USERPROFILE%\Downloads` plus the server's suggested filename
-    /// chosen by `manifold`'s equivalent, WebKit's own default -- see each
-    /// engine-host's own download-handling code). `total_bytes` is the
+    /// project never prompts for a save location: WebView2 uses Edge's own
+    /// Downloads-folder default and naming; CEF and WebKit use
+    /// `crate::downloads` -- `~/Downloads`, the suggested name's last
+    /// component, numbered `name (n).ext` if taken). `total_bytes` is the
     /// expected final size if the server reported a real `Content-Length`;
     /// `None` for a chunked/unknown-length response, shown as a byte count
     /// with no percentage rather than a guessed bar. `path` is the stable
@@ -475,7 +498,7 @@ pub enum EngineToHost {
     /// `path` its own `DownloadStarted` reported.
     DownloadProgress { path: String, bytes_received: u64 },
     /// A download finished — `path` is the same one its `DownloadStarted`
-    /// reported. `manifold` shows a brief "Saved <path>" toast here and
+    /// reported. `manifold` shows a brief "Saved `<path>`" toast here and
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
@@ -528,6 +551,16 @@ mod key_code_tests {
     use super::*;
 
     #[test]
+    fn text_keys_are_letters_digits_and_space() {
+        let text: Vec<KeyCode> = KeyCode::ALL.iter().copied().filter(|k| k.produces_text()).collect();
+        assert_eq!(text.len(), 26 + 10 + 1, "{text:?}");
+        assert!(KeyCode::KeyQ.produces_text() && KeyCode::Digit7.produces_text() && KeyCode::Space.produces_text());
+        assert!(
+            !KeyCode::Enter.produces_text() && !KeyCode::ShiftLeft.produces_text() && !KeyCode::Tab.produces_text()
+        );
+    }
+
+    #[test]
     fn dom_code_is_the_variant_name_and_vk_codes_are_distinct_per_key() {
         for &key in KeyCode::ALL {
             assert_eq!(key.dom_code(), format!("{key:?}"));
@@ -548,6 +581,43 @@ mod key_code_tests {
         assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
         assert_eq!(KeyCode::Space.dom_key(), " ");
         assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
+
+    // The macro also emits `ALL`, `dom_code` and `windows_vk`, which this one-key table never calls.
+    #[allow(dead_code)]
+    mod attrs_pass_through {
+        // A doc comment on a variant must compile: `key_codes!` forwards attributes.
+        use serde::{Deserialize, Serialize};
+        key_codes! {
+            /// A documented key.
+            KeyA 0x41 "a";
+        }
+
+        #[test]
+        fn a_documented_variant_compiles() {
+            assert_eq!(KeyCode::KeyA.dom_key(), "a");
+        }
+    }
+}
+
+#[cfg(test)]
+mod cookie_message_tests {
+    use super::*;
+    use crate::channel::MessageChannel;
+    use std::io::Cursor;
+
+    /// Sends `msg` through the real postcard framing and reads it back.
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned>(msg: &T) -> T {
+        let mut out = MessageChannel::new(Cursor::new(Vec::new()));
+        out.send(msg).unwrap();
+        MessageChannel::new(Cursor::new(out.into_inner().into_inner())).recv().unwrap()
+    }
+
+    #[test]
+    fn the_cookie_messages_round_trip() {
+        assert!(matches!(round_trip(&HostToEngine::GetCookies), HostToEngine::GetCookies));
+        assert!(matches!(round_trip(&HostToEngine::SetCookies("[]".into())), HostToEngine::SetCookies(s) if s == "[]"));
+        assert!(matches!(round_trip(&EngineToHost::Cookies("[]".into())), EngineToHost::Cookies(s) if s == "[]"));
     }
 }
 

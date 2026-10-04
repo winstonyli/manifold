@@ -30,6 +30,14 @@ exe="$repo_root/target/debug/manifold.exe"
 # shellcheck source=fresh-exe.sh
 . "$repo_root/scripts/fresh-exe.sh"
 require_fresh_exe "$exe" || exit 1
+# Seconds from a sleep request to the tab being asleep. WebView2 sleeps at
+# once, but a CEF tab's sleep waits for its last cookies: the host's jar pull
+# answers only after `EMPTY_PULL_TIMEOUT` (2 s, manifold-engine-cef
+# jar_cookies.rs) on an empty jar, and the app holds the page state up to
+# `COOKIE_HOLD` (2 s, tabs.rs) for it, so CEF sleeps ~2 s after the request.
+# A 1-2 s wait exported (or woke) a CEF tab before it slept, and the dirty
+# case's "idle sleep left it awake" check passed on CEF without proving it.
+asleep_wait=4
 # Not under the repo: a path with a space (this one has "Winston Li") stops the app reading its commands.
 out="$(mktemp -d)"
 srv=""
@@ -100,7 +108,7 @@ for engine in ${ENGINES:-webview2 cef}; do
                 echo "SLEEP 3"
                 echo "IDLESWEEP 2"
             fi
-            echo "SLEEP 1"
+            echo "SLEEP $asleep_wait"
             echo "EXPORTSTATE $(st asleep)"
             # Opening the card wakes it; the open is a click on the card in Graph view.
             echo GRAPHOPEN
@@ -119,7 +127,7 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo ESCAPE
             echo "SLEEP 2"
             echo "SLEEPNODE $id"
-            echo "SLEEP 2"
+            echo "SLEEP $asleep_wait"
             echo GRAPHOPEN
             echo WAITTABS
             echo "SLEEP 6"
@@ -148,7 +156,7 @@ for engine in ${ENGINES:-webview2 cef}; do
                 echo ESCAPE
                 echo "SLEEP 2"
                 echo "SLEEPNODE $id"
-                echo "SLEEP 2"
+                echo "SLEEP $asleep_wait"
                 echo GRAPHOPEN
                 echo WAITTABS
                 echo "SLEEP 5"
@@ -162,10 +170,10 @@ for engine in ${ENGINES:-webview2 cef}; do
             echo "IDLESWEEP 9999"
             echo "SLEEP 3"
             echo "IDLESWEEP 2"
-            echo "SLEEP 2"
+            echo "SLEEP $asleep_wait"
             echo "EXPORTSTATE $(st stay)"
             echo "SLEEPNODE $id"
-            echo "SLEEP 2"
+            echo "SLEEP $asleep_wait"
             echo "EXPORTSTATE $(st slept)"
             ;;
         esac

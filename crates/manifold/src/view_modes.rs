@@ -258,7 +258,11 @@ impl App {
             return; // no-op swap, or one swap at a time for this tab
         }
         node.swap_target = Some(target);
-        node.tab.send(&HostToEngine::GetState);
+        // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).
+        self.pull_cookies(tab_id);
+        if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
+            node.tab.send(&HostToEngine::GetState);
+        }
     }
 
     pub(crate) fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {

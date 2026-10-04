@@ -34,7 +34,7 @@ pub(crate) const MAX_CLOSED: usize = 20;
 /// PDFs, JSON files and leaves -- is.
 pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
     match kind {
-        store::model::Kind::Download => false,
+        store::model::Kind::Download | store::model::Kind::Jar => false,
         store::model::Kind::Note => match fields.get(&field::TEXT) {
             Some(store::model::FieldValue::Str(text)) => !text.trim().is_empty(),
             _ => false,
@@ -44,9 +44,39 @@ pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::F
         | store::model::Kind::Image
         | store::model::Kind::Pdf
         | store::model::Kind::Json
-        | store::model::Kind::JsonLeaf
-        | store::model::Kind::Unknown(_) => true,
+        | store::model::Kind::JsonLeaf => true,
+        // A kind this build can't show (and `node_json` can't name) isn't
+        // reopenable.
+        store::model::Kind::Unknown(_) => false,
     }
+}
+
+/// Every node under `root` at any depth, in `order`, each group visited
+/// once: a group cycle (never built, but the loop must end) can't hang it.
+fn members_under(
+    root: store::model::NodeId,
+    order: &[store::model::NodeId],
+    group_of: impl Fn(&store::model::NodeId) -> Option<store::model::NodeId>,
+    is_group: impl Fn(&store::model::NodeId) -> bool,
+) -> Vec<store::model::NodeId> {
+    let mut members: HashMap<store::model::NodeId, Vec<store::model::NodeId>> = HashMap::new();
+    for id in order {
+        if let Some(group) = group_of(id) {
+            members.entry(group).or_default().push(*id);
+        }
+    }
+    let (mut out, mut seen, mut levels) = (Vec::new(), HashSet::from([root]), vec![root]);
+    while let Some(level) = levels.pop() {
+        for id in members.get(&level).into_iter().flatten() {
+            if is_group(id) && seen.insert(*id) {
+                levels.push(*id);
+            }
+            if *id != root {
+                out.push(*id);
+            }
+        }
+    }
+    out
 }
 
 /// `id`'s live tab zoom, when it differs from the default -- what
@@ -96,22 +126,19 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     };
     record(id);
     // Only a group has members; for anything else this finds none.
-    let mut levels = vec![root_id];
-    while let Some(level) = levels.pop() {
-        for member_id in &app.node_order {
-            let Ok(member_id) = member_id.parse::<store::model::NodeId>() else { continue };
-            let Some(member) = shared.get(&member_id) else { continue };
-            if member.group != Some(level) {
-                continue;
-            }
-            if member.kind == store::model::Kind::Group {
-                levels.push(member_id);
-            }
-            if worth_reopening(member.kind, &member.fields) {
-                let label = member_id.to_string();
-                nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
-                record(&label);
-            }
+    let order: Vec<store::model::NodeId> = app.node_order.iter().filter_map(|s| s.parse().ok()).collect();
+    let members = members_under(
+        root_id,
+        &order,
+        |id| shared.get(id).and_then(|n| n.group),
+        |id| shared.get(id).is_some_and(|n| n.kind == store::model::Kind::Group),
+    );
+    for member_id in members {
+        let Some(member) = shared.get(&member_id) else { continue };
+        if worth_reopening(member.kind, &member.fields) {
+            let label = member_id.to_string();
+            nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
+            record(&label);
         }
     }
     let mut local = serde_json::Map::new();
@@ -166,7 +193,8 @@ impl App {
     /// skipped; a PDF reopens as its error card. Ends with `save_session`.
     pub(crate) fn reopen_closed(&mut self, entry: ClosedEntry) {
         self.leave_json_level();
-        let imported = match store::json::import(&entry.doc, || self.alloc_node_id().parse().expect("a store id")) {
+        let next_id = || self.alloc_node_id().parse().expect("a store id");
+        let imported = match store::json::import(&entry.doc, next_id, store::json::Trust::Own) {
             Ok(imported) => imported,
             Err(err) => {
                 self.queue_toast(format!("Couldn't reopen: {err}"));
@@ -227,12 +255,12 @@ mod tests {
         let mut app = app_on(&path, 1);
         let put_in = |app: &mut App, id: &str, group: &str| app.nodes.get_mut(id).unwrap().group = Some(group.into());
 
-        let outer = add(&mut app, NodePayload::Group(GroupPayload { name: "Outer".into(), from_json: false }));
+        let outer = add(&mut app, NodePayload::Group(GroupPayload::named("Outer")));
         let note0 = add(&mut app, NodePayload::Note(NotePayload { text: "kept".into(), editing: false, url: None }));
         put_in(&mut app, &note0, &outer);
         let note1 = add(&mut app, NodePayload::Note(NotePayload { text: " ".into(), editing: false, url: None }));
         put_in(&mut app, &note1, &outer);
-        let inner = add(&mut app, NodePayload::Group(GroupPayload { name: "Inner".into(), from_json: false }));
+        let inner = add(&mut app, NodePayload::Group(GroupPayload::named("Inner")));
         put_in(&mut app, &inner, &outer);
         let img0 = add(
             &mut app,
@@ -243,7 +271,7 @@ mod tests {
             &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
-                value: 1.into(),
+                value: std::sync::Arc::new(1.into()),
                 key: Some("k".into()),
                 error: None,
                 url: None,
@@ -280,7 +308,7 @@ mod tests {
             &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
-                value: 1.into(),
+                value: std::sync::Arc::new(1.into()),
                 key: Some("k".into()),
                 error: None,
                 url: None,
@@ -290,5 +318,26 @@ mod tests {
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
         assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
         assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_kind_is_not_worth_reopening() {
+        assert!(!worth_reopening(store::model::Kind::Unknown(99), &Default::default()));
+    }
+
+    #[test]
+    fn a_group_cycle_ends_the_walk() {
+        use store::model::{ActorId, NodeId};
+        let id = |n| NodeId { actor: ActorId(1), counter: n };
+        let (a, b, c) = (id(1), id(2), id(3));
+        // a contains b, b contains a (a cycle), and c is in b.
+        let group_of = |n: &NodeId| match n.counter {
+            1 => Some(b),
+            2 => Some(a),
+            3 => Some(b),
+            _ => None,
+        };
+        let out = members_under(a, &[a, b, c], group_of, |n| n.counter < 3);
+        assert_eq!(out, [b, c], "b and c, once each");
     }
 }

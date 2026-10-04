@@ -19,6 +19,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ipc_protocol::EngineToHost;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
 };
@@ -27,23 +28,11 @@ use webview2_com::{
 };
 use windows::core::PWSTR;
 
-/// One thing that happened to a download since the last poll -- mirrors
-/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
-/// type here (rather than depending on `ipc_protocol` from this leaf
-/// module) so `main.rs` does the actual translation, same separation the
-/// rest of this crate's `pending_*` types already keep.
-pub enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
-    Progress { path: String, bytes_received: u64 },
-    Completed { path: String },
-    Failed { path: String },
-}
-
 /// A queue, not a single slot -- two downloads progressing within the same
 /// tick would otherwise silently clobber each other (each gets its own
 /// `BytesReceivedChangedEventHandler`/`StateChangedEventHandler` closures
 /// below, all writing into whatever this type is).
-pub type PendingDownload = Rc<RefCell<Vec<DownloadEvent>>>;
+pub type PendingDownload = Rc<RefCell<Vec<EngineToHost>>>;
 
 /// Best-effort like this project's other version-gated WebView2 APIs -- an
 /// `ICoreWebView2_4`-less Runtime just means downloads on this tab proceed
@@ -77,7 +66,11 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
             let mut uri_raw = PWSTR::null();
             let url =
                 unsafe { operation.Uri(&mut uri_raw) }.is_ok().then(|| take_pwstr(uri_raw)).filter(|u| !u.is_empty());
-            pending_for_handler.borrow_mut().push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
+            pending_for_handler.borrow_mut().push(EngineToHost::DownloadStarted {
+                path: path.clone(),
+                total_bytes,
+                url,
+            });
 
             let pending_for_bytes = pending_for_handler.clone();
             let path_for_bytes = path.clone();
@@ -86,7 +79,7 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                 if let Some(sender) = &sender {
                     let mut bytes_received: i64 = 0;
                     if unsafe { sender.BytesReceived(&mut bytes_received) }.is_ok() && bytes_received >= 0 {
-                        pending_for_bytes.borrow_mut().push(DownloadEvent::Progress {
+                        pending_for_bytes.borrow_mut().push(EngineToHost::DownloadProgress {
                             path: path_for_bytes.clone(),
                             bytes_received: bytes_received as u64,
                         });
@@ -105,9 +98,9 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                     let mut state = Default::default();
                     if unsafe { sender.State(&mut state) }.is_ok() {
                         if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
-                            pending_for_state.borrow_mut().push(DownloadEvent::Completed { path: path.clone() });
+                            pending_for_state.borrow_mut().push(EngineToHost::DownloadCompleted { path: path.clone() });
                         } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
-                            pending_for_state.borrow_mut().push(DownloadEvent::Failed { path: path.clone() });
+                            pending_for_state.borrow_mut().push(EngineToHost::DownloadFailed { path: path.clone() });
                         }
                     }
                 }

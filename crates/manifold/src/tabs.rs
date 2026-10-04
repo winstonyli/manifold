@@ -4,6 +4,81 @@ use super::*;
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
+/// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
+pub(crate) enum Held {
+    PageState(PageState),
+    Snapshot(EngineKind, String),
+}
+
+/// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
+const COOKIE_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long quitting waits for the tabs' last `Cookies` replies (`App::final_cookie_pull`).
+const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
+const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A tab whose last `MAX_SILENT_PULLS` pulls all went unanswered is given up on: its host cannot answer (the WebView2
+/// shared-profile fallback, a CDP error), so it is no longer asked and nothing waits on it.
+const MAX_SILENT_PULLS: u8 = 3;
+
+/// Records a new `GetCookies` to `id` and returns whether to send it: not while one is pending, and not once the host
+/// has stayed silent `MAX_SILENT_PULLS` times in a row (`silent` counts the unanswered ones; a reply resets it).
+pub(crate) fn start_pull(
+    pulls: &mut HashMap<String, std::time::Instant>,
+    silent: &mut HashMap<String, u8>,
+    id: &str,
+    now: std::time::Instant,
+) -> bool {
+    if silent.get(id).is_some_and(|n| *n >= MAX_SILENT_PULLS) || pull_pending(pulls, id, now) {
+        return false;
+    }
+    if pulls.contains_key(id) {
+        // The previous pull timed out unanswered.
+        let n = silent.entry(id.to_string()).or_default();
+        *n += 1;
+        if *n >= MAX_SILENT_PULLS {
+            pulls.remove(id);
+            return false;
+        }
+    }
+    pulls.insert(id.to_string(), now);
+    true
+}
+
+/// Whether `id` has a `GetCookies` sent less than `JAR_PULL_TIMEOUT` ago and not yet answered.
+pub(crate) fn pull_pending(pulls: &HashMap<String, std::time::Instant>, id: &str, now: std::time::Instant) -> bool {
+    pulls.get(id).is_some_and(|sent| now.saturating_duration_since(*sent) < JAR_PULL_TIMEOUT)
+}
+
+/// A tab whose engine crashes this many times within `CRASH_WINDOW` is left
+/// as a failed card instead of respawning again.
+pub(crate) const CRASH_LIMIT: usize = 3;
+pub(crate) const CRASH_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Records a crash at `now` in `times` (one tab's) and says whether that tab
+/// has now crashed `CRASH_LIMIT` times within `CRASH_WINDOW`.
+pub(crate) fn crashes_too_often(times: &mut Vec<std::time::Instant>, now: std::time::Instant) -> bool {
+    times.retain(|&t| now.duration_since(t) < CRASH_WINDOW);
+    times.push(now);
+    times.len() >= CRASH_LIMIT
+}
+
+/// `tab` as an unloaded card in `state`, keeping what a reopen needs.
+fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
+    UnloadedTabPayload {
+        url: tab.url.clone(),
+        title: tab.title.clone(),
+        kind: tab.tab.kind,
+        pinned: tab.pinned,
+        muted: tab.muted,
+        zoom_factor: tab.zoom_factor,
+        state,
+        jar: tab.jar,
+    }
+}
+
 impl App {
     /// Spawns the very first tab at startup: no parent, becomes focused,
     /// starts in Tab view (preserves "opens straight into a usable
@@ -27,6 +102,9 @@ impl App {
         self.tab_spawns_in_flight += 1;
         self.spawning.insert(spawn.id.clone(), session_sync::spawn_shared(&spawn));
         let generation = self.session_generation;
+        // Resolved and loaded before the test early return, so tests see the load happen.
+        let (jar, _) = self.resolved_jar(&spawn.carry.jar);
+        self.ensure_jar_loaded(jar);
         #[cfg(test)]
         if self.event_proxy.is_none() {
             self.test_spawns.push((spawn, generation));
@@ -34,10 +112,193 @@ impl App {
         }
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let custom_cef = self.custom_cef_dir();
+        let snapshots = self.jar_snapshots.clone();
         std::thread::spawn(move || {
-            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref());
-            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result })));
+            // Read when the host has connected (the host starts seconds after the spawn): remember its keys, and the
+            // jar's clear count then, so a clear before it lands is caught (`note_spawned_jar`).
+            let seeded = std::cell::RefCell::new((crate::jar::TabCookies::default(), None));
+            let seed = || {
+                let (cookies, clears) = match snapshots.lock() {
+                    Ok(s) => {
+                        let (cookies, clears) = s.seed(jar);
+                        (cookies, Some(clears))
+                    }
+                    Err(_) => (Vec::new(), None),
+                };
+                *seeded.borrow_mut() = (crate::jar::TabCookies::seeded(&cookies), clears);
+                serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
+            };
+            let result = process_manager::spawn_tab(spawn.kind, &spawn.id, &spawn.url, custom_cef.as_deref(), &seed);
+            let (seeded, seed_clears) = seeded.into_inner();
+            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
+                spawn,
+                generation,
+                result,
+                seeded,
+                jar,
+                seed_clears,
+            })));
         });
+    }
+
+    /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and saves that jar's file when it
+    /// changed (spec: "Its pulls merge into that jar and save only that jar's file"). Merged against that tab's own
+    /// `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse, a tab with no `jar_tabs` entry
+    /// (closed or replaced since it was asked; deviation 5), a named jar deleted while it ran, or a host whose jar was
+    /// cleared under it (`jar_reseed`): it still holds the old cookies, and they must not refill the cleared jar.
+    pub(crate) fn apply_pulled_cookies(&mut self, tab_id: &str, json: &str) -> bool {
+        if self.jar_reseed.contains(tab_id) {
+            return false;
+        }
+        let Some(pulled) = crate::jar::from_json(json) else { return false };
+        let Some((key, _)) = self.jar_tabs.get(tab_id) else { return false };
+        let key = *key;
+        if matches!(key, crate::jar::JarKey::Named(id) if !self.jar_defs.contains_key(&id)) {
+            return false;
+        }
+        self.ensure_jar_loaded(key);
+        let (Some(jar), Some((_, tab))) = (self.jars.get_mut(&key), self.jar_tabs.get_mut(tab_id)) else {
+            return false;
+        };
+        let changed = jar.merge(pulled, tab);
+        if changed {
+            let jar = jar.clone();
+            if let Ok(mut snapshots) = self.jar_snapshots.lock() {
+                snapshots.insert(key, jar);
+            }
+            self.save_jar(key);
+        }
+        changed
+    }
+
+    /// Asks one WebView2 or CEF tab for its cookies; the answer arrives as `EngineToHost::Cookies`. Best effort: a
+    /// host may never answer, so nothing waits on it, and a pull still pending (under `JAR_PULL_TIMEOUT`) is not stacked.
+    pub(crate) fn pull_cookies(&mut self, id: &str) {
+        let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return };
+        if matches!(node.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
+            && start_pull(&mut self.jar_pulls, &mut self.jar_silent, id, std::time::Instant::now())
+        {
+            node.tab.send(&HostToEngine::GetCookies);
+        }
+    }
+
+    /// Parks `held` until tab `id`'s pending `Cookies` reply (or `COOKIE_HOLD`), so the host is not dropped before its
+    /// last cookies arrive. Hands it back when no pull is pending: act on it now.
+    pub(crate) fn hold_for_cookies(&mut self, id: &str, held: Held) -> Option<Held> {
+        let now = std::time::Instant::now();
+        if !pull_pending(&self.jar_pulls, id, now) {
+            return Some(held);
+        }
+        // The latest request wins: a second hold (a sleep then a swap) cancels the first, which may be stale.
+        if let Some((_, old)) = self.cookie_holds.remove(id) {
+            self.cancel_held(id, old);
+        }
+        self.cookie_holds.insert(id.to_string(), (now + COOKIE_HOLD, held));
+        None
+    }
+
+    /// Drops a held answer without acting on it, leaving no half-started request behind: a cancelled sleep's pending
+    /// entry goes too (else its timeout would sleep the tab anyway). A swap's `swap_target` was already taken when its
+    /// snapshot arrived, so there is nothing to undo.
+    fn cancel_held(&mut self, id: &str, held: Held) {
+        if let Held::PageState(_) = held {
+            self.pending_sleeps.remove(id);
+        }
+    }
+
+    /// Forgets everything cookie-related about tab `id`'s host (it closed, or a new host replaces it): its `jar_tabs`
+    /// entry, pull bookkeeping, its reseed mark and any held answer, which is cancelled, not run against whatever host
+    /// comes next.
+    pub(crate) fn clear_cookie_state(&mut self, id: &str) {
+        self.jar_tabs.remove(id);
+        self.jar_reseed.remove(id);
+        self.jar_pulls.remove(id);
+        self.jar_silent.remove(id);
+        if let Some((_, held)) = self.cookie_holds.remove(id) {
+            self.cancel_held(id, held);
+        }
+    }
+
+    /// A new host for tab `id` landed (`handle_tab_spawn_result`): forgets the old host's cookie state, then records
+    /// the jar this one was spawned with and its seed. `seed_clears` is that jar's clear count when the seed was read
+    /// (`None`: never seeded). A Clear Cookies since then, while the spawn or wake was in flight, found no `jar_tabs`
+    /// entry to mark; a host seeded with cookies it cleared is marked now, like the hosts running at the clear, so it
+    /// switches and its pulls cannot refill the jar (final review I3). Marked after the wipe, which would drop it.
+    pub(crate) fn note_spawned_jar(
+        &mut self,
+        id: &str,
+        jar: crate::jar::JarKey,
+        seeded: crate::jar::TabCookies,
+        seed_clears: Option<u64>,
+    ) {
+        self.clear_cookie_state(id);
+        let clears = self.jar_snapshots.lock().ok().map(|s| s.clears(jar));
+        let stale = seed_clears.is_some() && clears.is_some() && seed_clears != clears;
+        if stale && !seeded.baseline.is_empty() {
+            self.jar_reseed.insert(id.to_string());
+        }
+        self.jar_tabs.insert(id.to_string(), (jar, seeded));
+    }
+
+    /// Acts on what `hold_for_cookies` parked for `id`, if anything.
+    pub(crate) fn release_cookie_hold(&mut self, id: &str) {
+        if let Some((_, held)) = self.cookie_holds.remove(id) {
+            self.run_held(id, held);
+        }
+    }
+
+    /// Acts on every hold whose deadline has passed (a host that never answered its pull).
+    pub(crate) fn release_expired_cookie_holds(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<String> =
+            self.cookie_holds.iter().filter(|(_, (t, _))| *t <= now).map(|(id, _)| id.clone()).collect();
+        for id in due {
+            self.release_cookie_hold(&id);
+        }
+    }
+
+    pub(crate) fn run_held(&mut self, id: &str, held: Held) {
+        match held {
+            Held::PageState(state) => self.finish_sleep(id, state),
+            Held::Snapshot(target, url) => self.finish_swap(id, target, url),
+        }
+    }
+
+    /// Asks every live WebView2 and CEF tab for its cookies.
+    pub(crate) fn jar_pull_all(&mut self) {
+        self.jar_pulls.retain(|id, _| self.nodes.contains_key(id));
+        let ids: Vec<String> =
+            self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        for id in ids {
+            self.pull_cookies(&id);
+        }
+    }
+
+    /// One last pull as the app quits, so a login made since the last timed pull is kept. Waits at most
+    /// `QUIT_PULL_WAIT` for the replies. Any other engine message read meanwhile is dropped: nothing would act on it
+    /// after quit anyway.
+    pub(crate) fn final_cookie_pull(&mut self) {
+        self.jar_pull_all();
+        let deadline = std::time::Instant::now() + QUIT_PULL_WAIT;
+        while !self.jar_pulls.is_empty() && std::time::Instant::now() < deadline {
+            for id in self.jar_pulls.keys().cloned().collect::<Vec<_>>() {
+                let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else {
+                    self.jar_pulls.remove(&id);
+                    continue;
+                };
+                let reply = std::iter::from_fn(|| tab.tab.events_rx.try_recv().ok())
+                    .filter_map(|msg| match msg {
+                        EngineToHost::Cookies(json) => Some(json),
+                        _ => None,
+                    })
+                    .last();
+                if let Some(json) = reply {
+                    self.jar_pulls.remove(&id);
+                    self.apply_pulled_cookies(&id, &json);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// Applies a finished `spawn_tab_async` call — inserts the new tab node
@@ -51,8 +312,11 @@ impl App {
             spawn: TabSpawn { id, url, kind, parent, group, pos, vel, purpose, carry, fallback_kind },
             generation,
             result,
+            seeded,
+            jar,
+            seed_clears,
         } = outcome;
-        let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
+        let TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar } = carry;
         self.spawning.remove(&id);
         let remote = self.remote_in_flight.remove(&id);
         self.tab_spawns_in_flight = self.tab_spawns_in_flight.saturating_sub(1);
@@ -77,10 +341,10 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
+        let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
-                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted)
+                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted, tab.jar)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -93,7 +357,7 @@ impl App {
                 }
             }
         } else {
-            (parent, group, pos, color, pinned, muted)
+            (parent, group, pos, color, pinned, muted, carry_jar)
         };
         let group = group.filter(|g| self.nodes.contains_key(g));
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
@@ -103,6 +367,7 @@ impl App {
         }
         match result {
             Ok(mut tab) => {
+                self.note_spawned_jar(&id, jar, seeded, seed_clears);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,
@@ -146,6 +411,7 @@ impl App {
                             pinned,
                             zoom_factor,
                             swap_target: None,
+                            jar: carry_jar,
                         }),
                     },
                 );
@@ -227,7 +493,7 @@ impl App {
                         engine_label(kind),
                         engine_label(fallback)
                     ));
-                    let carry = TabCarry { pinned, color, zoom_factor, title, muted };
+                    let carry = TabCarry { pinned, color, zoom_factor, title, muted, jar: carry_jar };
                     let spawn = TabSpawn {
                         id,
                         url,
@@ -252,12 +518,17 @@ impl App {
                 if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake) {
                     // "Couldn't start Blink (CEF): Blink (CEF) is not installed" says it twice.
                     let toast = match err {
-                        process_manager::SpawnError::EngineMissing(_) => format!("Couldn't open {url}: {err}"),
-                        _ => format!("Couldn't start {} for {url}: {err}", engine_label(kind)),
+                        process_manager::SpawnError::EngineMissing(_)
+                        | process_manager::SpawnError::EngineOutdated(_)
+                        | process_manager::SpawnError::EngineUnavailable(..) => {
+                            format!("Couldn't open {}: {err}", Self::toast_url(&url))
+                        }
+                        _ => format!("Couldn't start {} for {}: {err}", engine_label(kind), Self::toast_url(&url)),
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state };
+                    let failed =
+                        UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
                     if !self.node_order.iter().any(|t| t == &id) {
@@ -286,27 +557,39 @@ impl App {
         }
     }
 
-    /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
-    /// if `parent` is `None`), spawned invisible — it stays in Graph view
-    /// rather than auto-focusing (see plan's M5 scope decision 5), and
-    /// background tabs render nothing until focused anyway. Also used for
-    /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
-    /// that request's URL instead of the configured home page.
     /// Tab context menu's "Duplicate": a new tab at `id`'s current url and
     /// engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip.
+    /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
             n.payload.saved_tab().map(|(url, kind)| (n.parent.clone(), n.group.clone(), url.to_string(), kind))
         }) else {
             return;
         };
-        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New);
+        let jar = self.tab_jar(id);
+        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar);
     }
 
+    /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
+    /// if `parent` is `None`), spawned invisible — it stays in Graph view
+    /// rather than auto-focusing (see plan's M5 scope decision 5), and
+    /// background tabs render nothing until focused anyway. Also used for
+    /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
+    /// that request's URL instead of the configured home page.
     pub(crate) fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
-        self.spawn_new_tab_with_kind(parent, group, url, self.settings.default_starting_engine, SpawnPurpose::New);
+        let kind = self.settings.default_starting_engine;
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None);
+    }
+
+    /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar
+    /// (deviation 3).
+    pub(crate) fn spawn_tab_from(&mut self, opener: &str, url: &str) -> String {
+        let parent = Some(opener.to_string());
+        let group = self.group_of(&parent);
+        let (kind, jar) = (self.settings.default_starting_engine, self.tab_jar(opener));
+        self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar)
     }
 
     /// Shared by `spawn_new_tab` (always `default_starting_engine`),
@@ -318,7 +601,7 @@ impl App {
     /// match). Returns the new tab's id, allocated synchronously even
     /// though the real engine-host process spawn (and thus the node's own
     /// insertion into `self.nodes`) completes asynchronously -- see
-    /// `spawn_tab_async`'s own doc comment.
+    /// `spawn_tab_async`'s own doc comment. `jar` is the opener's choice to copy; `None` inherits from `group`.
     pub(crate) fn spawn_new_tab_with_kind(
         &mut self,
         parent: Option<String>,
@@ -326,6 +609,7 @@ impl App {
         url: &str,
         kind: EngineKind,
         purpose: SpawnPurpose,
+        jar: Option<crate::jar::JarChoice>,
     ) -> String {
         let id = self.alloc_node_id();
         // `parent`'s own position only if it actually shares `group` --
@@ -346,7 +630,10 @@ impl App {
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
-        self.spawn_tab_async(TabSpawn { parent, group, ..spawn });
+        let jar = jar.unwrap_or_else(|| self.new_tab_jar(group.as_deref()));
+        let mut spawn = TabSpawn { parent, group, ..spawn };
+        spawn.carry.jar = jar;
+        self.spawn_tab_async(spawn);
         id
     }
 
@@ -378,6 +665,7 @@ impl App {
     /// paired with the specific tab it was opened against. An unloaded tab
     /// (`UnloadedTabPayload`) is woken.
     pub(crate) fn focus_tab(&mut self, id: &str) {
+        self.end_note_edits();
         if self.focused.as_deref() != Some(id) {
             self.hide_focused_tab();
         }
@@ -408,6 +696,7 @@ impl App {
         match self.nodes.get(id).map(|n| item_node_kind(&n.payload)) {
             Some(ItemNodeKind::Tab | ItemNodeKind::Unloaded) => self.focus_tab(id),
             Some(ItemNodeKind::Image) => {
+                self.end_note_edits();
                 self.hide_focused_tab();
                 self.viewed_image = Some(id.to_string());
                 self.image_view = ImageViewState::default();
@@ -436,7 +725,8 @@ impl App {
             return;
         };
         let group = self.group_of(&Some(focused_id.clone()));
-        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split);
+        let jar = self.tab_jar(&focused_id);
+        self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar);
     }
 
     /// Closes split view -- unpairs the secondary pane and stops its
@@ -510,15 +800,7 @@ impl App {
         }
         let Some(node) = self.nodes.get_mut(id) else { return false };
         let NodePayload::Tab(tab) = &node.payload else { return false };
-        let asleep = UnloadedTabPayload {
-            url: tab.url.clone(),
-            title: tab.title.clone(),
-            kind: tab.tab.kind,
-            pinned: tab.pinned,
-            muted: tab.muted,
-            zoom_factor: tab.zoom_factor,
-            state: UnloadedState::Sleeping,
-        };
+        let asleep = unloaded_from(tab, UnloadedState::Sleeping);
         // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
         // the engine host down (see `teardown_running_session`).
         node.payload = NodePayload::Unloaded(asleep);
@@ -537,6 +819,33 @@ impl App {
         true
     }
 
+    /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
+    /// another protocol version, becomes a failed card: the reason is its
+    /// tooltip, and opening it tries again. Respawning would only loop.
+    pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str) {
+        let Some(node) = self.nodes.get_mut(id) else { return };
+        let NodePayload::Tab(tab) = &node.payload else { return };
+        let url = tab.url.clone();
+        // Replacing the payload drops the `EngineTab`, which reaps the dead host.
+        node.payload = NodePayload::Unloaded(unloaded_from(tab, UnloadedState::Failed(reason.to_string())));
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_thumbnail(id);
+            gpu.free_tab_texture(id);
+        }
+        // Tab view, focused on this card, falls back to Graph by itself
+        // (`build_tab_view_ui`) unless a stale respawn spinner names it; a
+        // split pane showing it has nothing left to show.
+        if self.pending_respawn_focus.as_deref() == Some(id) {
+            self.pending_respawn_focus = None;
+        }
+        if self.split_tab.as_deref() == Some(id) {
+            self.close_split();
+        }
+        self.tab_crashes.remove(id);
+        self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
+        self.save_session();
+    }
+
     /// First phase of every sleep: validates as `sleep_now` does, asks the
     /// engine for its page state, and notes the request. `finish_sleep`
     /// completes it when `EngineToHost::PageState` arrives;
@@ -549,6 +858,10 @@ impl App {
         if open || self.split_tab.as_deref() == Some(id) || self.pending_sleeps.contains_key(id) {
             return false;
         }
+        if self.nodes.get(id).and_then(|n| n.as_tab()).is_none() {
+            return false;
+        }
+        self.pull_cookies(id);
         let Some(tab) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) else { return false };
         tab.tab.send(&HostToEngine::QueryPageState);
         self.pending_sleeps.insert(id.to_string(), PendingSleep { why, sent: std::time::Instant::now() });
@@ -570,8 +883,9 @@ impl App {
 
     /// Settles requests the engine never answered (hung page, no script
     /// context). A manual one sleeps the tab anyway, without a scroll to
-    /// restore, so Sleep still works on a stuck tab; an idle one is dropped
-    /// and the tab's clock restarts so it is not asked again every sweep.
+    /// restore, so Sleep still works on a stuck tab; an idle or jar-switch one
+    /// is dropped and the tab's clock restarts so it is not asked again every
+    /// sweep (a waiting jar switch is asked again by the next sweep).
     fn expire_pending_sleeps(&mut self, now: std::time::Instant) {
         let dead: Vec<(String, SleepWhy)> = self
             .pending_sleeps
@@ -585,7 +899,7 @@ impl App {
                 SleepWhy::Manual => {
                     self.sleep_now(&id, None);
                 }
-                SleepWhy::Idle => self.idle_clock.restart(&id, now),
+                SleepWhy::Idle | SleepWhy::JarSwitch => self.idle_clock.restart(&id, now),
             }
         }
     }
@@ -594,10 +908,23 @@ impl App {
     /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
     /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
     /// seconds.
+    /// Each sweep also switches the tabs whose jar change was waiting and that now qualify (`sweep_jar_switches`).
     pub(crate) fn sweep_idle_tabs(&mut self, limit: Option<std::time::Duration>) {
         let now = std::time::Instant::now();
         self.expire_pending_sleeps(now);
-        let on_screen = self.showing_tab_view().then(|| self.focused.clone()).flatten();
+        // Taken out so the views can borrow the rest of `self`.
+        let mut clock = std::mem::take(&mut self.idle_clock);
+        let idle = clock.sweep(now, limit, self.tab_idle_views());
+        self.idle_clock = clock;
+        for id in idle {
+            self.request_sleep(&id, SleepWhy::Idle);
+        }
+        self.sweep_jar_switches();
+    }
+
+    /// What the idle and jar-switch sweeps need to know about each live tab.
+    fn tab_idle_views(&self) -> Vec<crate::idle_sleep::TabIdleView<'_>> {
+        let on_screen = self.showing_tab_view().then_some(self.focused.as_deref()).flatten();
         // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
         let downloading: std::collections::HashSet<&str> = self
             .nodes
@@ -605,21 +932,82 @@ impl App {
             .filter(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed))
             .filter_map(|n| n.parent.as_deref())
             .collect();
-        let views = self.nodes.iter().filter_map(|(id, n)| {
-            let t = n.as_tab()?;
-            Some(crate::idle_sleep::TabIdleView {
-                id,
-                on_screen: on_screen.as_deref() == Some(id) || self.split_tab.as_deref() == Some(id),
-                audio_playing: t.audio_playing,
-                pinned: t.pinned,
-                loading: t.loading,
-                downloading: downloading.contains(id.as_str()),
+        self.nodes
+            .iter()
+            .filter_map(|(id, n)| {
+                let t = n.as_tab()?;
+                Some(crate::idle_sleep::TabIdleView {
+                    id,
+                    on_screen: on_screen == Some(id.as_str()) || self.split_tab.as_deref() == Some(id),
+                    audio_playing: t.audio_playing,
+                    pinned: t.pinned,
+                    loading: t.loading,
+                    downloading: downloading.contains(id.as_str()),
+                })
             })
-        });
-        let idle = self.idle_clock.sweep(now, limit, views);
-        for id in idle {
-            self.request_sleep(&id, SleepWhy::Idle);
+            .collect()
+    }
+
+    /// A live WebView2 or CEF tab running on a jar other than the one it now resolves to, or on a jar the user
+    /// cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
+    pub(crate) fn will_switch(&self, id: &str) -> bool {
+        let Some(tab) = self.nodes.get(id).and_then(|n| n.as_tab()) else { return false };
+        let Some((had, _)) = self.jar_tabs.get(id) else { return false };
+        matches!(tab.tab.kind, EngineKind::Webview2 | EngineKind::Cef)
+            && (*had != self.resolved_jar(&tab.jar).0 || self.jar_reseed.contains(id))
+    }
+
+    /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
+    /// new jar (spec table). Runs after a local jar change, a remote batch (`apply_remote`) and each idle sweep, so a
+    /// waiting tab switches once it qualifies (deviation 11). A dirty form keeps it awake (`sleep_state::verdict`).
+    pub(crate) fn sweep_jar_switches(&mut self) {
+        let todo: Vec<String> = self
+            .tab_idle_views()
+            .iter()
+            .filter(|v| self.will_switch(v.id))
+            .filter(|v| {
+                let Some(tab) = self.nodes.get(v.id).and_then(|n| n.as_tab()) else { return false };
+                let had = self.jar_tabs.get(v.id).map(|(k, _)| *k);
+                let focused = self.focused.as_deref() == Some(v.id);
+                let reseed = self.jar_reseed.contains(v.id);
+                sleep_state::jar_switch(had, self.resolved_jar(&tab.jar).0, reseed, v.busy(), focused)
+                    == sleep_state::JarSwitch::SleepNow
+            })
+            .map(|v| v.id.to_string())
+            .collect();
+        for id in todo {
+            self.request_sleep(&id, SleepWhy::JarSwitch);
         }
+    }
+
+    /// "Switch jar now": the old jar gets the tab's final cookies, then the host is replaced in place by one seeded
+    /// from the new jar (the engine-swap path, same engine). Does nothing while another host change is on its way
+    /// (`host_change_pending`): that one replaces the host anyway.
+    pub(crate) fn switch_jar_now(&mut self, id: &str) {
+        let Some((kind, url)) = self.nodes.get(id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone())) else {
+            return;
+        };
+        if !self.can_switch_jar_now(id) {
+            return;
+        }
+        self.pull_cookies(id);
+        if let Some(held) = self.hold_for_cookies(id, Held::Snapshot(kind, url)) {
+            self.run_held(id, held);
+        }
+    }
+
+    /// Whether "Switch Jar Now" would do anything for tab `id`: it waits to switch and nothing else is about to
+    /// replace its host. The menu hides the item otherwise.
+    pub(crate) fn can_switch_jar_now(&self, id: &str) -> bool {
+        self.will_switch(id) && !self.host_change_pending(id)
+    }
+
+    /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id` (Task 6 review M3).
+    /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
+    pub(crate) fn host_change_pending(&self, id: &str) -> bool {
+        self.pending_sleeps.contains_key(id)
+            || self.cookie_holds.contains_key(id)
+            || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
     /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.
@@ -648,8 +1036,14 @@ impl App {
         self.node_order.retain(|t| t != id);
         self.skip_convert.remove(id);
         self.pending_sleeps.remove(id);
+        self.clear_cookie_state(id);
+        if self.naming_jar.as_ref().is_some_and(|(t, _)| t == id) {
+            self.naming_jar = None;
+        }
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
+        self.popup_gate.forget(id);
+        self.tab_crashes.remove(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
@@ -715,7 +1109,8 @@ impl App {
         // Cleared at the start of this spawn attempt too -- see
         // `tab_spawn_error`'s own doc comment.
         self.tab_spawn_error = None;
-        let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        let mut spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
+        spawn.carry.jar = self.new_tab_jar(group.as_deref());
         self.spawn_tab_async(TabSpawn { group, ..spawn });
         id
     }
@@ -755,6 +1150,30 @@ impl App {
 }
 
 #[cfg(test)]
+mod crash_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_third_crash_within_the_window_gives_up() {
+        let t0 = Instant::now();
+        let mut times = Vec::new();
+        assert!(!crashes_too_often(&mut times, t0));
+        assert!(!crashes_too_often(&mut times, t0 + Duration::from_secs(1)));
+        assert!(crashes_too_often(&mut times, t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn crashes_spread_past_the_window_keep_respawning() {
+        let t0 = Instant::now();
+        let mut times = Vec::new();
+        for i in 0..10 {
+            assert!(!crashes_too_often(&mut times, t0 + CRASH_WINDOW * i), "crash {i}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -776,11 +1195,11 @@ mod tests {
     fn unanswered_requests_are_settled_after_the_timeout() {
         let mut app = App::default();
         let t0 = std::time::Instant::now();
-        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle)] {
+        for (id, why) in [("m", SleepWhy::Manual), ("i", SleepWhy::Idle), ("j", SleepWhy::JarSwitch)] {
             app.pending_sleeps.insert(id.into(), PendingSleep { why, sent: t0 });
         }
         app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
-        assert_eq!(app.pending_sleeps.len(), 2);
+        assert_eq!(app.pending_sleeps.len(), 3);
         app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
         assert!(app.pending_sleeps.is_empty());
     }

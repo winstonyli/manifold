@@ -3,6 +3,7 @@ mod card;
 mod cef_pin;
 mod cef_platform;
 mod cli;
+mod click_count;
 mod closed;
 mod content;
 mod crash_report;
@@ -20,21 +21,27 @@ mod history;
 mod idle_sleep;
 mod image_view;
 mod input;
+mod jar;
+mod jar_defs;
 mod json_file;
 mod json_level;
 mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
+mod names;
 mod nav_history;
+mod net;
 mod node;
 mod node_menu;
 mod pdf;
-mod pdf_fetch;
+mod pdf_render;
+mod popup_gate;
 mod popups;
 mod process_manager;
 mod profile;
 mod redirect_fetch;
+mod rgba;
 mod session;
 mod session_sync;
 mod settings;
@@ -55,11 +62,11 @@ use node_menu::*;
 use view_modes::*;
 use zoom_chip::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use favicon_fetch::FaviconFetcher;
-use pdf_fetch::PdfFetcher;
+use pdf_render::PdfRenderer;
 use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
 use suggestions::{resolve_navigation_url, Suggestion, SuggestionFetcher};
 
@@ -112,18 +119,17 @@ const CHROME_HEIGHT_POINTS: f32 = 38.0;
 /// visibly cut off at the old 26.0).
 const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 
-/// One click on a card's color swatch advances to the next palette entry,
-/// wrapping back to `None` (the plain default border) after the last --
-/// `None` -> red -> orange -> ... -> purple -> `None`, matching how the pin
-/// dot's own binary toggle needs no separate popup/menu to operate.
 /// Strips a "Save Session As..." name down to characters safe to use
 /// verbatim as a filename (`sessions/<name>.mnf`) -- alphanumeric, space,
 /// hyphen, underscore only. No path separators or `.` survive, so there's
 /// no path-traversal or extension-confusion risk from typed input, and no
 /// separate validation step is needed before treating the result as a bare
-/// file stem.
+/// file stem. Cleaned first and last by the name rules (`names::clean_name`), so a hidden character
+/// never reaches the file name and the spaces the filter leaves behind collapse.
 fn sanitize_session_name(raw: &str) -> String {
-    raw.trim().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect::<String>()
+    let clean = crate::names::clean_name(raw);
+    let safe: String = clean.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect();
+    crate::names::clean_name(&safe).into_owned()
 }
 
 /// Case-insensitive substring match against any of `haystacks` -- shared
@@ -248,24 +254,44 @@ fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
-/// Where node `id`'s file is on this machine (spec "Where fetched files
+/// How long settings wait after the last change before they are written:
+/// a window drag sends dozens of moves a second.
+const SETTINGS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Where nodes' files are on this machine (spec "Where fetched files
 /// live"): this machine's own fetch in the content dir (`<id>.<ext>`, the
 /// newest if a Refresh changed the extension), which a Refresh replaces
-/// without touching the shared `path`; else `stored`. A missing `stored`
-/// shows as missing, and `session_sync::materialize` refetches it when the
-/// node has a URL. An unfinished `.tmp` save is never picked.
-fn resolve_content_path(dir: Option<&std::path::Path>, id: &str, stored: &str) -> String {
-    let prefix = format!("{id}.");
-    dir.and_then(|dir| std::fs::read_dir(dir).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
+/// without touching the shared `path`; else the stored path. A missing
+/// stored path shows as missing, and `session_sync::materialize` refetches
+/// it when the node has a URL. An unfinished `.tmp` save is never picked.
+/// One directory read answers a whole restore or apply pass.
+#[derive(Debug, Default)]
+pub(crate) struct ContentIndex(HashMap<String, (std::time::SystemTime, std::path::PathBuf)>);
+
+impl ContentIndex {
+    pub(crate) fn scan(dir: Option<&std::path::Path>) -> Self {
+        let mut newest: HashMap<String, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
+        let entries = dir.and_then(|dir| std::fs::read_dir(dir).ok()).into_iter().flatten().flatten();
+        for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with(&prefix) && !name.ends_with(".tmp")
-        })
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-        .map_or_else(|| stored.to_string(), |e| e.path().to_string_lossy().into_owned())
+            let Some((id, _)) = name.split_once('.') else { continue };
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            match newest.get(id) {
+                Some((at, _)) if *at >= modified => {}
+                _ => {
+                    newest.insert(id.to_string(), (modified, e.path()));
+                }
+            }
+        }
+        Self(newest)
+    }
+
+    pub(crate) fn resolve(&self, id: &str, stored: &str) -> String {
+        self.0.get(id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
+    }
 }
 
 /// A one-line shape summary for a JSON node's own small graph card:
@@ -352,7 +378,7 @@ fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
 }
 
-/// `%USERPROFILE%\Pictures\manifold-<unix-seconds>.png` — same
+/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
 /// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
 /// (in each engine-host's own download-handling code) already takes, just
 /// on the manifold side for the toolbar's "Screenshot" button. The
@@ -360,7 +386,7 @@ fn default_graph_scene_rect() -> egui::Rect {
 /// state; a real "Save As" dialog would be the alternative, but this
 /// project doesn't build custom save UI anywhere else either.
 fn screenshot_default_path() -> std::path::PathBuf {
-    let dir = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default().join("Pictures");
+    let dir = profile::pictures_dir().unwrap_or_else(std::env::temp_dir);
     let _ = std::fs::create_dir_all(&dir);
     let timestamp =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -375,25 +401,13 @@ fn screenshot_default_path() -> std::path::PathBuf {
 /// border.
 const GROUP_OVERLOAD_THRESHOLD: usize = 8;
 
-/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
-/// no wider than `max_width` at `font_id`, or returns it unchanged if it
-/// already fits. Needed because graph-view node labels are now painted at
-/// a fixed screen-space font size regardless of zoom (see
-/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
-/// card shrinks well below the label's natural width, and unlike a normal
-/// egui `Label` widget (which can `.truncate()` itself during layout),
-/// text painted directly via `Painter::text` has no such built-in limit.
-/// A binary search over char-boundary indices rather than a linear
-/// shrink-by-one-char loop, since `layout_no_wrap` (one text-shaping pass)
-/// is the expensive part and a title could in principle be long.
-/// `truncate_to_width`'s cache key -- the exact text and font size (as a
-/// bit pattern, since `f32` isn't `Hash`/`Eq`) plus available width
-/// *bucketed* to the nearest `TRUNCATE_WIDTH_BUCKET` pixels, not the
-/// exact width. Every call site in this app builds its `FontId` via
-/// `FontId::proportional`, so font family never needs to be part of the
-/// key. See `truncate_to_width`'s own doc comment for why bucketing (not
-/// the exact width) is the key.
-type TruncateCacheKey = (String, u32, i32);
+/// `truncate_core`'s cache key: a hash of the text (the text itself is in
+/// the value, compared on a hit, so a lookup allocates nothing), the font
+/// size as bits (`f32` isn't `Hash`/`Eq`), the width bucket, and which end
+/// is cut. Every call site builds its `FontId` with `FontId::proportional`,
+/// so the family is not in the key. See `truncate_to_width` for why the
+/// width is bucketed rather than exact.
+type TruncateCacheKey = (u64, u32, i32, bool);
 
 /// Width granularity `truncate_to_width` bucket its cache key to -- see
 /// that function's own doc comment. A truncation result only actually
@@ -415,9 +429,16 @@ const TRUNCATE_WIDTH_BUCKET: f32 = 4.0;
 /// titles cycling through over a long session).
 const TRUNCATE_CACHE_CAP: usize = 2000;
 
-/// Same truncation behavior as before (binary search for the longest
-/// prefix, plus "…", that fits `max_width`), but memoized on `cache` --
-/// each binary-search step needs a real text-shaping call
+/// Shortens `text` to the longest prefix (plus an ellipsis) that lays out
+/// no wider than `max_width` at `font_id`, or returns it unchanged if it
+/// already fits. Needed because graph-view node labels are now painted at
+/// a fixed screen-space font size regardless of zoom (see
+/// `build_graph_ui`'s `overlay_painter`/`project`) — at low zoom a node's
+/// card shrinks well below the label's natural width, and unlike a normal
+/// egui `Label` widget (which can `.truncate()` itself during layout),
+/// text painted directly via `Painter::text` has no such built-in limit.
+///
+/// Memoized on `cache` -- each search step needs a real text-shaping call
 /// (`ctx.fonts_mut(...).layout_no_wrap`), and the overwhelming common
 /// case frame to frame is "this exact label, this exact width, again",
 /// since neither a card's title nor its on-screen width usually change
@@ -426,24 +447,48 @@ const TRUNCATE_CACHE_CAP: usize = 2000;
 /// frame, for every visible labeled card, regardless of graph size.
 ///
 /// **`max_width` is bucketed, not used exactly, for both the cache key
-/// and the search bound below.** Every call site derives it from
+/// and the search bound.** Every call site derives it from
 /// `zoom_scale`, which changes continuously (as a raw float) on every
 /// frame during an active pan/zoom gesture -- keying on the exact width
 /// meant this cache hit approximately never while the user was actually
 /// zooming, the one time avoiding repeated font-shaping calls matters
 /// most. Found live, following up on the general audit above.
 fn truncate_to_width(
-    cache: &mut HashMap<TruncateCacheKey, String>,
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
     ctx: &egui::Context,
     text: &str,
     font_id: &egui::FontId,
     max_width: f32,
 ) -> String {
+    truncate_core(cache, ctx, text, font_id, max_width, false)
+}
+
+/// `text` cut to fit `max_width` with "…" at the cut: at the end, or at the
+/// start when `from_start` (a path keeps its file name). Cuts fall on
+/// grapheme boundaries, so a ZWJ emoji or a combining mark is never split,
+/// and the width measured is the width drawn. A binary search over
+/// grapheme boundaries rather than a shrink-by-one loop, since
+/// `layout_no_wrap` (one text-shaping pass) is the expensive part and a
+/// title could in principle be long. Memoized on `cache`.
+fn truncate_core(
+    cache: &mut HashMap<TruncateCacheKey, (String, String)>,
+    ctx: &egui::Context,
+    text: &str,
+    font_id: &egui::FontId,
+    max_width: f32,
+    from_start: bool,
+) -> String {
+    use std::hash::{Hash, Hasher};
+    use unicode_segmentation::UnicodeSegmentation;
     let bucketed_width = (max_width / TRUNCATE_WIDTH_BUCKET).floor() * TRUNCATE_WIDTH_BUCKET;
     let width_bucket = (max_width / TRUNCATE_WIDTH_BUCKET).floor() as i32;
-    let key: TruncateCacheKey = (text.to_owned(), font_id.size.to_bits(), width_bucket);
-    if let Some(cached) = cache.get(&key) {
-        return cached.clone();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let key: TruncateCacheKey = (hasher.finish(), font_id.size.to_bits(), width_bucket, from_start);
+    if let Some((cached_text, cut)) = cache.get(&key) {
+        if cached_text == text {
+            return cut.clone();
+        }
     }
     let width_of = |s: &str| -> f32 {
         ctx.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)).size().x
@@ -453,27 +498,32 @@ fn truncate_to_width(
     } else if width_of(text) <= bucketed_width {
         text.to_owned()
     } else {
-        let chars: Vec<char> = text.chars().collect();
-        let (mut lo, mut hi) = (0usize, chars.len());
+        // Byte offsets of every grapheme boundary, both ends included.
+        let mut bounds: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        bounds.push(text.len());
+        let candidate = |k: usize| {
+            if from_start {
+                format!("\u{2026}{}", &text[bounds[bounds.len() - 1 - k]..])
+            } else {
+                format!("{}\u{2026}", &text[..bounds[k]])
+            }
+        };
+        // The most graphemes `k` kept that still fit.
+        let (mut lo, mut hi) = (0usize, bounds.len() - 1);
         while lo < hi {
             let mid = (lo + hi).div_ceil(2);
-            let candidate: String = chars[..mid].iter().collect::<String>() + "…";
-            if width_of(&candidate) <= bucketed_width {
+            if width_of(&candidate(mid)) <= bucketed_width {
                 lo = mid;
             } else {
                 hi = mid - 1;
             }
         }
-        if lo == 0 {
-            "…".to_owned()
-        } else {
-            chars[..lo].iter().collect::<String>() + "…"
-        }
+        candidate(lo)
     };
     if cache.len() >= TRUNCATE_CACHE_CAP {
         cache.clear();
     }
-    cache.insert(key, result.clone());
+    cache.insert(key, (text.to_owned(), result.clone()));
     result
 }
 
@@ -573,6 +623,8 @@ enum FocusTarget {
     QuickSwitcher,
     GroupRename,
     BookmarkFolder,
+    /// The tab menu's "New Jar..." name field (`App::naming_jar`).
+    JarName,
 }
 
 /// True, once, if `target` is the pending focus request: clears it so the
@@ -663,6 +715,12 @@ struct TabSpawnOutcome {
     /// `App::session_generation` when the spawn started -- see that field.
     generation: u64,
     result: Result<EngineTab, process_manager::SpawnError>,
+    /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
+    seeded: jar::TabCookies,
+    /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
+    jar: jar::JarKey,
+    /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
+    seed_clears: Option<u64>,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
@@ -700,6 +758,8 @@ struct TabCarry {
     title: String,
     /// See `TabPayload::muted`. Sent to the new engine on landing.
     muted: bool,
+    /// See `TabPayload::jar`.
+    jar: crate::jar::JarChoice,
 }
 
 impl TabSpawn {
@@ -720,7 +780,14 @@ impl TabSpawn {
             pos,
             vel: egui::Vec2::ZERO,
             purpose,
-            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
+            carry: TabCarry {
+                pinned: false,
+                color: None,
+                zoom_factor,
+                title: String::new(),
+                muted: false,
+                jar: Default::default(),
+            },
             fallback_kind: None,
         }
     }
@@ -744,10 +811,19 @@ impl TabSpawn {
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
+                jar: tab.jar,
             },
             fallback_kind: None,
         })
     }
+}
+
+/// A named jar's synced definition (a `Kind::Jar` node). Not a graph node (spec "Data model").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct JarDef {
+    pub(crate) name: String,
+    pub(crate) color: Option<egui::Color32>,
+    pub(crate) ephemeral: bool,
 }
 
 struct App {
@@ -797,6 +873,13 @@ struct App {
     /// it until Enter commits or Escape cancels. Transient UI state, not
     /// part of `GroupPayload` itself.
     renaming_group: Option<(String, String)>,
+    /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
+    /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
+    naming_jar: Option<(String, String)>,
+    /// A jar's "Clear Cookies" or "Delete" from Settings, waiting for its confirm dialog (`build_jar_confirm_popup`).
+    pending_jar_confirm: Option<jar_defs::JarConfirm>,
+    /// A named session's delete from Settings, waiting for its confirm dialog (`build_session_delete_popup`).
+    pending_session_delete: Option<String>,
     /// `(node_id, screen_pos)` while a right-click context menu is showing
     /// for that node's card -- one field for every kind, so at most one
     /// menu is ever open by construction. Right-click is otherwise the
@@ -864,6 +947,30 @@ struct App {
     idle_clock: idle_sleep::IdleClock,
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
     pending_sleeps: HashMap<String, sleep_state::PendingSleep>,
+    /// The cookie jars WebView2 and CEF tabs share, by key (see `jar`). The default jar loads at startup; a named jar
+    /// loads the first time a tab spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
+    jars: BTreeMap<jar::JarKey, jar::Jar>,
+    /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
+    /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
+    /// the tab itself reported can be deleted by its absence.
+    jar_tabs: HashMap<String, (jar::JarKey, jar::TabCookies)>,
+    /// Hosts still holding cookies from a jar the user cleared (`clear_jar_cookies`): they switch (`will_switch`)
+    /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
+    /// leaves when its host is replaced or closed (`clear_cookie_state`).
+    jar_reseed: HashSet<String>,
+    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
+    /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
+    jar_snapshots: Arc<std::sync::Mutex<jar::Snapshots>>,
+    /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so the
+    /// host is not dropped before its last cookies arrive.
+    cookie_holds: HashMap<String, (std::time::Instant, tabs::Held)>,
+    /// When `jar_pull_all` last ran, for the 30 s pull in `about_to_wait`.
+    jar_last_pull: Option<std::time::Instant>,
+    /// Tabs with a `GetCookies` in flight, by tab id. A host may never answer, so an entry expires
+    /// (`JAR_PULL_TIMEOUT`) instead of blocking the next pull.
+    jar_pulls: HashMap<String, std::time::Instant>,
+    /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
+    jar_silent: HashMap<String, u8>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<String, sleep_state::SavedScroll>,
     /// Each tab's back/forward list as the host saw it, by tab id: kept
@@ -902,9 +1009,9 @@ struct App {
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
     host_loads: HashMap<String, std::time::Instant>,
-    /// Tabs `navigate_tab` just moved on, with the url each left and when
-    /// (`App::reported_url`).
-    navigated_from: HashMap<String, (String, std::time::Instant)>,
+    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
+    /// whether the engine has reported loading since (`App::reported_url`).
+    navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
@@ -913,11 +1020,19 @@ struct App {
     /// now differs, so a remote change to one field doesn't overwrite
     /// another field's unsaved local value.
     last_shared: HashMap<String, session_sync::Shared>,
+    /// Named jars' synced definitions (spec "Data model"). A jar is a `Kind::Jar` store node but never a graph node:
+    /// `session_sync` bridges this map to the document.
+    jar_defs: BTreeMap<store::model::NodeId, JarDef>,
     /// Personal state (spec "Personal state") last written to
     /// `session.mnf.local`, or read at startup: `maybe_write_local` skips
     /// writing when the current state compares equal, so an idle session
     /// never rewrites the file.
     local_written: Option<local_state::LocalState>,
+    /// Set while startup couldn't read `session.mnf.local` (another
+    /// window held the lock, or the read failed): nothing writes it, so
+    /// this profile's saved state isn't replaced by defaults, and
+    /// `poll_store` retries the read.
+    local_unread: Option<session_sync::LocalUnread>,
     /// When `local_written` was last written (or, at startup, `Instant::now`
     /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
     local_written_at: std::time::Instant,
@@ -963,6 +1078,8 @@ struct App {
     /// carries the modifier state at the time of that key, not just the
     /// currently-pressed key itself.
     key_modifiers: u8,
+    /// Click counts for page presses (`InputEvent::MouseDown::click_count`).
+    click_counter: click_count::ClickCounter,
     /// Physical keys of a shortcut chord pressed in Tab view, whose release (and typed text) must not
     /// reach the page either (`shortcuts::claims_chord`).
     swallowed_keys: std::collections::HashSet<WinitKeyCode>,
@@ -977,7 +1094,7 @@ struct App {
     /// native favicon API.
     favicon_fetcher: FaviconFetcher,
     /// See `PdfPayload::outcome`'s own doc comment.
-    pdf_fetcher: PdfFetcher,
+    pdf_renderer: PdfRenderer,
     /// See `redirect_fetch`'s own module doc comment.
     redirect_fetcher: RedirectFetcher,
     /// Origins already resolved (successfully or not) by `favicon_fetcher`
@@ -1049,7 +1166,7 @@ struct App {
     /// a count sitting right at one boundary doesn't flicker every frame.
     graph_lod_simplified: bool,
     /// See `truncate_to_width`'s own doc comment.
-    truncate_cache: HashMap<TruncateCacheKey, String>,
+    truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
     /// See `App::cached_favicon_origin`'s own doc comment.
     favicon_origin_cache: HashMap<String, Option<String>>,
     /// `(level, node_count)` for the graph level `graph_settle_current_level`
@@ -1121,13 +1238,14 @@ struct App {
     /// The stdin reader waiting on `pending_screenshot` (see
     /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
     screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
-    /// "Print to PDF": the target `.pdf` path, set alongside
-    /// `pending_screenshot` (a temp PNG) so the underlying GPU capture
-    /// mechanism doesn't need to know PDF exists at all -- once that
-    /// screenshot actually completes (see `handle_screenshot_result`), the temp PNG is converted via
+    /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
+    /// asked for, and where its PDF goes. Paired so an unrelated screenshot
+    /// can't take the PDF target. Set alongside `pending_screenshot` so the
+    /// GPU capture needn't know PDF exists; once that capture completes
+    /// (`handle_screenshot_result`), the temp PNG is converted via
     /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
     /// including for an ordinary "Screenshot" button click.
-    pending_print_to_pdf: Option<String>,
+    pending_print_to_pdf: Option<(String, String)>,
 
     /// "Recently Closed", oldest first: one entry per close, capped at
     /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
@@ -1158,6 +1276,12 @@ struct App {
     /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
     /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
+    /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
+    /// per source tab: a user gesture and a rate budget.
+    popup_gate: popup_gate::PopupGate,
+    /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
+    /// tab crashing too often is left as a failed card, not respawned.
+    tab_crashes: HashMap<String, Vec<std::time::Instant>>,
 
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
@@ -1182,6 +1306,13 @@ struct App {
     /// until the file has actually been loaded or saved once this run,
     /// which also means "skip the conflict check" the first time.
     settings_fingerprint: Option<u64>,
+    /// When settings changed by a window move or resize are due to be
+    /// written (`note_settings_changed`, `flush_settings_if_due`); `None`
+    /// when nothing is waiting.
+    settings_save_due: Option<std::time::Instant>,
+    /// Set for the length of one restore or apply pass, so each node's file
+    /// lookup doesn't read the content dir again.
+    content_index: Option<ContentIndex>,
 
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
@@ -1196,9 +1327,11 @@ struct App {
     /// and Settings all ask. Cleared at the start of each frame and whenever an install changes.
     engine_state_cache: std::cell::RefCell<HashMap<EngineKind, engine_install::EngineState>>,
     /// The bring-your-own CEF directory's last validation, with the path it was for (`custom_cef_dir`).
-    cef_dir_check: std::cell::RefCell<Option<(String, Result<(), String>)>>,
+    cef_dir_check: std::cell::RefCell<Option<engine_install::DirCheck>>,
     /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
     cef_dir_draft: Option<String>,
+    /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
+    home_page_draft: Option<String>,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1246,6 +1379,9 @@ struct App {
     /// The history popup's own filter box text -- same "cleared on each
     /// open" reasoning as `bookmarks_filter`.
     history_filter: String,
+    /// The History popup's filter, the history length it was computed at, and its matches: recomputed only when
+    /// either changes (or when `history_dirty` is set, which also covers an in-place title update).
+    history_matches_cache: Option<(String, usize, Vec<usize>)>,
     /// Which popup anchored below a toolbar or Settings button is open, if
     /// any; one at a time. See `AnchoredPopup`, `toggle_popup` and
     /// `close_popup`.
@@ -1305,6 +1441,10 @@ struct App {
     /// to hand `handle_tab_spawn_result` an outcome itself.
     #[cfg(test)]
     test_spawns: Vec<(TabSpawn, u64)>,
+    /// A test's jar directory, read only by `jars_dir`. `None`: no jar files at all (`profile::jars_dir()` is `None`
+    /// under test).
+    #[cfg(test)]
+    jars_dir_override: Option<std::path::PathBuf>,
 }
 
 impl Default for App {
@@ -1327,6 +1467,11 @@ impl Default for App {
         // its own redundant warm-up (or, worse, one racing a real request
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
+        let jars: BTreeMap<jar::JarKey, jar::Jar> = profile::jars_dir()
+            .map(|dir| (jar::JarKey::Default, jar::Jar::load(&dir, jar::JarKey::Default)))
+            .into_iter()
+            .collect();
+        let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
@@ -1340,6 +1485,9 @@ impl Default for App {
             json_outline_width: 260.0,
             json_accessor_paths: false,
             renaming_group: None,
+            naming_jar: None,
+            pending_jar_confirm: None,
+            pending_session_delete: None,
             node_menu: None,
             node_menu_cache: None,
             quick_switcher: None,
@@ -1354,6 +1502,14 @@ impl Default for App {
             split_tab: None,
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
+            jars,
+            jar_tabs: HashMap::new(),
+            jar_reseed: HashSet::new(),
+            jar_snapshots,
+            cookie_holds: HashMap::new(),
+            jar_last_pull: None,
+            jar_pulls: HashMap::new(),
+            jar_silent: HashMap::new(),
             saved_scroll: HashMap::new(),
             nav_history: nav_history::load(),
             drop_batch: 0,
@@ -1367,7 +1523,9 @@ impl Default for App {
             navigated_from: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
             last_shared: HashMap::new(),
+            jar_defs: BTreeMap::new(),
             local_written: None,
+            local_unread: None,
             local_written_at: std::time::Instant::now(),
             closed_changed_at: None,
             pending_local: None,
@@ -1377,12 +1535,13 @@ impl Default for App {
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
             key_modifiers: 0,
+            click_counter: Default::default(),
             swallowed_keys: Default::default(),
             egui_ctx,
             egui_state: None,
             address_bar: AddressBar::new(settings.home_page.clone()),
             favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
-            pdf_fetcher: PdfFetcher::new(),
+            pdf_renderer: PdfRenderer::new(),
             redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
             favicon_resolved: HashSet::new(),
             dragging: None,
@@ -1416,11 +1575,15 @@ impl Default for App {
             context_menu_cache: None,
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
+            popup_gate: popup_gate::PopupGate::default(),
+            tab_crashes: HashMap::new(),
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),
             store_recovered: false,
             settings_fingerprint,
+            settings_save_due: None,
+            content_index: None,
             find: FindState::default(),
             engine_installs: HashMap::new(),
             engine_failures: HashMap::new(),
@@ -1428,6 +1591,7 @@ impl Default for App {
             engine_state_cache: Default::default(),
             cef_dir_check: Default::default(),
             cef_dir_draft: None,
+            home_page_draft: None,
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,
@@ -1437,6 +1601,7 @@ impl Default for App {
             history,
             history_dirty: false,
             history_filter: String::new(),
+            history_matches_cache: None,
             open_popup: None,
             card_nav_active: false,
             hints_revealed: false,
@@ -1448,6 +1613,8 @@ impl Default for App {
             skip_convert: HashMap::new(),
             #[cfg(test)]
             test_spawns: Vec::new(),
+            #[cfg(test)]
+            jars_dir_override: None,
         };
         for err in [settings_err, bookmarks_err, history_err].into_iter().flatten() {
             app.queue_toast(err);
@@ -1665,11 +1832,12 @@ impl App {
                     self.history.remove(0);
                 }
                 self.history_dirty = true;
+                self.history_matches_cache = None;
             }
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             if node.url != url {
-                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now()));
+                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });
@@ -1732,8 +1900,10 @@ impl App {
     /// or wrote it: then the write goes to `settings::conflict_path()` and a
     /// toast says so, rather than clobbering theirs. The first save of a run
     /// (`settings_fingerprint` still `None`) always proceeds. Replaces every
-    /// direct `self.settings.save()` call site.
+    /// direct `self.settings.save()` call site. It writes the window
+    /// geometry too, so a debounced save still waiting is done by it.
     fn save_settings(&mut self) {
+        self.settings_save_due = None;
         let on_disk = settings::fingerprint();
         if self.settings_fingerprint.is_some() && on_disk != self.settings_fingerprint {
             if let Some(path) = settings::conflict_path() {
@@ -1753,24 +1923,78 @@ impl App {
         self.settings_fingerprint = settings::fingerprint();
     }
 
+    /// Settings changed (window size or position): written once things
+    /// are quiet for `SETTINGS_SAVE_DELAY`, or at exit.
+    pub(crate) fn note_settings_changed(&mut self) {
+        self.settings_save_due = Some(std::time::Instant::now() + SETTINGS_SAVE_DELAY);
+    }
+
+    /// Writes settings if a change is due by `now`. Returns whether it wrote.
+    pub(crate) fn flush_settings_if_due(&mut self, now: std::time::Instant) -> bool {
+        match self.settings_save_due {
+            Some(due) if due <= now => {
+                self.settings_save_due = None;
+                self.save_settings();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// At exit: writes a debounced settings change still waiting.
+    pub(crate) fn flush_pending_settings(&mut self) {
+        if self.settings_save_due.is_some() {
+            self.save_settings();
+        }
+    }
+
+    /// `session::named_session_path`, toasting why there is none: "Not a session name" for a name that can't be a
+    /// file (`session_name_is_safe`; a device name such as `CON` survives `sanitize_session_name`), "No session
+    /// file" without a profile.
+    fn named_session_path_or_toast(&mut self, name: &str) -> Option<std::path::PathBuf> {
+        let path = session::named_session_path(name);
+        if path.is_none() {
+            self.queue_toast(if session::session_name_is_safe(name) {
+                "No session file".into()
+            } else {
+                let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
+                format!("Not a session name: {shown}")
+            });
+        }
+        path
+    }
+
     /// "Save Session As..." (settings popup) / headless `SAVESESSIONAS` --
     /// a full compacted copy of the running store (spec "Named sessions"),
-    /// with this profile's own personal state, saved to `sessions/<name>
+    /// with this profile's own personal state (`local_state_for_copy`), saved to `sessions/<name>
     /// .mnf`. Saves the running session first so the copy isn't missing
     /// recent edits; a failure there or in the copy itself is toasted, not
-    /// fatal (the running session is untouched either way).
-    fn save_named_session(&mut self, name: &str) {
-        let Some(path) = session::named_session_path(name) else {
-            self.queue_toast("No session file".into());
+    /// fatal (the running session is untouched either way). `raw` is sanitised here (`sanitize_session_name`), for
+    /// Settings and the headless command alike; nothing left of it saves nothing.
+    fn save_named_session(&mut self, raw: &str) {
+        let name = sanitize_session_name(raw);
+        if name.is_empty() {
             return;
-        };
+        }
+        // The Settings page lists saves and sizes: read them again next frame, whatever happens below.
+        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        let Some(path) = self.named_session_path_or_toast(&name) else { return };
         if !self.save_session() {
             self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());
         }
+        let local = self.local_state_for_copy();
         let Some(journal) = self.journal.as_ref() else { return };
-        if let Err(err) = journal.save_copy(&path, Some(&self.local_state().to_bytes())) {
-            self.queue_toast(format!("Couldn't save as {name}: {err}"));
+        if let Err(err) = journal.save_copy(&path, local.as_deref()) {
+            let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
+            self.queue_toast(format!("Couldn't save as {shown}: {err}"));
         }
+    }
+
+    /// The personal state Save As gives its copy: this profile's, or none while startup's is still unread
+    /// (`App::local_unread`). The live view then lacks what the file holds (its Recently Closed, say); a copy
+    /// with none opens with defaults rather than a partial state passed off as this profile's.
+    fn local_state_for_copy(&self) -> Option<Vec<u8>> {
+        self.local_unread.is_none().then(|| self.local_state().to_bytes())
     }
 
     /// "Open Session" (settings popup) / headless `OPENSESSION` -- reads a
@@ -1781,21 +2005,19 @@ impl App {
     /// read` still reads it, just says so in its `Display`), is toasted
     /// and leaves the running session untouched.
     fn load_named_session(&mut self, name: &str) {
-        let Some(path) = session::named_session_path(name) else {
-            self.queue_toast("No session file".into());
-            return;
-        };
+        let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
+        let Some(path) = self.named_session_path_or_toast(name) else { return };
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                self.queue_toast(format!("Couldn't open {shown}: {err}"));
                 return;
             }
         };
         let doc = match store::journal::Journal::read(&bytes) {
             Ok(doc) => doc,
             Err(err) => {
-                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                self.queue_toast(format!("Couldn't open {shown}: {err}"));
                 return;
             }
         };
@@ -1805,7 +2027,7 @@ impl App {
             .and_then(|bytes| local_state::LocalState::from_bytes(&bytes));
         let mut json = store::json::doc_to_json(&doc);
         json.local = local.map(|l| serde_json::to_value(l).expect("personal state serializes"));
-        self.replace_running_session(&json);
+        self.replace_running_session(&json, store::json::Trust::Own);
     }
 
     /// Whether the first-launch demo can render here: its `manifold://` pages need WebView2.
@@ -1852,7 +2074,7 @@ impl App {
         self.place_node(None, note, Placement { group: None, pos: egui::vec2(-300.0, 0.0) });
 
         let group_pos = egui::vec2(300.0, 0.0);
-        let group = NodePayload::Group(GroupPayload { name: "Try grouping".to_string(), from_json: false });
+        let group = NodePayload::Group(GroupPayload::named("Try grouping".to_string()));
         let group_id = self.place_node(None, group, Placement { group: None, pos: group_pos });
         // A small fixed offset, not `graph_layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
@@ -1882,11 +2104,11 @@ impl App {
         // genuine standalone JSON node, not an exploded leaf).
         let json = NodePayload::Json(JsonPayload {
             path: "(demo).json".to_string(),
-            value: serde_json::json!({
+            value: std::sync::Arc::new(serde_json::json!({
                 "project": "Manifold",
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
-            }),
+            })),
             key: None,
             error: None,
             url: None,
@@ -1909,15 +2131,37 @@ impl App {
         }
     }
 
-    /// Opens `session.mnf` under a fresh actor. A failure is toasted and
-    /// leaves the app running without a store.
+    /// Opens `session.mnf` under a fresh actor. A file that isn't a session
+    /// file at all is set aside (`Journal::open_or_set_aside`) and a new one
+    /// started, toasting where the old one went; that launch then counts as
+    /// recovered (`store_recovered`), so nothing is pruned against the new,
+    /// empty session. Any other failure is toasted
+    /// and leaves the app running without a store.
     fn open_store(&mut self) {
-        let Some(path) = session::store_path() else { return };
+        if let Some(path) = session::store_path() {
+            self.open_store_at(&path);
+        }
+    }
+
+    /// `open_store` for the store at `path`.
+    fn open_store_at(&mut self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match store::journal::Journal::open(&path, store::model::ActorId::random()) {
-            Ok(journal) => self.journal = Some(journal),
+        match store::journal::Journal::open_or_set_aside(path, store::model::ActorId::random()) {
+            Ok((journal, aside)) => {
+                self.journal = Some(journal);
+                if let Some(aside) = aside {
+                    // The new, empty session names none of the old one's fetched content or jars: pruning
+                    // against it this launch would delete what the set-aside file still needs.
+                    self.store_recovered = true;
+                    self.queue_toast(format!(
+                        "The session file wasn't readable; it was kept (with its .prev/.local) as {} and a new one \
+                         started",
+                        aside.display()
+                    ));
+                }
+            }
             Err(err) => self.queue_toast(format!("Couldn't open the session file {}: {err}", path.display())),
         }
     }
@@ -1935,6 +2179,9 @@ impl App {
     /// name a node that's gone, or `insertion_group` would orphan new nodes.
     fn remove_node(&mut self, id: &str) {
         let removed = self.nodes.remove(id);
+        if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
+            self.pdf_renderer.cancel(id);
+        }
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(removed.and_then(|n| n.group));
         }
@@ -1971,8 +2218,16 @@ impl App {
     /// the mechanism behind `reveal_node`.
     #[cfg(windows)]
     fn reveal_in_explorer(path: &str) -> Result<(), String> {
-        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
-        Ok(())
+        use std::os::windows::process::CommandExt;
+        if path.is_empty() {
+            return Err("This download has no file path".to_string());
+        }
+        // `raw_arg`, not `arg`: `arg` would escape the quotes `explorer_select_arg` adds.
+        std::process::Command::new("explorer.exe")
+            .raw_arg(explorer_select_arg(path))
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("Couldn't open Explorer: {e}"))
     }
     /// Elsewhere there is no portable "select this file", so the containing folder is opened with the desktop's
     /// own handler (`xdg-open` on Linux, `open` on macOS).
@@ -1993,27 +2248,39 @@ impl App {
     /// download's path may be a WSL-side POSIX path (WebKit downloads), so
     /// it goes through `windows_path_for_download`; an image/PDF/JSON path
     /// always came from a real Windows file picker, so it's used as-is.
-    /// `None` for kinds with no backing file (Tab, Group, Note).
+    /// `None` for kinds with no backing file (Tab, Group, Note), and for an
+    /// empty path: "no file" (a Download from a `Trust::Foreign` import has
+    /// its machine-local path dropped).
     fn node_file_path(&self, id: &str) -> Option<String> {
-        match &self.nodes.get(id)?.payload {
+        let path = match &self.nodes.get(id)?.payload {
             NodePayload::Download(_) => self.windows_path_for_download(id),
             NodePayload::Image(image) => Some(image.path.clone()),
             NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
             NodePayload::Json(json) => Some(json.path.clone()),
             NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
-        }
+        };
+        path.filter(|p| !p.is_empty())
     }
 
     /// Opens a node's file's containing folder with the file pre-selected
     /// (a plain click on a download card does this too -- same "just show
     /// the obvious thing, no custom UI" posture as the download itself, see
     /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
-    /// with no file.
+    /// with no file; a file node with no path (`node_file_path`) is toasted.
     fn reveal_node(&mut self, id: &str) {
-        if let Some(path) = self.node_file_path(id) {
-            if let Err(e) = Self::reveal_in_explorer(&path) {
-                self.queue_toast(e);
+        let Some(node) = self.nodes.get(id) else { return };
+        let has_file = matches!(
+            node.payload,
+            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_)
+        );
+        match self.node_file_path(id) {
+            Some(path) => {
+                if let Err(e) = Self::reveal_in_explorer(&path) {
+                    self.queue_toast(e);
+                }
             }
+            None if has_file => self.queue_toast("This file's path isn't known on this machine".to_string()),
+            None => {}
         }
     }
 
@@ -2050,7 +2317,7 @@ impl App {
             .nodes
             .values()
             .filter_map(|node| match &node.payload {
-                NodePayload::Group(group) => Some(group.name.as_str()),
+                NodePayload::Group(group) => Some(group.name.as_str()), // name rule: compares stored names
                 _ => None,
             })
             .collect();
@@ -2067,11 +2334,23 @@ impl App {
     /// dissolved (should only actually matter defensively — the close
     /// button that calls this only ever renders one level up from the
     /// group being closed, never on the level currently being viewed).
+    ///
+    /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
     fn dissolve_group(&mut self, id: &str) {
+        for member in self.dissolve_group_quietly(id) {
+            self.refollow(&member);
+        }
+    }
+
+    /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
+    /// ordinary tab edits (spec "Inheritance"). Returns the members moved.
+    fn dissolve_group_quietly(&mut self, id: &str) -> Vec<String> {
         let parent = self.nodes.get(id).and_then(|n| n.group.clone());
-        for node in self.nodes.values_mut() {
+        let mut members = Vec::new();
+        for (member, node) in self.nodes.iter_mut() {
             if node.group.as_deref() == Some(id) {
                 node.group = parent.clone();
+                members.push(member.clone());
             }
         }
         self.nodes.remove(id);
@@ -2080,6 +2359,7 @@ impl App {
             self.switch_group_level(parent);
         }
         self.forget_removed_group(id);
+        members
     }
 
     /// Drops the per-card state still naming a group card that's gone
@@ -2124,7 +2404,7 @@ impl App {
     fn insert_group_at(&mut self, id: String, pos: Option<egui::Vec2>) {
         let name = self.default_group_name();
         let at = self.placement(&id, pos);
-        self.place_node(Some(id), NodePayload::Group(GroupPayload { name, from_json: false }), at);
+        self.place_node(Some(id), NodePayload::Group(GroupPayload::named(name)), at);
     }
 
     /// Like `insert_group_at`, for `new_note_shortcut` and the card's note.
@@ -2154,6 +2434,7 @@ impl App {
             zoom_factor: tab.zoom_factor,
             title: tab.title.clone(),
             muted: tab.muted,
+            jar: tab.jar,
         };
         let url = tab.url.clone();
         let vel = egui::Vec2::ZERO;
@@ -2198,8 +2479,9 @@ impl App {
         let timestamp =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let temp_png = std::env::temp_dir().join(format!("manifold-print-{timestamp}.png"));
-        self.pending_screenshot = Some(temp_png.to_string_lossy().into_owned());
-        self.pending_print_to_pdf = Some(pdf_path);
+        let png = temp_png.to_string_lossy().into_owned();
+        self.pending_screenshot = Some(png.clone());
+        self.pending_print_to_pdf = Some((png, pdf_path));
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -2389,6 +2671,16 @@ impl App {
         self.save_toast_queue.push_back(message);
     }
 
+    /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
+    /// text, and a `data:` URL can be megabytes.
+    fn toast_url(url: &str) -> String {
+        const TOAST_URL_CHARS: usize = 80;
+        match url.char_indices().nth(TOAST_URL_CHARS) {
+            Some((at, _)) => format!("{}\u{2026}", &url[..at]),
+            None => url.to_string(),
+        }
+    }
+
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
@@ -2495,12 +2787,7 @@ impl App {
                 ui.ctx()
                     .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("image_transition")))
                     .with_clip_rect(clip_rect)
-                    .image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    .image(tex_id, rect, crate::card::FULL_UV, egui::Color32::WHITE);
             }
             return;
         }
@@ -2512,6 +2799,8 @@ impl App {
         self.build_quick_switcher(ui);
         self.build_import_confirm_popup(ui);
         self.build_engine_confirm_popup(ui);
+        self.build_jar_confirm_popup(ui);
+        self.build_session_delete_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.
@@ -2600,6 +2889,8 @@ fn main() {
     // of scripting an OS-level window capture around it.
     let debug_commands = std::env::args().any(|arg| arg == "--debug-commands");
     std::thread::spawn(process_manager::sweep_cef_cache);
+    std::thread::spawn(process_manager::sweep_webview2_profiles);
+    std::thread::spawn(process_manager::sweep_frame_files);
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -2621,9 +2912,491 @@ fn main() {
     process_manager::finish_cache_removals();
 }
 
+/// Explorer's `/select,` argument for `path`, quoted: Explorer splits an
+/// unquoted argument at commas, so `a,b.pdf` opened the wrong folder.
+#[cfg(windows)]
+fn explorer_select_arg(path: &str) -> String {
+    format!("/select,\"{path}\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_select_quotes_the_path() {
+        assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+    }
+
+    fn with_fonts(f: impl FnOnce(&egui::Context)) {
+        let ctx = egui::Context::default();
+        // `run_ui` takes an `FnMut`; the test body runs once.
+        let mut f = Some(f);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            if let Some(f) = f.take() {
+                f(ui.ctx());
+            }
+        });
+        // The font atlas upload is never applied here; dropping it unapplied is a debug assertion.
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_cut_from_the_start_keeps_a_true_suffix_on_grapheme_boundaries() {
+        use unicode_segmentation::UnicodeSegmentation;
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            let text = format!("{}e\u{301}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}tail.jpg", "dir\\".repeat(30));
+            let cut = truncate_start_to_width(&mut cache, ctx, &text, &font, 80.0);
+            let kept = cut.strip_prefix('\u{2026}').expect("cut at the start");
+            assert!(text.ends_with(kept), "a true suffix, not a re-reversed one: {cut}");
+            let start = text.len() - kept.len();
+            assert!(text.grapheme_indices(true).any(|(i, _)| i == start), "starts on a grapheme boundary");
+        });
+    }
+
+    #[test]
+    fn a_cut_from_the_end_never_splits_a_grapheme() {
+        use unicode_segmentation::UnicodeSegmentation;
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            // A ZWJ family, and a base letter with a combining mark; every width, so some cut lands
+            // inside a sequence if the search counts chars.
+            for text in ["\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(40), "e\u{301}".repeat(60)] {
+                for width in (8..=200).step_by(4) {
+                    let cut = truncate_to_width(&mut cache, ctx, &text, &font, width as f32);
+                    let kept = cut.strip_suffix('\u{2026}').expect("cut at the end");
+                    assert!(
+                        text.grapheme_indices(true).any(|(i, _)| i == kept.len()) || kept.is_empty(),
+                        "width {width}: {kept:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_repeated_cut_is_one_cache_entry() {
+        with_fonts(|ctx| {
+            let mut cache = HashMap::new();
+            let font = egui::FontId::proportional(14.0);
+            let a = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            let b = truncate_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            assert_eq!((a, cache.len()), (b, 1));
+            truncate_start_to_width(&mut cache, ctx, "a long title that will not fit", &font, 40.0);
+            assert_eq!(cache.len(), 2, "start and end cuts are cached apart");
+        });
+    }
+
+    #[test]
+    fn window_geometry_is_saved_after_a_quiet_spell_not_per_event() {
+        let mut app = App::default();
+        let t0 = std::time::Instant::now();
+        app.note_settings_changed();
+        assert!(!app.flush_settings_if_due(t0), "not at once");
+        app.note_settings_changed();
+        assert!(app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 2));
+        assert!(!app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 3), "flushed once");
+        app.note_settings_changed();
+        app.save_settings();
+        assert!(!app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 4), "an immediate save covers a pending one");
+    }
+
+    fn sid_key() -> jar::Key {
+        ("sid".into(), "a.com".into(), "/".into())
+    }
+
+    fn on_default(app: &mut App, tab: &str) {
+        app.jar_tabs.insert(tab.into(), (jar::JarKey::Default, jar::TabCookies::default()));
+    }
+
+    fn default_jar(app: &App) -> &jar::Jar {
+        &app.jars[&jar::JarKey::Default]
+    }
+
+    #[test]
+    fn pulled_cookies_reach_the_jar_and_a_logout_removes_them() {
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        assert!(app.apply_pulled_cookies("a", SID));
+        assert_eq!(default_jar(&app).cookies.len(), 1);
+        assert!(app.apply_pulled_cookies("a", "[]"), "sid was known to a, so its absence is a logout");
+        assert!(default_jar(&app).cookies.is_empty());
+        assert!(!app.apply_pulled_cookies("a", "not json"), "a garbled pull changes nothing");
+    }
+
+    #[test]
+    fn a_tab_that_never_saw_a_cookie_cannot_delete_it() {
+        let mut app = App::default();
+        // Tab b was opened before a logged in, so it was seeded with nothing.
+        on_default(&mut app, "a");
+        on_default(&mut app, "b");
+        assert!(app.apply_pulled_cookies("a", SID));
+        assert!(!app.apply_pulled_cookies("b", "[]"), "b never saw sid: its pull must not delete it");
+        assert_eq!(default_jar(&app).cookies.len(), 1);
+        assert!(app.apply_pulled_cookies("a", "[]"), "a logout seen by a (sid in a's known) does delete it");
+        assert!(default_jar(&app).cookies.is_empty());
+    }
+
+    #[test]
+    fn a_seeded_tab_deletes_a_cookie_only_once_it_has_reported_it() {
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        app.apply_pulled_cookies("a", SID);
+        let seeded = jar::TabCookies::seeded(&default_jar(&app).cookies);
+        app.jar_tabs.insert("b".into(), (jar::JarKey::Default, seeded));
+        assert!(!app.apply_pulled_cookies("b", "[]"), "the seed may have failed: an empty first pull is no logout");
+        assert_eq!(default_jar(&app).cookies.len(), 1);
+        assert!(!app.apply_pulled_cookies("b", SID), "b now holds sid, unchanged from its seed");
+        assert!(app.jar_tabs["b"].1.reported.contains(&sid_key()));
+        assert!(app.apply_pulled_cookies("b", "[]"), "b held sid and lost it: a logout");
+        assert!(default_jar(&app).cookies.is_empty());
+    }
+
+    #[test]
+    fn a_pull_merges_into_the_jar_the_tab_was_spawned_with() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        app.ensure_jar_loaded(jar::JarKey::Named(work));
+        app.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        assert!(app.apply_pulled_cookies("a", SID));
+        assert_eq!(app.jars[&jar::JarKey::Named(work)].cookies.len(), 1);
+        assert!(app.jars.get(&jar::JarKey::Default).is_none_or(|j| j.cookies.is_empty()), "default untouched");
+    }
+
+    #[test]
+    fn a_pull_with_no_entry_or_a_deleted_jar_is_dropped() {
+        let mut app = App::default();
+        assert!(!app.apply_pulled_cookies("nobody", SID), "no jar_tabs entry: dropped (deviation 5)");
+        let work = app.create_jar("Work");
+        app.jar_tabs.insert("a".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        app.forget_jar(work);
+        assert!(!app.apply_pulled_cookies("a", SID), "its jar was deleted while it ran: dropped");
+        assert!(app.jars.values().all(|j| j.cookies.is_empty()));
+    }
+
+    #[test]
+    fn resolved_jar_falls_back_to_default_and_flags_a_missing_jar() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let gone = store::model::NodeId { actor: store::model::ActorId(5), counter: 5 };
+        let pick = |jar| jar::JarChoice { jar, set: true };
+        assert_eq!(app.resolved_jar(&pick(None)), (jar::JarKey::Default, false));
+        assert_eq!(app.resolved_jar(&pick(Some(work))), (jar::JarKey::Named(work), false));
+        assert_eq!(app.resolved_jar(&pick(Some(gone))), (jar::JarKey::Default, true));
+    }
+
+    #[test]
+    fn an_ephemeral_jar_never_writes_a_file() {
+        let dir = store::testutil::temp_dir("jar-ephemeral");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let tmp = app.create_jar("Throwaway");
+        app.set_jar_ephemeral(tmp, true);
+        app.ensure_jar_loaded(jar::JarKey::Named(tmp));
+        app.jar_tabs.insert("a".into(), (jar::JarKey::Named(tmp), jar::TabCookies::default()));
+        assert!(app.apply_pulled_cookies("a", SID));
+        assert!(!jar::Jar::path(&dir, jar::JarKey::Named(tmp)).exists());
+        app.set_jar_ephemeral(tmp, false);
+        assert!(jar::Jar::path(&dir, jar::JarKey::Named(tmp)).exists(), "turned off: saved (deviation 10)");
+        app.set_jar_ephemeral(tmp, true);
+        assert!(!jar::Jar::path(&dir, jar::JarKey::Named(tmp)).exists(), "turned on: file deleted");
+        assert_eq!(app.jars[&jar::JarKey::Named(tmp)].cookies.len(), 1, "cookies kept in memory until quit");
+    }
+
+    #[test]
+    fn deleting_a_jar_deletes_its_file_and_clearing_empties_it() {
+        let dir = store::testutil::temp_dir("jar-delete-clear");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let key = jar::JarKey::Named(work);
+        app.ensure_jar_loaded(key);
+        app.jar_tabs.insert("a".into(), (key, jar::TabCookies::default()));
+        app.apply_pulled_cookies("a", SID);
+        assert!(jar::Jar::path(&dir, key).exists());
+        app.clear_jar_cookies(key);
+        assert!(app.jars[&key].cookies.is_empty());
+        assert!(jar::Jar::load(&dir, key).cookies.is_empty(), "cleared on disk too");
+        app.delete_jar(work);
+        assert!(!jar::Jar::path(&dir, key).exists());
+        assert!(!app.jars.contains_key(&key));
+    }
+
+    /// A jar `Work` whose file holds one cookie, saved by an earlier run: this run has not loaded it.
+    fn jar_saved_earlier(name: &str) -> (std::path::PathBuf, App, store::model::NodeId) {
+        let dir = store::testutil::temp_dir(name);
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let mut jar = jar::Jar::default();
+        jar.cookies = jar::from_json(SID).unwrap();
+        jar.save(&dir, jar::JarKey::Named(work)).unwrap();
+        (dir, app, work)
+    }
+
+    /// Final review I1: ephemeral on, then off, for a jar not loaded this run must not lose its saved logins: on
+    /// loads them first (they stay in memory until quit), off saves them back.
+    #[test]
+    fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
+        let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-unloaded");
+        let key = jar::JarKey::Named(work);
+        app.set_jar_ephemeral(work, true);
+        assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
+        assert_eq!(app.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
+        assert_eq!(app.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
+        app.set_jar_ephemeral(work, false);
+        assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
+    }
+
+    /// Final review I1: a locked jar's unreadable file (and its earlier copies) is never touched, ephemeral or not.
+    #[test]
+    fn ephemeral_on_leaves_a_locked_jars_files_alone() {
+        let dir = store::testutil::temp_dir("jar-ephemeral-locked");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let key = jar::JarKey::Named(work);
+        // A directory where the file should be: reading it fails, so the jar loads locked.
+        std::fs::create_dir(jar::Jar::path(&dir, key)).unwrap();
+        let aside = dir.join(format!("{}.json.unreadable-100", key.file_stem()));
+        std::fs::write(&aside, "x").unwrap();
+        app.set_jar_ephemeral(work, true);
+        assert!(app.jar_defs[&work].ephemeral);
+        assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists());
+        app.set_jar_ephemeral(work, false);
+        assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists(), "off saves nothing over it");
+    }
+
+    /// Final review I1: Settings asks before making a jar with saved logins ephemeral; one without, or turning it
+    /// off, acts at once.
+    #[test]
+    fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
+        let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
+        app.request_jar_ephemeral(work, true);
+        assert_eq!(app.pending_jar_confirm, Some(jar_defs::JarConfirm::Ephemeral(work)));
+        assert!(!app.jar_defs[&work].ephemeral, "nothing happens until confirmed");
+        assert!(jar::Jar::path(&dir, jar::JarKey::Named(work)).exists());
+        let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
+        assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
+        assert!(detail.contains("deleted from disk now") && detail.contains("until Manifold quits"), "{detail}");
+        app.pending_jar_confirm = None;
+        let home = app.create_jar("Home");
+        app.request_jar_ephemeral(home, true);
+        assert!(app.pending_jar_confirm.is_none() && app.jar_defs[&home].ephemeral, "no file: nothing to lose");
+        app.request_jar_ephemeral(home, false);
+        assert!(!app.jar_defs[&home].ephemeral);
+        app.set_jar_ephemeral(work, true);
+        assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
+    }
+
+    /// Final review I2: an unreadable copy or a crashed save's temp file is a full copy of the jar's credentials, so
+    /// deleting the jar takes them too. A live process's temp file and other jars' files stay.
+    #[test]
+    fn deleting_a_jar_removes_its_unreadable_copies_and_dead_temp_files() {
+        let dir = store::testutil::temp_dir("jar-delete-asides");
+        let mut app = App { jars_dir_override: Some(dir.clone()), ..App::default() };
+        let work = app.create_jar("Work");
+        let home = app.create_jar("Home");
+        let (w, h) = (jar::JarKey::Named(work).file_stem(), jar::JarKey::Named(home).file_stem());
+        let live = format!("{w}.json.{}.tmp", std::process::id());
+        let gone = [format!("{w}.json"), format!("{w}.json.unreadable-100"), format!("{w}.json.4294967295.tmp")];
+        let kept = [live, format!("{h}.json"), format!("{h}.json.unreadable-100"), "default.json".to_string()];
+        for name in gone.iter().chain(&kept) {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        app.delete_jar(work);
+        for name in &gone {
+            assert!(!dir.join(name).exists(), "{name} should be deleted");
+        }
+        for name in &kept {
+            assert!(dir.join(name).exists(), "{name} should be kept");
+        }
+    }
+
+    #[test]
+    fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        // A stale entry from before it slept, on a key other than the one it now resolves to.
+        app.jar_tabs.insert(t.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
+        app.set_tab_jar(&t, Some(work));
+        assert!(!app.will_switch(&t), "asleep: it spawns into the new jar");
+        app.jar_reseed.insert(t.clone());
+        assert!(!app.will_switch(&t), "asleep: a reseed spawns into the cleared jar anyway");
+        assert!(app.pending_sleeps.is_empty(), "the sweeps after each jar change asked nothing of it");
+        // A host spawned with Work whose jar is then deleted must head for Default.
+        app.jar_tabs.insert(t.clone(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        app.forget_jar(work);
+        assert_eq!(app.resolved_jar(&app.tab_jar(&t).unwrap()).0, jar::JarKey::Default);
+    }
+
+    #[test]
+    fn clearing_a_jar_marks_its_running_tabs_for_a_reseed() {
+        let mut app = App::default();
+        app.jar_tabs.insert("a".into(), (jar::JarKey::Default, jar::TabCookies::default()));
+        let work = app.create_jar("Work");
+        app.jar_tabs.insert("b".into(), (jar::JarKey::Named(work), jar::TabCookies::default()));
+        app.clear_jar_cookies(jar::JarKey::Default);
+        assert!(app.jar_reseed.contains("a"));
+        assert!(!app.jar_reseed.contains("b"), "another jar's tab keeps its host");
+        app.clear_cookie_state("a");
+        assert!(!app.jar_reseed.contains("a"));
+    }
+
+    /// Final review I3: a Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
+    /// honoured: the host holds the old cookies, so it is marked to switch like the hosts running at the clear, even
+    /// though the landing first wipes its id's old cookie state.
+    #[test]
+    fn a_clear_during_a_spawn_marks_the_host_when_it_lands() {
+        let key = jar::JarKey::Default;
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        app.apply_pulled_cookies("a", SID);
+        app.clear_cookie_state("a");
+        let read_seed = |app: &App| {
+            let (cookies, clears) = app.jar_snapshots.lock().unwrap().seed(key);
+            (jar::TabCookies::seeded(&cookies), Some(clears))
+        };
+        let (old_seed, before) = read_seed(&app);
+        assert_eq!(old_seed.baseline.len(), 1);
+        app.clear_jar_cookies(key);
+        app.note_spawned_jar("t", key, old_seed.clone(), before);
+        assert!(app.jar_reseed.contains("t"), "seeded before the clear: it holds the old cookies");
+        assert!(!app.apply_pulled_cookies("t", SID), "so its pulls cannot refill the cleared jar");
+        assert!(default_jar(&app).cookies.is_empty());
+
+        let (empty_seed, after) = read_seed(&app);
+        app.jar_reseed.insert("u".into()); // an earlier host's mark: the landing wipes it
+        app.note_spawned_jar("u", key, empty_seed.clone(), after);
+        assert!(!app.jar_reseed.contains("u"), "seeded after the clear: the empty jar");
+        app.clear_jar_cookies(key);
+        app.note_spawned_jar("v", key, empty_seed, after);
+        assert!(!app.jar_reseed.contains("v"), "an empty seed holds nothing the clear took");
+        app.note_spawned_jar("w", key, old_seed.clone(), None);
+        assert!(!app.jar_reseed.contains("w"), "never seeded (its engine ignores jars)");
+        let work = app.create_jar("Work");
+        app.clear_jar_cookies(jar::JarKey::Named(work));
+        app.note_spawned_jar("x", key, old_seed, after.map(|n| n + 1));
+        assert!(!app.jar_reseed.contains("x"), "only its own jar's clears count");
+    }
+
+    /// The pull `request_sleep` (or a timed pull, or one already in flight) sends a reseed tab still returns the
+    /// cookies its engine was seeded with; they must not refill the jar the user just cleared.
+    #[test]
+    fn a_cleared_jar_is_not_refilled_by_its_old_tabs_pulls() {
+        let mut app = App::default();
+        on_default(&mut app, "a");
+        app.clear_jar_cookies(jar::JarKey::Default);
+        assert!(!app.apply_pulled_cookies("a", SID), "a host still holding the old cookies: dropped");
+        assert!(default_jar(&app).cookies.is_empty());
+        app.clear_cookie_state("a"); // its replacement host landed
+        on_default(&mut app, "a");
+        assert!(app.apply_pulled_cookies("a", SID), "the new host's pulls count again");
+    }
+
+    #[test]
+    fn a_pending_pull_blocks_another_until_it_times_out() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let pulls: HashMap<String, Instant> = [("t".to_string(), now)].into();
+        assert!(tabs::pull_pending(&pulls, "t", now + Duration::from_secs(1)));
+        assert!(!tabs::pull_pending(&pulls, "t", now + Duration::from_secs(11)), "a silent host is asked again");
+        assert!(!tabs::pull_pending(&pulls, "other", now));
+    }
+
+    fn sleep_answer() -> tabs::Held {
+        tabs::Held::PageState(ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false })
+    }
+
+    fn swap_answer() -> tabs::Held {
+        tabs::Held::Snapshot(process_manager::EngineKind::Cef, "http://x/".into())
+    }
+
+    #[test]
+    fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
+        let mut app = App::default();
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        // Sleep, then swap: only the swap stays parked, and the sleep's pending entry is gone (no timeout sleep).
+        app.pending_sleeps.insert(
+            "t".into(),
+            sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        );
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        assert!(app.hold_for_cookies("t", swap_answer()).is_none());
+        assert!(matches!(app.cookie_holds["t"].1, tabs::Held::Snapshot(..)));
+        assert!(app.pending_sleeps.is_empty(), "the cancelled sleep left nothing behind");
+        // Swap, then sleep: only the sleep stays parked.
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        assert!(matches!(app.cookie_holds["t"].1, tabs::Held::PageState(..)));
+        assert_eq!(app.cookie_holds.len(), 1);
+    }
+
+    #[test]
+    fn a_respawn_drops_a_held_answer_meant_for_the_old_host() {
+        let mut app = App::default();
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        app.pending_sleeps.insert(
+            "t".into(),
+            sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        );
+        assert!(app.hold_for_cookies("t", sleep_answer()).is_none());
+        app.clear_cookie_state("t"); // what a spawn result for the same id does first
+        assert!(app.cookie_holds.is_empty() && app.jar_pulls.is_empty() && app.pending_sleeps.is_empty());
+        app.release_expired_cookie_holds();
+        app.release_cookie_hold("t"); // nothing left to run against the new host
+    }
+
+    #[test]
+    fn closing_a_tab_clears_its_cookie_bookkeeping() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+        let mut app = App::default();
+        let tab = add(&mut app, sleeping_tab("https://x.test/", "A"));
+        app.jar_tabs.insert(tab.clone(), (jar::JarKey::Default, jar::TabCookies::default()));
+        app.jar_pulls.insert(tab.clone(), std::time::Instant::now());
+        app.jar_silent.insert(tab.clone(), 2);
+        app.cookie_holds.insert(
+            tab.clone(),
+            (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::EngineKind::Cef, String::new())),
+        );
+        app.remove_tab(&tab);
+        assert!(
+            !app.jar_tabs.contains_key(&tab)
+                && !app.jar_pulls.contains_key(&tab)
+                && !app.jar_silent.contains_key(&tab)
+                && !app.cookie_holds.contains_key(&tab)
+        );
+    }
+
+    #[test]
+    fn a_host_that_never_answers_is_given_up_on_after_three_pulls() {
+        use std::time::{Duration, Instant};
+        let (mut pulls, mut silent) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0));
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(1)), "pending");
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(30)), "second ask");
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(60)), "third ask");
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(90)), "three silences: stop");
+        assert!(!pulls.contains_key("t"), "so no hold waits on it");
+        assert!(!tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(300)));
+        silent.clear(); // a reply (or a respawn) resets it
+        assert!(tabs::start_pull(&mut pulls, &mut silent, "t", t0 + Duration::from_secs(400)));
+    }
+
+    #[test]
+    fn a_sleep_answer_is_held_for_a_pending_pull_and_released_by_it() {
+        let mut app = App::default();
+        let state = || ipc_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
+        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_some(), "no pull pending: act now");
+        app.jar_pulls.insert("t".into(), std::time::Instant::now());
+        assert!(app.hold_for_cookies("t", tabs::Held::PageState(state())).is_none());
+        assert!(app.cookie_holds.contains_key("t"));
+        app.release_cookie_hold("t");
+        assert!(app.cookie_holds.is_empty());
+    }
 
     #[test]
     fn remove_from_group_moves_up_one_level() {
@@ -2635,7 +3408,7 @@ mod tests {
             color: None,
             payload,
         };
-        let group = |name: &str| NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+        let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
         let mut nodes = NodeMap::default();
         nodes.insert("outer".into(), node(None, group("outer")));
@@ -2666,7 +3439,7 @@ mod tests {
     fn a_new_group_takes_the_smallest_free_number() {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
-            let payload = NodePayload::Group(GroupPayload { name: name.into(), from_json: false });
+            let payload = NodePayload::Group(GroupPayload::named(name));
             let node = GraphNode {
                 parent: None,
                 group: None,
@@ -2684,5 +3457,55 @@ mod tests {
         assert_eq!(app.default_group_name(), "Group 2", "a dissolved group's number is reused, never duplicated");
         add(&mut app, "Group 2");
         assert_eq!(app.default_group_name(), "Group 4");
+    }
+
+    /// Name rules: a session name is cleaned, made file-safe, then cleaned again (spaces the filter leaves collapse).
+    #[test]
+    fn a_session_name_is_cleaned_then_made_file_safe() {
+        assert_eq!(sanitize_session_name("  Trip\u{200B} to\u{00A0}\u{00A0}Rome: day 1 "), "Trip to Rome day 1");
+        assert_eq!(sanitize_session_name("a . b"), "a b");
+        assert_eq!(sanitize_session_name("\u{202E}..\\"), "");
+        assert_eq!(sanitize_session_name(&"é".repeat(80)).chars().count(), 64);
+    }
+
+    /// Save As (Settings or headless `SAVESESSIONAS`) with nothing left of the name does nothing; before, the headless
+    /// path skipped `sanitize_session_name`.
+    #[test]
+    fn save_as_with_nothing_left_of_the_name_does_nothing() {
+        let mut app = App::default();
+        app.save_named_session("\u{200B} ..");
+        assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
+        app.save_named_session("Trip");
+        assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    }
+
+    /// A toast shows a long URL's start and an ellipsis, cut on a character boundary.
+    #[test]
+    fn a_toast_url_is_cut_to_eighty_characters() {
+        assert_eq!(App::toast_url("https://a/"), "https://a/");
+        let long = format!("data:text/plain,{}", "é".repeat(500));
+        let shown = App::toast_url(&long);
+        assert_eq!(shown.chars().count(), 81);
+        assert!(shown.starts_with("data:text/plain,é") && shown.ends_with("é\u{2026}"), "{shown}");
+        assert_eq!(App::toast_url(&"x".repeat(80)), "x".repeat(80));
+    }
+
+    /// Save As while startup's personal state is unread carries none into the copy; once read, it carries this
+    /// profile's.
+    #[test]
+    fn save_as_while_personal_state_is_unread_carries_none() {
+        let mut app = App::default();
+        assert!(app.local_state_for_copy().is_some());
+        app.local_unread = Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+        assert_eq!(app.local_state_for_copy(), None);
+    }
+
+    /// Review fix: a Windows device name survives `sanitize_session_name` but can't be a file; Save As says so
+    /// instead of "No session file".
+    #[test]
+    fn save_as_a_device_name_says_why() {
+        let mut app = App::default();
+        app.save_named_session("Con");
+        assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
     }
 }

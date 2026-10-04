@@ -2,6 +2,11 @@ use std::io::{self, Read, Write};
 
 use serde::{de::DeserializeOwned, Serialize};
 
+/// The largest message either side accepts; a longer length prefix is an error, not an allocation.
+/// Room for a 4096x4096 RGBA frame (64 MiB) twice over; the length is refused before anything is
+/// allocated, so a corrupt or hostile prefix can't make the reader reserve gigabytes.
+pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
 /// Length-prefixed postcard framing over any duplex byte stream. One
 /// `MessageChannel` implementation covers both `LocalTransport` (a
 /// named-pipe / Unix-socket stream from `interprocess`) and
@@ -10,11 +15,6 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Uses `postcard`, not `bincode`: bincode is unmaintained as of
 /// RUSTSEC-2025-0141 (the whole crate, not just a bad 3.0.0 release) and
 /// its own advisory recommends postcard as a replacement.
-/// The most one message (or one raw frame) may carry: a 4096x4096 RGBA frame is
-/// 64 MiB. A peer announcing more is broken or hostile, and is refused before
-/// any buffer is allocated.
-pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
-
 pub struct MessageChannel<S> {
     stream: S,
 }
@@ -46,22 +46,17 @@ impl<S: Read + Write> MessageChannel<S> {
         postcard::from_bytes(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// Used only by `RemoteTransport`: read `len` raw frame bytes sent
-    /// immediately after an `EngineToHost::FrameReady` message, since a
-    /// WSL2-hosted engine-host has no shared memory segment with the
-    /// Windows host process.
-    pub fn recv_raw(&mut self, len: usize) -> io::Result<Vec<u8>> {
-        if len > MAX_MESSAGE_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "raw frame larger than MAX_MESSAGE_BYTES"));
-        }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf)?;
-        Ok(buf)
+    /// Writes `PROTOCOL_VERSION`; the first thing each side sends.
+    pub fn send_version(&mut self) -> io::Result<()> {
+        self.stream.write_all(&crate::PROTOCOL_VERSION.to_le_bytes())?;
+        self.stream.flush()
     }
 
-    pub fn send_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.stream.write_all(bytes)?;
-        self.stream.flush()
+    /// Reads the peer's `send_version`.
+    pub fn recv_version(&mut self) -> io::Result<u32> {
+        let mut buf = [0u8; 4];
+        self.stream.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
     }
 
     pub fn into_inner(self) -> S {
@@ -88,5 +83,31 @@ mod tests {
         out.send(&"hello".to_string()).unwrap();
         let mut back = MessageChannel::new(Cursor::new(out.into_inner().into_inner()));
         assert_eq!(back.recv::<String>().unwrap(), "hello");
+    }
+
+    #[test]
+    fn a_version_round_trips_ahead_of_messages() {
+        let mut sender = MessageChannel::new(Cursor::new(Vec::new()));
+        sender.send_version().unwrap();
+        sender.send(&7u32).unwrap();
+        let mut receiver = MessageChannel::new(Cursor::new(sender.into_inner().into_inner()));
+        assert_eq!(receiver.recv_version().unwrap(), crate::PROTOCOL_VERSION);
+        assert_eq!(receiver.recv::<u32>().unwrap(), 7);
+    }
+
+    #[test]
+    fn a_truncated_payload_is_an_eof_not_a_hang() {
+        let mut bytes = 10u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[1, 2, 3]);
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<u32>().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn garbage_payload_is_invalid_data_not_a_panic() {
+        let mut bytes = 4u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        let err = MessageChannel::new(Cursor::new(bytes)).recv::<crate::HostToEngine>().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

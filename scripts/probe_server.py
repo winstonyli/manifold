@@ -9,11 +9,13 @@ valid PNG, each with its real content type, for the page-kind probe. GET
 /tall is a 6000 px page that requests /s?e=load|scroll&y=.. on load and after
 each scroll settles (logged as `<e> y=<y>`); /tall?dirty also fills its
 input, for the sleep probe. GET /wide is 6000 px wide and logs `hscroll y=<scrollX>`
-after each scroll settles, for hscroll-probe.sh. Writes
+after each scroll settles, for hscroll-probe.sh. GET /ac/?q=.. answers like DuckDuckGo's
+suggestions (`[q, [q one, q two, q three]]`), for the smoke test's MANIFOLD_SUGGESTIONS_URL. Writes
 the port to <port-file> and exits after <seconds> on its own.
 """
 
 import http.server
+import json
 import struct
 import sys
 import threading
@@ -89,6 +91,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f.write("%s y=%s\n" % (q["e"][0], q["y"][0]))
             self.send_response(204)
             self.end_headers()
+            return
+        if url.path == "/ac/":
+            # The suggestions endpoint (MANIFOLD_SUGGESTIONS_URL), DuckDuckGo's `type=list` shape.
+            q = urllib.parse.parse_qs(url.query, keep_blank_values=True).get("q", [""])[0]
+            body = json.dumps([q, [q + " one", q + " two", q + " three"]]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         routes = {"/data.json": ("application/json", JSON), "/pixel.png": ("image/png", PNG), "/tall": ("text/html", TALL), "/wide": ("text/html", WIDE)}
         ctype, body = routes.get(url.path, ("text/html", PAGE))

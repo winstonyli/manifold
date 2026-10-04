@@ -107,13 +107,30 @@ pub struct Imported {
     pub fields: BTreeMap<u32, FieldValue>,
 }
 
+/// How far an import trusts the file's machine-local fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trust {
+    /// A file this app wrote for this profile (Recently Closed, a named
+    /// session): every field is kept.
+    Own,
+    /// Anything else (Import Session/Group, `--import`): a Download's `path`
+    /// is dropped (it would point "Show in folder" anywhere), and `jar` /
+    /// `default_jar` are kept only when they name a node in the same file
+    /// (an export re-imported on its source machine must not re-link tabs to
+    /// that machine's logins).
+    Foreign,
+}
+
 /// Reads `json`'s nodes, giving each a fresh id from `next_id`. Ids
 /// naming a node in the file are rewritten to its fresh id; others are
 /// kept when they are real node ids and dropped otherwise. Unknown field
 /// names are ignored (a newer build's export); a bad value is an error.
+/// Under `Trust::Foreign` the machine-local fields are filtered first (see
+/// `Trust`): a Download's `path` is dropped, and a `jar`/`default_jar`
+/// naming no node in the file is dropped rather than kept as a real id.
 /// The result is in `json.nodes` order, so `imported[i]` is `json.nodes[i]`
 /// (callers map labels to fresh ids by index).
-pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId) -> Result<Vec<Imported>, String> {
+pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust) -> Result<Vec<Imported>, String> {
     let mut fresh = HashMap::new();
     for node in &json.nodes {
         if fresh.insert(node.id.as_str(), next_id()).is_some() {
@@ -126,6 +143,15 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId) -> Result<Vec
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
             let Some(def) = field_by_name(name) else { continue };
+            if trust == Trust::Foreign {
+                if def.no == field::PATH && kind == Kind::Download {
+                    continue;
+                }
+                let names_in_file = value.as_str().is_some_and(|s| fresh.contains_key(s));
+                if matches!(def.no, field::JAR | field::DEFAULT_JAR) && !names_in_file {
+                    continue;
+                }
+            }
             let bad = || format!("node {:?}: bad {name} {value}", node.id);
             let parsed = match (def.ty, value) {
                 (FieldType::Pos, Value::Array(xy)) if xy.len() == 2 => {
@@ -184,7 +210,7 @@ mod tests {
         let parsed: JsonDoc = serde_json::from_str(json).unwrap();
         let mut doc = Doc::new(DocId([0; 16]));
         let mut op_ids = ids(actor + 100);
-        for (i, body) in creates(&import(&parsed, ids(actor)).unwrap()).into_iter().enumerate() {
+        for (i, body) in creates(&import(&parsed, ids(actor), Trust::Own).unwrap()).into_iter().enumerate() {
             doc.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
         }
         doc
@@ -261,7 +287,7 @@ mod tests {
 
     #[test]
     fn bad_input_is_an_error() {
-        let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1)).unwrap_err();
+        let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
         bad(r#"{"nodes": [{"id": "a", "kind": "spaceship"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "kind": "tab", "engine": "gecko"}]}"#);
         bad(r#"{"nodes": [{"id": "a", "kind": "tab", "color": "red"}]}"#);
@@ -288,7 +314,33 @@ mod tests {
             serde_json::from_str(r#"{"nodes":[{"id":"b","kind":"note"},{"id":"a","kind":"note"}]}"#).unwrap();
         let mut next = ids(7);
         let first = next();
-        let imported = import(&json, ids(7)).unwrap();
+        let imported = import(&json, ids(7), Trust::Own).unwrap();
         assert_eq!(imported[0].id, first, "the first node in the file gets the first fresh id");
+    }
+
+    fn doc(nodes: Value) -> JsonDoc {
+        serde_json::from_value(serde_json::json!({ "nodes": nodes })).unwrap()
+    }
+
+    #[test]
+    fn a_foreign_import_drops_download_paths_and_outside_jars() {
+        let outside = NodeId { actor: ActorId(9), counter: 9 }.to_string();
+        // `JsonNode` flattens its fields into the node object.
+        let json = doc(serde_json::json!([
+            { "id": "j", "kind": "jar" },
+            { "id": "d", "kind": "download", "path": "C:\\Windows\\x.exe" },
+            { "id": "t", "kind": "tab", "url": "https://a", "jar": "j" },
+            { "id": "u", "kind": "tab", "url": "https://b", "jar": outside },
+            { "id": "g", "kind": "group", "default_jar": outside },
+        ]));
+        let foreign = import(&json, ids(1), Trust::Foreign).unwrap();
+        assert!(!foreign[1].fields.contains_key(&field::PATH));
+        assert_eq!(foreign[2].fields.get(&field::JAR), Some(&FieldValue::Id(Some(foreign[0].id))), "in-file jar kept");
+        assert!(!foreign[3].fields.contains_key(&field::JAR), "a jar outside the file is dropped");
+        assert!(!foreign[4].fields.contains_key(&field::DEFAULT_JAR), "so is an outside default jar");
+        let own = import(&json, ids(2), Trust::Own).unwrap();
+        assert!(own[1].fields.contains_key(&field::PATH));
+        assert!(own[3].fields.contains_key(&field::JAR));
+        assert!(own[4].fields.contains_key(&field::DEFAULT_JAR));
     }
 }

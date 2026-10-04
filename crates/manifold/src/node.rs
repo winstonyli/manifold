@@ -21,28 +21,56 @@ pub(crate) enum NodePayload {
     Json(JsonPayload),
 }
 
+/// `as_x` (and `as_x_mut` where listed) on `NodePayload`, and the same
+/// pair on `GraphNode` forwarding to its payload.
+macro_rules! payload_accessors {
+    ($( $variant:ident($ty:ty) => $as:ident $(, $as_mut:ident)?; )*) => {
+        impl NodePayload {
+            $(
+                pub(crate) fn $as(&self) -> Option<&$ty> {
+                    match self {
+                        NodePayload::$variant(p) => Some(p),
+                        _ => None,
+                    }
+                }
+                $(
+                    pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
+                        match self {
+                            NodePayload::$variant(p) => Some(p),
+                            _ => None,
+                        }
+                    }
+                )?
+            )*
+        }
+
+        impl GraphNode {
+            $(
+                pub(crate) fn $as(&self) -> Option<&$ty> {
+                    self.payload.$as()
+                }
+                $(
+                    pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
+                        self.payload.$as_mut()
+                    }
+                )?
+            )*
+        }
+    };
+}
+
+payload_accessors! {
+    Tab(TabPayload) => as_tab, as_tab_mut;
+    Unloaded(UnloadedTabPayload) => as_unloaded;
+    Download(DownloadPayload) => as_download, as_download_mut;
+    Group(GroupPayload) => as_group, as_group_mut;
+    Note(NotePayload) => as_note, as_note_mut;
+    Image(ImagePayload) => as_image;
+    Pdf(PdfPayload) => as_pdf, as_pdf_mut;
+    Json(JsonPayload) => as_json;
+}
+
 impl NodePayload {
-    pub(crate) fn as_tab(&self) -> Option<&TabPayload> {
-        match self {
-            NodePayload::Tab(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
-        match self {
-            NodePayload::Tab(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
-        match self {
-            NodePayload::Unloaded(t) => Some(t),
-            _ => None,
-        }
-    }
-
     /// The url and engine a live or unloaded tab is saved (and exported,
     /// and copied) with.
     pub(crate) fn saved_tab(&self) -> Option<(&str, EngineKind)> {
@@ -97,76 +125,6 @@ impl NodePayload {
             | NodePayload::Image(_)
             | NodePayload::Pdf(_)
             | NodePayload::Json(_) => false,
-        }
-    }
-
-    pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
-        match self {
-            NodePayload::Download(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
-        match self {
-            NodePayload::Download(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_group(&self) -> Option<&GroupPayload> {
-        match self {
-            NodePayload::Group(g) => Some(g),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
-        match self {
-            NodePayload::Group(g) => Some(g),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_note(&self) -> Option<&NotePayload> {
-        match self {
-            NodePayload::Note(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
-        match self {
-            NodePayload::Note(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_image(&self) -> Option<&ImagePayload> {
-        match self {
-            NodePayload::Image(i) => Some(i),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_pdf(&self) -> Option<&PdfPayload> {
-        match self {
-            NodePayload::Pdf(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_pdf_mut(&mut self) -> Option<&mut PdfPayload> {
-        match self {
-            NodePayload::Pdf(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_json(&self) -> Option<&JsonPayload> {
-        match self {
-            NodePayload::Json(j) => Some(j),
-            _ => None,
         }
     }
 }
@@ -277,11 +235,11 @@ pub(crate) struct ImagePayload {
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
 /// kind built on the unified model. Unlike an image, rendering a PDF page
-/// is genuinely slow the first time (`pdf_fetch::PdfFetcher` may need to
+/// is genuinely slow the first time (`pdf_render::PdfRenderer` may need to
 /// download and cache a real `pdfium.dll` before it can render anything at
 /// all), so this can't decode synchronously at creation the way
 /// `ImagePayload` does -- `outcome` starts `None` (rendering in the
-/// background) and is filled in once `PdfFetcher::tick` reports a result
+/// background) and is filled in once `PdfRenderer::tick` reports a result
 /// for this node's own id, the same "spawn a thread, `mpsc` channel, main
 /// loop `tick()`s it" pattern `SuggestionFetcher`/`FaviconFetcher` already
 /// use. Only the first page is ever rendered -- no page-navigation UI yet,
@@ -326,7 +284,8 @@ pub(crate) struct PdfOutcome {
 /// rather than failing the whole session load.
 pub(crate) struct JsonPayload {
     pub(crate) path: String,
-    pub(crate) value: serde_json::Value,
+    /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
+    pub(crate) value: std::sync::Arc<serde_json::Value>,
     /// The JSON key (or `[index]` for an array element) this value came
     /// from -- `None` for a genuine top-level file-backed JSON node (its
     /// card just shows the value's own shape), `Some(k)` for a leaf that an
@@ -382,6 +341,8 @@ pub(crate) struct UnloadedTabPayload {
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
     pub(crate) state: UnloadedState,
+    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
+    pub(crate) jar: crate::jar::JarChoice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -433,10 +394,10 @@ pub(crate) struct TabPayload {
     /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
-    /// Graph view's pin toggle — a pinned node is excluded from the
-    /// force-directed layout entirely (same `pinned` exclusion
-    /// `graph_layout::step` already gives a node currently being dragged),
-    /// so it stays exactly where the user put it instead of drifting under
+    /// Graph view's pin toggle — a pinned node is never moved by the
+    /// force-directed layout (the same `pinned` handling `graph_layout::step`
+    /// gives a node being dragged; it still pushes its neighbours), so it
+    /// stays exactly where the user put it instead of drifting under
     /// repulsion/centering forces as siblings come and go. Saved as
     /// `field::PINNED`.
     pub(crate) pinned: bool,
@@ -445,6 +406,8 @@ pub(crate) struct TabPayload {
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
     /// block or interfere with a concurrent swap/crash on another.
     pub(crate) swap_target: Option<EngineKind>,
+    /// See `jar::JarChoice`. Synced (`field::JAR`, `field::JAR_SET`).
+    pub(crate) jar: crate::jar::JarChoice,
 }
 
 /// A download's own data -- was `DownloadNode`'s non-shared fields (`path`,
@@ -510,73 +473,29 @@ pub(crate) struct GraphNode {
 }
 
 impl GraphNode {
-    pub(crate) fn as_tab(&self) -> Option<&TabPayload> {
-        self.payload.as_tab()
-    }
-
-    pub(crate) fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
-        self.payload.as_tab_mut()
-    }
-
-    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
-        self.payload.as_unloaded()
-    }
-
-    pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
-        self.payload.as_download()
-    }
-
-    pub(crate) fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
-        self.payload.as_download_mut()
-    }
-
-    pub(crate) fn as_group(&self) -> Option<&GroupPayload> {
-        self.payload.as_group()
-    }
-
-    pub(crate) fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
-        self.payload.as_group_mut()
-    }
-
-    pub(crate) fn as_note(&self) -> Option<&NotePayload> {
-        self.payload.as_note()
-    }
-
-    pub(crate) fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
-        self.payload.as_note_mut()
-    }
-
-    pub(crate) fn as_image(&self) -> Option<&ImagePayload> {
-        self.payload.as_image()
-    }
-
-    pub(crate) fn as_pdf(&self) -> Option<&PdfPayload> {
-        self.payload.as_pdf()
-    }
-
-    pub(crate) fn as_pdf_mut(&mut self) -> Option<&mut PdfPayload> {
-        self.payload.as_pdf_mut()
-    }
-
-    pub(crate) fn as_json(&self) -> Option<&JsonPayload> {
-        self.payload.as_json()
-    }
-
-    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
-    /// What a screen reader announces for the node's card: its kind, then what identifies it.
+    /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
+    /// web source) is named by its file name.
     pub(crate) fn accessible_name(&self) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
+        // Either separator: a saved path may come from the other platform.
+        let file_name =
+            |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
+        let source_or_file = |path: &str| self.source_url().map(str::to_string).or_else(|| file_name(path));
         let (kind, detail) = match &self.payload {
             NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Download(d) => ("Download", d.path.rsplit(['/', '\\']).next().map(str::to_string)),
-            NodePayload::Group(g) => ("Group", first_nonempty(&[&g.name])),
-            NodePayload::Note(n) => {
-                ("Note", n.text.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
+            NodePayload::Download(d) => ("Download", file_name(&d.path)),
+            NodePayload::Group(g) => {
+                ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
             }
-            NodePayload::Image(_) => ("Image", self.source_url().map(str::to_string)),
-            NodePayload::Pdf(_) => ("PDF", self.source_url().map(str::to_string)),
-            NodePayload::Json(_) => ("JSON", self.source_url().map(str::to_string)),
+            NodePayload::Note(n) => {
+                // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+                let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
+                ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
+            }
+            NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
+            NodePayload::Pdf(p) => ("PDF", source_or_file(&p.path)),
+            NodePayload::Json(p) => ("JSON", source_or_file(&p.path)),
         };
         match detail {
             Some(detail) => format!("{kind}: {detail}"),
@@ -584,6 +503,7 @@ impl GraphNode {
         }
     }
 
+    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
     pub(crate) fn source_url(&self) -> Option<&str> {
         match &self.payload {
             NodePayload::Image(p) => p.url.as_deref(),
@@ -652,6 +572,15 @@ pub(crate) struct GroupPayload {
     /// any group, as are the JSON leaves inside it, so a session saved by
     /// that build still loads.
     pub(crate) from_json: bool,
+    /// The jar new tabs in this group start with (`field::DEFAULT_JAR`); `None` inherits from the parent group.
+    pub(crate) default_jar: Option<crate::store::model::NodeId>,
+}
+
+impl GroupPayload {
+    /// A plain group: not from JSON, no default jar.
+    pub(crate) fn named(name: impl Into<String>) -> GroupPayload {
+        GroupPayload { name: name.into(), from_json: false, default_jar: None }
+    }
 }
 
 #[cfg(test)]
@@ -674,10 +603,7 @@ mod tests {
             })),
             ItemNodeKind::Download
         );
-        assert_eq!(
-            item_node_kind(&NodePayload::Group(GroupPayload { name: "g".into(), from_json: false })),
-            ItemNodeKind::Group
-        );
+        assert_eq!(item_node_kind(&NodePayload::Group(GroupPayload::named("g"))), ItemNodeKind::Group);
         assert_eq!(
             item_node_kind(&NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None })),
             ItemNodeKind::Note
@@ -699,7 +625,7 @@ mod tests {
         assert_eq!(
             item_node_kind(&NodePayload::Json(JsonPayload {
                 path: "data.json".into(),
-                value: serde_json::Value::Null,
+                value: Default::default(),
                 key: None,
                 error: None,
                 url: None,
@@ -725,6 +651,53 @@ second"
         assert_eq!(name(&app, &n), "Note: first line");
         app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
         assert_eq!(name(&app, &g), "Group: Reading");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = " ".into();
+        assert_eq!(name(&app, &g), "Group: Untitled");
+        let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
+        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
+        assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
+        assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
+    }
+
+    /// Review C-B12: a local file's card is named by its file name; a web source still wins.
+    #[test]
+    fn a_local_file_card_has_an_accessible_name() {
+        let node = |payload| GraphNode {
+            parent: None,
+            group: None,
+            pos: egui::Vec2::ZERO,
+            vel: egui::Vec2::ZERO,
+            color: None,
+            payload,
+        };
+        let pdf = |url: Option<&str>| {
+            node(NodePayload::Pdf(PdfPayload {
+                path: r"C:\docs\report.pdf".into(),
+                outcome: None,
+                url: url.map(str::to_string),
+            }))
+        };
+        assert_eq!(pdf(None).accessible_name(), "PDF: report.pdf");
+        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(), "PDF: https://example.org/r.pdf");
+        let image = node(NodePayload::Image(ImagePayload {
+            path: "/home/u/cat.png".into(),
+            width: 1,
+            height: 1,
+            error: None,
+            url: None,
+        }));
+        assert_eq!(image.accessible_name(), "Image: cat.png");
+        let json = node(NodePayload::Json(JsonPayload {
+            path: r"D:\data\x.json".into(),
+            value: Default::default(),
+            key: None,
+            error: None,
+            url: None,
+            view: JsonView::default(),
+        }));
+        assert_eq!(json.accessible_name(), "JSON: x.json");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.
@@ -739,10 +712,11 @@ second"
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
+                jar: Default::default(),
             }))
             .saved_tab(),
             Some(("https://example.org/", EngineKind::Cef))
         );
-        assert_eq!(NodePayload::Group(GroupPayload { name: "g".into(), from_json: false }).saved_tab(), None);
+        assert_eq!(NodePayload::Group(GroupPayload::named("g")).saved_tab(), None);
     }
 }

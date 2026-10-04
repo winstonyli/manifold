@@ -2,7 +2,7 @@ mod input;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use ipc_protocol::{transport, EngineToHost, HostToEngine, MessageChannel, TabState};
@@ -14,18 +14,22 @@ use webkit2gtk::{
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
 
-/// One thing that happened to a download since the last poll -- mirrors
-/// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
-/// type here (rather than depending on `ipc_protocol` from the GTK signal
-/// closures directly) so the polling loop below does the actual
-/// translation, same separation `manifold-engine-webview2`'s own `download::
-/// DownloadEvent`/`manifold-engine-cef`'s own `download_handler::DownloadEvent`
-/// use.
-enum DownloadEvent {
-    Started { path: String, total_bytes: Option<u64>, url: Option<String> },
-    Progress { path: String, bytes_received: u64 },
-    Completed { path: String },
-    Failed { path: String },
+/// What was last sent: the next frame goes only if it differs.
+struct SentFrame {
+    size: (u32, u32),
+    pixels: Vec<u8>,
+}
+
+/// At most one frame per this, as WebView2's own `FRAME_INTERVAL`: about 30 fps.
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Whether a frame of `size` and `pixels` should be sent: it differs from
+/// `last` (or nothing was sent yet) and `FRAME_INTERVAL` has passed.
+fn frame_due(size: (u32, u32), pixels: &[u8], last: Option<&SentFrame>, since_sent: Duration) -> bool {
+    match last {
+        None => true,
+        Some(last) => since_sent >= FRAME_INTERVAL && (last.size != size || last.pixels != pixels),
+    }
 }
 
 fn main() {
@@ -83,57 +87,62 @@ fn main() {
     // WebView2) -- `decide-destination` fires with the server's suggested
     // filename and MUST call `set_destination` or the download silently
     // never starts, same requirement as CEF's `on_before_download`/
-    // `BeforeDownloadCallback::cont`. `$HOME/Downloads` mirrors CEF's
-    // `%USERPROFILE%\Downloads` choice for the same reason: this project
-    // never shows its own save-as dialog.
+    // `BeforeDownloadCallback::cont`. The folder and name come from
+    // `ipc_protocol::downloads`, the rule CEF uses too: `~/Downloads`, the
+    // suggested name's last component, numbered if taken (WebKit doesn't
+    // overwrite, so a second download of one name would otherwise fail).
+    // `reserved` holds names handed out and not yet finished, so concurrent
+    // same-name downloads get distinct names before either file exists. The
+    // destination is set as a properly escaped `file://` URI
+    // (`glib::filename_to_uri`), so a `#` or space in a name works.
     //
-    // Reports live byte progress now, not just the final result:
-    // `decide-destination` is also where `total_bytes` is read (the
-    // response's `Content-Length`, via `WebKitURIResponse::content_length`
-    // -- 0 means unknown, per WebKit's own convention) and where `path` is
-    // computed directly from `dest` rather than round-tripped through
-    // `destination()` the way the other two signals below need to (they
-    // don't have `dest` in their own closure's scope). `connect_received_
-    // data` fires repeatedly as bytes arrive; `received_data_length()` is
-    // WebKit's own running total, no manual accumulation from the signal's
-    // per-chunk delta parameter needed. `connect_finished` (not `estimated_
-    // progress` polling) remains the actual completion signal; `destination
-    // ()` returns back whatever URI was set above, stripped of its `file://`
-    // prefix to match the plain filesystem paths WebView2/CEF report.
+    // `decide-destination` also reads `total_bytes` (the response's
+    // `Content-Length`, via `WebKitURIResponse::content_length` -- 0 means
+    // unknown, per WebKit's own convention) and stores the plain filesystem
+    // path in `dest_for_events`. `received-data`, `failed` and `finished`
+    // report that stored string, never `destination()` (the escaped URI),
+    // so every message about one download carries the exact `path` its
+    // `Started` did -- the host keys downloads by it. `received-data` fires
+    // repeatedly as bytes arrive; `received_data_length()` is WebKit's own
+    // running total. `finished` (not `estimated-progress` polling) is the
+    // completion signal.
     //
     // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
-    let pending_download: Rc<RefCell<Vec<DownloadEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let pending_download: Rc<RefCell<Vec<EngineToHost>>> = Rc::new(RefCell::new(Vec::new()));
+    let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
     if let Some(context) = &web_context {
         let pending_for_started = pending_download.clone();
         context.connect_download_started(move |_context, download| {
+            let dest_for_events: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
             let pending_for_destination = pending_for_started.clone();
+            let dest_for_destination = dest_for_events.clone();
+            let reserved_for_destination = reserved.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join("Downloads");
+                let dir = ipc_protocol::downloads::downloads_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                // Server-controlled -- only its final path component is
-                // ever used, same `..`/absolute-path guard as CEF's
-                // `on_before_download`.
-                let name = std::path::Path::new(suggested_filename)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("download");
-                let dest = dir.join(name);
-                download.set_destination(&format!("file://{}", dest.display()));
+                let dest = ipc_protocol::downloads::unique_path(
+                    &dir,
+                    &ipc_protocol::downloads::safe_name(suggested_filename),
+                    |p| p.exists() || reserved_for_destination.borrow().contains(p),
+                );
+                let Ok(uri) = gtk::glib::filename_to_uri(&dest, None) else { return false };
+                download.set_destination(&uri);
+                reserved_for_destination.borrow_mut().insert(dest.clone());
                 let path = dest.to_string_lossy().to_string();
+                *dest_for_destination.borrow_mut() = Some(path.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
                 let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
-                pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes, url });
+                pending_for_destination.borrow_mut().push(EngineToHost::DownloadStarted { path, total_bytes, url });
                 true
             });
 
             let pending_for_progress = pending_for_started.clone();
+            let dest_for_progress = dest_for_events.clone();
             download.connect_received_data(move |download, _data_length_delta| {
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                if let Some(path) = dest_for_progress.borrow().clone() {
                     let bytes_received = download.received_data_length();
-                    pending_for_progress.borrow_mut().push(DownloadEvent::Progress { path, bytes_received });
+                    pending_for_progress.borrow_mut().push(EngineToHost::DownloadProgress { path, bytes_received });
                 }
             });
 
@@ -141,22 +150,27 @@ fn main() {
             let failed = Rc::new(std::cell::Cell::new(false));
             let pending_for_failed = pending_for_started.clone();
             let failed_for_handler = failed.clone();
-            download.connect_failed(move |download, _error| {
+            let dest_for_failed = dest_for_events.clone();
+            download.connect_failed(move |_download, _error| {
                 failed_for_handler.set(true);
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
-                    pending_for_failed.borrow_mut().push(DownloadEvent::Failed { path });
+                if let Some(path) = dest_for_failed.borrow().clone() {
+                    pending_for_failed.borrow_mut().push(EngineToHost::DownloadFailed { path });
                 }
             });
 
             let pending_for_finished = pending_for_started.clone();
-            download.connect_finished(move |download| {
+            let reserved_for_finished = reserved.clone();
+            download.connect_finished(move |_download| {
+                // `finished` follows either outcome, so the name is freed here.
+                let dest = dest_for_events.borrow().clone();
+                if let Some(path) = &dest {
+                    reserved_for_finished.borrow_mut().remove(std::path::Path::new(path));
+                }
                 if failed.get() {
                     return;
                 }
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
-                    pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
+                if let Some(path) = dest {
+                    pending_for_finished.borrow_mut().push(EngineToHost::DownloadCompleted { path });
                 }
             });
         });
@@ -186,7 +200,10 @@ fn main() {
     // spawns a real child tab for `url` instead, once drained below).
     // A queue, not a single slot -- a page opening several tabs
     // synchronously would otherwise silently lose all but the last one.
-    let pending_open_tab: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    // Each entry is `(url, user_gesture)`; the host drops popups without a
+    // gesture (WebKit already blocks script popups by default, as
+    // `javascript-can-open-windows-automatically` is false).
+    let pending_open_tab: Rc<RefCell<Vec<(String, bool)>>> = Rc::new(RefCell::new(Vec::new()));
     {
         let pending_open_tab = pending_open_tab.clone();
         // Fully-qualified: `connect_create` also exists on gtk::atk's
@@ -195,7 +212,7 @@ fn main() {
         // can't disambiguate which trait's version to use here.
         <WebView as webkit2gtk::WebViewExt>::connect_create(&webview, move |_webview, nav_action| {
             if let Some(uri) = nav_action.request().and_then(|r| r.uri()) {
-                pending_open_tab.borrow_mut().push(uri.to_string());
+                pending_open_tab.borrow_mut().push((uri.to_string(), nav_action.is_user_gesture()));
             }
             None
         });
@@ -265,6 +282,9 @@ fn main() {
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
+    // The last frame sent and when (`frame_due`).
+    let mut last_sent: Option<SentFrame> = None;
+    let mut sent_at = Instant::now();
     // Last-sent NavigationStateChanged fields, compared each tick against
     // the WebView's live properties (`webview.uri()`/`title()`/
     // `is_loading()`/`can_go_back()`/`can_go_forward()`) rather than
@@ -331,11 +351,16 @@ fn main() {
                 }
                 HostToEngine::SetVisible(v) => {
                     visible = v;
+                    if v {
+                        // A tab shown again gets a frame at once, changed or not.
+                        last_sent = None;
+                    }
                 }
                 HostToEngine::GetState => {
                     let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
-                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url, zoom: webview.zoom_level() }));
+                    let _ = to_host.send(&EngineToHost::StateSnapshot(TabState { url }));
                 }
+                HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.
                 HostToEngine::QueryPageState => {
                     let pending = pending_page_state.clone();
                     webview.run_javascript(
@@ -463,8 +488,8 @@ fn main() {
             }
         }
 
-        for url in pending_open_tab.borrow_mut().drain(..) {
-            let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
+        for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
+            let _ = to_host.send(&EngineToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {
@@ -491,17 +516,8 @@ fn main() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
-        for event in pending_download.borrow_mut().drain(..) {
-            let msg = match event {
-                DownloadEvent::Started { path, total_bytes, url } => {
-                    EngineToHost::DownloadStarted { path, total_bytes, url }
-                }
-                DownloadEvent::Progress { path, bytes_received } => {
-                    EngineToHost::DownloadProgress { path, bytes_received }
-                }
-                DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
-                DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-            };
+        let download_msgs = std::mem::take(&mut *pending_download.borrow_mut());
+        for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = to_host.send(&msg);
         }
 
@@ -524,18 +540,23 @@ fn main() {
             // `FrameReady` message directly (no separate shared-memory
             // sizing contract for this RemoteTransport-based engine-host),
             // so there is no requirement that it match what was requested.
+            // Unchanged frames are not sent (`frame_due`).
             if let Some(pixbuf) = offscreen.pixbuf() {
                 let (pw, ph) = (pixbuf.width() as u32, pixbuf.height() as u32);
                 if pw > 0 && ph > 0 {
                     let pixels = tightly_packed_rgba(&pixbuf);
-                    frame_id += 1;
-                    let _ = to_host.send(&EngineToHost::FrameReady {
-                        frame_id,
-                        width: pw,
-                        height: ph,
-                        damage: None,
-                        pixels: Some(pixels),
-                    });
+                    if frame_due((pw, ph), &pixels, last_sent.as_ref(), sent_at.elapsed()) {
+                        frame_id += 1;
+                        let _ = to_host.send(&EngineToHost::FrameReady {
+                            frame_id,
+                            width: pw,
+                            height: ph,
+                            damage: None,
+                            pixels: Some(pixels.clone()),
+                        });
+                        last_sent = Some(SentFrame { size: (pw, ph), pixels });
+                        sent_at = Instant::now();
+                    }
                 }
             }
         }
@@ -573,4 +594,20 @@ fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_sent_only_when_it_changed_and_the_interval_passed() {
+        let last = SentFrame { size: (2, 1), pixels: vec![1; 8] };
+        let later = FRAME_INTERVAL;
+        assert!(frame_due((2, 1), &[1; 8], None, Duration::ZERO), "the first frame always goes");
+        assert!(!frame_due((2, 1), &[1; 8], Some(&last), later), "unchanged");
+        assert!(frame_due((2, 1), &[2; 8], Some(&last), later), "changed pixels");
+        assert!(frame_due((1, 2), &[1; 8], Some(&last), later), "changed size, same bytes");
+        assert!(!frame_due((2, 1), &[2; 8], Some(&last), Duration::from_millis(5)), "too soon");
+    }
 }

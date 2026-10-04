@@ -28,10 +28,10 @@ Each engine is in exactly one state, computed in one place (`engine_availability
 
 | State | Meaning | Shown as |
 |---|---|---|
-| **Installed** | present and matching the app's pin (bundled engines always) | no extra marker beyond the name |
+| **Installed** | present and matching the app's pin, or a later CEF major (see "Runtime compatibility"; bundled engines always) | no extra marker beyond the name |
 | **Not installed** | needs the download | "Not installed · 172 MB" with a Download button |
 | **Installing** | download or unpack in progress | progress bar with bytes; Cancel is in Settings, Engines only (the cards and pickers show the state line) |
-| **Update needed** | installed for an older pin (after an app update) | "Update needed · 172 MB" with an Update button |
+| **Update needed** | installed for an older pin (after an app update): an older CEF major, or another build of the pin's major | "Update needed · 172 MB" with an Update button |
 | **Failed** | last install failed | the reason and a Retry button |
 | **Custom** | using a user-chosen CEF directory | the path, with its validation result |
 | **Unavailable** | this OS cannot run the engine (see "Platforms") | dimmed (weak text) with "Unavailable: <reason>" on the state line |
@@ -53,7 +53,7 @@ A tab, session or restored node that needs a missing engine shows its card as "C
 
 ## 4. Lookup
 
-`engine_binary_path` (`process_manager.rs`) keeps its sibling-then-`engine-hosts/` order. The CEF host exe ships with the app; the runtime is resolved from the data directory, and only when the `ready` marker matches the pin. A stale or missing marker yields state Not installed or Update needed, never a spawn that crashes. The downloaded runtime holds no host exe (the archive has none), so at spawn the shipped host is copied into the runtime directory (`ensure_host_copy`): Windows resolves `libcef.dll` from the exe's own directory first. Linux's loader does not, so the host is linked with an rpath of `$ORIGIN` (`manifold-engine-cef/build.rs`), which makes the same copy work there (see "Platforms").
+`engine_binary_path` (`process_manager.rs`) keeps its sibling-then-`engine-hosts/` order. The CEF host exe ships with the app; the runtime is resolved from the data directory, and only when the `ready` marker matches the pin or names a later CEF major (see "Runtime compatibility"). A stale or missing marker yields state Not installed or Update needed, never a spawn that crashes; a tab refused for an Update-needed runtime says "Blink (CEF) needs an update" (card: "needs an update (click to download)"), not "is not installed". The downloaded runtime holds no host exe (the archive has none), so at spawn the shipped host is copied into the runtime directory (`ensure_host_copy`): Windows resolves `libcef.dll` from the exe's own directory first. Linux's loader does not, so the host is linked with an rpath of `$ORIGIN` (`manifold-engine-cef/build.rs`), which makes the same copy work there (see "Platforms").
 
 ## 5. Management
 
@@ -61,7 +61,7 @@ Settings shows installed size per downloaded engine and a Remove button (deletes
 
 ## 6. Bring-your-own
 
-A "CEF directory" setting accepts a runtime directory. Validation requires the platform's runtime library (`libcef.dll`, `libcef.so` on Linux) and reads the version from one of two sources, the same on every platform: `archive.json`'s `name` field (a runtime exported by the `cef` crate's tool; it wins when present, and an invalid one is refused rather than skipped), else our own `ready` marker (which holds the pin, so a runtime this app installed can be reused as a custom directory). Neither CDN archive (Windows, Linux) carries `archive.json`; a directory with neither source is refused, naming both. Reading the version out of `libcef` itself was skipped: it needs loading the library (`cef_version_info`) or scanning a 285 MB binary. The version is compared against the pin; a match is state Custom, a mismatch shows the found and expected versions and refuses it. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. The copy is made to a unique temp name and renamed, under a lock; a user's own `manifold-engine-cef.exe` in a custom folder is overwritten only when it differs from the shipped host (size or modification time), and a matching one is left alone even if a running host has it locked. Archive entry names containing `:` are refused when unpacking (drive-relative names and NTFS streams), and so are names containing `\` (a separator on Windows, an ordinary character on Linux; refused everywhere so both platforms agree).
+A "CEF directory" setting accepts a runtime directory. Validation requires the platform's runtime library (`libcef.dll`, `libcef.so` on Linux) and reads the version from one of two sources, the same on every platform: `archive.json`'s `name` field (a runtime exported by the `cef` crate's tool; it wins when present, and an invalid one is refused rather than skipped), else our own `ready` marker (which holds the pin, so a runtime this app installed can be reused as a custom directory). Neither CDN archive (Windows, Linux) carries `archive.json`; a directory with neither source is refused, naming both. Reading the version out of `libcef` itself was skipped: it needs loading the library (`cef_version_info`) or scanning a 285 MB binary. The version is compared against the pin by CEF major (`runtime_compat`, see "Runtime compatibility"): the pin's major or a later one is state Custom (a later one with the note "CEF N is newer than the tested 152.0.6" under the setting), an earlier major shows the found and expected versions and refuses it, and a version with no readable major is refused. A custom directory launches a copy of the host exe placed in that directory (same DLL search order reason as above), refreshed when the shipped host changes. The copy is made to a unique temp name and renamed, under a lock; a user's own `manifold-engine-cef.exe` in a custom folder is overwritten only when it differs from the shipped host (size or modification time), and a matching one is left alone even if a running host has it locked. Archive entry names containing `:` are refused when unpacking (drive-relative names and NTFS streams), and so are names containing `\` (a separator on Windows, an ordinary character on Linux; refused everywhere so both platforms agree).
 
 There is no auto-switch: after an install (or choosing a custom directory) the engine becomes available, but no tab, default or setting changes by itself.
 
@@ -106,7 +106,14 @@ Not verified on Linux: scrolling, a real desktop rather than WSLg, the sandbox w
 
 **Platform default.** A profile with no saved choice starts new tabs in the first engine of WebView2, Servo that the OS can run (`platform_default_engine`): WebView2 on Windows (unchanged), Servo elsewhere. CEF is never the default and WebKit needs setup. A `settings.json` without the field takes this default; a saved engine that is Unavailable here is kept as is (never replaced), Settings shows its Unavailable state on the default-engine row, and new tabs with it fail with the reason.
 
-**Re-pin burden.** The shipped host links one CEF build exactly, so every `cef` crate bump re-pins every pinned platform (one download each). The release checklist (README, "Branches") carries that line.
+**Re-pin burden.** The shipped host is built against one CEF build, so every `cef` crate bump re-pins every pinned platform (one download each). The release checklist (README, "Branches") carries that line.
+
+**Runtime compatibility (2026-10-04).** The host is built against one CEF API version (`CEF_API_VERSION_LAST`, 15200 for the `cef` crate 152.1.0+152.0.6), and its first call, `api_hash`, asks libcef for it. A libcef of that major serves it, and so do later ones while they keep 15200 in their supported range (`CEF_API_VERSION_MIN`..`LAST`); an earlier one does not. Experiment (`.superpowers/sdd/2026-10-04-review-scan-fixes/cef-compat-experiment.md`): a host built for 152 ran correctly on libcef 154.0.33 (page load, WebGL, find, context menu, download, clean shutdown, all as on 152), and on 151.3.24 libcef logged "Request for unsupported CEF API version 15200" and the host died about 0.4 s later on an assertion (exit `0x80000003`). With the check below, verified once against that real 151.3.24 runtime (Windows, 2026-10-04): libcef logs the same line, `api_hash` returns null without aborting, and the host prints its `HOST_FATAL` line and exits 1. The rule, one pure function `engine_install::runtime_compat(pin, runtime)` comparing the leading number of each version (Current, Newer, Older, Unknown):
+- *Downloaded runtime* (`runtime_state`, the `ready` marker, which keeps recording the installed pin): Installed for the pin or a later major (an install by a newer app, then a downgrade); Update needed for an earlier major, for another build of the pin's major (so a re-pin within a major still offers its update), and for an unreadable marker. Deliberately, a later build of the pin's major is Update needed too, and its update downloads the pin, an older build: the pin is what the app was tested with.
+- *Bring-your-own folder* (`validate_custom`): the pin's major (any build) or a later one is Custom; an earlier major is refused, naming both versions; a version with no readable major is refused.
+- *A runtime that can't serve 15200 anyway* (a folder mislabelled, a runtime replaced on disk, or a future major that dropped 15200): the host checks `api_hash`'s result (null for an unsupported version), writes one `ipc_protocol::HOST_FATAL` line, "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)", and exits 1. Only lines after the latest spawn header in the appended per-tab log count, so an earlier spawn's line is never reused. `connect_host` shows that line alone as the failure, so the failed card's tooltip and the toast read it. A log convention, not a protocol change.
+- The pin stays the version the app downloads; nothing downloads a newer one. Later majors are accepted while they keep 15200 in their supported range, untested beyond that one spike (154.0.33 on Windows); Settings says so for a newer custom folder.
+- Nothing requires `libEGL.dll`/`libGLESv2.dll`: CEF 154's minimal archive has neither (ANGLE seems to be inside libcef; WebGL still came up as ANGLE D3D11). The install copies whatever `Release/` holds, validation requires only the runtime library, and `scripts/sync-runtime-deps.sh` copies whatever the CEF build output holds (its libEGL/libGLESv2 lines are Servo's mozangle copies). `a_runtime_without_angle_dlls_counts_as_installed` pins this down.
 
 **Product position.** CEF is offered as an opt-in advanced engine, never the default. WebView2 stays the Windows default, and where nothing comparable ships with the OS the defaults are decided separately. Re-pinning is part of the release checklist, not left to whoever notices the test fail.
 
@@ -121,4 +128,28 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 - **Launching verified (2026-10-02):** a real CEF host ran and loaded a page from a runtime unpacked by `unpack` into the data directory, and from a custom directory (with the host copied in). The first attempt failed: no code put a host beside the downloaded runtime (spawn looked for `engine-hosts/cef-runtime/manifold-engine-cef.exe`), fixed in `process_manager::spawn_tab` with `host_home`/`shipped_cef_host`.
 - Whether to trim locales or other files after unpack.
 - Where the Settings "Engines" section lives relative to the existing sections.
-- Servo and WebKit availability: both "Installed" where the OS can run them, else Unavailable; the same states apply if either ever becomes downloadable.
+- Servo and WebKit availability: WebKit is "Installed" where the OS can run it, else Unavailable. Servo is "Installed"
+  when its host exe is present (`engine_binary_path`: beside the app, else `engine-hosts/`), Unavailable ("the Servo
+  host wasn't found") otherwise, on every OS (2026-10-04). The same states apply if either ever
+  becomes downloadable.
+
+## System-library preflight (2026-10-02)
+
+CEF on Linux needs `libnss3` and `libnspr4` from the system. `CefPlatform::system_libs` lists them (empty on Windows).
+`missing_system_libs()` reads `ldconfig -p` (cached 10 s) and the Download confirm dialog adds a "Missing system
+libraries: ..." line before the 321 MB download. It is a warning, not a block: if `ldconfig` cannot be run, nothing is
+shown, since unknown is not missing. Checked in WSL with a stub `ldconfig` that omits `libnspr4.so`: it reports exactly that one; real `ldconfig` reports none. The dialog text is unit-tested; the rendered dialog was not viewed.
+
+## Windows package install check (2026-10-02)
+
+From the unzipped `manifold-v0.1.0-windows-x64.zip` with a temp `APPDATA`: `INSTALLENGINE cef` went Installing 0% to Installed in 63 s
+(405 MB on disk, `libcef.dll`, `ready` and a host copy in `data/engine-hosts/cef-runtime`). A restart with a CEF tab on a local
+page then loaded it (the page reported `load y=0`) and exited cleanly with no manifold process left. The temp profile was deleted.
+
+## Two parked defects fixed (2026-10-02)
+
+- The bring-your-own CEF directory's verdict was cached until the path changed, so deleting or replacing the folder left
+  CEF reading as Custom. It now expires after `CEF_DIR_CHECK_TTL` (5 s) and the disk is read again.
+- A corrupt tar header (`ErrorKind::Other`, e.g. a bad checksum) was classified as `Io`, which `install` retries without
+  downloading again, so a bad archive would loop. Errors from reading the tar itself (`entries`, `entry`, `path`) are now
+  always `Unpack`; only the copy into a file still sorts by error kind.

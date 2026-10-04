@@ -45,6 +45,13 @@ fn key_event(type_: KeyEventType, key: KeyCode, modifiers: u8, character: u16) -
     }
 }
 
+/// `codepoint` as UTF-16 code units: Windows delivers a character outside
+/// the BMP as two WM_CHARs (a surrogate pair), and CEF's KEYEVENT_CHAR takes
+/// one unit each. Empty for a value that isn't a character.
+fn utf16_units(codepoint: u32) -> Vec<u16> {
+    char::from_u32(codepoint).map(|c| c.encode_utf16(&mut [0; 2]).to_vec()).unwrap_or_default()
+}
+
 /// Translates and dispatches one `ipc_protocol::InputEvent` onto a live CEF
 /// `Browser` — mirrors `manifold-engine-servo`'s `translate_input_event`, just
 /// dispatching directly instead of returning a value, since CEF's
@@ -59,13 +66,13 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_move_event(Some(&mouse_event), 0);
         }
-        InputEvent::MouseDown { x, y, button, modifiers } => {
+        InputEvent::MouseDown { x, y, button, modifiers, click_count } => {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
-            host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 0, 1);
+            host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 0, click_count as i32);
         }
-        InputEvent::MouseUp { x, y, button, modifiers } => {
+        InputEvent::MouseUp { x, y, button, modifiers, click_count } => {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
-            host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 1, 1);
+            host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 1, click_count as i32);
         }
         InputEvent::Scroll { x, y, delta_x, delta_y, modifiers } => {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
@@ -88,19 +95,34 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
             // CEF's KEYEVENT_CHAR takes the produced character directly in
             // `character` - the physical key is irrelevant here (matches
             // KeyDown/KeyUp's own key field being unused for CHAR events in
-            // CEF's own model).
-            let e = KeyEvent {
-                size: std::mem::size_of::<KeyEvent>(),
-                type_: KeyEventType::CHAR,
-                modifiers: 0,
-                windows_key_code: codepoint as i32,
-                native_key_code: 0,
-                is_system_key: 0,
-                character: codepoint as u16,
-                unmodified_character: codepoint as u16,
-                focus_on_editable_field: 0,
-            };
-            host.send_key_event(Some(&e));
+            // CEF's own model). One event per UTF-16 unit, so an emoji
+            // arrives as its surrogate pair (`utf16_units`).
+            for unit in utf16_units(codepoint) {
+                let e = KeyEvent {
+                    size: std::mem::size_of::<KeyEvent>(),
+                    type_: KeyEventType::CHAR,
+                    modifiers: 0,
+                    windows_key_code: unit as i32,
+                    native_key_code: 0,
+                    is_system_key: 0,
+                    character: unit,
+                    unmodified_character: unit,
+                    focus_on_editable_field: 0,
+                };
+                host.send_key_event(Some(&e));
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn astral_characters_become_surrogate_pairs() {
+        assert_eq!(utf16_units(0x1F600), vec![0xD83D, 0xDE00]);
+        assert_eq!(utf16_units('a' as u32), vec![0x61]);
+        assert!(utf16_units(0xD800).is_empty(), "a lone surrogate isn't a character");
     }
 }

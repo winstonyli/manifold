@@ -45,9 +45,11 @@ pub fn send_input(
     // feature actually needs: whether the click landed on a link.
     if let InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } = event {
         let pending = pending_context_menu.clone();
+        let zoom = webview.zoom_level().max(0.01);
+        // InputEvent coordinates are surface pixels; elementFromPoint takes CSS pixels, which page zoom scales.
         webview.run_javascript(
             &format!(
-                "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
+                "(function(){{var e=document.elementFromPoint({x}/{zoom},{y}/{zoom});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             ),
             gtk::gio::Cancellable::NONE,
             move |result| {
@@ -63,7 +65,7 @@ pub fn send_input(
     }
 
     match event {
-        InputEvent::MouseMove { x, y, .. } => {
+        InputEvent::MouseMove { x, y, modifiers } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -71,21 +73,28 @@ pub fn send_input(
                 x,
                 y,
                 0,
-                gdk::ModifierType::empty(),
+                modifiers_to_gdk(modifiers),
             );
         }
-        InputEvent::MouseDown { x, y, button, .. } => {
-            send_button_or_motion_event(
-                &window,
-                pointer_device,
-                gdk::EventType::ButtonPress,
-                x,
-                y,
-                mouse_button_to_gdk(button),
-                gdk::ModifierType::empty(),
-            );
+        InputEvent::MouseDown { x, y, button, modifiers, click_count } => {
+            let (button, state) = (mouse_button_to_gdk(button), modifiers_to_gdk(modifiers));
+            send_button_or_motion_event(&window, pointer_device, gdk::EventType::ButtonPress, x, y, button, state);
+            // GDK3 follows the second press of a double click with a
+            // `2BUTTON_PRESS`, and that is what WebKitGTK counts as a double
+            // click (word selection, `dblclick`).
+            if click_count == 2 {
+                send_button_or_motion_event(
+                    &window,
+                    pointer_device,
+                    gdk::EventType::DoubleButtonPress,
+                    x,
+                    y,
+                    button,
+                    state,
+                );
+            }
         }
-        InputEvent::MouseUp { x, y, button, .. } => {
+        InputEvent::MouseUp { x, y, button, modifiers, .. } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -93,7 +102,7 @@ pub fn send_input(
                 x,
                 y,
                 mouse_button_to_gdk(button),
-                gdk::ModifierType::empty(),
+                modifiers_to_gdk(modifiers),
             );
         }
         InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
@@ -133,7 +142,7 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
     state
 }
 
-/// Letters/digits/space deliberately do *not* map to their own real keyval
+/// Letters/digits/space (`KeyCode::produces_text`) deliberately do *not* map to their own real keyval
 /// here (`GDK_KEY_a` etc.) — GTK's input-method handling reads a
 /// `GdkEventKey`'s keyval directly to decide what text to insert, so a
 /// real letter keyval on `KeyDown` inserts text *in addition to* the
@@ -150,44 +159,10 @@ fn modifiers_to_gdk(bits: u8) -> gdk::ModifierType {
 /// from "produced text".
 fn key_to_gdk_keyval(key: KeyCode) -> Option<u32> {
     use gdk::ffi::*;
+    if key.produces_text() {
+        return Some(GDK_KEY_VoidSymbol as u32);
+    }
     let keyval = match key {
-        KeyCode::KeyA
-        | KeyCode::KeyB
-        | KeyCode::KeyC
-        | KeyCode::KeyD
-        | KeyCode::KeyE
-        | KeyCode::KeyF
-        | KeyCode::KeyG
-        | KeyCode::KeyH
-        | KeyCode::KeyI
-        | KeyCode::KeyJ
-        | KeyCode::KeyK
-        | KeyCode::KeyL
-        | KeyCode::KeyM
-        | KeyCode::KeyN
-        | KeyCode::KeyO
-        | KeyCode::KeyP
-        | KeyCode::KeyQ
-        | KeyCode::KeyR
-        | KeyCode::KeyS
-        | KeyCode::KeyT
-        | KeyCode::KeyU
-        | KeyCode::KeyV
-        | KeyCode::KeyW
-        | KeyCode::KeyX
-        | KeyCode::KeyY
-        | KeyCode::KeyZ
-        | KeyCode::Digit0
-        | KeyCode::Digit1
-        | KeyCode::Digit2
-        | KeyCode::Digit3
-        | KeyCode::Digit4
-        | KeyCode::Digit5
-        | KeyCode::Digit6
-        | KeyCode::Digit7
-        | KeyCode::Digit8
-        | KeyCode::Digit9
-        | KeyCode::Space => GDK_KEY_VoidSymbol,
         KeyCode::Enter => GDK_KEY_Return,
         KeyCode::Backspace => GDK_KEY_BackSpace,
         KeyCode::Tab => GDK_KEY_Tab,
@@ -207,6 +182,8 @@ fn key_to_gdk_keyval(key: KeyCode) -> Option<u32> {
         KeyCode::ControlRight => GDK_KEY_Control_R,
         KeyCode::AltLeft => GDK_KEY_Alt_L,
         KeyCode::AltRight => GDK_KEY_Alt_R,
+        // Text keys returned above; a new non-text key lands here until it gets its own arm.
+        _ => GDK_KEY_VoidSymbol,
     };
     Some(keyval as u32)
 }
@@ -245,7 +222,7 @@ fn send_button_or_motion_event(
                 (*raw).state = state.into_glib();
                 (*raw).is_hint = 0;
             }
-            gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease => {
+            gdk::EventType::ButtonPress | gdk::EventType::DoubleButtonPress | gdk::EventType::ButtonRelease => {
                 let any: *mut gdk::ffi::GdkEvent = ev.to_glib_none_mut().0;
                 let raw = any as *mut gdk::ffi::GdkEventButton;
                 (*raw).window = window.to_glib_full();

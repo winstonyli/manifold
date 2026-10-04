@@ -20,16 +20,22 @@ const TABLE: [u32; 256] = {
 };
 
 pub fn crc32c(data: &[u8]) -> u32 {
+    crc32c_append(0, data)
+}
+
+/// The CRC of `prefix ‖ data`, given `crc = crc32c(prefix)`: checksums a message in pieces
+/// without copying them together.
+pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("sse4.2") {
         // SAFETY: the CPU was just checked for SSE4.2.
-        return unsafe { sse42(data) };
+        return unsafe { sse42(crc, data) };
     }
-    table(data)
+    table(crc, data)
 }
 
-fn table(data: &[u8]) -> u32 {
-    let mut c = !0u32;
+fn table(crc: u32, data: &[u8]) -> u32 {
+    let mut c = !crc;
     for &b in data {
         c = TABLE[((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8);
     }
@@ -38,10 +44,10 @@ fn table(data: &[u8]) -> u32 {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.2")]
-fn sse42(data: &[u8]) -> u32 {
+fn sse42(crc: u32, data: &[u8]) -> u32 {
     use std::arch::x86_64::{_mm_crc32_u64, _mm_crc32_u8};
     let (words, rest) = data.as_chunks::<8>();
-    let mut c = u64::from(!0u32);
+    let mut c = u64::from(!crc);
     for word in words {
         c = _mm_crc32_u64(c, u64::from_le_bytes(*word));
     }
@@ -69,6 +75,18 @@ mod tests {
     }
 
     #[test]
+    fn appending_equals_one_pass() {
+        let mut rng = XorShift(7);
+        for len in 0..200 {
+            let data: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            let split = if len == 0 { 0 } else { rng.below(len as u64 + 1) as usize };
+            let (a, b) = data.split_at(split);
+            assert_eq!(crc32c_append(crc32c(a), b), crc32c(&data), "len {len} split {split}");
+            assert_eq!(crc32c_append(0, &data), crc32c(&data));
+        }
+    }
+
+    #[test]
     fn sse42_path_equals_table_path() {
         #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("sse4.2") {
@@ -76,7 +94,10 @@ mod tests {
             for len in 0..300 {
                 let data: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
                 // SAFETY: checked for SSE4.2 above.
-                assert_eq!(unsafe { sse42(&data) }, table(&data), "len {len}");
+                assert_eq!(unsafe { sse42(0, &data) }, table(0, &data), "len {len}");
+                let start = rng.next() as u32;
+                // SAFETY: checked for SSE4.2 above.
+                assert_eq!(unsafe { sse42(start, &data) }, table(start, &data), "len {len} from {start:#x}");
             }
         }
     }

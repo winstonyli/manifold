@@ -20,6 +20,10 @@ pub(crate) struct AddressBar {
     /// Reset whenever the list changes or the dropdown closes, so a stale
     /// index can't point at an unrelated row.
     pub(crate) highlighted: Option<usize>,
+    /// Frames in a row the field hasn't had focus. The dropdown survives one
+    /// (egui's focus blip as its buttons appear, see `editing`) and closes
+    /// after that: a click into the page must dismiss it.
+    pub(crate) unfocused_frames: u8,
 }
 
 impl AddressBar {
@@ -31,6 +35,17 @@ impl AddressBar {
             search_suggestions: Vec::new(),
             fetcher: SuggestionFetcher::new(),
             highlighted: None,
+            unfocused_frames: 0,
+        }
+    }
+
+    /// Records this frame's focus; dismisses the dropdown once focus has
+    /// been away for more than one frame.
+    pub(crate) fn note_focus(&mut self, has_focus: bool) {
+        self.focused = has_focus;
+        self.unfocused_frames = if has_focus { 0 } else { self.unfocused_frames.saturating_add(1) };
+        if self.unfocused_frames > 1 && (!self.open_tab_suggestions.is_empty() || !self.search_suggestions.is_empty()) {
+            self.dismiss();
         }
     }
 
@@ -100,6 +115,8 @@ pub(crate) struct ItemToolbarActions {
     pub(crate) home_requested: bool,
     pub(crate) enter_pressed: bool,
     pub(crate) toggle_bookmark_requested: bool,
+    /// The jar dot was clicked while the tab waits to switch: "Switch Jar Now".
+    pub(crate) switch_jar: bool,
     pub(crate) close_split_requested: bool,
     /// The Graph button inside the Tab toolbar's nav chip was clicked.
     pub(crate) back_to_graph: bool,
@@ -341,6 +358,33 @@ impl App {
         if bookmark.clicked() {
             actions.toggle_bookmark_requested = true;
         }
+        // The jar dot, beside the address bar (spec "UI"): the card chip's dots (`card::paint_jar_dots`, so a tab
+        // waiting to switch shows its old jar's dot, an arrow, then the new one), its name and warnings as hover text.
+        // A click switches a tab that is waiting to, unless another host change is already on its way.
+        if let Some(chip) = self.jar_chip(focused_id) {
+            let text = trailing_ui.visuals().text_color();
+            let arrow =
+                crate::card::jar_chip_arrow(trailing_ui.painter(), &chip, egui::FontId::proportional(11.0), text);
+            let width = crate::card::jar_dots_width(arrow.as_deref()) + 8.0;
+            let (rect, response) = trailing_ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
+            let warn = trailing_ui.visuals().warn_fg_color;
+            crate::card::paint_jar_dots(
+                trailing_ui.painter(),
+                rect.left() + 4.0,
+                rect.center().y,
+                &chip,
+                arrow,
+                text,
+                warn,
+            );
+            let font = egui::FontSelection::Default.resolve(&trailing_ui.ctx().global_style());
+            let response = response.on_hover_text(chip.hover_job(font, trailing_ui.visuals().weak_text_color()));
+            let response =
+                if chip.can_switch_now { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+            if response.clicked() {
+                actions.switch_jar = chip.can_switch_now;
+            }
+        }
         let trailing_width = trailing_ui.min_rect().width();
 
         // Now the address bar gets whatever's actually left,
@@ -373,7 +417,11 @@ impl App {
         if take_focus(&mut self.pending_focus, FocusTarget::AddressBar) {
             response.request_focus();
         }
-        self.address_bar.focused = response.has_focus();
+        // Egui's own focus, not `response.has_focus()`: that is also false while
+        // the OS window is unfocused, yet the field keeps its edit, so switching
+        // windows mid-edit would close the dropdown and resync the typed text
+        // away. A click into the page goes through egui and does move focus.
+        self.address_bar.note_focus(ui.memory(|m| m.has_focus(response.id)));
         actions.address_bar_rect = Some(response.rect);
         let identity = egui::Rect::from_center_size(
             egui::pos2(response.rect.min.x + 8.0 + FAVICON_SIZE.x / 2.0, response.rect.center().y),
@@ -386,7 +434,7 @@ impl App {
             .cached_favicon_origin(&node.url.clone())
             .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
         {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let uv = crate::card::FULL_UV;
             ui.painter().image(tex_id, identity, uv, egui::Color32::WHITE);
         }
         if !response.has_focus() {
@@ -463,6 +511,7 @@ impl App {
                     home_requested,
                     enter_pressed,
                     toggle_bookmark_requested,
+                    switch_jar,
                     close_split_requested,
                     // Folded into `back_to_graph` by `render_item_toolbar`.
                     back_to_graph: _,
@@ -584,6 +633,9 @@ impl App {
         if toggle_bookmark_requested {
             self.toggle_bookmark(&focused_id);
         }
+        if switch_jar {
+            self.switch_jar_now(&focused_id);
+        }
         let ctx = ui.ctx().clone();
         if let Some((rect, fade)) = self.anchored_popup_fade(&ctx, AnchoredPopup::TabActions, tab_actions_button_rect) {
             self.build_tab_actions_popup(ui, rect, &focused_id, fade);
@@ -649,8 +701,10 @@ impl App {
         address_bar_rect: Option<egui::Rect>,
         focused_id: &str,
     ) {
-        let arrow_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-        let arrow_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+        // The arrows are the field's only while it has focus (or is in its one-frame blip).
+        let live = self.address_bar.unfocused_frames <= 1;
+        let arrow_down = live && ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+        let arrow_up = live && ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
         if arrow_down {
             self.address_bar.highlighted = Some(match self.address_bar.highlighted {
                 Some(i) if i + 1 < combined.len() => i + 1,
@@ -752,5 +806,24 @@ impl App {
                 ui.add(egui::Spinner::new().size(32.0));
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review C-B6: the dropdown survives one unfocused frame (the focus blip) but not two.
+    #[test]
+    fn the_dropdown_closes_after_focus_stays_away() {
+        let mut bar = AddressBar::new(String::new());
+        bar.search_suggestions = vec!["rust".into()];
+        bar.note_focus(false);
+        assert!(bar.editing(), "one frame is the known blip");
+        bar.note_focus(true);
+        bar.note_focus(false);
+        assert!(bar.editing(), "regaining focus starts the count again");
+        bar.note_focus(false);
+        assert!(!bar.editing(), "dismissed");
     }
 }

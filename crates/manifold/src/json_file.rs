@@ -33,9 +33,11 @@ pub fn load<T: DeserializeOwned>(path: &Path, what: &str) -> Result<T, String> {
 /// `<stem>.unreadable-<unix-seconds>.json` and comes back as `Err`. Left in
 /// place, the first save after the fresh start would overwrite it: the
 /// fingerprint guards in `App::save_session`/`save_settings` only cover a
-/// file this run has loaded.
+/// file this run has loaded. Only a file known to be missing is a fresh
+/// start: one whose metadata can't be read (`try_exists` errs, say access
+/// denied) goes on to the load, so its error is reported, not hidden.
 pub fn load_or_move_aside<T: DeserializeOwned>(path: &Path, what: &str) -> Result<Option<T>, String> {
-    if !path.exists() {
+    if matches!(path.try_exists(), Ok(false)) {
         return Ok(None);
     }
     let err = match load(path, what) {
@@ -72,7 +74,7 @@ pub fn save<T: Serialize + ?Sized>(value: &T, path: &Path, what: &str) {
         Ok(json) => json,
         Err(err) => return eprintln!("{what}: failed to serialize: {err}"),
     };
-    if let Err(err) = crate::store::local::replace(path, json.as_bytes()) {
+    if let Err(err) = crate::store::atomic::replace(path, json.as_bytes()) {
         eprintln!("{what}: failed to write {}: {err}", path.display());
     }
 }
@@ -98,6 +100,17 @@ mod tests {
         std::fs::write(&path, "[1, 2]").unwrap();
         assert_eq!(load_or_move_aside::<Vec<u32>>(&path, "thing"), Ok(Some(vec![1, 2])));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A path whose existence can't be told (here a name too long for any file system) isn't read as missing:
+    /// the error comes back rather than a fresh start that a later save would write over the file with.
+    #[test]
+    fn a_path_that_cant_be_checked_is_not_missing() {
+        let dir = crate::store::testutil::temp_dir("json-unknown");
+        let path = dir.join(format!("{}.json", "x".repeat(300)));
+        assert!(path.try_exists().is_err(), "the premise: no metadata for this name");
+        let err = load_or_move_aside::<Vec<u32>>(&path, "thing").unwrap_err();
+        assert!(err.starts_with("Couldn't load thing "), "{err}");
     }
 
     #[test]

@@ -8,8 +8,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use ipc_protocol::nav_label::{NavLabel, GESTURE_WINDOW};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2NavigationStartingEventArgs, ICoreWebView2SourceChangedEventArgs,
 };
@@ -25,59 +26,21 @@ pub struct NavState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub loading: bool,
-    /// Whether the current navigation was user-started, sent as
-    /// `NavigationStateChanged::user_started`. Set when a navigation starts
-    /// and kept through its redirects; cleared once its completion has been
-    /// sent (`finished`), so a later change nothing started isn't labelled.
-    pub user_started: Option<bool>,
-    /// The label of a navigation the host just asked for, and when:
-    /// `false` for `Navigate` (a typed url, another instance's url, the
-    /// initial load), `true` for back/forward. It applies to the next
-    /// navigation or same-document url change within `HOST_START_WINDOW`:
-    /// a request can change nothing (`Navigate` to the current url), and a
-    /// stale label would mislabel the user's next click.
-    pub host_started: Option<(bool, Instant)>,
-    /// When the page last got a click or a key press (`main.rs`). A
-    /// navigation or same-document url change that starts within
-    /// `GESTURE_WINDOW` of it is the user's, and uses it up, as a new
-    /// document starts without Chromium's transient user activation. WebView2's own `IsUserInitiated` can't
-    /// say: it was true even for a page's `setTimeout` navigation in a tab
-    /// that never got any input (runtime tested 2026-09-26).
-    pub last_input: Option<Instant>,
-    /// The current navigation completed; `main.rs` clears `user_started`
-    /// after sending it.
-    pub finished: bool,
+    /// Who started the current navigation. WebView2 has no gesture flag to
+    /// trust: `IsUserInitiated` was true even for a page's `setTimeout`
+    /// navigation in a tab that never got any input (runtime tested
+    /// 2026-09-26), so labelling rests on `last_input` (set from `main.rs`),
+    /// which a new document uses up as it starts without Chromium's
+    /// transient user activation.
+    pub label: NavLabel,
     pub dirty: bool,
 }
 
-/// See `NavState::host_started`: long enough for a navigation to start,
-/// short enough that a click after a request that changed nothing isn't
-/// taken for the host's.
-const HOST_START_WINDOW: Duration = Duration::from_secs(2);
-
-/// See `NavState::last_input`: Chromium's own lifespan for transient user
-/// activation, which covers a click whose handler navigates only after a
-/// fetch. It also covers a page's own timer navigation within 5 s of a
-/// click or key press, as Chromium does: CEF's `user_gesture` labelled a
-/// fetch-then-navigate click, a timer 3 s after a click and one 2 s after a
-/// key press all as user-started (runtime tested 2026-09-26). Too long
-/// only shares one navigation too many: the one it starts in another
-/// instance is the host's, and never shared back.
-const GESTURE_WINDOW: Duration = Duration::from_secs(5);
-
 impl NavState {
-    /// A navigation is started and not yet finished.
-    fn under_way(&self) -> bool {
-        self.user_started.is_some() && !self.finished
-    }
-
-    /// Labels a navigation starting now: the host's label if it just asked
-    /// for one, else the user's if they just clicked or typed.
-    fn label_new(&mut self) {
-        let host = self.host_started.take().filter(|(_, at)| at.elapsed() < HOST_START_WINDOW);
-        let input = self.last_input.take().is_some_and(|at| at.elapsed() < GESTURE_WINDOW);
-        self.user_started = Some(host.map_or(input, |(label, _)| label));
-        self.finished = false;
+    /// The page got a click or key press within `GESTURE_WINDOW`; unlike
+    /// `NavLabel::label_new`, doesn't use it up (`popup.rs`).
+    pub fn had_recent_input(&self) -> bool {
+        self.label.last_input.is_some_and(|at| at.elapsed() < GESTURE_WINDOW)
     }
 }
 
@@ -90,10 +53,7 @@ pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
         can_go_back: false,
         can_go_forward: false,
         loading: false,
-        user_started: None,
-        host_started: Some((false, Instant::now())), // `main.rs` navigates to `initial_url` next
-        last_input: None,
-        finished: false,
+        label: NavLabel::created_by_host(Instant::now()), // `main.rs` navigates to `initial_url` next
         dirty: false,
     }))
 }
@@ -174,8 +134,8 @@ pub fn register_handlers(
             // its label, while that one is under way. WebView2 also calls a
             // page script's navigation just after the load a redirect (a
             // client redirect); that one gets its own.
-            if !(redirected && s.under_way()) {
-                s.label_new();
+            if !(redirected && s.label.under_way()) {
+                s.label.label_new(None, Instant::now());
             }
             s.url = url;
             s.loading = true;
@@ -198,7 +158,7 @@ pub fn register_handlers(
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
-            s.finished = true;
+            s.label.finished = true;
             if let Some(sender) = &sender {
                 let mut uri = PWSTR::null();
                 if unsafe { sender.Source(&mut uri) }.is_ok() {
@@ -295,9 +255,9 @@ pub fn register_handlers(
             // During a load it is part of that navigation (a router
             // rewriting the url as the page starts); otherwise it is a
             // navigation of its own, already complete.
-            if !s.under_way() {
-                s.label_new();
-                s.finished = true;
+            if !s.label.under_way() {
+                s.label.label_new(None, Instant::now());
+                s.label.finished = true;
             }
             s.url = take_pwstr(uri);
             s.dirty = true;

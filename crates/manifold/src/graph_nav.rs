@@ -80,6 +80,7 @@ impl App {
     pub(crate) fn eject(&mut self, id: &str) {
         remove_from_group(&mut self.nodes, id);
         self.selected_tabs.remove(id);
+        self.refollow(id);
     }
 
     /// What a drop moves along with `id`: the whole rectangle selection
@@ -104,6 +105,7 @@ impl App {
                     if let Some(node) = self.nodes.get_mut(&member) {
                         node.group = Some(group.clone());
                     }
+                    self.refollow(&member);
                 }
             }
             Some((DropEffect::GroupWith, Some(other))) => {
@@ -115,6 +117,7 @@ impl App {
                     if let Some(node) = self.nodes.get_mut(&member) {
                         node.group = Some(group.clone());
                     }
+                    self.refollow(&member);
                 }
             }
             Some((DropEffect::Reparent, Some(parent))) => {
@@ -144,14 +147,20 @@ impl App {
             }
             ancestor = self.nodes.get(&cur).and_then(|n| n.group.clone());
         }
-        for node in self.nodes.values_mut() {
+        let mut moved = Vec::new();
+        for (id, node) in self.nodes.iter_mut() {
             if node.group.as_deref() == Some(source) {
                 node.group = Some(target.to_string());
+                moved.push(id.clone());
             }
         }
         self.nodes.remove(source);
         self.node_order.retain(|g| g != source);
         self.forget_removed_group(source);
+        // Only the members that moved: `target`'s own tabs keep their jar (deviation 12).
+        for member in moved {
+            self.refollow(&member);
+        }
     }
 
     /// Would setting `node_id`'s parent to `new_parent_id` create a cycle?
@@ -195,6 +204,7 @@ impl App {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.payload {
+                // name rule: drawn by display_name in toolbar_breadcrumb
                 NodePayload::Group(group) => group.name.clone(),
                 NodePayload::Json(json) => download_filename(&json.path).to_string(),
                 _ => String::new(),

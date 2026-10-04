@@ -4,6 +4,7 @@ mod context_menu_handler;
 mod download_handler;
 mod find_handler;
 mod input;
+mod jar_cookies;
 mod life_span_handler;
 mod nav_handler;
 mod render_handler;
@@ -28,6 +29,8 @@ use nav_handler::{new_shared_muted, new_shared_nav_state};
 use render_handler::EngineRenderHandler;
 use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE};
 
+/// How long a host started with `ENGINE_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
 /// How often to poll for audio-playing state -- see `ipc_protocol::
@@ -62,10 +65,32 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
     }
 }
 
+/// Whether libcef answered `api_hash` with a hash. A runtime that doesn't support the requested API
+/// version (an older CEF, e.g. 151.3.24 for 15200: verified 2026-10-04) logs "Request for unsupported CEF API
+/// version N" and returns null; without this check the next CEF call died on an assertion (exit 0x80000003).
+fn api_hash_found(hash: *const std::ffi::c_char) -> bool {
+    // SAFETY: a non-null result is a NUL-terminated string owned by libcef (cef_api_hash.h).
+    !hash.is_null() && !unsafe { std::ffi::CStr::from_ptr(hash) }.to_bytes().is_empty()
+}
+
+/// The reason a runtime without our API version gets. Usually that's an older CEF, but a future one may
+/// drop this version from its supported range, so it doesn't say "too old". API version `NNNXX` is CEF `NNN`'s.
+fn unsupported_api_message(api_version: i32) -> String {
+    format!(
+        "CEF runtime doesn't support CEF API version {api_version} (the host was built for CEF {})",
+        api_version / 100
+    )
+}
+
 fn main() {
     // Matches cefsimple's shared::load_cef(): initializes the CEF API
-    // version before any other CEF call.
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+    // version before any other CEF call. A runtime that can't serve it
+    // fails cleanly here, with one `HOST_FATAL` line that manifold shows
+    // as the reason, instead of on the next CEF call's assertion.
+    if !api_hash_found(api_hash(sys::CEF_API_VERSION_LAST, 0)) {
+        eprintln!("{}{}", ipc_protocol::HOST_FATAL, unsupported_api_message(sys::CEF_API_VERSION_LAST));
+        std::process::exit(1);
+    }
 
     let args = Args::new();
     let cmd = args.as_cmd_line().expect("cef command line");
@@ -133,10 +158,10 @@ fn main() {
         root_cache_path: cache_dir.as_str().into(),
         windowless_rendering_enabled: true as _,
         external_message_pump: true as _,
-        // We disabled the `sandbox` cargo feature (it needs a separate
-        // bootstrap-process bundling step we're not doing), so CEF must be
-        // told explicitly not to expect one — otherwise it CHECK()-fails
-        // almost immediately trying to initialize sandbox-dependent state.
+        // The `sandbox` cargo feature is off (it needs a separate bootstrap
+        // process this project doesn't bundle), so CEF must be told not to
+        // expect one, or it CHECK()-fails at startup. Renderers run
+        // unsandboxed: README, Known limitations.
         no_sandbox: true as _,
         ..Default::default()
     };
@@ -177,6 +202,21 @@ fn main() {
         ..Default::default()
     };
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
+    // Cookie-jar seeding: manifold sends `SetCookies` as its very first message to hosts started with
+    // `ENGINE_AWAIT_COOKIES`. Wait for it (bounded) so the cookies are in place before the first navigation.
+    // Any other first message is kept for the loop below rather than dropped.
+    let mut first_message: Option<HostToEngine> = None;
+    // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
+    let mut may_hold_cookies = false;
+    if std::env::var_os("ENGINE_AWAIT_COOKIES").is_some() {
+        match ipc_protocol::transport::wait_for_first_message(&rx, COOKIE_SEED_WAIT, do_message_loop_work) {
+            Some(HostToEngine::SetCookies(json)) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
+            Some(other) => first_message = Some(other),
+            None => eprintln!("jar: no seed received"),
+        }
+    }
+    let mut pull: Option<jar_cookies::JarPull> = None;
+
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut ClientBuilder::build(
@@ -201,37 +241,43 @@ fn main() {
     .expect("create CEF browser");
 
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    let mut frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .expect("create shared frame buffer");
+    // Whether the last recreate failed: a run of failures (one per frame) logs only its first.
+    let mut recreate_failing = false;
+    // `None` only while a recreate at a new size fails (retried on the next frame); the first one is fatal.
+    let mut frame_buffer = Some(
+        ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+            .expect("create shared frame buffer"),
+    );
     let mut frame_id: u64 = 0;
     // M5: background tabs stay alive but stop sending frames; see
     // HostToEngine::SetVisible's doc comment.
     let mut visible = true;
     // Set once `HostToEngine::Shutdown` calls `close_browser` -- the loop
     // keeps pumping (`do_message_loop_work` below) until `closed` flips,
-    // which is what actually drives `on_before_close` to fire.
-    let mut shutting_down = false;
+    // which is what actually drives `on_before_close` to fire, or until
+    // `SHUTDOWN_GRACE` passes (`shutdown_due`).
+    let mut shutting_down: Option<std::time::Instant> = None;
 
     loop {
         do_message_loop_work();
 
-        while let Ok(msg) = rx.try_recv() {
+        while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToEngine::Navigate { url, .. } => {
-                    nav_state.borrow_mut().host_started = Some((false, std::time::Instant::now()));
+                    nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
                     if let Some(frame) = browser.main_frame() {
                         frame.load_url(Some(&url.as_str().into()));
                     }
                 }
                 HostToEngine::GoBack => {
                     if browser.can_go_back() != 0 {
-                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
+                        nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_back();
                     }
                 }
                 HostToEngine::GoForward => {
                     if browser.can_go_forward() != 0 {
-                        nav_state.borrow_mut().host_started = Some((true, std::time::Instant::now()));
+                        nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
                         browser.go_forward();
                     }
                 }
@@ -253,7 +299,7 @@ fn main() {
                 }
                 HostToEngine::Input(event) => {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
-                        nav_state.borrow_mut().last_input = Some(std::time::Instant::now());
+                        nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
                     input::send_input(&browser, event);
                 }
@@ -272,11 +318,11 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    let _ = control.send(&EngineToHost::StateSnapshot(TabState {
-                        url: nav_state.borrow().url.clone(),
-                        zoom: 1.0,
-                    }));
+                    let _ =
+                        control.send(&EngineToHost::StateSnapshot(TabState { url: nav_state.borrow().url.clone() }));
                 }
+                HostToEngine::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
+                HostToEngine::GetCookies => pull = Some(jar_cookies::start_pull()),
                 HostToEngine::QueryPageState => {
                     if let Some(frame) = browser.main_frame() {
                         if let Some(mut message) = process_message_create(Some(&CHECK_PAGE_STATE.into())) {
@@ -364,9 +410,25 @@ fn main() {
                     if let Some(host) = browser.host() {
                         host.close_browser(true as _);
                     }
-                    shutting_down = true;
+                    // A repeated `Shutdown` does not restart the clock.
+                    shutting_down.get_or_insert_with(std::time::Instant::now);
                 }
             }
+        }
+
+        match pull.as_ref().map(|p| p.poll(may_hold_cookies)) {
+            Some(jar_cookies::PullState::Answer(json)) => {
+                let n = serde_json::from_str::<Vec<serde_json::Value>>(&json).map_or(0, |v| v.len());
+                eprintln!("jar: reported {n} cookies");
+                may_hold_cookies |= n > 0;
+                let _ = control.send(&EngineToHost::Cookies(json));
+                pull = None;
+            }
+            Some(jar_cookies::PullState::Silent) => {
+                eprintln!("jar: no complete cookie read; not answering");
+                pull = None;
+            }
+            Some(jar_cookies::PullState::Pending) | None => {}
         }
 
         {
@@ -379,16 +441,16 @@ fn main() {
                     can_go_back: nav.can_go_back,
                     can_go_forward: nav.can_go_forward,
                     loading: nav.loading,
-                    user_started: nav.user_started,
+                    user_started: nav.label.user_started,
                 });
-                if std::mem::take(&mut nav.finished) {
-                    nav.user_started = None;
+                if std::mem::take(&mut nav.label.finished) {
+                    nav.label.user_started = None;
                 }
             }
         }
 
-        for url in pending_open_tab.borrow_mut().drain(..) {
-            let _ = control.send(&EngineToHost::OpenTabRequested { url });
+        for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
+            let _ = control.send(&EngineToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = find_result.borrow_mut().take() {
@@ -437,45 +499,120 @@ fn main() {
             }
         }
 
-        for event in download_path.borrow_mut().queue.drain(..) {
-            let msg = match event {
-                download_handler::DownloadEvent::Started { path, total_bytes, url } => {
-                    EngineToHost::DownloadStarted { path, total_bytes, url }
-                }
-                download_handler::DownloadEvent::Progress { path, bytes_received } => {
-                    EngineToHost::DownloadProgress { path, bytes_received }
-                }
-                download_handler::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
-                download_handler::DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-            };
+        let download_msgs = std::mem::take(&mut download_path.borrow_mut().queue);
+        for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = control.send(&msg);
         }
 
         if visible {
-            if let Some(frame) = latest_frame.borrow_mut().take() {
-                if buffer_size != (frame.width, frame.height) {
-                    drop(frame_buffer);
-                    frame_buffer = ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
-                        .expect("recreate shared frame buffer to match painted frame size");
+            // Taken in its own statement: the `RefMut` would otherwise live through the block (edition 2021),
+            // and putting a frame back for the retry below would panic on a second borrow.
+            let painted = latest_frame.borrow_mut().take();
+            if let Some(frame) = painted {
+                if frame_buffer.is_none() || buffer_size != (frame.width, frame.height) {
+                    // Unmapped before `create` truncates the file by name.
+                    drop(frame_buffer.take());
+                    frame_buffer = match ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
+                    {
+                        Ok(buffer) => {
+                            recreate_failing = false;
+                            Some(buffer)
+                        }
+                        Err(e) => {
+                            // The host still maps the old file (stalled on upload): retried on the next frame.
+                            if !recreate_failing {
+                                eprintln!(
+                                    "frame buffer: recreate at {}x{} failed, retrying each frame: {e}",
+                                    frame.width, frame.height
+                                );
+                            }
+                            recreate_failing = true;
+                            None
+                        }
+                    };
                     buffer_size = (frame.width, frame.height);
                 }
-                frame_buffer.write_frame(&frame.bgra);
-                frame_id += 1;
-                let _ = control.send(&EngineToHost::FrameReady {
-                    frame_id,
-                    width: frame.width,
-                    height: frame.height,
-                    damage: None,
-                    pixels: None,
-                });
+                if let Some(buffer) = frame_buffer.as_mut() {
+                    buffer.write_frame(&frame.bgra);
+                    frame_id += 1;
+                    let _ = control.send(&EngineToHost::FrameReady {
+                        frame_id,
+                        width: frame.width,
+                        height: frame.height,
+                        damage: None,
+                        pixels: None,
+                    });
+                } else {
+                    // Kept for the retry unless a newer paint already replaced it.
+                    latest_frame.borrow_mut().get_or_insert(frame);
+                }
             }
         }
 
-        if shutting_down && *closed.borrow() {
-            cef::shutdown();
-            return;
+        if let Some(since) = shutting_down {
+            match shutdown_due(since.elapsed(), *closed.borrow()) {
+                Some(ShutdownPath::Clean) => {
+                    cef::shutdown();
+                    return;
+                }
+                Some(ShutdownPath::Forced) => {
+                    // `cef::shutdown()` with the browser still alive can hang inside libcef:
+                    // leave instead, and let the job object take the subprocesses.
+                    eprintln!("shutdown: no on_before_close after {SHUTDOWN_GRACE:?}; exiting");
+                    std::process::exit(0);
+                }
+                None => {}
+            }
         }
 
         std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
+/// How long a `Shutdown` waits for `on_before_close` before the host exits
+/// anyway. It matters when manifold died: `spawn_host_reader` synthesizes
+/// the `Shutdown`, and a host that waited for ever would be the orphan.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownPath {
+    /// The browser closed: CEF's documented order, then `cef::shutdown()`.
+    Clean,
+    /// It never did within `SHUTDOWN_GRACE`.
+    Forced,
+}
+
+/// Which way a host that got `Shutdown` `elapsed` ago leaves, if it leaves yet: cleanly once the browser `closed`,
+/// forced once `SHUTDOWN_GRACE` passed without that.
+fn shutdown_due(elapsed: Duration, closed: bool) -> Option<ShutdownPath> {
+    if closed {
+        Some(ShutdownPath::Clean)
+    } else if elapsed >= SHUTDOWN_GRACE {
+        Some(ShutdownPath::Forced)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_waits_for_the_close_then_gives_up() {
+        assert_eq!(shutdown_due(Duration::ZERO, true), Some(ShutdownPath::Clean));
+        assert_eq!(shutdown_due(Duration::from_secs(1), false), None);
+        assert_eq!(shutdown_due(SHUTDOWN_GRACE, false), Some(ShutdownPath::Forced));
+    }
+
+    #[test]
+    fn a_runtime_without_our_api_version_is_named() {
+        assert!(!api_hash_found(std::ptr::null()));
+        assert!(!api_hash_found(c"".as_ptr()));
+        assert!(api_hash_found(c"0123abcd".as_ptr()));
+        assert_eq!(
+            unsupported_api_message(15200),
+            "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)"
+        );
     }
 }

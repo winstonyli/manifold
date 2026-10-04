@@ -3,8 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
-use crate::nav_history::Dir;
-use crate::sleep_state::SleepWhy;
+use crate::tabs::Held;
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -84,9 +83,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.prune_content_dir();
+        self.prune_jar_files();
     }
 
-    /// A clean exit (a window close, or headless `QUIT`): the store's last
+    /// A clean exit (a window close, or headless `QUIT`): a window geometry
+    /// change still waiting (`flush_pending_settings`), the tabs' last
+    /// cookies (`final_cookie_pull`, at most 1 s), the store's last
     /// save and close, then everything tied to the window, while the event
     /// loop still exists. `run_app` drops the event loop (on Wayland, its
     /// display connection) before `main` drops `App`, and egui-winit's
@@ -95,6 +97,8 @@ impl ApplicationHandler<UserEvent> for App {
     /// WSLg. Children before the window: egui's state and the surface hold
     /// handles to it.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.flush_pending_settings();
+        self.final_cookie_pull();
         self.close_store();
         self.egui_state = None;
         self.gpu = None;
@@ -143,6 +147,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.was_minimized = minimized;
+        self.release_expired_cookie_holds();
+        if self.jar_last_pull.is_none_or(|t| t.elapsed() >= JAR_PULL_EVERY) {
+            self.jar_pull_all();
+            self.jar_last_pull = Some(std::time::Instant::now());
+        }
+        // A window drag's geometry, once it has been quiet for `SETTINGS_SAVE_DELAY`. The loop wakes at least
+        // every idle frame or `MINIMIZED_TICK`, so it lands within about a second.
+        self.flush_settings_if_due(std::time::Instant::now());
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -212,6 +224,7 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(focused) => self.on_window_focus(focused),
             // Fires when the window moves to a monitor with a different
             // scale factor (also on a live resolution/scaling change).
             // Confirmed live this was a real gap, not just theoretical:
@@ -266,14 +279,14 @@ impl ApplicationHandler<UserEvent> for App {
                     let ppp = self.ppp();
                     self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
                     self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
-                    self.save_settings();
+                    self.note_settings_changed();
                 }
             }
             WindowEvent::Moved(position) => {
                 if !self.headless {
                     self.settings.window_x = Some(position.x);
                     self.settings.window_y = Some(position.y);
-                    self.save_settings();
+                    self.note_settings_changed();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -337,11 +350,17 @@ impl ApplicationHandler<UserEvent> for App {
                             let (x, y) = (x, y - chrome_height);
                             let event = match state {
                                 ElementState::Pressed => {
-                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers }
+                                    let click_count =
+                                        self.click_counter.press(button, (x, y), std::time::Instant::now());
+                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
                                 }
-                                ElementState::Released => {
-                                    InputEvent::MouseUp { x, y, button, modifiers: self.key_modifiers }
-                                }
+                                ElementState::Released => InputEvent::MouseUp {
+                                    x,
+                                    y,
+                                    button,
+                                    modifiers: self.key_modifiers,
+                                    click_count: self.click_counter.current(),
+                                },
                             };
                             node.tab.send(&HostToEngine::Input(event));
                             if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
@@ -431,7 +450,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .as_deref()
                     .and_then(|id| self.nodes.get(id))
                     .and_then(|n| n.as_tab())
-                    .map(|t| format!("{:?} {}", t.tab.kind, t.url));
+                    .map(|t| format!("{:?} {}", t.tab.kind, crash_report::redacted_url(&t.url)));
                 crash_report::record_state(format!(
                     "view_mode={:?} headless={} node_count={} focused_tab={:?}",
                     self.view_mode,
@@ -478,8 +497,27 @@ pub(crate) const IDLE_FRAME: std::time::Duration = std::time::Duration::from_mil
 /// an idle page still sends a few.
 const BUSY_FRAMES: u32 = 6;
 
+/// How often every WebView2 and CEF tab is asked for its cookies (`App::jar_pull_all`).
+const JAR_PULL_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How often a minimized window's loop wakes (see `about_to_wait`).
 const MINIMIZED_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A tab's newest frame, which `App::drain_engine_ipc` collects and `App::upload_frames` uploads.
+struct FrameUpdate {
+    tab_id: String,
+    /// Socket/shared-memory id this tab's engine-host actually used
+    /// (see `EngineTab::socket_id`) — usually equal to `tab_id`,
+    /// but can diverge after the stale-pipe fallback in
+    /// `process_manager::spawn_tab`. Only used to look up the
+    /// shared frame buffer in `App::upload_frames`; GPU texture bookkeeping stays
+    /// keyed by `tab_id`.
+    socket_id: String,
+    kind: EngineKind,
+    width: u32,
+    height: u32,
+    pixels: Option<Vec<u8>>,
+}
 
 impl App {
     fn mark_active(&mut self) {
@@ -664,6 +702,7 @@ impl App {
         // attempted this frame, and the request must survive to
         // retry on a later one instead of being silently dropped.
         let screenshot_path = self.pending_screenshot.clone();
+        let mut lost = None;
         if let Some(gpu) = &mut self.gpu {
             let outcome = match egui_output {
                 Some(output) => gpu.render(
@@ -674,6 +713,7 @@ impl App {
                 ),
                 None => gpu.render(&content_panes_px, content_on_top, None, screenshot_path.as_deref()),
             };
+            lost = gpu.take_device_lost();
             if outcome.surface_ok {
                 self.pending_screenshot = None;
                 // The PNG is written by now (`render` saves it). A headless
@@ -690,6 +730,9 @@ impl App {
                 let screenshot_path = screenshot_path.filter(|_| !headless);
                 self.handle_screenshot_result(screenshot_path, outcome.screenshot_result);
             }
+        }
+        if let Some(message) = lost {
+            self.queue_toast(format!("The graphics device was lost ({message}). Restart manifold to draw again."));
         }
     }
 
@@ -726,31 +769,53 @@ impl App {
         egui::pos2(self.cursor_pos.0 as f32 / ppp, self.cursor_pos.1 as f32 / ppp)
     }
 
+    /// Window focus changed. A chord's key-up can be lost while the window is
+    /// in the background (Alt-Tab mid-chord); a key left in `swallowed_keys`
+    /// would then swallow that key's next real release in the page.
+    pub(crate) fn on_window_focus(&mut self, focused: bool) {
+        if !focused {
+            self.swallowed_keys.clear();
+        }
+    }
+
     /// A screenshot `render_frame` just took: toasts where it went, or
-    /// turns it into the pending PDF.
+    /// turns it into the pending PDF. Only the capture `start_print_to_pdf`
+    /// asked for (its temp PNG) takes the PDF target; a failed one clears it.
+    /// `screenshot_path` is `None` for a headless `SCREENSHOT`, which isn't toasted.
     pub(crate) fn handle_screenshot_result(
         &mut self,
         screenshot_path: Option<String>,
         result: Option<Result<(), String>>,
     ) {
-        match result {
-            Some(Ok(())) => {
-                if let Some(path) = screenshot_path {
-                    if let Some(pdf_path) = self.pending_print_to_pdf.take() {
-                        match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
-                            Ok(()) => {
-                                self.queue_toast(format!("Saved {pdf_path}"));
-                            }
-                            Err(err) => eprintln!("print to pdf: {err}"),
-                        }
-                        let _ = std::fs::remove_file(&path);
-                    } else {
-                        self.queue_toast(format!("Saved {path}"));
+        let Some(result) = result else { return };
+        let Some(path) = screenshot_path else {
+            if let Err(err) = result {
+                eprintln!("screenshot: {err}");
+            }
+            return;
+        };
+        let pdf = self.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
+        match (result, pdf) {
+            (Ok(()), Some(pdf_path)) => {
+                match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
+                    Ok(()) => self.queue_toast(format!("Saved {pdf_path}")),
+                    Err(err) => {
+                        eprintln!("print to pdf: {err}");
+                        self.queue_toast(format!("Couldn't print to PDF: {err}"));
                     }
                 }
+                let _ = std::fs::remove_file(&path);
             }
-            Some(Err(err)) => eprintln!("screenshot: {err}"),
-            None => {}
+            (Ok(()), None) => self.queue_toast(format!("Saved {path}")),
+            (Err(err), Some(_)) => {
+                eprintln!("print to pdf: capture failed: {err}");
+                self.queue_toast(format!("Couldn't print to PDF: {err}"));
+                let _ = std::fs::remove_file(&path);
+            }
+            (Err(err), None) => {
+                eprintln!("screenshot: {err}");
+                self.queue_toast(format!("Couldn't save the screenshot: {err}"));
+            }
         }
     }
 
@@ -808,10 +873,6 @@ impl App {
             || self.pending_screenshot.is_some()
     }
 
-    /// Applies one headless `DebugCommand` (see `debug_control`'s doc
-    /// comment for the overall design: mouse commands are real synthetic
-    /// `WindowEvent`s, keyboard/text commands call the equivalent effect
-    /// directly since `winit::event::KeyEvent` has no public constructor).
     /// Moves the pointer to (x, y), then presses and releases `button`
     /// `count` times. All of it lands in one egui frame, so for `count` 2
     /// the second release is always within egui's double-click delay
@@ -839,413 +900,6 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_debug_command(&mut self, event_loop: &ActiveEventLoop, cmd: DebugCommand) {
-        // A transition only ends in a frame, and frames can stall for
-        // seconds on a busy GPU, so one that ran out long ago could still
-        // be `Some` here and make the ENTER/ESCAPE/arrow guards below drop
-        // their command. It's timed by the clock, so end it by the clock.
-        self.finish_transition_if_done();
-        match cmd {
-            DebugCommand::MouseMove { x, y } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-            }
-            DebugCommand::MouseDown { x, y, button } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Pressed, button },
-                );
-            }
-            DebugCommand::MouseUp { x, y, button } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button },
-                );
-            }
-            DebugCommand::Click { x, y, button } => self.debug_click(event_loop, x, y, button, 1),
-            DebugCommand::DoubleClick { x, y } => self.debug_click(event_loop, x, y, WinitMouseButton::Left, 2),
-            DebugCommand::Scroll { x, y, delta_x, delta_y } => {
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) },
-                );
-                self.dispatch_window_event(
-                    event_loop,
-                    WindowEvent::MouseWheel {
-                        device_id: DeviceId::dummy(),
-                        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
-                        phase: TouchPhase::Moved,
-                    },
-                );
-            }
-            // A click on the address bar, then select-all and typing: focus
-            // is requested now, and the text is typed as egui `Text` input in
-            // the first frame the bar has it (see `debug_address_bar_typing`).
-            DebugCommand::AddressBar(text) if self.showing_tab_view() => {
-                self.pending_focus = Some(FocusTarget::AddressBar);
-                self.debug_address_bar_typing = Some(text);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            DebugCommand::AddressBar(_) => eprintln!("debug: ADDRESSBAR ignored: not in Tab view"),
-            // Real key presses for the next frame's egui input, so they go
-            // through the same checks a keyboard does, in any view.
-            DebugCommand::Enter => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Enter, egui::Modifiers::NONE))
-            }
-            DebugCommand::Escape => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowDown => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowRight => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowRight, egui::Modifiers::NONE))
-            }
-            DebugCommand::DigitKey(d) => {
-                let key = [
-                    egui::Key::Num0,
-                    egui::Key::Num1,
-                    egui::Key::Num2,
-                    egui::Key::Num3,
-                    egui::Key::Num4,
-                    egui::Key::Num5,
-                    egui::Key::Num6,
-                    egui::Key::Num7,
-                    egui::Key::Num8,
-                    egui::Key::Num9,
-                ][d as usize];
-                self.debug_input_events.push(debug_key_event(key, egui::Modifiers::NONE))
-            }
-            DebugCommand::SpaceKey => {
-                self.debug_input_events.push(debug_key_event(egui::Key::Space, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowLeft => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowLeft, egui::Modifiers::NONE))
-            }
-            DebugCommand::ArrowUp => {
-                self.debug_input_events.push(debug_key_event(egui::Key::ArrowUp, egui::Modifiers::NONE))
-            }
-            DebugCommand::TabKey(shift) => {
-                let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
-                self.debug_input_events.push(debug_key_event(egui::Key::Tab, modifiers))
-            }
-            DebugCommand::ShiftF10 => {
-                self.debug_input_events.push(debug_key_event(egui::Key::F10, egui::Modifiers::SHIFT))
-            }
-            DebugCommand::GraphFocusLeft => self.move_graph_focus(egui::vec2(-1.0, 0.0)),
-            DebugCommand::GraphFocusRight => self.move_graph_focus(egui::vec2(1.0, 0.0)),
-            DebugCommand::GraphFocusUp => self.move_graph_focus(egui::vec2(0.0, -1.0)),
-            DebugCommand::GraphFocusDown => self.move_graph_focus(egui::vec2(0.0, 1.0)),
-            DebugCommand::GraphOpenFocused => self.open_focused_graph_node(),
-            DebugCommand::TypeIntoPage(text) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        for ch in text.chars() {
-                            node.tab.send(&HostToEngine::Input(InputEvent::Char { codepoint: ch as u32 }));
-                        }
-                    }
-                }
-            }
-            DebugCommand::KeyPage(key) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyDown { key, modifiers: self.key_modifiers }));
-                        node.tab.send(&HostToEngine::Input(InputEvent::KeyUp { key, modifiers: self.key_modifiers }));
-                    }
-                }
-            }
-            DebugCommand::ReopenTab => self.reopen_closed_shortcut(),
-            DebugCommand::InstallEngine(kind) => {
-                self.start_engine_install(kind);
-            }
-            DebugCommand::EngineState(kind) => {
-                eprintln!(
-                    "engine-state {}: {}",
-                    kind.desc().name,
-                    crate::engine_info::engine_state_label(&self.engine_state(kind)).0
-                )
-            }
-            DebugCommand::ZoomIn => self.zoom_in_shortcut(),
-            DebugCommand::ZoomOut => self.zoom_out_shortcut(),
-            DebugCommand::ZoomReset => self.zoom_reset_shortcut(),
-            DebugCommand::OpenDevTools => self.open_devtools_shortcut(),
-            DebugCommand::NewTab => self.new_tab_shortcut(),
-            DebugCommand::CloseTab => self.close_focused_tab_shortcut(),
-            DebugCommand::FocusAddressBar => self.focus_address_bar_shortcut(),
-            DebugCommand::NextTab => self.cycle_focused_tab(true),
-            DebugCommand::PrevTab => self.cycle_focused_tab(false),
-            DebugCommand::OpenFindBar => self.open_find_bar_shortcut(),
-            DebugCommand::FindText(text) => {
-                self.find.text = text;
-                self.send_find_start();
-            }
-            DebugCommand::FindMatchCase(match_case) => {
-                self.find.match_case = match_case;
-                self.send_find_start();
-            }
-            DebugCommand::FindNext => self.send_find_navigate(true),
-            DebugCommand::FindPrevious => self.send_find_navigate(false),
-            DebugCommand::CloseFindBar => self.close_find_bar(),
-            DebugCommand::SetVisible(visible) => {
-                if let Some(id) = self.focused.clone() {
-                    if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                        node.tab.set_visible(visible);
-                    }
-                }
-            }
-            // Only ever intercepted by the stdin reader itself.
-            DebugCommand::Screenshot(_) | DebugCommand::Sleep(_) => {}
-            DebugCommand::NotifyWhenScreenshotTaken(path, waiter) => {
-                self.pending_screenshot = Some(path);
-                self.screenshot_waiter = Some(waiter);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            DebugCommand::Resize(width, height) => {
-                if let Some(window) = &self.window {
-                    let _ = window.request_inner_size(PhysicalSize::new(width, height));
-                }
-            }
-            DebugCommand::QuickSwitchOpen => {
-                self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-                self.pending_focus = Some(FocusTarget::QuickSwitcher);
-            }
-            DebugCommand::QuickSwitchText(text) => {
-                if let Some(switcher) = &mut self.quick_switcher {
-                    switcher.query = text;
-                    switcher.selected = 0;
-                }
-            }
-            DebugCommand::QuickSwitchDown => self.quick_switcher_move(1),
-            DebugCommand::QuickSwitchUp => self.quick_switcher_move(-1),
-            DebugCommand::QuickSwitchEnter => self.quick_switcher_confirm(),
-            DebugCommand::QuickSwitchEscape => self.quick_switcher = None,
-            DebugCommand::SessionNameText(text) => self.session_name_draft = text,
-            DebugCommand::SaveSessionAs(name) => self.save_named_session(&name),
-            DebugCommand::OpenSession(name) => {
-                self.load_named_session(&name);
-                self.close_settings_page();
-            }
-            DebugCommand::GraphFilterText(text) => self.graph_filter = text,
-            DebugCommand::HistoryFilterText(text) => self.history_filter = text,
-            DebugCommand::BookmarksFilterText(text) => self.bookmarks_filter = text,
-            DebugCommand::ToggleView => self.toggle_view_mode_shortcut(),
-            DebugCommand::ToggleSettingsPage => self.toggle_settings_page(),
-            DebugCommand::ExportSession(path) => {
-                self.export_session_to(std::path::Path::new(&path));
-            }
-            DebugCommand::ExportState(path) => {
-                let focused_url = self
-                    .focused
-                    .as_ref()
-                    .and_then(|id| self.nodes.get(id))
-                    .and_then(|n| n.as_tab())
-                    .map(|t| t.url.clone());
-                let suggestions: Vec<String> = self
-                    .address_bar
-                    .combined()
-                    .into_iter()
-                    .map(|s| match s {
-                        Suggestion::OpenTab { tab_id, .. } => format!("tab:{tab_id}"),
-                        Suggestion::Search { query } => query,
-                    })
-                    .collect();
-                // The current level's cards, in draw order, with where each
-                // one's center is on screen: what a headless test needs to
-                // aim a click or drag at a card.
-                let cards: Vec<serde_json::Value> = self
-                    .level_items()
-                    .into_iter()
-                    .filter_map(|item| {
-                        let screen = self.graph_world_rect_to_screen(item.rect);
-                        if item.kind == LevelItemKind::JsonCard {
-                            return Some(serde_json::json!({
-                                "id": item.id,
-                                "kind": "JsonCard",
-                                "screen": [screen.center().x, screen.center().y],
-                                "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                            }));
-                        }
-                        let LevelItemKind::Node(kind) = item.kind else { return None };
-                        let node = self.nodes.get(&item.id)?;
-                        Some(serde_json::json!({
-                            "id": item.id,
-                            "kind": format!("{kind:?}"),
-                            "group": node.group,
-                            "parent": node.parent,
-                            "color": node.color.is_some(),
-                            "pinned": node.payload.pinned(),
-                            "editing": node.as_note().is_some_and(|n| n.editing),
-                            "screen": [screen.center().x, screen.center().y],
-                            "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
-                        }))
-                    })
-                    .collect();
-                let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
-                selected_tabs.sort();
-                let state = serde_json::json!({
-                    "tab_view": self.showing_tab_view(),
-                    "transition": self.transition.is_some(),
-                    "focused_url": focused_url,
-                    "address_bar_text": self.address_bar.text,
-                    "suggestions": suggestions,
-                    "highlighted": self.address_bar.highlighted,
-                    "current_group": self.current_group,
-                    "cards": cards,
-                    "json_level": self.json_level_state(),
-                    "selected_tabs": selected_tabs,
-                    // The toast showing, or else the next queued one.
-                    "toast": self.save_toast.as_ref().map(|(message, _)| message).or(self.save_toast_queue.front()),
-                });
-                if let Err(err) = std::fs::write(&path, state.to_string()) {
-                    eprintln!("EXPORTSTATE: couldn't write {path}: {err}");
-                }
-            }
-            DebugCommand::ImportSession(path) => match crate::json_file::load(std::path::Path::new(&path), "session") {
-                Ok(json) => self.pending_import = Some(json),
-                Err(err) => self.queue_toast(err),
-            },
-            DebugCommand::ConfirmImport => {
-                if let Some(json) = self.pending_import.take() {
-                    self.replace_running_session(&json);
-                }
-            }
-            DebugCommand::CancelImport => {
-                self.pending_import = None;
-            }
-            DebugCommand::RenameGroup => self.rename_current_group_shortcut(),
-            DebugCommand::BookmarkFolderText(text) => {
-                if let Some((_, draft)) = &mut self.renaming_bookmark_folder {
-                    *draft = text;
-                }
-            }
-            DebugCommand::DismissPeek => self.dismiss_hover_peek(),
-            DebugCommand::ExportGroup(path) => {
-                if let Some((group_id, _)) = self
-                    .node_menu
-                    .clone()
-                    .filter(|(id, _)| self.nodes.get(id).is_some_and(|node| node.as_group().is_some()))
-                {
-                    if let Some(json) = self.export_group_json(&group_id) {
-                        write_json_export(&json, std::path::Path::new(&path), "group");
-                    }
-                }
-            }
-            DebugCommand::ImportGroup(path) => {
-                match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
-                    Ok(json) => self.import_group_json(&json),
-                    Err(err) => self.queue_toast(err),
-                }
-            }
-            DebugCommand::DuplicateTab => self.duplicate_focused_tab_shortcut(),
-            DebugCommand::ExportBookmarks(path) => {
-                bookmarks::save_to(&self.bookmarks, std::path::Path::new(&path));
-            }
-            DebugCommand::ImportBookmarks(path) => match bookmarks::load_from(std::path::Path::new(&path)) {
-                Ok(imported) => {
-                    self.bookmarks = imported;
-                    bookmarks::save(&self.bookmarks);
-                }
-                Err(err) => self.queue_toast(err),
-            },
-            DebugCommand::PrintToPdf(path) => self.start_print_to_pdf(path),
-            DebugCommand::TogglePin => self.pin_focused_tab_shortcut(),
-            DebugCommand::Reload => self.reload_focused_tab_shortcut(),
-            DebugCommand::GoBack | DebugCommand::GoForward => {
-                if let Some(id) = self.focused.clone() {
-                    let dir = if matches!(cmd, DebugCommand::GoBack) { Dir::Back } else { Dir::Forward };
-                    self.navigate_history(&id, dir);
-                }
-            }
-            DebugCommand::NewGroup => self.new_group_shortcut(),
-            DebugCommand::NewNote => self.new_note_shortcut(),
-            DebugCommand::AddFile(path, None) => {
-                if self.add_file_at(path.into(), None).is_ok() {
-                    self.save_session();
-                }
-            }
-            // Placed like a real drop at that window point. No
-            // `save_session` here either -- same reasoning as
-            // `WindowEvent::DroppedFile`, so a script sending several
-            // `ADDFILE`s with a point still gets one save per batch, not
-            // one per file.
-            DebugCommand::AddFile(path, Some((x, y))) => {
-                self.drop_file(path.into(), egui::pos2(x, y));
-            }
-            // Only ever intercepted by the stdin reader itself.
-            DebugCommand::WaitTabs(_) => {}
-            DebugCommand::NotifyWhenTabsSpawned(waiter) => {
-                if self.tab_spawns_in_flight == 0 {
-                    let _ = waiter.send(());
-                } else {
-                    self.tabs_spawned_waiters.push(waiter);
-                }
-            }
-            DebugCommand::AddDownload(path) => {
-                if let Some(tab_id) = self.focused.clone() {
-                    self.insert_download_node(tab_id, path, None, None);
-                }
-            }
-            DebugCommand::Split(kind) => self.start_split(kind),
-            DebugCommand::CloseSplit => self.close_split(),
-            DebugCommand::JsonSelect(pointer) => self.apply_json_edit(JsonEdit::Select(pointer)),
-            DebugCommand::JsonToggle(pointer) => self.apply_json_edit(JsonEdit::Toggle(pointer)),
-            DebugCommand::JsonMore(pointer) => self.apply_json_edit(JsonEdit::More(pointer)),
-            DebugCommand::JsonRelayout => self.apply_json_edit(JsonEdit::Relayout),
-            DebugCommand::JsonSearch(text) => self.set_json_search(text),
-            DebugCommand::CloseGroup(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
-                    self.close_node(&id);
-                }
-            }
-            DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
-            DebugCommand::SleepNode(id) => {
-                if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
-                    self.sleep_group(&id);
-                } else {
-                    self.request_sleep(&id, SleepWhy::Manual);
-                }
-            }
-            DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
-            DebugCommand::Help => debug_control::print_help(),
-            DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
-            DebugCommand::ToggleShortcutsHelp => {
-                self.shortcuts_help_open = !self.shortcuts_help_open;
-            }
-            DebugCommand::Quit => {
-                // See `quit_after_redraws`'s doc comment: exiting right
-                // now could drop a pending Enter/Escape/arrow command, or a
-                // just-requested Screenshot that hasn't been captured yet
-                // (`pending_screenshot` is only consumed inside a
-                // `RedrawRequested` — a `Screenshot` immediately followed by
-                // `Quit`, with no frame in between, would otherwise silently
-                // lose the screenshot the same way an unconsumed Enter
-                // could).
-                if self.debug_input_pending() {
-                    self.quit_after_redraws = Some(3);
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                } else {
-                    event_loop.exit();
-                }
-            }
-        }
-    }
-
     /// Drains every tab's `events_rx` (not just the focused one — a
     /// background tab can still crash, or finish an in-flight swap, while
     /// suspended), applies every message but frames in arrival order through
@@ -1253,22 +907,19 @@ impl App {
     /// Draining first means no tab node stays borrowed while a message is
     /// applied, so any message can touch any node. Frames go last because a
     /// crash or swap in the same drain replaces the tab they came from.
+    /// The order is load-bearing: ipc may remove tabs before the idle
+    /// sweep looks at them, the sweep and the fetches can remove tabs
+    /// too, and frame uploads run last so none lands on a removed tab.
     pub(crate) fn drain_tab_events(&mut self) {
-        struct FrameUpdate {
-            tab_id: String,
-            /// Socket/shared-memory id this tab's engine-host actually used
-            /// (see `EngineTab::socket_id`) — usually equal to `tab_id`,
-            /// but can diverge after the stale-pipe fallback in
-            /// `process_manager::spawn_tab`. Only used to look up the
-            /// shared frame buffer below; GPU texture bookkeeping stays
-            /// keyed by `tab_id`.
-            socket_id: String,
-            kind: EngineKind,
-            width: u32,
-            height: u32,
-            pixels: Option<Vec<u8>>,
-        }
+        let frame_updates = self.drain_engine_ipc();
+        self.idle_sweep();
+        self.tick_fetchers();
+        self.upload_frames(frame_updates);
+    }
 
+    /// Takes every message off every tab's `events_rx`, applies all but frames in
+    /// arrival order, and returns each tab's newest frame (`drain_tab_events`).
+    fn drain_engine_ipc(&mut self) -> std::collections::HashMap<String, FrameUpdate> {
         // Keyed by tab id, not a plain `Vec` -- only the *latest* `FrameReady`
         // for a tab ever matters (each one fully supersedes the last in
         // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
@@ -1363,12 +1014,19 @@ impl App {
         if changed {
             self.save_session();
         }
+        frame_updates
+    }
 
+    /// Puts idle tabs to sleep (`sweep_idle_tabs`) when `idle_clock` says a sweep is due.
+    fn idle_sweep(&mut self) {
         if self.idle_clock.due(std::time::Instant::now()) {
             let limit = self.settings.idle_sleep_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60));
             self.sweep_idle_tabs(limit);
         }
+    }
 
+    /// Applies what the favicon fetcher, PDF renderer and redirect fetcher finished since the last drain.
+    fn tick_fetchers(&mut self) {
         for (origin, result) in self.favicon_fetcher.tick() {
             self.favicon_resolved.insert(origin.clone());
             if let Some(image) = result {
@@ -1378,7 +1036,7 @@ impl App {
             }
         }
 
-        for (id, result) in self.pdf_fetcher.tick() {
+        for (id, result) in self.pdf_renderer.tick() {
             // The node may have been deleted while this render was still
             // in flight -- skip a late-arriving result entirely rather
             // than uploading a texture nothing will ever free (`delete`'s
@@ -1454,7 +1112,11 @@ impl App {
                 FetchTarget::Node(id) => self.reload_fetched_node(&id, body),
             }
         }
+    }
 
+    /// Uploads each tab's newest frame to the GPU. Runs last in `drain_tab_events`: a message or fetch
+    /// applied earlier in the same drain can remove the tab a frame came from.
+    fn upload_frames(&mut self, frame_updates: std::collections::HashMap<String, FrameUpdate>) {
         for update in frame_updates.into_values() {
             // A `JsonBody`/`RedirectableContent` conversion earlier in this
             // same drain (or a plain tab close) can remove `update.tab_id`
@@ -1496,11 +1158,14 @@ impl App {
     /// navigation (CEF reports loading first): that keeps `current`, the
     /// typed url, rather than flashing back and adding the old url to
     /// history again. Any other url, or `NAVIGATE_START_WINDOW` passing,
-    /// ends that.
-    pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, current: String) -> String {
+    /// ends that. So does a finished load (`!loading`) at the old url after
+    /// one reported loading: the navigation started and never left the page
+    /// (an attachment download, a 204), and CEF reports nothing after it.
+    pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, loading: bool, current: String) -> String {
         const NAVIGATE_START_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
-        let Some((from, at)) = self.navigated_from.get(tab_id) else { return url };
-        if *from == url && at.elapsed() < NAVIGATE_START_WINDOW {
+        let Some((from, at, started)) = self.navigated_from.get_mut(tab_id) else { return url };
+        if *from == url && at.elapsed() < NAVIGATE_START_WINDOW && (loading || !*started) {
+            *started |= loading;
             return current;
         }
         self.navigated_from.remove(tab_id);
@@ -1517,18 +1182,32 @@ impl App {
     pub(crate) fn handle_engine_message(&mut self, tab_id: &str, msg: EngineToHost) -> bool {
         match msg {
             EngineToHost::FrameReady { .. } => {}
-            EngineToHost::PageState(state) => self.finish_sleep(tab_id, state),
+            EngineToHost::PageState(state) => {
+                if let Some(Held::PageState(state)) = self.hold_for_cookies(tab_id, Held::PageState(state)) {
+                    self.finish_sleep(tab_id, state);
+                }
+            }
+            EngineToHost::Cookies(json) => {
+                self.jar_pulls.remove(tab_id);
+                self.jar_silent.remove(tab_id);
+                self.apply_pulled_cookies(tab_id, &json);
+                self.release_cookie_hold(tab_id);
+            }
             EngineToHost::StateSnapshot(state) => {
                 let target = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {
-                    self.finish_swap(tab_id, target, state.url);
+                    if let Some(Held::Snapshot(target, url)) =
+                        self.hold_for_cookies(tab_id, Held::Snapshot(target, state.url))
+                    {
+                        self.finish_swap(tab_id, target, url);
+                    }
                 }
             }
             EngineToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
                 let Some(current) = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
                     return false;
                 };
-                let url = self.reported_url(tab_id, url, current);
+                let url = self.reported_url(tab_id, url, loading, current);
                 self.nav_history.entry(tab_id.to_string()).or_default().observe(&url, loading);
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
@@ -1545,6 +1224,7 @@ impl App {
                         self.history.remove(0);
                     }
                     self.history_dirty = true;
+                    self.history_matches_cache = None;
                     // The origin is known as soon as the url is --
                     // no need to wait for the page to actually
                     // finish loading, unlike a page's own favicon
@@ -1582,6 +1262,16 @@ impl App {
                 }) else {
                     return false;
                 };
+                // A stale engine binary (protocol mismatch) would fail the same
+                // way again, and a page or install that crashes on every start
+                // would loop forever; either is left as a failed card instead.
+                let mismatch = reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH);
+                let times = self.tab_crashes.entry(tab_id.to_string()).or_default();
+                if mismatch || crate::tabs::crashes_too_often(times, std::time::Instant::now()) {
+                    eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
+                    self.leave_crashed_card(tab_id, &reason);
+                    return false;
+                }
                 let url = &spawn.url;
                 eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
                 // Previously silent from the actual app's own UI -- this only
@@ -1592,7 +1282,7 @@ impl App {
                 // has (generalized to a plain message, see `save_toast`'s own
                 // doc comment) rather than a second, separate notification
                 // mechanism.
-                self.queue_toast(format!("Tab crashed, restarted: {url}"));
+                self.queue_toast(format!("Tab crashed, restarted: {}", Self::toast_url(url)));
                 self.nodes.remove(tab_id);
                 // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
                 // `finish_swap`'s own comment on this.
@@ -1605,14 +1295,26 @@ impl App {
                 self.respawn_tab(spawn);
             }
             // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
-            // intercepted by CEF/WebKit - see EngineToHost::OpenTabRequested's
+            // intercepted by CEF/WebKit/WebView2 - see EngineToHost::OpenTabRequested's
             // doc comment): a child of whichever tab requested it, staying in
             // the current view rather than auto-focusing, same as an explicit
-            // "+ New Tab" click.
-            EngineToHost::OpenTabRequested { url } => {
-                let parent = Some(tab_id.to_string());
-                let group = self.group_of(&parent);
-                self.spawn_new_tab(parent, group, &url);
+            // "+ New Tab" click. Only web/internal schemes, only with a user
+            // gesture, and only a few per source tab (`popup_gate.rs`).
+            EngineToHost::OpenTabRequested { url, user_gesture } => {
+                if !crate::popup_gate::page_tab_url_allowed(&url) {
+                    eprintln!("popup to a disallowed scheme dropped: {}:", crate::popup_gate::scheme_for_log(&url));
+                } else {
+                    match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
+                        crate::popup_gate::Admit::Open => {
+                            self.spawn_tab_from(tab_id, &url);
+                        }
+                        crate::popup_gate::Admit::Drop { toast } => {
+                            if toast {
+                                self.queue_toast("Blocked pop-ups from this page".to_string());
+                            }
+                        }
+                    }
+                }
             }
             EngineToHost::FindResult { count, active_index } => {
                 // Ignore a result from a tab that isn't the one the find bar
@@ -1688,22 +1390,30 @@ impl App {
             EngineToHost::DownloadStarted { path, total_bytes, url } => {
                 self.insert_download_node(tab_id.to_string(), path, total_bytes, url);
             }
+            // Each finds its node with `in_flight_download_id`: the in-flight
+            // one this tab started, never a finished one with the same path.
             EngineToHost::DownloadProgress { path, bytes_received } => {
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.bytes_received = bytes_received;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.bytes_received = bytes_received;
+                    }
                 }
             }
             EngineToHost::DownloadFailed { path } => {
                 self.queue_toast(format!("Download failed: {path}"));
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.failed = true;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.failed = true;
+                    }
                 }
             }
             EngineToHost::DownloadCompleted { path } => {
                 self.queue_toast(format!("Saved {path}"));
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.completed = true;
-                    return true;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.completed = true;
+                        return true;
+                    }
                 }
             }
         }
@@ -1714,6 +1424,30 @@ impl App {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_failed_print_capture_clears_the_pdf_target() {
+        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        app.handle_screenshot_result(Some("p.png".into()), Some(Err("no surface".into())));
+        assert!(app.pending_print_to_pdf.is_none());
+        assert!(app.save_toast_queue.iter().any(|t| t.contains("Couldn't print")), "{:?}", app.save_toast_queue);
+    }
+
+    #[test]
+    fn an_ordinary_screenshot_never_takes_a_pdf_target() {
+        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        app.handle_screenshot_result(Some("shot.png".into()), Some(Ok(())));
+        assert!(app.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
+        assert!(app.pending_print_to_pdf.is_some(), "still waiting for its own capture");
+    }
+
+    #[test]
+    fn losing_focus_forgets_swallowed_keys() {
+        let mut app = App::default();
+        app.swallowed_keys.insert(winit::keyboard::KeyCode::ArrowLeft);
+        app.on_window_focus(false);
+        assert!(app.swallowed_keys.is_empty());
+    }
 
     #[test]
     fn a_failed_download_is_marked_and_no_longer_in_flight() {
@@ -1727,6 +1461,34 @@ mod idle_tests {
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
         assert!(download.failed && !download.completed);
         assert!(!in_flight(&app));
+    }
+
+    #[test]
+    fn a_redownload_updates_the_new_node_not_the_finished_one() {
+        let mut app = App::default();
+        app.insert_note_at("n".into(), None);
+        app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
+        app.handle_engine_message("n", EngineToHost::DownloadCompleted { path: "f.zip".into() });
+        app.insert_download_node("n".into(), "f.zip".into(), Some(20), None);
+        app.handle_engine_message("n", EngineToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
+        let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
+        assert_eq!(downloads.len(), 2);
+        assert!(downloads[0].completed && downloads[0].bytes_received == 0, "the old node is untouched");
+        assert_eq!(downloads[1].bytes_received, 7);
+    }
+
+    #[test]
+    fn same_named_downloads_from_two_tabs_stay_apart() {
+        let mut app = App::default();
+        app.insert_note_at("a".into(), None);
+        app.insert_note_at("b".into(), None);
+        app.insert_download_node("a".into(), "f.zip".into(), None, None);
+        app.insert_download_node("b".into(), "f.zip".into(), None, None);
+        app.handle_engine_message("a", EngineToHost::DownloadFailed { path: "f.zip".into() });
+        let by_parent = |p: &str| {
+            app.nodes.values().find(|n| n.parent.as_deref() == Some(p)).and_then(|n| n.as_download()).unwrap().failed
+        };
+        assert!(by_parent("a") && !by_parent("b"));
     }
 
     #[test]

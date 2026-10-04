@@ -2,33 +2,115 @@
 
 use super::*;
 
-/// Whether `code` pressed with `modifiers` (the `ipc_protocol::modifiers` bits) is one of the chords
-/// `handle_global_shortcuts` consumes, so the page must not get it as well. Extra Shift is ignored,
-/// as it is by egui's matching; keep this in step with that list.
+/// What a global shortcut does (`App::handle_global_shortcuts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shortcut {
+    ReopenTab,
+    NewTab,
+    CloseAllLevel,
+    CloseTab,
+    FocusAddress,
+    OpenFind,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    OpenDevtools,
+    PrevTab,
+    NextTab,
+    QuickSwitch,
+    NewGroup,
+    ViewToggle,
+    PinToggle,
+    Reload,
+    RenameGroup,
+    DuplicateTab,
+    ShortcutsHelp,
+}
+
+/// One key chord: egui's modifiers and key (what `consume_key` matches),
+/// the winit codes the same press arrives as on its way to a page
+/// (`claims_chord`), and what it does.
+pub(crate) struct Chord {
+    pub(crate) mods: egui::Modifiers,
+    pub(crate) key: egui::Key,
+    pub(crate) codes: &'static [WinitKeyCode],
+    pub(crate) action: Shortcut,
+}
+
+const CTRL_SHIFT: egui::Modifiers = egui::Modifiers { shift: true, ..egui::Modifiers::CTRL };
+
+/// Every global shortcut, in the order they are tried. egui's matching
+/// ignores an extra Shift, so each `Ctrl+Shift+X` comes before its plain
+/// `Ctrl+X`, or the plain one would consume it. An action with two chords
+/// fires on the first that matches.
+#[rustfmt::skip] // One chord per line reads as the shortcut list it is.
+pub(crate) const CHORDS: &[Chord] = {
+    use egui::Key as K;
+    use egui::Modifiers as M;
+    use Shortcut as S;
+    use WinitKeyCode as W;
+    &[
+        Chord { mods: CTRL_SHIFT, key: K::T, codes: &[W::KeyT], action: S::ReopenTab },
+        Chord { mods: M::CTRL, key: K::T, codes: &[W::KeyT], action: S::NewTab },
+        Chord { mods: CTRL_SHIFT, key: K::W, codes: &[W::KeyW], action: S::CloseAllLevel },
+        Chord { mods: M::CTRL, key: K::W, codes: &[W::KeyW], action: S::CloseTab },
+        Chord { mods: M::CTRL, key: K::L, codes: &[W::KeyL], action: S::FocusAddress },
+        Chord { mods: M::CTRL, key: K::F, codes: &[W::KeyF], action: S::OpenFind },
+        // `Ctrl+=` is what most keyboards send for "zoom in" (`+` needs Shift): accept both.
+        Chord { mods: M::CTRL, key: K::Equals, codes: &[W::Equal], action: S::ZoomIn },
+        Chord { mods: M::CTRL, key: K::Plus, codes: &[W::NumpadAdd], action: S::ZoomIn },
+        Chord { mods: M::CTRL, key: K::Minus, codes: &[W::Minus, W::NumpadSubtract], action: S::ZoomOut },
+        Chord { mods: M::CTRL, key: K::Num0, codes: &[W::Digit0, W::Numpad0], action: S::ZoomReset },
+        Chord { mods: M::NONE, key: K::F12, codes: &[W::F12], action: S::OpenDevtools },
+        Chord { mods: CTRL_SHIFT, key: K::Tab, codes: &[W::Tab], action: S::PrevTab },
+        Chord { mods: M::CTRL, key: K::Tab, codes: &[W::Tab], action: S::NextTab },
+        Chord { mods: M::CTRL, key: K::K, codes: &[W::KeyK], action: S::QuickSwitch },
+        Chord { mods: CTRL_SHIFT, key: K::G, codes: &[W::KeyG], action: S::NewGroup },
+        Chord { mods: M::CTRL, key: K::G, codes: &[W::KeyG], action: S::ViewToggle },
+        Chord { mods: M::CTRL, key: K::P, codes: &[W::KeyP], action: S::PinToggle },
+        Chord { mods: M::CTRL, key: K::R, codes: &[W::KeyR], action: S::Reload },
+        Chord { mods: M::NONE, key: K::F5, codes: &[W::F5], action: S::Reload },
+        Chord { mods: M::NONE, key: K::F2, codes: &[W::F2], action: S::RenameGroup },
+        Chord { mods: M::CTRL, key: K::D, codes: &[W::KeyD], action: S::DuplicateTab },
+        Chord { mods: M::NONE, key: K::F1, codes: &[W::F1], action: S::ShortcutsHelp },
+    ]
+};
+
+/// Whether `code` pressed with `modifiers` (the `ipc_protocol::modifiers` bits) is one of `CHORDS`, so
+/// the page must not get it as well. Extra Shift is ignored, as egui's matching ignores it.
 pub(crate) fn claims_chord(code: WinitKeyCode, modifiers: u8) -> bool {
-    use WinitKeyCode::*;
-    if modifiers & ipc_protocol::modifiers::CONTROL != 0 {
-        matches!(
-            code,
-            KeyT | KeyW
-                | KeyL
-                | KeyF
-                | KeyD
-                | KeyP
-                | KeyK
-                | KeyG
-                | KeyR
-                | Tab
-                | Equal
-                | NumpadAdd
-                | Minus
-                | NumpadSubtract
-                | Digit0
-                | Numpad0
-        )
-    } else {
-        modifiers == 0 && matches!(code, F1 | F2 | F5 | F12)
+    let ctrl = modifiers & ipc_protocol::modifiers::CONTROL != 0;
+    CHORDS.iter().any(|c| {
+        c.codes.contains(&code) && if ctrl { c.mods.ctrl } else { modifiers == 0 && c.mods == egui::Modifiers::NONE }
+    })
+}
+
+/// Whether a text field had keyboard focus as this pass's input arrived (`text_field_has_keys`).
+#[derive(Default)]
+struct TextFieldFocus {
+    at_input: bool,
+}
+
+impl egui::Plugin for TextFieldFocus {
+    fn debug_name(&self) -> &'static str {
+        "text_field_focus"
     }
+
+    /// Runs before `Memory::begin_pass`, which is where an Escape press drops focus.
+    fn input_hook(&mut self, ctx: &egui::Context, _input: &mut egui::RawInput) {
+        self.at_input = ctx.text_edit_focused();
+    }
+}
+
+/// Whether this pass's keys belong to a text field, so a page-wide handler (graph navigation, Settings' Escape)
+/// must leave them alone. True if a `TextEdit` had focus when the input arrived, or has it now. The first half is
+/// needed for Escape: egui drops focus on Escape before any widget runs (`Memory::begin_pass`), so
+/// `Context::text_edit_focused` already reads false on that frame. Reading it later in the frame doesn't work for
+/// Enter either: a singleline `TextEdit` gives up focus while handling it. The first call on a context registers
+/// the plugin that does the tracking, so it starts answering from the next pass.
+pub(crate) fn text_field_has_keys(ctx: &egui::Context) -> bool {
+    let at_input = ctx.plugin_or_default::<TextFieldFocus>().lock().at_input;
+    at_input || ctx.text_edit_focused()
 }
 
 impl App {
@@ -38,131 +120,78 @@ impl App {
     /// view. `consume_key` removes the matching key event from this
     /// frame's input first, so a page never sees e.g. `Ctrl+T` leak
     /// through as a plain `T` keypress the way an unhandled key would
-    /// (see `window_event`'s `KeyboardInput` arm). `Ctrl+Shift+Tab` and
-    /// `Ctrl+Shift+T` are each checked before their plain (no-Shift)
-    /// counterpart — egui's `matches_logically` ignores an extra Shift/Alt,
-    /// so checking the less specific one first would consume a
-    /// `Ctrl+Shift+X` press as if it were plain `Ctrl+X`.
+    /// (see `window_event`'s `KeyboardInput` arm). Order and chords: `CHORDS`.
     pub(crate) fn handle_global_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (
-            reopen_tab,
-            new_tab,
-            close_all_level,
-            close_tab,
-            focus_address,
-            open_find,
-            zoom_in,
-            zoom_out,
-            zoom_reset,
-            open_devtools,
-            prev_tab,
-            next_tab,
-            quick_switch,
-            new_group,
-            view_toggle,
-            pin_toggle,
-            reload,
-            rename_group,
-            duplicate_tab,
-            shortcuts_help,
-        ) = ui.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::T),
-                // Checked ahead of plain `Ctrl+W` below, same "extra Shift
-                // matches the plain binding too" ordering reason `Ctrl+Shift+
-                // T`/`Ctrl+Shift+G` already need.
-                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::W),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::W),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::L),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::F),
-                // `Ctrl+=` is the physical key most keyboards actually send
-                // for "zoom in" (`+` needs Shift on most layouts) — accept
-                // both so either a real `Ctrl++` or the more common
-                // `Ctrl+=` works.
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::Equals)
-                    || i.consume_key(egui::Modifiers::CTRL, egui::Key::Plus),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::Minus),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::Num0),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::F12),
-                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::K),
-                // Checked ahead of plain `Ctrl+G` below -- `matches_logically`
-                // ignores an extra Shift, so checking `Ctrl+G` first would
-                // consume a `Ctrl+Shift+G` press as if it were plain
-                // `Ctrl+G`, same ordering reason `Ctrl+Shift+T` already needs.
-                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::G),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::G),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::P),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::R)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::F5),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::F2),
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::F1),
-            )
+        let fired: Vec<Shortcut> = ui.input_mut(|i| {
+            let mut fired = Vec::new();
+            for c in CHORDS {
+                // An action's second chord is tried only if its first didn't fire, as `a || b` did.
+                if !fired.contains(&c.action) && i.consume_key(c.mods, c.key) {
+                    fired.push(c.action);
+                }
+            }
+            fired
         });
-
-        if reopen_tab {
+        let on = |s: Shortcut| fired.contains(&s);
+        if on(Shortcut::ReopenTab) {
             self.reopen_closed_shortcut();
         }
-        if new_tab {
+        if on(Shortcut::NewTab) {
             self.new_tab_shortcut();
         }
-        if close_all_level {
+        if on(Shortcut::CloseAllLevel) {
             self.close_all_at_current_level();
         }
-        if close_tab {
+        if on(Shortcut::CloseTab) {
             self.close_focused_tab_shortcut();
         }
-        if focus_address {
+        if on(Shortcut::FocusAddress) {
             self.focus_address_bar_shortcut();
         }
-        if open_find {
+        if on(Shortcut::OpenFind) {
             self.open_find_bar_shortcut();
         }
-        if zoom_in {
+        if on(Shortcut::ZoomIn) {
             self.zoom_in_shortcut();
         }
-        if zoom_out {
+        if on(Shortcut::ZoomOut) {
             self.zoom_out_shortcut();
         }
-        if zoom_reset {
+        if on(Shortcut::ZoomReset) {
             self.zoom_reset_shortcut();
         }
-        if open_devtools {
+        if on(Shortcut::OpenDevtools) {
             self.open_devtools_shortcut();
         }
-        if next_tab || prev_tab {
-            self.cycle_focused_tab(next_tab);
+        if on(Shortcut::NextTab) || on(Shortcut::PrevTab) {
+            self.cycle_focused_tab(on(Shortcut::NextTab));
         }
-        if quick_switch {
-            self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-            self.pending_focus = Some(FocusTarget::QuickSwitcher);
+        if on(Shortcut::QuickSwitch) {
+            self.open_quick_switcher();
         }
-        if new_group {
+        if on(Shortcut::NewGroup) {
             self.new_group_shortcut();
         }
         // Neutralized while the quick-switcher is open, same reasoning as
         // its own Escape/arrow handling in `build_quick_switcher` -- a
         // `Ctrl+G` typed while it's open shouldn't also flip the view
         // underneath it.
-        if view_toggle && self.quick_switcher.is_none() {
+        if on(Shortcut::ViewToggle) && self.quick_switcher.is_none() {
             self.toggle_view_mode_shortcut();
         }
-        if pin_toggle {
+        if on(Shortcut::PinToggle) {
             self.pin_focused_tab_shortcut();
         }
-        if reload {
+        if on(Shortcut::Reload) {
             self.reload_focused_tab_shortcut();
         }
-        if rename_group {
+        if on(Shortcut::RenameGroup) {
             self.rename_current_group_shortcut();
         }
-        if duplicate_tab {
+        if on(Shortcut::DuplicateTab) {
             self.duplicate_focused_tab_shortcut();
         }
-        if shortcuts_help {
+        if on(Shortcut::ShortcutsHelp) {
             self.shortcuts_help_open = !self.shortcuts_help_open;
         }
     }
@@ -199,6 +228,7 @@ impl App {
         if self.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
+        // name rule: the field edits the stored name
         let Some(name) = self.nodes.get(&group_id).and_then(|n| n.as_group()).map(|g| g.name.clone()) else { return };
         self.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);
@@ -400,5 +430,84 @@ mod chord_tests {
         assert!(!claims_chord(WinitKeyCode::KeyC, CONTROL), "copy is the page's");
         assert!(!claims_chord(WinitKeyCode::KeyW, 0), "a plain W is typing");
         assert!(!claims_chord(WinitKeyCode::F5, SHIFT));
+    }
+
+    /// `claims_chord` as it was before the table, kept verbatim as the reference.
+    fn claims_chord_before(code: WinitKeyCode, modifiers: u8) -> bool {
+        use WinitKeyCode::*;
+        if modifiers & ipc_protocol::modifiers::CONTROL != 0 {
+            matches!(
+                code,
+                KeyT | KeyW
+                    | KeyL
+                    | KeyF
+                    | KeyD
+                    | KeyP
+                    | KeyK
+                    | KeyG
+                    | KeyR
+                    | Tab
+                    | Equal
+                    | NumpadAdd
+                    | Minus
+                    | NumpadSubtract
+                    | Digit0
+                    | Numpad0
+            )
+        } else {
+            modifiers == 0 && matches!(code, F1 | F2 | F5 | F12)
+        }
+    }
+
+    #[test]
+    fn the_table_claims_exactly_the_chords_it_did_before() {
+        use WinitKeyCode::*;
+        let codes = [
+            KeyA,
+            KeyD,
+            KeyF,
+            KeyG,
+            KeyK,
+            KeyL,
+            KeyP,
+            KeyR,
+            KeyT,
+            KeyW,
+            KeyZ,
+            Tab,
+            Equal,
+            NumpadAdd,
+            Minus,
+            NumpadSubtract,
+            Digit0,
+            Digit1,
+            Numpad0,
+            F1,
+            F2,
+            F3,
+            F5,
+            F12,
+            Enter,
+            Escape,
+        ];
+        let m = CONTROL | SHIFT;
+        for code in codes {
+            for mods in [0, CONTROL, SHIFT, m] {
+                assert_eq!(claims_chord(code, mods), claims_chord_before(code, mods), "{code:?} {mods:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_ctrl_shift_chord_is_tried_before_its_plain_ctrl_twin() {
+        for (i, c) in CHORDS.iter().enumerate() {
+            if c.mods.shift {
+                assert!(
+                    !CHORDS[..i].iter().any(|p| p.key == c.key && p.mods == egui::Modifiers::CTRL),
+                    "{:?}: plain Ctrl would consume Ctrl+Shift first",
+                    c.action
+                );
+            }
+        }
     }
 }

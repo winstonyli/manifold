@@ -27,7 +27,7 @@ egui_commonmark = { version = "0.25.0", default-features = false, features = ["p
 # when this project ports off Windows-only.
 etcetera = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp", "gif"] }
-ipc-protocol = { version = "0.1.0", path = "../ipc-protocol" }
+ipc-protocol = { version = "0.2.0", path = "../ipc-protocol" }
 # PDF node rendering. Pinned to `0.8.37` specifically, matching whatever
 # version `pdfium-auto` itself depends on exactly (`0.3.1` -> `0.8.37`, one
 # version older than this crate's own latest `0.9.4`) -- a mismatched pin
@@ -77,9 +77,18 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10.7"
 sha2 = "0.10.9"
 tar = "0.4.46"
+# Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
+# sequences (already built for url's idna), grapheme clusters for the 64 cap.
+icu_properties = "2.3.0"
+unicode-segmentation = "1.13.3"
 ureq = "3"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[dev-dependencies]
+# Reads the monospace font's character map in names::tests (already in Cargo.lock through epaint). Exact, because
+# Cargo.lock holds two skrifa versions.
+skrifa = "=0.44.0"
 
 # Windows-only dependencies. `manifold` also compiles on Linux (`cargo check
 # -p manifold` under WSL), and `windows` pulls `windows-future`, which does not
@@ -87,7 +96,7 @@ winit = "0.30.13"
 [target.'cfg(windows)'.dependencies]
 # Only for `SetProcessDpiAwarenessContext` at startup -- see `main()`'s own
 # doc comment on it.
-windows = { version = "0.62", features = ["Win32_UI_HiDpi"] }
+windows = { version = "0.62", features = ["Win32_UI_HiDpi", "Win32_Security_Cryptography"] }
 # Forces the native titlebar dark regardless of the OS theme setting (see
 # `apply_dark_titlebar`'s own doc comment in theme.rs), plus the uses below.
 windows-sys = { version = "0.59", features = [

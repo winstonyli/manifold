@@ -91,8 +91,13 @@ impl Clock {
         } else {
             match self.last.logical.checked_add(1) {
                 Some(logical) => Hlc { ms, logical },
-                // 2^32 events in one millisecond: borrow the next one.
-                None => Hlc { ms: ms + 1, logical: 0 },
+                // 2^32 events in one millisecond: borrow the next one. At the
+                // very top of the range, stay there: wrapping to 0 would put
+                // every later local write behind every stamp seen.
+                None => match ms.checked_add(1) {
+                    Some(ms) => Hlc { ms, logical: 0 },
+                    None => Hlc { ms, logical: u32::MAX },
+                },
             }
         };
         self.last
@@ -118,12 +123,13 @@ pub enum Kind {
     Json,
     JsonLeaf,
     Download,
+    Jar,
     /// A kind a newer build wrote (kept, never shown), or `Unknown(0)` for
     /// a node an op named before its `Create` arrived.
     Unknown(u64),
 }
 
-const KINDS: [(Kind, u64, &str); 8] = [
+const KINDS: [(Kind, u64, &str); 9] = [
     (Kind::Tab, 1, "tab"),
     (Kind::Group, 2, "group"),
     (Kind::Note, 3, "note"),
@@ -132,6 +138,7 @@ const KINDS: [(Kind, u64, &str); 8] = [
     (Kind::Json, 6, "json"),
     (Kind::JsonLeaf, 7, "json_leaf"),
     (Kind::Download, 8, "download"),
+    (Kind::Jar, 9, "jar"),
 ];
 
 impl Kind {
@@ -203,9 +210,17 @@ pub mod field {
     pub const VALUE: u32 = 13;
     /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
     pub const VIEW: u32 = 14;
+    /// A tab's cookie jar: a `Kind::Jar` node, absent for the default jar.
+    pub const JAR: u32 = 15;
+    /// The tab's jar was picked by hand, so group-default cascades skip it.
+    pub const JAR_SET: u32 = 16;
+    /// A group's jar for new tabs (and unset tabs, by cascade).
+    pub const DEFAULT_JAR: u32 = 17;
+    /// A jar with no file: dropped at quit.
+    pub const EPHEMERAL: u32 = 18;
 }
 
-pub static FIELDS: [FieldDef; 14] = [
+pub static FIELDS: [FieldDef; 18] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos, explicit: true },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color, explicit: false },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id, explicit: false },
@@ -222,6 +237,10 @@ pub static FIELDS: [FieldDef; 14] = [
     FieldDef { no: field::KEY, name: "key", ty: FieldType::Str, explicit: false },
     FieldDef { no: field::VALUE, name: "value", ty: FieldType::Str, explicit: false },
     FieldDef { no: field::VIEW, name: "view", ty: FieldType::Str, explicit: false },
+    FieldDef { no: field::JAR, name: "jar", ty: FieldType::Id, explicit: false },
+    FieldDef { no: field::JAR_SET, name: "jar_set", ty: FieldType::Bool, explicit: false },
+    FieldDef { no: field::DEFAULT_JAR, name: "default_jar", ty: FieldType::Id, explicit: false },
+    FieldDef { no: field::EPHEMERAL, name: "ephemeral", ty: FieldType::Bool, explicit: false },
 ];
 
 /// Retired field numbers, never to be reused (checked by a test).
@@ -496,6 +515,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_clock_saturates_instead_of_wrapping() {
+        let mut clock = Clock::default();
+        let top = Hlc { ms: u64::MAX, logical: u32::MAX };
+        clock.observe(top);
+        assert!(clock.tick(0) >= top, "never behind a time seen");
+    }
+
+    #[test]
     fn node_ids_print_and_parse() {
         let id = NodeId { actor: ActorId(0x1f3a_9c00_0000_00ab), counter: 17 };
         assert_eq!(id.to_string(), "1f3a9c00000000ab-17");
@@ -528,6 +555,16 @@ mod tests {
         let view = field_by_name("view").unwrap();
         assert_eq!(view.ty, FieldType::Str);
         assert!(!view.explicit);
+        for (no, name, ty) in [
+            (field::JAR, "jar", FieldType::Id),
+            (field::JAR_SET, "jar_set", FieldType::Bool),
+            (field::DEFAULT_JAR, "default_jar", FieldType::Id),
+            (field::EPHEMERAL, "ephemeral", FieldType::Bool),
+        ] {
+            let def = field_by_name(name).unwrap();
+            assert_eq!((def.no, def.ty, def.explicit), (no, ty, false), "{name}");
+        }
+        assert_eq!((field::JAR, field::JAR_SET, field::DEFAULT_JAR, field::EPHEMERAL), (15, 16, 17, 18));
     }
 
     #[test]
@@ -542,6 +579,10 @@ mod tests {
             (field::URL, FieldValue::Str("https://example.com/".into())),
             (field::PINNED, FieldValue::Bool(true)),
             (field::ENGINE, FieldValue::Engine(4)),
+            (field::JAR, FieldValue::Id(Some(id))),
+            (field::JAR_SET, FieldValue::Bool(true)),
+            (field::DEFAULT_JAR, FieldValue::Id(Some(id))),
+            (field::EPHEMERAL, FieldValue::Bool(true)),
         ];
         for (no, value) in cases {
             let enc = encode_field(no, &value);
@@ -564,6 +605,14 @@ mod tests {
         }
         assert_eq!(Kind::from_code(40), Kind::Unknown(40));
         assert_eq!(Kind::Unknown(40).code(), 40);
+    }
+
+    #[test]
+    fn jar_is_kind_nine_and_live() {
+        assert_eq!((Kind::Jar.code(), Kind::Jar.name()), (9, Some("jar")));
+        assert_eq!(Kind::from_name("jar"), Some(Kind::Jar));
+        let node = Node { kind: Kind::Jar, fields: BTreeMap::new(), group: None, deleted: false };
+        assert!(node.is_live(), "a build that knows jars shows them as live");
     }
 
     #[test]

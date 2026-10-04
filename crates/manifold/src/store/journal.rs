@@ -7,11 +7,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use super::crc32c::crc32c;
+use super::crc32c::{crc32c, crc32c_append};
 use super::local;
 use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Kind, Node, NodeId, Reg, Stamp};
 use super::ops::{Op, OpBody};
@@ -119,10 +119,7 @@ pub fn encode_frame(out: &mut Vec<u8>, ty: u64, message: &[u8]) {
 
 /// CRC-32C over `len ‖ frame_type ‖ message`, so a zeroed region fails.
 fn frame_crc(len: u32, body: &[u8]) -> u32 {
-    let mut input = Vec::with_capacity(4 + body.len());
-    input.extend_from_slice(&len.to_le_bytes());
-    input.extend_from_slice(body);
-    crc32c(&input)
+    crc32c_append(crc32c(&len.to_le_bytes()), body)
 }
 
 fn frame_at(buf: &[u8]) -> Result<(u64, &[u8], usize), Stop> {
@@ -204,7 +201,9 @@ pub fn scan_all(buf: &[u8], base: usize) -> FullScan<'_> {
 /// stopped frame's own length points (a damaged body), else the first
 /// later offset holding one. `None` when none follows.
 fn resync(buf: &[u8], at: usize) -> Option<usize> {
-    let valid = |p: usize| p < buf.len() && frame_at(&buf[p..]).is_ok();
+    // A body starting with a zero byte has frame type 0, which `frame_at`
+    // refuses: skipping it here saves the checksum, not a result.
+    let valid = |p: usize| buf.get(p + 8).is_some_and(|&b| b != 0) && frame_at(&buf[p..]).is_ok();
     let claimed = buf.get(at..at + 4).map(|b| at + 8 + u32::from_le_bytes(b.try_into().expect("4 bytes")) as usize);
     if let Some(p) = claimed.filter(|&p| p > at + 8 && valid(p)) {
         return Some(p);
@@ -243,6 +242,27 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
     let crc = buf.get(at + 16..at + 20).ok_or(JournalError::NotAJournal)?;
     let damaged = crc32c(&buf[..at + 16]) != u32::from_le_bytes(crc.try_into().expect("4 bytes"));
     Ok(Header { version, generation, prev_generation, damaged, len: at + 20 })
+}
+
+/// The most a header can take: magic (4), a varint version (at most 9,
+/// `varint`'s longest), two u64 generations and a CRC (4).
+const HEADER_MAX: u64 = 4 + 9 + 16 + 4;
+
+/// The header, the file's length and its bytes from `from` on: what an
+/// incremental catch-up needs, without reading the snapshot before `from`.
+/// An empty tail when the file is shorter than `from`.
+fn read_tail(path: &Path, from: u64) -> Result<(Header, u64, Vec<u8>), JournalError> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut head = Vec::new();
+    (&mut file).take(HEADER_MAX).read_to_end(&mut head)?;
+    let header = read_header(&head)?;
+    let mut tail = Vec::new();
+    if from <= len {
+        file.seek(SeekFrom::Start(from))?;
+        file.read_to_end(&mut tail)?;
+    }
+    Ok((header, len, tail))
 }
 
 fn header_bytes(generation: u64, prev_generation: u64) -> Vec<u8> {
@@ -370,12 +390,14 @@ fn stamp_message(stamp: Stamp, actors: &Actors) -> Writer {
 }
 
 fn decode_stamp(buf: &[u8], actors: &Actors) -> Result<Stamp, JournalError> {
-    let hlc = decode_hlc(buf)?;
-    let mut index = 0;
+    let (mut hlc, mut index) = (Hlc::default(), 0);
     for field in Reader::new(buf) {
         let field = field?;
-        if field.no == 3 {
-            index = field.value.u64()?;
+        match field.no {
+            1 => hlc.ms = field.value.u64()?,
+            2 => hlc.logical = field.value.u32()?,
+            3 => index = field.value.u64()?,
+            _ => {}
         }
     }
     Ok(Stamp { hlc, actor: actors.get(index)? })
@@ -769,7 +791,9 @@ impl Journal {
     pub fn open(path: &Path, actor: ActorId) -> Result<Journal, JournalError> {
         let mut journal = Journal::blank(path, actor);
         let _lock = journal.lock()?;
-        if !path.exists() {
+        // `exists()` is false on any error; a transient access error must not
+        // replace the user's session with an empty one.
+        if !path.try_exists()? {
             write_compacted(path, &Doc::new(DocId::random()), 0, false)?;
         }
         let bytes = std::fs::read(path)?;
@@ -777,6 +801,22 @@ impl Journal {
         journal.repair(&bytes);
         journal.note_seen();
         Ok(journal)
+    }
+
+    /// `open`, but a file that isn't a journal at all is renamed to
+    /// `<path>.unreadable-<secs>[-<n>]`, with its `.prev` and `.local`
+    /// beside it (`set_aside_unless_journal`), and a fresh journal is
+    /// created in its place. Refusing used to leave the app without a
+    /// store, so nothing more was saved that run. Returns where the old
+    /// file went.
+    pub fn open_or_set_aside(path: &Path, actor: ActorId) -> Result<(Journal, Option<PathBuf>), JournalError> {
+        match Journal::open(path, actor) {
+            Err(JournalError::NotAJournal) => {
+                let aside = set_aside_unless_journal(path)?;
+                Ok((Journal::open(path, actor)?, aside))
+            }
+            other => other.map(|journal| (journal, None)),
+        }
     }
 
     /// Reads a session file's document, as `open` would, without a lock or
@@ -799,7 +839,12 @@ impl Journal {
         &self.doc
     }
 
-    #[cfg(test)]
+    /// The session file this journal reads and writes.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// A newer build wrote the file: commits are refused, and this build may not read all of it.
     pub fn read_only(&self) -> bool {
         self.read_only
     }
@@ -807,7 +852,14 @@ impl Journal {
     /// This profile's personal state for this document (spec "Personal
     /// state"). `None` when there is none, or it is another document's.
     pub fn read_local(&self) -> Result<Option<Vec<u8>>, JournalError> {
-        let _lock = self.lock()?;
+        self.read_local_within(LOCK_WAIT)
+    }
+
+    /// `read_local`, giving up with `WouldBlock` once the lock has been
+    /// busy for `wait` (`Duration::ZERO`: a single try, for a retry that
+    /// mustn't stall a frame).
+    pub fn read_local_within(&self, wait: Duration) -> Result<Option<Vec<u8>>, JournalError> {
+        let _lock = lock_file_within(&self.path, wait)?;
         local::read(&self.path, self.doc.id)
     }
 
@@ -967,15 +1019,16 @@ impl Journal {
     /// Reads the frames other processes appended, or the whole file again
     /// if another process compacted it or damage turned up. Returns the
     /// nodes they touched. After a whole-file read, that is the nodes that
-    /// differ from before, so another replica's compaction alone reports
-    /// nothing (pruning a tombstone changes nothing a replica shows).
+    /// differ from before (plus those the tail's frames touched before the
+    /// damage that caused it), so another replica's compaction alone
+    /// reports nothing (pruning a tombstone changes nothing a replica shows).
     fn catch_up(&mut self) -> Result<Vec<NodeId>, JournalError> {
-        let bytes = std::fs::read(&self.path)?;
-        let header = read_header(&bytes)?;
+        let (header, len, tail) = read_tail(&self.path, self.end)?;
         let mut touched = Vec::new();
-        let mut reload = self.stale || header.generation != self.generation || (bytes.len() as u64) < self.end;
+        let mut reload = self.stale || header.generation != self.generation || len < self.end;
         if !reload {
-            let scan = scan(&bytes[self.end as usize..], self.end as usize);
+            let base = self.end as usize;
+            let scan = scan(&tail, base);
             for f in &scan.frames {
                 // A snapshot after other frames, or a frame that doesn't
                 // decode, is damage: `load` skips it.
@@ -994,13 +1047,16 @@ impl Journal {
             }
             // A whole frame failing its CRC, or a stop with a valid frame
             // after it, is damage, not a torn tail.
-            reload |= scan.stop == Some(Stop::BadCrc) || (scan.stop.is_some() && resync(&bytes, scan.end).is_some());
+            reload |=
+                scan.stop == Some(Stop::BadCrc) || (scan.stop.is_some() && resync(&tail, scan.end - base).is_some());
             if !reload {
                 self.end = scan.end as u64;
                 self.dirty |= !scan.frames.is_empty() || scan.stop.is_some();
             }
         }
         if reload {
+            // Only now the whole file: another process compacted it, or damage turned up.
+            let bytes = std::fs::read(&self.path)?;
             let before = std::mem::take(&mut self.doc.nodes);
             self.load(&bytes)?;
             self.repair(&bytes);
@@ -1009,7 +1065,9 @@ impl Journal {
                 Some(new) => new != old,
                 None => old.is_live(),
             };
-            touched = before.iter().filter(|&n| changed(n)).map(|(id, _)| *id).collect();
+            // Added to what the tail frames applied before the damage touched:
+            // `before` already holds those changes, so the diff alone misses them.
+            touched.extend(before.iter().filter(|&n| changed(n)).map(|(id, _)| *id));
             touched.extend(after.keys().filter(|id| !before.contains_key(id)));
         }
         self.note_seen();
@@ -1236,14 +1294,93 @@ fn sync_data(path: &Path) -> io::Result<()> {
     OpenOptions::new().write(true).open(path)?.sync_data()
 }
 
+/// How long taking the session lock may wait for another instance before
+/// the caller gets a "busy" error (and the app's usual save-failed toast)
+/// instead of a frozen window.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+
 /// Takes the exclusive lock beside `path` (`<path>.lock`), creating it.
 fn lock_file(path: &Path) -> Result<File, JournalError> {
+    lock_file_within(path, LOCK_WAIT)
+}
+
+/// `lock_file`, giving up after `wait` with `WouldBlock`.
+fn lock_file_within(path: &Path, wait: Duration) -> Result<File, JournalError> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(with_suffix(path, ".lock"))?;
-    file.lock()?;
-    Ok(file)
+    let deadline = Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(JournalError::Io(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "the session is busy in another window",
+                )))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+    }
+}
+
+/// `open_or_set_aside`'s move, under the lock. The file is read again
+/// first: another process starting at the same time may already have set
+/// it aside and started a journal, which is kept. Its `.prev` (the best
+/// copy to recover from, which the new journal's first compaction would
+/// replace) and `.local` move with it, to `<aside>.prev` and
+/// `<aside>.local`. Returns where it went.
+fn set_aside_unless_journal(path: &Path) -> Result<Option<PathBuf>, JournalError> {
+    const COMPANIONS: [&str; 2] = [".prev", ".local"];
+    let _lock = lock_file(path)?;
+    match std::fs::read(path) {
+        Ok(bytes) if matches!(read_header(&bytes), Err(JournalError::NotAJournal)) => {}
+        _ => return Ok(None),
+    }
+    let secs = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let taken = |aside: &Path| -> io::Result<bool> {
+        for suffix in [""].into_iter().chain(COMPANIONS) {
+            if with_suffix(aside, suffix).try_exists()? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let mut aside = with_suffix(path, &format!(".unreadable-{secs}"));
+    let mut n = 1;
+    while taken(&aside)? {
+        aside = with_suffix(path, &format!(".unreadable-{secs}-{n}"));
+        n += 1;
+    }
+    // Companions first: if one can't move, nothing has, and the error
+    // leaves the user's files as they were.
+    let mut moved = Vec::new();
+    for suffix in COMPANIONS {
+        match std::fs::rename(with_suffix(path, suffix), with_suffix(&aside, suffix)) {
+            Ok(()) => moved.push(suffix),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                undo_companions(path, &aside, &moved);
+                return Err(err.into());
+            }
+        }
+    }
+    if let Err(err) = std::fs::rename(path, &aside) {
+        undo_companions(path, &aside, &moved);
+        return Err(err.into());
+    }
+    Ok(Some(aside))
+}
+
+/// Puts back what `set_aside_unless_journal` moved before a later step failed. Best effort.
+fn undo_companions(path: &Path, aside: &Path, moved: &[&str]) {
+    for suffix in moved {
+        let _ = std::fs::rename(with_suffix(aside, suffix), with_suffix(path, suffix));
+    }
 }
 
 /// `path` with `suffix` appended to its file name (`session.mnf` →
@@ -1252,13 +1389,6 @@ pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
-}
-
-/// Creates `path` holding `bytes`, and fsyncs it.
-pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
 }
 
 fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
@@ -1273,12 +1403,11 @@ fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
 fn write_compacted(path: &Path, doc: &Doc, prev_generation: u64, rotate: bool) -> Result<Vec<u8>, JournalError> {
     let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"), prev_generation);
     bytes.extend(snapshot_bytes(doc));
-    let tmp = with_suffix(path, ".tmp");
-    write_synced(&tmp, &bytes)?;
-    if rotate {
-        keep_prev(path);
-    }
-    std::fs::rename(&tmp, path)?;
+    super::atomic::replace_with(path, &bytes, false, || {
+        if rotate {
+            keep_prev(path);
+        }
+    })?;
     Ok(bytes)
 }
 
@@ -1312,12 +1441,10 @@ pub fn damaged_path(path: &Path, bytes: &[u8]) -> PathBuf {
 /// Writes `bytes` to `path` unless it exists, through a temp file, so a
 /// file there is always whole.
 fn save_damaged(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if path.exists() {
+    if path.try_exists()? {
         return Ok(());
     }
-    let tmp = with_suffix(path, ".tmp");
-    write_synced(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    super::atomic::replace(path, bytes)
 }
 
 // ---- Inspection (`--dump`, `--check`) --------------------------------------
@@ -1459,6 +1586,48 @@ mod tests {
     }
 
     #[test]
+    fn the_tail_read_skips_everything_before_end() {
+        let dir = temp_dir("tail");
+        let path = dir.join("session.mnf");
+        let j = Journal::open(&path, ActorId(1)).unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let (header, file_len, tail) = read_tail(&path, j.end).unwrap();
+        assert_eq!(header.generation, j.generation);
+        assert_eq!(file_len, len);
+        assert_eq!(tail.len() as u64, len - j.end);
+        let (_, _, past) = read_tail(&path, len + 10).unwrap();
+        assert!(past.is_empty(), "a file shorter than `end` gives no tail; catch_up reloads it");
+    }
+
+    #[test]
+    fn a_held_lock_times_out_with_a_busy_error() {
+        let dir = temp_dir("lock_wait");
+        let path = dir.join("session.mnf");
+        let held = lock_file(&path).unwrap();
+        let started = Instant::now();
+        match lock_file_within(&path, Duration::from_millis(100)) {
+            Err(JournalError::Io(e)) => {
+                assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+                assert!(e.to_string().contains("busy"), "{e}");
+            }
+            Err(other) => panic!("expected a busy error, got {other}"),
+            Ok(_) => panic!("a second handle got a held lock"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(held);
+        assert!(lock_file_within(&path, Duration::from_millis(100)).is_ok(), "free once released");
+    }
+
+    #[test]
+    fn resync_finds_a_frame_after_noise() {
+        let mut rng = XorShift(3);
+        let mut buf: Vec<u8> = (0..4096).map(|_| rng.next() as u8).collect();
+        let at = buf.len();
+        encode_frame(&mut buf, 1, b"after the noise");
+        assert_eq!(resync(&buf, 0), Some(at));
+    }
+
+    #[test]
     fn two_replicas_on_one_file_merge_each_others_ops() {
         let dir = temp_dir("two");
         let path = dir.join("session.mnf");
@@ -1526,10 +1695,8 @@ mod tests {
     fn a_failed_compaction_does_not_fail_the_commit() {
         let dir = temp_dir("compact-fail");
         let path = dir.join("session.mnf");
-        let mut tmp = path.clone().into_os_string();
-        tmp.push(".tmp");
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
-        std::fs::create_dir(&tmp).unwrap(); // the rewrite's temp file can't be created
+        crate::store::atomic::block_for_test(&path, true); // the rewrite can't replace the file
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
         txn.commit(vec![create]).unwrap();
@@ -1542,7 +1709,7 @@ mod tests {
         }
         assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
         assert!(journal.close().is_err());
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&path, false);
         journal.close().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
         let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
@@ -1812,7 +1979,7 @@ mod tests {
                 counter += 1;
                 NodeId { actor: ActorId(9), counter }
             };
-            crate::store::json::import(&json, fresh).expect("an export imports");
+            crate::store::json::import(&json, fresh, crate::store::json::Trust::Own).expect("an export imports");
         }
         if open {
             std::fs::write(path, bytes).unwrap();
@@ -1911,6 +2078,69 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_isnt_a_journal_is_set_aside_and_replaced() {
+        let dir = temp_dir("not-a-journal");
+        let path = dir.join("session.mnf");
+        std::fs::write(&path, b"this is not a session").unwrap();
+        assert!(matches!(Journal::open(&path, ActorId(1)), Err(JournalError::NotAJournal)));
+        let (journal, aside) = Journal::open_or_set_aside(&path, ActorId(1)).unwrap();
+        let aside = aside.expect("moved aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"this is not a session");
+        assert!(aside.file_name().unwrap().to_string_lossy().starts_with("session.mnf.unreadable-"));
+        drop(journal);
+        assert!(Journal::open(&path, ActorId(2)).is_ok(), "a real journal now");
+    }
+
+    /// Review fix: the set-aside file's `.prev` (its best recovery copy) and
+    /// `.local` go with it, so the new journal's first compaction can't
+    /// replace them.
+    #[test]
+    fn setting_a_file_aside_takes_its_prev_and_local_along() {
+        let dir = temp_dir("aside-prev");
+        let path = dir.join("session.mnf");
+        let old = dir.join("old.mnf");
+        let mut journal = Journal::open(&old, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://old.example/");
+        txn.commit(vec![create]).unwrap();
+        drop(journal);
+        let prev_bytes = std::fs::read(&old).unwrap();
+        std::fs::write(prev_path(&path), &prev_bytes).unwrap();
+        std::fs::write(local::path_for(&path), b"old local").unwrap();
+        std::fs::write(&path, b"this is not a session").unwrap();
+
+        let (mut journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
+        let aside = aside.expect("moved aside");
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://new.example/");
+        txn.commit(vec![create]).unwrap();
+        let txn = journal.begin().unwrap();
+        txn.journal.compact().unwrap();
+        drop(txn);
+
+        assert_eq!(std::fs::read(prev_path(&aside)).unwrap(), prev_bytes, "the old .prev survives beside the aside");
+        assert_eq!(std::fs::read(local::path_for(&aside)).unwrap(), b"old local");
+        assert_ne!(std::fs::read(prev_path(&path)).unwrap(), prev_bytes, "the new journal has its own .prev");
+    }
+
+    /// Review fix: the re-check under the lock. A file that is a journal by
+    /// the time the lock is held (another instance set the bad one aside
+    /// first) stays where it is.
+    #[test]
+    fn a_file_that_is_a_journal_under_the_lock_is_not_set_aside() {
+        let dir = temp_dir("aside-recheck");
+        let path = dir.join("session.mnf");
+        drop(Journal::open(&path, ActorId(1)).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(set_aside_unless_journal(&path).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "only the file and its lock: {dir:?}");
+        std::fs::write(&path, b"junk").unwrap();
+        assert!(set_aside_unless_journal(&path).unwrap().is_some());
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn every_frame_reads_on_its_own() {
         // Each frame carries its own actor table, author first, so any
         // frame decodes without the frames before it.
@@ -1953,7 +2183,12 @@ mod tests {
         assert_eq!(reopened.read_local().unwrap().as_deref(), Some(&b"view two"[..]));
         let bytes = std::fs::read(&path).unwrap();
         assert!(inspect(&bytes).unwrap().frames.iter().all(|f| f.1 == frame::SNAPSHOT || f.1 == frame::OPS));
-        assert!(!with_suffix(&local::path_for(&path), ".tmp").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
@@ -2234,6 +2469,33 @@ mod tests {
         assert!(txn.remote.contains(&x) && !txn.doc().nodes.contains_key(&x));
     }
 
+    /// A stop that is not a CRC failure (here a zeroed length) with a whole frame after it is damage, found in the
+    /// tail `catch_up` reads: it reloads and keeps the frame, rather than cutting it as a torn tail.
+    #[test]
+    fn a_zeroed_gap_in_the_tail_is_damage_not_a_torn_tail() {
+        let dir = temp_dir("tail-gap");
+        let path = dir.join("session.mnf");
+        let mut a = Journal::open(&path, ActorId(1)).unwrap();
+        let mut b = Journal::open(&path, ActorId(2)).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (x, create_x) = create_tab(&mut txn, "https://x.example/");
+        txn.commit(vec![create_x]).unwrap();
+        let mut txn = b.begin().unwrap();
+        let (y, create_y) = create_tab(&mut txn, "https://y.example/");
+        txn.commit(vec![create_y]).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let (y_at, _) = *frame_spans(&bytes).last().unwrap();
+        bytes.splice(y_at..y_at, [0u8; 8]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut txn = a.begin().unwrap();
+        assert!(txn.remote.contains(&x) && txn.remote.contains(&y), "{:?}", txn.remote);
+        let (z, create_z) = create_tab(&mut txn, "https://z.example/");
+        txn.commit(vec![create_z]).unwrap();
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert!([x, y, z].iter().all(|id| doc.nodes[id].is_live()));
+    }
+
     #[test]
     fn a_frame_that_does_not_decode_is_skipped_and_kept_aside() {
         let dir = temp_dir("undecodable");
@@ -2281,10 +2543,9 @@ mod tests {
         damaged[offset + size - 1] ^= 1;
         std::fs::write(&path, &damaged).unwrap();
 
-        // Block `save_damaged`'s temp file with a directory of the same name.
+        // Make `save_damaged` fail.
         let saved = damaged_path(&path, &damaged);
-        let tmp = with_suffix(&saved, ".tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, true);
 
         let mut journal = Journal::open(&path, ActorId(3)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), damaged); // the repair's rewrite never ran
@@ -2298,7 +2559,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), damaged);
 
         // Once the save can succeed, the next operation retries it and proceeds.
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, false);
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://ok.example/");
         txn.commit(vec![create]).unwrap();
@@ -2319,14 +2580,13 @@ mod tests {
         // Block this journal's own save, so it opens with the damage
         // unsaved and never rewritten.
         let saved = damaged_path(&path, &damaged);
-        let tmp = with_suffix(&saved, ".tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, true);
         let mut journal = Journal::open(&path, ActorId(3)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), damaged);
         journal.take_recovery();
 
         // Another replica repairs the file cleanly.
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, false);
         drop(Journal::open(&path, ActorId(4)).unwrap());
         assert_eq!(std::fs::read(&saved).unwrap(), damaged);
         assert_ne!(std::fs::read(&path).unwrap(), damaged);
@@ -2484,8 +2744,8 @@ mod tests {
     }
 
     /// What each save costs at realistic session sizes, with the file at
-    /// its largest (just below compaction), since `catch_up` reads the
-    /// whole file on every `begin`. Timing, not correctness, so ignored:
+    /// its largest (just below compaction): `begin` reads the header and
+    /// the tail past `end`, and the whole file when it reloads. Timing, not correctness, so ignored:
     /// `cargo test --release -j 12 -p manifold -- --ignored --nocapture save_path_costs`
     #[test]
     #[ignore]

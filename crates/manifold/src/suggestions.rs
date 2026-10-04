@@ -103,7 +103,8 @@ pub struct SuggestionFetcher {
     generation: u64,
     pending_query: Option<String>,
     pending_since: Option<Instant>,
-    last_fetched: Option<String>,
+    /// The last fetch started: its query and generation (`due_fetch`).
+    last_fetched: Option<(String, u64)>,
 }
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -166,16 +167,26 @@ impl SuggestionFetcher {
         self.last_fetched = None;
     }
 
+    /// The fetch to start now, if one is due: the debounced query, once per
+    /// generation. Keyed on the generation too, so returning to a query whose
+    /// reply was superseded ("rust", "rusty", "rust") fetches it again.
+    fn due_fetch(&mut self, now: Instant) -> Option<(String, u64)> {
+        let (query, since) = (self.pending_query.as_ref()?, self.pending_since?);
+        let job = (query.clone(), self.generation);
+        if now.duration_since(since) < DEBOUNCE || self.last_fetched.as_ref() == Some(&job) {
+            return None;
+        }
+        self.last_fetched = Some(job.clone());
+        Some(job)
+    }
+
     /// Call once per frame. Fires the debounced HTTP fetch if it's due,
     /// and returns freshly-arrived, still-relevant suggestions if any
     /// landed this tick (an empty `Vec` clears previous ones — e.g. the
     /// query stopped looking like a search or the request failed).
     pub fn tick(&mut self) -> Option<Vec<String>> {
-        if let (Some(query), Some(since)) = (&self.pending_query, self.pending_since) {
-            if since.elapsed() >= DEBOUNCE && self.last_fetched.as_deref() != Some(query.as_str()) {
-                self.last_fetched = Some(query.clone());
-                spawn_fetch(query.clone(), self.generation, self.tx.clone());
-            }
+        if let Some((query, generation)) = self.due_fetch(Instant::now()) {
+            spawn_fetch(query, generation, self.tx.clone());
         }
 
         let mut latest = None;
@@ -206,17 +217,33 @@ fn spawn_fetch(query: String, generation: u64, tx: mpsc::Sender<(u64, Vec<String
 /// `SuggestionFetcher`'s doc comment — this is cosmetic, never
 /// load-bearing).
 fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
-    let url = format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding_light(query));
-    let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
+    let url = suggestions_url(std::env::var("MANIFOLD_SUGGESTIONS_URL").ok().as_deref(), query);
+    let response =
+        crate::net::agent().get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let body = response.into_body().with_config().limit(200_000).read_to_vec().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
     let phrases = value.as_array()?.get(1)?.as_array()?;
     Some(phrases.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
 }
 
+/// The suggestions request for `query`. `base` is the endpoint; `MANIFOLD_SUGGESTIONS_URL` overrides it so the
+/// smoke test can answer from a local server instead of DuckDuckGo (no network, no flakiness).
+fn suggestions_url(base: Option<&str>, query: &str) -> String {
+    format!("{}?q={}&type=list", base.unwrap_or("https://duckduckgo.com/ac/"), urlencoding_light(query))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_endpoint_can_be_overridden() {
+        assert_eq!(
+            suggestions_url(None, "a b"),
+            format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding_light("a b"))
+        );
+        assert!(suggestions_url(Some("http://127.0.0.1:1/ac/"), "x").starts_with("http://127.0.0.1:1/ac/?q=x"));
+    }
 
     #[test]
     fn a_cancelled_fetch_cannot_deliver() {
@@ -228,5 +255,21 @@ mod tests {
         fetcher.tx.send((in_flight, vec!["rust language".into()])).unwrap();
         assert_eq!(fetcher.tick(), None);
         assert_eq!(fetcher.pending_query, None);
+    }
+
+    /// Review C-B7: returning to a query whose fetch was superseded fetches it again.
+    #[test]
+    fn a_query_typed_again_after_a_detour_is_fetched_again() {
+        let mut fetcher = SuggestionFetcher::new();
+        let later = |f: &SuggestionFetcher| f.pending_since.unwrap() + DEBOUNCE;
+        fetcher.note_text_changed("rust");
+        assert!(fetcher.due_fetch(fetcher.pending_since.unwrap()).is_none(), "debounced");
+        let first = fetcher.due_fetch(later(&fetcher)).expect("first fetch");
+        assert_eq!(first.0, "rust");
+        assert!(fetcher.due_fetch(later(&fetcher)).is_none(), "not twice for one generation");
+        fetcher.note_text_changed("rusty");
+        fetcher.note_text_changed("rust");
+        let again = fetcher.due_fetch(later(&fetcher)).expect("fetched again");
+        assert_eq!(again, ("rust".to_string(), fetcher.generation));
     }
 }

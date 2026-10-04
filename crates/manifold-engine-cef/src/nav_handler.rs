@@ -1,7 +1,8 @@
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use cef::{rc::Rc, *};
+use ipc_protocol::nav_label::NavLabel;
 
 /// Latest known navigation state, updated incrementally as CEF's
 /// `DisplayHandler`/`LoadHandler` callbacks fire independently of each
@@ -16,38 +17,13 @@ pub struct NavState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub loading: bool,
-    /// Whether the current navigation was user-started, sent as
-    /// `NavigationStateChanged::user_started`. Set when a navigation starts
-    /// (`on_before_browse`) and kept through its redirects; cleared once its
-    /// load's end has been sent (`finished`), so a later change nothing
-    /// started isn't labelled.
-    pub user_started: Option<bool>,
-    /// The label of a navigation the host just asked for, and when:
-    /// `false` for `Navigate` (a typed url, another instance's url, the
-    /// initial load), `true` for back/forward. CEF's `user_gesture` reports
-    /// only the page's own gestures, so an API call needs its label from
-    /// here. It applies to the next navigation to start within
-    /// `HOST_START_WINDOW`, same-document url changes included: a request
-    /// can change nothing (`load_url` of the current url), and a stale label
-    /// would mislabel the user's next click.
-    pub host_started: Option<(bool, Instant)>,
-    /// When the page last got a click or a key press (`main.rs`). CEF
-    /// reports Chromium's own `user_gesture` only for a new document; a
+    /// Who started the current navigation. CEF reports Chromium's own
+    /// `user_gesture` only for a new document (`on_before_browse`); a
     /// same-document url change (`history.pushState`, a new `#fragment`)
-    /// within `GESTURE_WINDOW` of it is the user's. Any navigation uses it up.
-    pub last_input: Option<Instant>,
-    /// The current navigation's load ended; `main.rs` clears `user_started`
-    /// after sending it.
-    pub finished: bool,
+    /// falls back to `last_input`, set from `main.rs`.
+    pub label: NavLabel,
     pub dirty: bool,
 }
-
-/// See `NavState::host_started`.
-const HOST_START_WINDOW: Duration = Duration::from_secs(2);
-
-/// See `NavState::last_input`: Chromium's own lifespan for transient user
-/// activation, the one behind `user_gesture`.
-const GESTURE_WINDOW: Duration = Duration::from_secs(5);
 
 impl NavState {
     fn new(initial_url: String) -> Self {
@@ -57,27 +33,9 @@ impl NavState {
             can_go_back: false,
             can_go_forward: false,
             loading: false,
-            user_started: None,
-            host_started: Some((false, Instant::now())), // the browser is created at `initial_url`
-            last_input: None,
-            finished: false,
+            label: NavLabel::created_by_host(Instant::now()), // the browser is created at `initial_url`
             dirty: true,
         }
-    }
-
-    /// A navigation is started and not yet finished.
-    fn under_way(&self) -> bool {
-        self.user_started.is_some() && !self.finished
-    }
-
-    /// Labels a navigation starting now: the host's label if it just asked
-    /// for one, else `gesture` (Chromium's `user_gesture`) if CEF gave one,
-    /// else the user's if they just clicked or typed.
-    fn label_new(&mut self, gesture: Option<bool>) {
-        let host = self.host_started.take().filter(|(_, at)| at.elapsed() < HOST_START_WINDOW);
-        let input = self.last_input.take().is_some_and(|at| at.elapsed() < GESTURE_WINDOW);
-        self.user_started = Some(host.map_or(gesture.unwrap_or(input), |(label, _)| label));
-        self.finished = false;
     }
 }
 
@@ -133,9 +91,9 @@ wrap_display_handler! {
                 // its own, already complete. During a load it is part of
                 // that navigation (a router rewriting the url as the page
                 // starts).
-                if !state.under_way() {
-                    state.label_new(None);
-                    state.finished = true;
+                if !state.label.under_way() {
+                    state.label.label_new(None, Instant::now());
+                    state.label.finished = true;
                 }
                 state.url = url.to_string();
                 state.dirty = true;
@@ -201,7 +159,7 @@ wrap_load_handler! {
             {
                 let mut state = self.handler.state.borrow_mut();
                 state.loading = is_loading != 0;
-                state.finished |= is_loading == 0;
+                state.label.finished |= is_loading == 0;
                 state.can_go_back = can_go_back != 0;
                 state.can_go_forward = can_go_forward != 0;
                 state.dirty = true;
@@ -257,7 +215,7 @@ wrap_request_handler! {
 
     impl RequestHandler {
         /// Labels each main-frame navigation by how it started (see
-        /// `NavState::user_started`). `Request::transition_type` isn't read:
+        /// `NavLabel::user_started`). `Request::transition_type` isn't read:
         /// the binding makes it a Rust enum, and a source combined with its
         /// qualifier flags (a redirected link) is no variant of it.
         fn on_before_browse(
@@ -275,8 +233,8 @@ wrap_request_handler! {
             // A redirect continues the navigation it came from, and keeps
             // its label, while that one is under way; a client redirect
             // after the load gets its own.
-            if !(is_redirect != 0 && state.under_way()) {
-                state.label_new(Some(user_gesture != 0));
+            if !(is_redirect != 0 && state.label.under_way()) {
+                state.label.label_new(Some(user_gesture != 0), Instant::now());
             }
             0 // let it proceed
         }

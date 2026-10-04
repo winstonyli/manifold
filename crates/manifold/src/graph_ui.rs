@@ -251,16 +251,7 @@ impl App {
     /// the same projection `Scene` applies, computed outside it (see
     /// `graph_world_to_screen_transform`).
     pub(crate) fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
-        let screen = self.screen_size_points();
-        // A JSON level's outline is drawn on the right, so the scene keeps
-        // its left edge and loses the outline's width (plan ruling 12).
-        let outline =
-            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
-        let scene_outer_rect = egui::Rect::from_min_size(
-            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
-        );
-        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
         egui::Rect::from_min_max(
             (translation + scale * world.min.to_vec2()).to_pos2(),
             (translation + scale * world.max.to_vec2()).to_pos2(),
@@ -273,13 +264,23 @@ impl App {
     /// `handle_rect_select`'s own `world_pos`). Used to place a file
     /// dropped on the window (`drop_file`).
     pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
-        let screen = self.screen_size_points();
-        let scene_outer_rect = egui::Rect::from_min_size(
-            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2(screen.x, (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
-        );
-        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
         (point.to_vec2() - translation) / scale
+    }
+
+    /// The Graph view's scene area in window points: below the toolbar,
+    /// minus a JSON level's outline on the right (plan ruling 12). The one
+    /// definition both screen<->world conversions use; `build_graph_ui`
+    /// reads the live layout rect instead, which this mirrors for code
+    /// outside the frame.
+    pub(crate) fn graph_scene_outer_rect(&self) -> egui::Rect {
+        let screen = self.screen_size_points();
+        let outline =
+            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
+        egui::Rect::from_min_size(
+            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
+            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+        )
     }
 
     /// Applies one of `build_graph_ui`'s collected clicks. Called in click
@@ -322,7 +323,7 @@ impl App {
                 let pos = sum / count;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
-                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload { name, from_json: false }), at);
+                self.place_node(Some(id.clone()), NodePayload::Group(GroupPayload::named(name)), at);
                 for tab_id in self.selected_tabs.drain() {
                     if let Some(node) = self.nodes.get_mut(&tab_id) {
                         node.group = Some(id.clone());
@@ -399,6 +400,7 @@ impl App {
     /// otherwise act on tabs no longer visible), the empty-canvas card and
     /// any open node menu.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
+        self.end_note_edits();
         self.current_group = group;
         self.sync_json_level();
         self.layout_current_level();
@@ -411,32 +413,15 @@ impl App {
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
+        // Read before any widget runs: a singleline TextEdit gives up focus
+        // while handling Enter, so later this frame it would read false.
+        let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
         self.sync_json_level();
-        // Computed once per frame and reused everywhere below that only
-        // needs "every node of kind X at this level" unconditionally --
-        // **found during a performance audit**: each of these seven
-        // `*_at_current_level` accessors used to get called at least three
-        // separate times per frame from this one function alone (the
-        // toolbar's own group-count gates, the settle-key check, the
-        // minimap's dot-drawing pass, and the main card-rendering loop),
-        // each call redoing the identical `O(n)` `self.node_order` scan
-        // and allocating a fresh `Vec<String>` -- real, entirely avoidable
-        // cost that ran unconditionally every frame regardless of whether
-        // anything actually changed, since this app already redraws every
-        // frame. `self.current_group` can't change until `EnterGroup`/
-        // `LeaveGroup` actions are applied at the very end of this same
-        // function, so every unconditional per-frame use below sees the
-        // exact same, correct-for-this-frame level throughout. Left as
-        // fresh calls: the two `current_level_settle_key()` call sites
-        // that run *after* a group change is applied further down (they
-        // need a genuinely new key for the new level, not this frame's
-        // stale one) and the handful of conditional sites deeper in this
-        // function (drag-and-drop-into-group checks, the right-click
-        // hit-test chain) that don't run every idle frame, so caching them
-        // here would have added surface area without the same payoff.
+        // One level scan per frame, reused by the toolbar, settle key, minimap, items and cards;
+        // `current_group` only changes at the end of this function.
         let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
         let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
-        let items = self.level_items();
+        let items = self.level_items_from(&at_level);
 
         self.update_graph_lod(&items);
 
@@ -483,7 +468,7 @@ impl App {
         // where it is for the whole gesture.
         self.settle_level_if_changed(items.len());
 
-        self.handle_graph_keys(ui);
+        self.handle_graph_keys(ui, typing);
 
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
         // cursor) via egui's built-in `Scene` container — everything drawn
@@ -523,6 +508,13 @@ impl App {
         self.build_json_outline(ui);
         let scene_outer_rect = ui.available_rect_before_wrap();
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
+        // Advance first: everything below (strokes, `zoom_pct`, the new-node
+        // menu) must use the rect the Scene draws this frame.
+        self.camera.advance();
+        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
+            ui.ctx().request_repaint();
+        }
+        self.camera.fill(scene_outer_rect);
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.camera.zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
@@ -542,12 +534,6 @@ impl App {
         );
 
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
-
-        self.camera.advance();
-        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
-            ui.ctx().request_repaint();
-        }
-        self.camera.fill(scene_outer_rect);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
         // Compared against after `Scene`'s own closure runs, below --
@@ -584,7 +570,7 @@ impl App {
                         leave_group_button_rect,
                     );
                     self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
-                    self.draw_peek_preview(ui);
+                    self.draw_peek_preview(ui, &mut deferred_overlays);
                 }
                 deferred_overlays
             });
@@ -888,21 +874,22 @@ impl App {
                 // toolbar's other buttons were already
                 // confirmed live to hit once before (see the
                 // icon-only button conversion elsewhere in this
-                // file). Truncated the same char-count way
-                // `json_summary` already bounds a JSON card's
-                // own label, for the same "small fixed chrome,
-                // not a place for arbitrarily long text" reason.
-                let display_name = if name.chars().count() > 20 {
-                    format!("{}…", name.chars().take(19).collect::<String>())
-                } else {
-                    name.clone()
-                };
+                // file). So it is drawn by the display rule and
+                // cut to `CRUMB_UNITS` by `names::shorten` (small
+                // fixed chrome, not a place for arbitrarily long
+                // text), where a placeholder counts as one unit
+                // and cannot dodge the bound; the hover gives the
+                // whole name.
+                let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                let shown = crate::names::shorten(&segs, CRUMB_UNITS);
+                let text = crate::names::name_job(ui, "", shown.as_deref().unwrap_or(&segs), "");
                 if i + 1 == crumb_count && on_json_level {
                     // The Json node itself: its name is its file's,
                     // so there is nothing to rename.
-                    let label = ui.label(&display_name);
-                    if display_name != *name {
-                        label.on_hover_text(name);
+                    let label = ui.label(text);
+                    let hover = crate::names::name_hover(name, CRUMB_UNITS, "", str::to_string);
+                    if !hover.is_empty() {
+                        label.on_hover_text(hover);
                     }
                 } else if i + 1 == crumb_count {
                     let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
@@ -922,12 +909,10 @@ impl App {
                             }
                         }
                     } else if ui
-                        .button(&display_name)
-                        .on_hover_text(if display_name == *name {
-                            "Click to rename (F2)".to_string()
-                        } else {
-                            format!("Click to rename, F2 ({name})")
-                        })
+                        .button(text)
+                        .on_hover_text(crate::names::name_hover(name, CRUMB_UNITS, "Click to rename (F2)", |f| {
+                            format!("Click to rename, F2 ({f})")
+                        }))
                         .clicked()
                     {
                         actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
@@ -940,12 +925,10 @@ impl App {
                     // double-clicking a group card triggers;
                     // it doesn't care which direction that is).
                     if ui
-                        .button(&display_name)
-                        .on_hover_text(if display_name == *name {
-                            "Jump to this group".to_string()
-                        } else {
-                            format!("Jump to this group ({name})")
-                        })
+                        .button(text)
+                        .on_hover_text(crate::names::name_hover(name, CRUMB_UNITS, "Jump to this group", |f| {
+                            format!("Jump to this group ({f})")
+                        }))
                         .clicked()
                     {
                         actions.push(GraphAction::EnterGroup(id.clone()));
@@ -1136,12 +1119,14 @@ impl App {
     /// job there instead of hijacking focus underneath an open widget --
     /// the Settings page itself needs no such check here, since it's now
     /// a separate `ViewMode` `build_graph_ui` never runs under at all.
-    pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui) {
+    /// `typing`: a text field had focus at frame start; its keys are its own
+    /// (`shortcuts::text_field_has_keys`).
+    pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui, typing: bool) {
         if self.json_level.is_some() {
-            self.handle_json_keys(ui);
+            self.handle_json_keys(ui, typing);
             return;
         }
-        if self.renaming_group.is_none() && self.quick_switcher.is_none() {
+        if !typing && self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
                     Some(egui::vec2(1.0, 0.0))
@@ -1583,6 +1568,7 @@ impl App {
             }
             shown
         };
+        let members = self.group_members();
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1592,6 +1578,7 @@ impl App {
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
+            members: &members,
         };
         for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
             for id in ids.iter() {
@@ -1877,15 +1864,14 @@ impl App {
     }
 
     /// Peek preview: an enlarged view of the hovered node's cached
-    /// thumbnail, floating near it, without changing focus. Painted
-    /// directly in this same world-space layer (not a separate
-    /// `egui::Area`, which would paint in un-transformed screen
-    /// space) so it pans/zooms together with its node and simply
-    /// ends up on top by paint order, drawn after every card
-    /// (`draw_graph_cards`). Skipped while `peek_suppressed` matches -- an
+    /// thumbnail, floating near it, without changing focus. Queued as a
+    /// deferred overlay (not a separate `egui::Area`) so it is projected
+    /// with the frame's final pan/zoom and paints after every card's
+    /// overlay text and chips (`draw_graph_cards`), which would
+    /// otherwise cover it. Skipped while `peek_suppressed` matches -- an
     /// Escape press dismissing this exact node's peek early,
     /// see that field's own doc comment.
-    pub(crate) fn draw_peek_preview(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn draw_peek_preview(&mut self, ui: &mut egui::Ui, deferred_overlays: &mut DeferredOverlays) {
         if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
             self.peek_suppressed = None;
         }
@@ -1911,20 +1897,35 @@ impl App {
                         ),
                         GRAPH_PEEK_SIZE,
                     );
-                    ui.set_opacity(peek_fade);
-                    ui.painter().rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                    // Queued, not painted here: card labels and chips paint on the overlay layer after the
+                    // scene, so a peek drawn in the scene would sit under a neighbour's text.
+                    let bg = ui.visuals().extreme_bg_color.gamma_multiply(peek_fade);
+                    deferred_overlays.push(Box::new(move |painter, project| {
+                        let (min, max) = (project(rect.min), project(rect.max));
+                        let rounding = 6.0 * (max.x - min.x) / rect.width();
+                        let rect = egui::Rect::from_min_max(min, max);
+                        painter.rect_filled(rect, rounding, bg);
+                        painter.image(
+                            tex_id,
+                            rect,
+                            crate::card::FULL_UV,
+                            egui::Color32::WHITE.gamma_multiply(peek_fade),
+                        );
+                        painter.rect_stroke(
+                            rect,
+                            rounding,
+                            egui::Stroke::new(1.5, ACCENT.gamma_multiply(peek_fade)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }));
                 }
             }
         }
     }
 }
+
+/// The most units a breadcrumb crumb shows (`names::shorten`; a placeholder counts one).
+const CRUMB_UNITS: usize = 20;
 
 /// Ctrl held alone this long reveals the key hints.
 const CTRL_REVEAL_AFTER: f64 = 0.35;
@@ -2008,6 +2009,45 @@ mod tests {
     }
 
     use super::*;
+
+    /// Review C-B1: Escape (or Enter, or an arrow) typed into a text field is the field's, not the graph's.
+    #[test]
+    fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
+        let mut app = App::default();
+        app.selected_tabs.insert("t".into());
+        let ctx = egui::Context::default();
+        let field = egui::Id::new("test_field");
+        let mut text = String::new();
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                // Read first, as `build_graph_ui` does.
+                let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
+                ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                app.handle_graph_keys(ui, typing);
+            });
+            output.textures_delta.clear();
+        };
+        ctx.memory_mut(|m| m.request_focus(field));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.selected_tabs.contains("t"), "Escape ended the edit only");
+        assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+    }
 
     #[test]
     fn easing_the_camera_stops_a_glide() {
@@ -2121,5 +2161,36 @@ mod tests {
         let update = output.platform_output.accesskit_update.expect("accesskit update");
         let named = update.nodes.iter().find(|(_, n)| n.label() == Some("Group: Reading"));
         assert_eq!(named.map(|(_, n)| n.role()), Some(egui::accesskit::Role::Button));
+    }
+
+    /// Name rules: crumbs draw hidden characters as placeholders and shorten to 20 units, a placeholder counting one.
+    #[test]
+    fn breadcrumb_crumbs_follow_the_display_rule() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(outer.clone(), None);
+        app.insert_group_at(inner.clone(), None);
+        app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
+        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().name = "x".repeat(30);
+        app.nodes.get_mut(&inner).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.current_group = Some(inner);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| app.toolbar_breadcrumb(ui, false, &mut Vec::new()));
+        });
+        output.textures_delta.clear();
+        let galleys: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<String> = galleys.iter().map(|g| g.text().to_string()).collect();
+        assert!(texts.contains(&format!("{}…", "x".repeat(19))), "{texts:?}");
+        let current = galleys.iter().find(|g| g.text() == "Re⟦200B⟧ading").unwrap_or_else(|| panic!("{texts:?}"));
+        assert!(current.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
     }
 }

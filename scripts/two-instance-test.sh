@@ -35,6 +35,11 @@ if [ ! -x "$exe" ]; then
     echo "two-instance-test: $exe not found — build first (cargo build -j 12 -p manifold)" >&2
     exit 1
 fi
+# Refuses an exe older than its sources, and a cef-runtime CEF host older
+# than the built one (ENGINE=cef runs the copy).
+# shellcheck source=fresh-exe.sh
+. "$repo_root/scripts/fresh-exe.sh"
+require_fresh_exe "$exe" || exit 1
 profile="$repo_root/target/two-instance-appdata-$$"
 out="$repo_root/target/two-instance-out-$$"
 mkdir -p "$profile/manifold" "$out"

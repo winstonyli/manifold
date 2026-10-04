@@ -215,7 +215,9 @@ Per-task rulings:
 - The live Explorer drag-and-drop check (Task 7's Step 5) is left for the
   user to try, not attempted by any task's own implementer.
 - The smoke test asserts each dropped card lands within 60 px of the
-  point it was dropped at; it only asserts two same-frame drops fan out
+  point it was dropped at (since 2026-10-04: within 200 px, and the two
+  cards it drops on one point no longer overlap, because the layout now
+  eases stacked nodes about a card apart); it only asserts two same-frame drops fan out
   beside each other when they actually land in one rendered frame, and
   back-to-back headless `ADDFILE`s never reliably do, so that assertion
   was dropped from the smoke test and is covered by its unit test

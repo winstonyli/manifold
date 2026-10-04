@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A browser where each tab can run on a different rendering engine (Servo, CEF, WebKit, or WebView2), swappable live without closing it."
 

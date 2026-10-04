@@ -6,7 +6,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::journal::{encode_frame, scan, with_suffix, write_synced, JournalError};
+use super::journal::{encode_frame, scan, with_suffix, JournalError};
 use super::model::DocId;
 use super::tlv::{Reader, Writer};
 use super::varint;
@@ -70,19 +70,5 @@ pub fn write(session: &Path, doc: DocId, state: &[u8]) -> Result<(), JournalErro
         m.bytes(2, state);
     }
     encode_frame(&mut bytes, STATE, &m.into_bytes());
-    replace(&path_for(session), &bytes).map_err(JournalError::from)
-}
-
-/// Writes `bytes` to a temp file beside `path`, fsyncs it, and renames it
-/// over `path`. A failure leaves `path` as it was. The temp file is named
-/// per process: instances write the app's JSON files (`json_file::save`)
-/// without a lock, and a shared name would let one rename the other's
-/// half-written file.
-pub(crate) fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = with_suffix(path, &format!(".{}.tmp", std::process::id()));
-    let written = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
+    super::atomic::replace(&path_for(session), &bytes).map_err(JournalError::from)
 }

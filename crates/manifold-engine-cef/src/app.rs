@@ -1,5 +1,4 @@
 use cef::{self, rc::Rc, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, *};
-use std::cell::RefCell;
 
 use crate::render_process_handler::{EngineRenderProcessHandler, RenderProcessHandlerBuilder};
 
@@ -40,11 +39,12 @@ wrap_app! {
             // (CHROME_RESULT_CODE_EULA_REFUSED). An embedded engine has no
             // first run at all.
             command_line.append_switch(Some(&"no-first-run".into()));
-            command_line.append_switch_with_value(
-                Some(&"enable-logging".into()),
-                Some(&"stderr".into()),
-            );
-            command_line.append_switch_with_value(Some(&"v".into()), Some(&"1".into()));
+            command_line.append_switch_with_value(Some(&"enable-logging".into()), Some(&"stderr".into()));
+            // Chromium's verbose log is a debugging aid, and per-tab logs append across spawns:
+            // only on request.
+            if std::env::var_os("MANIFOLD_CEF_VERBOSE").is_some_and(|v| v == "1") {
+                command_line.append_switch_with_value(Some(&"v".into()), Some(&"1".into()));
+            }
         }
 
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
@@ -72,13 +72,11 @@ impl AppBuilder {
 }
 
 #[derive(Clone)]
-pub struct EngineBrowserProcessHandler {
-    is_cef_ready: RefCell<bool>,
-}
+pub struct EngineBrowserProcessHandler {}
 
 impl EngineBrowserProcessHandler {
     pub fn new() -> Self {
-        Self { is_cef_ready: RefCell::new(false) }
+        Self {}
     }
 }
 
@@ -87,11 +85,7 @@ wrap_browser_process_handler! {
         handler: EngineBrowserProcessHandler,
     }
 
-    impl BrowserProcessHandler {
-        fn on_context_initialized(&self) {
-            *self.handler.is_cef_ready.borrow_mut() = true;
-        }
-    }
+    impl BrowserProcessHandler {}
 }
 
 impl BrowserProcessHandlerBuilder {

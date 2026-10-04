@@ -14,8 +14,6 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 /// The CEF build the app downloads: where it lives and how to check it.
-// Later install tasks read every field.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Pin {
     pub(crate) version: &'static str,
@@ -26,8 +24,6 @@ pub(crate) struct Pin {
 }
 
 /// How an engine is available, as every engine list shows it.
-// Later tasks (lookup, UI) construct and match these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EngineState {
     Installed,
@@ -52,8 +48,6 @@ pub(crate) enum EngineState {
 pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// What the install directory holds, judged by its marker alone.
-// Later tasks use it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeOnDisk {
     Missing,
@@ -62,20 +56,63 @@ pub(crate) enum RuntimeOnDisk {
 }
 
 /// The file written last by an install; holds the pinned version it installed.
-// Later tasks use it.
-#[allow(dead_code)]
 pub(crate) const MARKER: &str = "ready";
 
-/// Ready when the marker names the pin's version, Stale when it names another, Missing without one.
-// Later tasks use it.
-#[allow(dead_code)]
+/// How a CEF runtime's version relates to the pin's, by CEF major version: the host is built against one
+/// CEF API version (CEF_API_VERSION 15200 for CEF 152), which libcef of that major and later majors serve
+/// and earlier ones refuse (the 2026-10-04 spike: a host built for 152 ran on CEF 154, and CEF 151 refused it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Compat {
+    /// The pin's major.
+    Current,
+    /// A later major: usable, though not what the app was tested with.
+    Newer,
+    /// An earlier major: the host can't start on it.
+    Older,
+    /// Either version has no leading major number.
+    Unknown,
+}
+
+/// The CEF major of a version string: its leading number, in every form we read ("152.0.6",
+/// "152.0.6+g708dc14+chromium-152.0.7977.83", the cef crate's "152.1.0+152.0.6").
+fn cef_major(version: &str) -> Option<u32> {
+    let version = version.trim();
+    let end = version.find(|c: char| !c.is_ascii_digit()).unwrap_or(version.len());
+    let rest = &version[end..];
+    if end == 0 || !(rest.is_empty() || rest.starts_with(['.', '+'])) {
+        return None;
+    }
+    version[..end].parse().ok()
+}
+
+/// `runtime_version` against `pin_version`, by CEF major (`Compat`).
+pub(crate) fn runtime_compat(pin_version: &str, runtime_version: &str) -> Compat {
+    match (cef_major(pin_version), cef_major(runtime_version)) {
+        (Some(pin), Some(runtime)) if runtime == pin => Compat::Current,
+        (Some(pin), Some(runtime)) if runtime > pin => Compat::Newer,
+        (Some(_), Some(_)) => Compat::Older,
+        _ => Compat::Unknown,
+    }
+}
+
+/// Ready when the marker names the pin's version or a later CEF major (`Compat::Newer`: an install by a
+/// newer app, which this host still runs on), Stale when it names any other (an older major, or another
+/// build of the pin's major, so a re-pin within a major still offers its update), Missing without one.
+/// Deliberately, a later build of the pin's major is Stale too: its "Update needed" downloads the pin,
+/// an older build of that major; it is the pin the app was tested with.
 pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     match std::fs::read_to_string(dir.join(MARKER)) {
-        Ok(v) if v.trim() == pin.version => RuntimeOnDisk::Ready,
+        Ok(v) if v.trim() == pin.version || runtime_compat(pin.version, &v) == Compat::Newer => RuntimeOnDisk::Ready,
         Ok(_) => RuntimeOnDisk::Stale,
         Err(_) => RuntimeOnDisk::Missing,
     }
 }
+
+/// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
+pub(crate) type DirCheck = (String, std::time::Instant, Result<(), String>);
+
+/// How long a bring-your-own CEF directory's verdict is trusted before the disk is read again.
+const CEF_DIR_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The CEF version a bring-your-own directory names. Two sources, on every platform:
 /// - `archive.json` (a runtime exported by the `cef` crate's tool): its `name` is the archive the build
@@ -103,9 +140,11 @@ fn custom_version(dir: &Path) -> Result<String, String> {
     }
 }
 
-/// Whether `dir` is a CEF runtime of the pinned version: it holds the platform's runtime library
-/// (`CefPlatform::runtime_lib`) and its version (`custom_version`: `archive.json` or our `MARKER`) is
-/// `pin.version`. An `Err` says what is wrong, naming both versions on a mismatch.
+/// Whether `dir` is a CEF runtime this host runs on: it holds the platform's runtime library
+/// (`CefPlatform::runtime_lib`; nothing else is required, e.g. CEF 154's archive has no `libEGL.dll`)
+/// and its version (`custom_version`: `archive.json` or our `MARKER`) is the pin's CEF major or a later one
+/// (`runtime_compat`, while that major keeps our API version in its supported range); a version with no
+/// readable major is not usable. An `Err` says what is wrong, naming both versions on a mismatch.
 pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
@@ -115,15 +154,23 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
         return Err(format!("no {lib} in that directory"));
     }
     let found = custom_version(dir)?;
-    if found != pin.version {
-        return Err(format!("found CEF {found}, expected {}", pin.version));
+    if !matches!(runtime_compat(pin.version, &found), Compat::Current | Compat::Newer) {
+        return Err(format!("found CEF {found}, expected {} or a later CEF version", pin.version));
     }
     Ok(())
 }
 
+/// A note for a usable bring-your-own runtime of a later CEF major than the pin's, which runs but was
+/// not what this build was tested with; `None` for any other.
+pub(crate) fn newer_than_tested(dir: &Path, pin: &Pin) -> Option<String> {
+    let found = custom_version(dir).ok()?;
+    (runtime_compat(pin.version, &found) == Compat::Newer).then(|| {
+        let tested = pin.version.split('+').next().unwrap_or(pin.version);
+        format!("CEF {} is newer than the tested {tested}", found.split('+').next().unwrap_or(&found))
+    })
+}
+
 /// Why an install step failed.
-// Later tasks construct `Unpack` and show these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum InstallError {
     Network(String),
@@ -159,10 +206,8 @@ const CHUNK: usize = 64 * 1024;
 /// The body is read on a helper thread so that a connection that goes quiet is noticed: no data for
 /// `IDLE_TIMEOUT` is a `Network` error (the `.part` is kept, so a retry resumes), and `cancel` is seen
 /// within about 100 ms even while a read is blocked. (ureq's body timeout is a total, not an idle
-/// time, so it only bounds the leaked helper thread: see `body_budget`.) The helper thread ends when the socket does, or at the latest when `body_budget` runs out.
+/// time, so it only bounds the leaked helper thread: see the body budget in `fetch`.) The helper thread ends when the socket does, or at the latest when that budget runs out.
 /// Run it on a worker thread.
-// Later install tasks call it.
-#[allow(dead_code)]
 pub(crate) fn download(
     url: &str,
     part: &Path,
@@ -217,14 +262,7 @@ enum Fetched {
     Restart,
 }
 
-/// The most a body read may take in total: the time `remaining` bytes need at `SLOW_BYTES_PER_SEC`,
-/// at least two minutes. The idle timeout is what ends a quiet connection from the caller's side; this
-/// total only bounds the helper thread left blocked on a dead socket, which would otherwise leak for
-/// ever. A link slower than the floor fails with a `Network` error and resumes from the `.part`.
-fn body_budget(remaining: u64) -> Duration {
-    Duration::from_secs((remaining / SLOW_BYTES_PER_SEC).max(120))
-}
-
+/// The slowest link a body read allows for: see the body budget in `fetch`.
 const SLOW_BYTES_PER_SEC: u64 = 32 * 1024;
 
 /// One request, appending to `part` from byte `have`.
@@ -238,11 +276,19 @@ fn fetch(
     idle: Duration,
 ) -> Result<Fetched, InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    let mut request = ureq::get(url)
+    // The most the body read may take in total: the time the remaining bytes need at
+    // `SLOW_BYTES_PER_SEC`, at least two minutes. The idle timeout is what ends a quiet connection
+    // from the caller's side; this total only bounds the helper thread left blocked on a dead socket,
+    // which would otherwise leak for ever. A link slower than the floor fails with a `Network` error
+    // and resumes from the `.part`.
+    let body_budget = crate::net::body_budget(total - have.min(total), SLOW_BYTES_PER_SEC, Duration::from_secs(120));
+    let mut request = crate::net::agent()
+        .get(url)
         .config()
+        .timeout_resolve(Some(Duration::from_secs(15)))
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(body_budget(total - have.min(total))))
+        .timeout_recv_body(Some(body_budget))
         .build();
     if have > 0 {
         request = request.header("Range", format!("bytes={have}-"));
@@ -250,7 +296,7 @@ fn fetch(
     let response = match request.call() {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(416)) if have > 0 => return Ok(Fetched::Restart),
-        Err(e) => return Err(InstallError::Network(e.to_string())),
+        Err(e) => return Err(InstallError::Network(crate::net::describe(&e))),
     };
     if response.status().as_u16() == 206 {
         let start = response
@@ -314,8 +360,6 @@ fn fetch(
 }
 
 /// Stream `path` through SHA-256 and SHA-1 and require both to match the pin (hex, any case).
-// Later install tasks call it.
-#[allow(dead_code)]
 pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let mut file = std::fs::File::open(path).map_err(io)?;
@@ -348,8 +392,6 @@ fn hex(bytes: &[u8]) -> String {
 /// is a separator on Windows, so no component holds one there; on Linux it is an ordinary character, so
 /// `Release/..\evil` is one odd name rather than an escape, refused anyway so an archive unpacks the same
 /// (or fails the same) on every platform. CEF's archives use neither character.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
     let mut names = Vec::new();
     for c in path.components() {
@@ -381,10 +423,18 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
 /// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
 /// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
 /// discards it.
-// Task 6 calls `install`.
-#[allow(dead_code)]
+#[cfg(test)] // production goes through `install`, which calls `unpack_with` directly
 pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
     unpack_with(archive, into, pin, cancel, &mut || {})
+}
+
+/// The permission bits an unpacked file gets: the archive's own, minus
+/// setuid/setgid/sticky and group/other write. `chrome-sandbox` needs setuid
+/// root only for the setuid sandbox, which manifold doesn't use (the CEF host
+/// passes `--no-sandbox`, see `manifold-engine-cef/src/app.rs`).
+#[cfg_attr(not(unix), allow(dead_code))] // only applied on Unix; tested everywhere
+fn unpacked_mode(header_mode: u32) -> u32 {
+    header_mode & 0o755
 }
 
 /// `unpack` that calls `on_entry` for each entry, after the cancel check (tests flip `cancel` from it at an
@@ -411,13 +461,15 @@ fn unpack_with(
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
     std::fs::create_dir_all(into).map_err(io)?;
     let mut files = 0usize;
-    for entry in tar.entries().map_err(bad)? {
+    // Reading the tar itself failing (a bad header checksum is `ErrorKind::Other`) is a bad archive whatever the kind.
+    let corrupt = |e: std::io::Error| InstallError::Unpack(e.to_string());
+    for entry in tar.entries().map_err(corrupt)? {
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
         on_entry();
-        let mut entry = entry.map_err(bad)?;
-        let path = entry.path().map_err(bad)?.into_owned();
+        let mut entry = entry.map_err(corrupt)?;
+        let path = entry.path().map_err(corrupt)?.into_owned();
         // Check every entry, even ones that will be skipped.
         let dest = target(&path, into)?;
         match entry.header().entry_type() {
@@ -433,6 +485,13 @@ fn unpack_with(
         }
         let mut out = std::fs::File::create(&dest).map_err(io)?;
         std::io::copy(&mut entry, &mut out).map_err(bad)?;
+        // Without this every file lands 0644 and the CEF host can't exec its helpers.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = entry.header().mode().map_err(corrupt)?;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(unpacked_mode(mode))).map_err(io)?;
+        }
         files += 1;
     }
     if files == 0 {
@@ -441,8 +500,6 @@ fn unpack_with(
     std::fs::write(into.join(MARKER), pin.version).map_err(io)
 }
 
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn remove_dir(dir: &Path) -> Result<(), InstallError> {
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
@@ -451,8 +508,6 @@ fn remove_dir(dir: &Path) -> Result<(), InstallError> {
     }
 }
 
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn remove_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
@@ -463,8 +518,6 @@ fn remove_file(path: &Path) {
 /// network failure, a cancel (checked while downloading, between archive entries and before the swap) or
 /// a file error (disk full) keeps it. Every failure removes the `.tmp` and leaves the previous install
 /// alone. Blocking: run it on a worker thread.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 pub(crate) fn install(
     pin: &Pin,
     data_dir: &Path,
@@ -520,8 +573,6 @@ fn install_with(
 
 /// Put `new` at `live`, keeping the previous `live` aside as `live.old` until the new one is in place.
 /// If the second rename fails, the previous install is moved back, so `live` is never half-deleted.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let old = live.with_extension("old");
@@ -614,13 +665,13 @@ impl crate::App {
         if let Some(state) = self.engine_state_cache.borrow().get(&kind) {
             return state.clone();
         }
-        let state = self.engine_state_at(kind, crate::process_manager::cef_on_disk());
+        let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind));
         self.engine_state_cache.borrow_mut().insert(kind, state.clone());
         state
     }
 
-    /// `engine_state` with the runtime's on-disk state given (tests use a temporary directory).
-    pub(crate) fn engine_state_at(&self, kind: EngineKind, cef_on_disk: RuntimeOnDisk) -> EngineState {
+    /// `engine_state` with the engine's on-disk state (`engine_on_disk`) given (tests use a temporary directory).
+    pub(crate) fn engine_state_at(&self, kind: EngineKind, on_disk: RuntimeOnDisk) -> EngineState {
         let installing = self
             .engine_installs
             .get(&kind)
@@ -628,7 +679,7 @@ impl crate::App {
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
         let failed = self.engine_failures.get(&kind).map(String::as_str);
         let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
-        crate::process_manager::engine_availability(kind, cef_on_disk, installing, failed, custom.as_deref())
+        crate::process_manager::engine_availability(kind, on_disk, installing, failed, custom.as_deref())
     }
 
     /// The configured bring-your-own CEF directory, only when it validates against the pin.
@@ -637,25 +688,28 @@ impl crate::App {
     }
 
     /// The configured directory and whether it validates; `None` when none is set. The verdict is cached
-    /// with the path (`cef_dir_check`): the disk is read when the path changes, not every frame.
+    /// with the path (`cef_dir_check`): the disk is read when the path changes or every `CEF_DIR_CHECK_TTL`,
+    /// not every frame, so a folder deleted or replaced behind the app's back is noticed.
     pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
         let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
         let mut cache = self.cef_dir_check.borrow_mut();
-        if cache.as_ref().is_none_or(|(path, _)| path != configured) {
+        if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
             let verdict = match crate::cef_pin::pin_for_platform() {
                 Some(pin) => validate_custom(Path::new(configured), pin),
                 None => Err(NO_PIN_REASON.to_string()),
             };
-            *cache = Some((configured.to_string(), verdict));
+            *cache = Some((configured.to_string(), std::time::Instant::now(), verdict));
         }
-        let verdict = cache.as_ref().map(|(_, v)| v.clone())?;
+        let verdict = cache.as_ref().map(|(_, _, v)| v.clone())?;
         Some((PathBuf::from(configured), verdict))
     }
 
-    /// Forget the cached verdict (and the states built on it) so the next read looks at the disk again.
+    /// Forget the cached verdict (and the states built on it, and the Settings page's disk reads) so the next
+    /// read looks at the disk again.
     pub(crate) fn invalidate_cef_dir_check(&self) {
         *self.cef_dir_check.borrow_mut() = None;
         self.engine_state_cache.borrow_mut().clear();
+        crate::settings_page::forget_disk_cache(&self.egui_ctx);
     }
 
     /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached
@@ -733,7 +787,10 @@ impl crate::App {
         let running =
             !self.spawning.is_empty() || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_installs.contains_key(&kind);
-        match remove_runtime(&dir, running, installing) {
+        let removed = remove_runtime(&dir, running, installing);
+        // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
+        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        match removed {
             Ok(()) => {
                 // A recorded failure described the files just deleted.
                 self.engine_failures.remove(&kind);
@@ -766,6 +823,8 @@ impl crate::App {
             self.engine_installs.iter().filter(|(_, job)| job.handle.is_finished()).map(|(kind, _)| *kind).collect();
         if !finished.is_empty() {
             self.engine_state_cache.borrow_mut().clear();
+            // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
+            crate::settings_page::forget_disk_cache(&self.egui_ctx);
         }
         for kind in finished {
             let Some(job) = self.engine_installs.remove(&kind) else { continue };
@@ -794,14 +853,15 @@ impl crate::App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn the_body_budget_scales_with_size_and_has_a_floor() {
-        assert_eq!(body_budget(0), Duration::from_secs(120));
-        assert_eq!(body_budget(171_619_649), Duration::from_secs(171_619_649 / (32 * 1024)));
-        assert!(body_budget(171_619_649) > Duration::from_secs(60 * 60));
+    fn unpacked_files_keep_exec_bits_but_never_setuid_or_group_write() {
+        assert_eq!(unpacked_mode(0o100755), 0o755);
+        assert_eq!(unpacked_mode(0o644), 0o644);
+        assert_eq!(unpacked_mode(0o4755), 0o755, "setuid dropped: CEF runs with --no-sandbox");
+        assert_eq!(unpacked_mode(0o777), 0o755);
     }
+
+    use super::*;
     use crate::store::testutil::temp_dir;
     use std::io::BufRead;
     use std::net::TcpListener;
@@ -849,6 +909,78 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Ready);
         std::fs::write(dir.join(MARKER), "0.9").unwrap();
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
+    }
+
+    /// Versions in the forms the CDN index, `archive.json` and the cef crate use, around a 152.0.6 pin.
+    const V151: &str = "151.3.24+g2384915+chromium-151.0.7922.174";
+    const V152: &str = "152.0.6+g708dc14+chromium-152.0.7977.83";
+    const V154: &str = "154.0.33+ga03e714+chromium-154.0.8037.94";
+
+    #[test]
+    fn runtime_compat_compares_the_cef_major() {
+        assert_eq!(runtime_compat(V152, V152), Compat::Current);
+        assert_eq!(runtime_compat(V152, "152.0.4+gabc+chromium-152.0.1.2"), Compat::Current);
+        assert_eq!(runtime_compat(V152, "152.1.0+152.0.6"), Compat::Current);
+        assert_eq!(runtime_compat(V152, " 152.0.6\n"), Compat::Current, "a marker's newline");
+        assert_eq!(runtime_compat(V152, "152"), Compat::Current);
+        assert_eq!(runtime_compat(V152, V154), Compat::Newer);
+        assert_eq!(runtime_compat(V152, V151), Compat::Older);
+        assert_eq!(runtime_compat(V152, "99.0.1"), Compat::Older, "numbers, not text");
+        assert_eq!(runtime_compat(V152, "1000.0.0"), Compat::Newer);
+        for garbage in ["", "garbage", "v152.0.6", "152x.0", ".152", "-152.0"] {
+            assert_eq!(runtime_compat(V152, garbage), Compat::Unknown, "{garbage:?}");
+            assert_eq!(runtime_compat(garbage, V152), Compat::Unknown, "{garbage:?}");
+        }
+    }
+
+    /// The downloaded runtime's marker: the pin or a later major is Installed, anything else Update needed.
+    #[test]
+    fn the_marker_is_installed_for_the_pin_or_a_later_major_and_update_needed_otherwise() {
+        let pin = Pin { version: V152, ..PIN };
+        let app = App::default();
+        let dir = temp_dir("compat-marker");
+        let state = |marker: &str| {
+            std::fs::write(dir.join(MARKER), marker).unwrap();
+            let on_disk = runtime_state(&dir, &pin);
+            (on_disk, app.engine_state_at(EngineKind::Cef, on_disk))
+        };
+        let update = (RuntimeOnDisk::Stale, EngineState::UpdateNeeded { size: cef_pin().size });
+        let installed = (RuntimeOnDisk::Ready, EngineState::Installed);
+        assert_eq!(state(V152), installed);
+        assert_eq!(state(V154), installed, "installed by a newer app: the host runs on it");
+        assert_eq!(state(V151), update);
+        assert_eq!(state("152.0.4+gabc+chromium-152.0.1.2"), update, "a re-pin within a major still updates");
+        assert_eq!(state("garbage"), update);
+    }
+
+    #[test]
+    fn a_custom_directory_of_the_pins_major_or_later_validates_and_an_earlier_one_does_not() {
+        let pin = Pin { version: V152, ..PIN };
+        let dir = |tag: &str, version: &str| {
+            custom_dir(tag, Some(&crate::cef_platform::PLATFORM.archive_name(version)), true)
+        };
+        let newer = dir("compat-c154", V154);
+        assert_eq!(validate_custom(&newer, &pin), Ok(()));
+        assert_eq!(newer_than_tested(&newer, &pin).as_deref(), Some("CEF 154.0.33 is newer than the tested 152.0.6"));
+        let same_major = dir("compat-c152", "152.0.4+gabc+chromium-152.0.1.2");
+        assert_eq!(validate_custom(&same_major, &pin), Ok(()));
+        assert_eq!(newer_than_tested(&same_major, &pin), None);
+        let err = validate_custom(&dir("compat-c151", V151), &pin).unwrap_err();
+        assert!(err.contains(V151) && err.contains(V152), "{err}");
+        assert!(validate_custom(&dir("compat-cbad", "garbage"), &pin).is_err());
+    }
+
+    /// CEF 154's minimal archive has no `libEGL.dll`/`libGLESv2.dll` (ANGLE is inside libcef): a runtime
+    /// without them is complete, both as our install and as a bring-your-own directory.
+    #[test]
+    fn a_runtime_without_angle_dlls_counts_as_installed() {
+        let pin = cef_pin();
+        let dir = custom_dir("compat-noangle", None, true);
+        std::fs::write(dir.join(MARKER), pin.version).unwrap();
+        assert!(!dir.join("libEGL.dll").exists() && !dir.join("libGLESv2.dll").exists());
+        assert_eq!(runtime_state(&dir, pin), RuntimeOnDisk::Ready);
+        assert_eq!(App::default().engine_state_at(EngineKind::Cef, runtime_state(&dir, pin)), EngineState::Installed);
+        assert_eq!(validate_custom(&dir, pin), Ok(()));
     }
 
     /// The pin of the platform the tests run on (Windows or Linux).
@@ -935,13 +1067,31 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_directory_deleted_later_stops_being_custom() {
+        let pin = cef_pin();
+        let dir = custom_dir("vc9", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
+        let mut app = App::default();
+        app.set_cef_directory(dir.to_str().unwrap());
+        assert!(app.cef_dir_verdict().unwrap().1.is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(app.cef_dir_verdict().unwrap().1.is_ok(), "still inside the TTL: the cached verdict stands");
+        // Age the cached verdict past the TTL, as waiting would.
+        let aged = std::time::Instant::now().checked_sub(CEF_DIR_CHECK_TTL * 2).unwrap();
+        app.cef_dir_check.borrow_mut().as_mut().unwrap().1 = aged;
+        assert!(app.cef_dir_verdict().unwrap().1.is_err());
+        assert_eq!(app.custom_cef_dir(), None);
+    }
+
+    #[test]
     fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
         let pin = cef_pin();
         let good = custom_dir("vc7", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
         let mut app = App::default();
         app.set_cef_directory(good.to_str().unwrap());
         assert_eq!(app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Missing), EngineState::Custom(good.clone()));
-        assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Installed);
+        // The CEF folder is CEF's alone: Servo still follows its own host exe.
+        assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Ready), EngineState::Installed);
+        assert!(matches!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Unavailable(_)));
 
         let bad = custom_dir("vc8", Some(&crate::cef_platform::PLATFORM.archive_name("1.0")), true);
         app.set_cef_directory(bad.to_str().unwrap());
@@ -1138,6 +1288,31 @@ Connection: close
         assert_eq!(std::fs::metadata(&part).unwrap().len(), 40_000);
     }
 
+    /// The installer fetches on the shared agent (`net::agent`), so it sends manifold's User-Agent.
+    #[test]
+    fn download_sends_the_user_agent() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase());
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK
+Content-Length: 3
+Connection: close
+
+abc",
+            );
+        });
+        let part = temp_dir("ei-ua").join("f.part");
+        download(&url, &part, 3, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let request = rx.recv().unwrap();
+        assert!(request.contains("user-agent: manifold/"), "{request}");
+    }
+
     #[test]
     fn download_restarts_when_content_range_starts_elsewhere() {
         let b = body(200_000);
@@ -1255,6 +1430,15 @@ Connection: close
         // An import library is a Windows build leftover; elsewhere `.lib` is not special.
         assert_eq!(!out.join("libcef.lib").exists(), !crate::cef_platform::PLATFORM.skip_suffixes.is_empty());
         assert_eq!(std::fs::read_to_string(out.join(MARKER)).unwrap(), "9.9");
+    }
+
+    #[test]
+    fn a_corrupt_tar_header_is_a_bad_archive_not_a_file_error() {
+        let dir = temp_dir("ei22");
+        // 512 bytes of junk: not a valid header, and its checksum cannot match.
+        let a = bz(&dir, "junk.tar.bz2", &[b'x'; 1024]);
+        let err = unpack(&a, &dir.join("out"), &pin_for(&a, String::new()), &AtomicBool::new(false)).unwrap_err();
+        assert!(matches!(err, InstallError::Unpack(_)), "{err:?}");
     }
 
     #[test]

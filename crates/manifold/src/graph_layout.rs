@@ -9,7 +9,18 @@ use std::collections::{HashMap, HashSet};
 /// the tab it was opened from), but the layout itself doesn't need to know
 /// that; it only sees a flat edge list.
 const REPULSION_STRENGTH: f32 = 900_000.0;
+/// Guards the spring's direction against dividing by zero.
 const MIN_DISTANCE: f32 = 1.0;
+/// Repulsion stops growing below this distance: closer nodes push with the
+/// force they'd have at this distance (900,000 / 40² ≈ 560). An inverse-square
+/// force clamped only at `MIN_DISTANCE` pushed two nodes on one point
+/// (two files dropped on the same spot, a card dragged onto another) with
+/// 900,000 on the first tick; that alone saturates `MAX_SPEED`, and under
+/// `DAMPING` each card then coasted ~670 px, off the canvas. Capped here,
+/// the pair builds up at most ~180 px/s, so it eases apart to the usual
+/// spacing (~230 px for two free nodes) near where it was, and nodes
+/// further apart than this feel exactly the force they did before.
+const REPULSION_SOFT_DISTANCE: f32 = 40.0;
 const SPRING_STRENGTH: f32 = 8.0;
 const REST_LENGTH: f32 = 320.0;
 const CENTERING_STRENGTH: f32 = 0.15;
@@ -36,11 +47,11 @@ const SETTLE_SPEED: f32 = 1.0;
 /// One force-directed simulation tick.
 ///
 /// `positions`/`velocities` are keyed by node id and updated in place.
-/// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids
-/// currently being dragged by the user: their position is assumed already
-/// set by the caller (e.g. to the cursor position) and they're excluded
-/// from force accumulation and integration entirely — they neither push
-/// nor get pushed by the simulation while held.
+/// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids being
+/// dragged: their position is the caller's and they don't move, but they
+/// still push the others (a dragged card shoulders its neighbours aside).
+/// Ids and edges are processed in sorted order, so the result doesn't depend
+/// on the maps' iteration order or the order of `edges`.
 pub fn step(
     positions: &mut HashMap<String, egui::Vec2>,
     velocities: &mut HashMap<String, egui::Vec2>,
@@ -52,79 +63,83 @@ pub fn step(
     if dt <= 0.0 {
         return;
     }
+    // Owned ids: `positions` is mutated below.
+    let mut ids: Vec<String> = positions.keys().cloned().collect();
+    ids.sort_unstable();
+    let index: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
+    let mut forces = vec![egui::Vec2::ZERO; ids.len()];
 
-    let ids: Vec<String> = positions.keys().cloned().collect();
-    let mut forces: HashMap<String, egui::Vec2> = ids.iter().map(|id| (id.clone(), egui::Vec2::ZERO)).collect();
-
-    // Pairwise repulsion — O(n^2), fine for the tens-of-tabs scale this UI
-    // is meant for.
-    for i in 0..ids.len() {
-        for j in (i + 1)..ids.len() {
-            let (id_a, id_b) = (&ids[i], &ids[j]);
-            let pos_a = positions[id_a];
-            let pos_b = positions[id_b];
-            let delta = pos_a - pos_b;
-            let dist = delta.length().max(MIN_DISTANCE);
-            let dir = delta / dist;
+    // Pairwise repulsion: O(n^2) over plain vectors.
+    for i in 0..pos.len() {
+        for j in (i + 1)..pos.len() {
+            let delta = pos[i] - pos[j];
+            let length = delta.length();
+            // Two nodes on one point have no direction between them: pick a
+            // fixed one from their ids so they still push apart, gently (see
+            // `REPULSION_SOFT_DISTANCE`).
+            let dir = if length > f32::EPSILON {
+                delta / length
+            } else {
+                spawn_jitter(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
+            };
+            let dist = length.max(REPULSION_SOFT_DISTANCE);
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
-            *forces.get_mut(id_a).unwrap() += force;
-            *forces.get_mut(id_b).unwrap() -= force;
+            forces[i] += force;
+            forces[j] -= force;
         }
     }
 
-    // Spring attraction along parent->child edges toward a rest length.
-    for (parent, child) in edges {
-        let (Some(&pos_p), Some(&pos_c)) = (positions.get(parent), positions.get(child)) else {
-            continue; // an edge referencing a since-removed node; ignore
-        };
-        let delta = pos_c - pos_p;
+    // Spring attraction along parent->child edges toward a rest length. An
+    // edge to a since-removed node is ignored; the rest are applied in sorted
+    // order, so the sums don't depend on the order of `edges` either.
+    let mut springs: Vec<(usize, usize)> = edges
+        .iter()
+        .filter_map(|(parent, child)| Some((*index.get(parent.as_str())?, *index.get(child.as_str())?)))
+        .collect();
+    springs.sort_unstable();
+    for (p, c) in springs {
+        let delta = pos[c] - pos[p];
         let dist = delta.length().max(MIN_DISTANCE);
-        let dir = delta / dist;
-        let stretch = dist - REST_LENGTH;
-        let force = dir * (SPRING_STRENGTH * stretch);
-        if let Some(f) = forces.get_mut(parent) {
-            *f += force;
-        }
-        if let Some(f) = forces.get_mut(child) {
-            *f -= force;
-        }
+        let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
+        forces[p] += force;
+        forces[c] -= force;
     }
 
-    // Gentle pull toward the canvas center so a disconnected node (or an
-    // entire orphaned subtree) doesn't drift off-screen indefinitely.
-    for id in &ids {
-        let pos = positions[id];
-        let force = (center - pos) * CENTERING_STRENGTH;
-        *forces.get_mut(id).unwrap() += force;
-    }
-
-    // Integrate. Pinned (dragged) nodes are left exactly where the caller
-    // placed them, with zero velocity, so releasing the drag doesn't fling
-    // the node from accumulated velocity it never actually had control over.
-    for id in &ids {
+    for (i, id) in ids.iter().enumerate() {
+        // Pinned (dragged) nodes stay exactly where the caller put them, with
+        // no velocity, so releasing the drag doesn't fling them.
         if pinned.contains(id) {
             velocities.insert(id.clone(), egui::Vec2::ZERO);
             continue;
         }
-        let force = forces[id];
+        // Gentle pull toward the canvas center, so a disconnected node
+        // doesn't drift away.
+        let force = forces[i] + (center - pos[i]) * CENTERING_STRENGTH;
         let mut vel = velocities.get(id).copied().unwrap_or(egui::Vec2::ZERO);
         vel = (vel + force * dt) * DAMPING;
         if vel.length() > MAX_SPEED {
-            vel = vel * (MAX_SPEED / vel.length());
+            vel *= MAX_SPEED / vel.length();
         }
         if vel.length() < SETTLE_SPEED {
             vel = egui::Vec2::ZERO;
         }
-        let pos = positions.get_mut(id).unwrap();
-        *pos += vel * dt;
-        velocities.insert(id.clone(), vel);
+        if let Some(p) = positions.get_mut(id) {
+            *p += vel * dt;
+        }
+        match velocities.get_mut(id) {
+            Some(v) => *v = vel,
+            None => {
+                velocities.insert(id.clone(), vel);
+            }
+        }
     }
 }
 
 /// Deterministic pseudo-random-ish spawn offset for a newly created node,
 /// derived from its own id so repeated spawns don't all land exactly on
-/// top of their parent (which would otherwise produce a near-infinite
-/// repulsion force on the very first tick — see `MIN_DISTANCE`). Radius is
+/// top of their parent (where repulsion is at its cap and still has to
+/// push them a full spacing apart — see `REPULSION_SOFT_DISTANCE`). Radius is
 /// close to `REST_LENGTH` itself (not a small fixed offset) so a new child
 /// spawns near where the spring will settle it anyway, instead of starting
 /// deep inside its parent's/siblings' repulsion field and relying on the
@@ -180,6 +195,87 @@ mod tests {
 
         assert_eq!(velocities["a"], egui::Vec2::ZERO);
         assert_eq!(velocities["b"], egui::Vec2::ZERO);
+    }
+
+    fn pair_at(a: egui::Vec2, b: egui::Vec2) -> (HashMap<String, egui::Vec2>, HashMap<String, egui::Vec2>) {
+        let positions = HashMap::from([("a".to_string(), a), ("b".to_string(), b)]);
+        let velocities = HashMap::from([("a".to_string(), egui::Vec2::ZERO), ("b".to_string(), egui::Vec2::ZERO)]);
+        (positions, velocities)
+    }
+
+    /// Review C-B9: two nodes on one point push apart.
+    #[test]
+    fn coincident_nodes_separate() {
+        let (mut positions, mut velocities) = pair_at(egui::Vec2::ZERO, egui::Vec2::ZERO);
+        for _ in 0..600 {
+            step(&mut positions, &mut velocities, &[], &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+        }
+        assert!((positions["a"] - positions["b"]).length() > 100.0, "{positions:?}");
+    }
+
+    /// Two files dropped on one spot (or a card dragged onto another) ease
+    /// apart to about a card's width, near the drop: never flung off-canvas,
+    /// as an unbounded repulsion at distance ~0 did (~670 px each). Four
+    /// 90-tick settles, as `settle_current_level` runs them.
+    #[test]
+    fn stacked_nodes_settle_a_card_apart_near_the_drop() {
+        let drop = egui::vec2(400.0, 300.0);
+        for pinned in [HashSet::new(), HashSet::from(["a".to_string()])] {
+            let (mut positions, mut velocities) = pair_at(drop, drop);
+            let mut farthest: f32 = 0.0;
+            for tick in 1..=360 {
+                step(&mut positions, &mut velocities, &[], &pinned, drop, 1.0 / 60.0);
+                farthest = farthest.max((positions["a"] - drop).length()).max((positions["b"] - drop).length());
+                if tick == 90 {
+                    let gap = (positions["a"] - positions["b"]).length();
+                    assert!(gap > 100.0, "one settle already parts them: {gap} ({pinned:?})");
+                }
+            }
+            let gap = (positions["a"] - positions["b"]).length();
+            // About a card's width (`card::GRAPH_NODE_SIZE` is 160 wide): ~200 for a free
+            // pair, ~160 when one is held in place.
+            assert!(gap > 150.0, "too close: {gap} ({pinned:?})");
+            assert!(farthest < 200.0, "a node strayed {farthest} px from the drop ({pinned:?})");
+        }
+    }
+
+    /// Same input, same output, whatever order the maps iterate in.
+    #[test]
+    fn the_layout_is_deterministic() {
+        let ids: Vec<String> = (0..30).map(|i| format!("n{i}")).collect();
+        // A chain plus a few cross edges, so several springs act on one node.
+        let mut edges: Vec<(String, String)> = (0..29).map(|i| (format!("n{i}"), format!("n{}", i + 1))).collect();
+        edges.extend([("n0", "n7"), ("n3", "n20"), ("n7", "n15"), ("n20", "n15")].map(|(a, b)| (a.into(), b.into())));
+        let run = |order: &[String], edges: &[(String, String)]| {
+            let mut positions = HashMap::new();
+            let mut velocities = HashMap::new();
+            for id in order {
+                let i: f32 = id[1..].parse().unwrap();
+                // n1 sits on n0 (at the origin): a stacked pair takes its push
+                // direction from the ids, not from the maps.
+                let at = if i == 1.0 { egui::Vec2::ZERO } else { egui::vec2(i * 7.0 % 50.0, i * 13.0 % 40.0) };
+                positions.insert(id.clone(), at);
+                velocities.insert(id.clone(), egui::Vec2::ZERO);
+            }
+            for _ in 0..90 {
+                step(&mut positions, &mut velocities, edges, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+            }
+            let mut out: Vec<_> = positions.into_iter().collect();
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out
+        };
+        let reversed: Vec<String> = ids.iter().rev().cloned().collect();
+        let reversed_edges: Vec<(String, String)> = edges.iter().rev().cloned().collect();
+        assert_eq!(run(&ids, &edges), run(&reversed, &reversed_edges), "edge order must not matter");
+        assert_eq!(run(&ids, &edges), run(&reversed, &edges), "map order must not matter");
+    }
+
+    /// A pinned (dragged) node still pushes its neighbours aside.
+    #[test]
+    fn a_pinned_node_still_pushes() {
+        let (mut positions, mut velocities) = pair_at(egui::Vec2::ZERO, egui::vec2(10.0, 0.0));
+        step(&mut positions, &mut velocities, &[], &HashSet::from(["a".to_string()]), egui::vec2(5.0, 0.0), 1.0 / 60.0);
+        assert!(positions["b"].x > 10.0, "{positions:?}");
     }
 
     #[test]

@@ -72,6 +72,42 @@ fn list_rows_key(ui: &egui::Ui) -> egui::Id {
     ui.layer_id().id.with("list_rows")
 }
 
+/// Marks this frame's list rows as a window of a longer list: `list_row_nav`
+/// then stops at the ends instead of wrapping to the wrong row.
+fn mark_list_partial(ui: &egui::Ui) {
+    ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("partial"), true));
+}
+
+/// Above this many matching entries, the History popup lays out only the
+/// rows in view. Shorter lists keep the plain layout (and wrapping arrow keys).
+const HISTORY_WINDOW_FROM: usize = 100;
+
+/// Indexes into `history` of the entries `filter` matches, newest first.
+pub(crate) fn history_matches(history: &[crate::history::HistoryEntry], filter: &str) -> Vec<usize> {
+    (0..history.len()).rev().filter(|&i| filter_matches(filter, &[&history[i].title, &history[i].url])).collect()
+}
+
+/// A bookmark folder as committed from the folder field: the draft's clean form (name rules), or no folder when
+/// nothing is left of it.
+fn folder_from_draft(draft: &str) -> Option<String> {
+    let clean = crate::names::clean_name(draft);
+    (!clean.is_empty()).then(|| clean.into_owned())
+}
+
+/// A bookmark folder's name in the popup's small font and `color`, its hidden characters as placeholders (name
+/// rules).
+fn folder_job(ui: &egui::Ui, segs: &[crate::names::NameSeg], color: egui::Color32) -> egui::text::LayoutJob {
+    let format = egui::TextFormat::simple(egui::TextStyle::Small.resolve(ui.style()), color);
+    let mut job = egui::text::LayoutJob::default();
+    crate::names::append_name(&mut job, segs, &format, ui.visuals().weak_text_color());
+    job
+}
+
+/// A closed group's member count as its row shows it, after the name.
+fn member_count_text(members: usize) -> String {
+    format!("({members})")
+}
+
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
@@ -98,10 +134,11 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
 }
 
 /// After a list popup's rows are laid out: focuses the first row when the popup opens, and moves
-/// focus between rows on Up/Down (wrapping).
+/// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
     let rows: Vec<egui::Id> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
+    let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
     let open_key = key.with("was_open");
     let just_opened = interactable && !ui.data(|d| d.get_temp::<bool>(open_key).unwrap_or(false));
     ui.data_mut(|d| d.insert_temp(open_key, interactable));
@@ -119,10 +156,28 @@ fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
         )
     });
-    // Down is +1, Up is -1 (as len - 1, mod len).
-    let step = usize::from(down) + (rows.len() - 1) * usize::from(up);
-    if step != 0 {
-        ui.memory_mut(|m| m.request_focus(rows[(at + step) % rows.len()]));
+    // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
+    let next = if down {
+        if at + 1 < rows.len() {
+            Some(at + 1)
+        } else if partial {
+            None
+        } else {
+            Some(0)
+        }
+    } else if up {
+        if at > 0 {
+            Some(at - 1)
+        } else if partial {
+            None
+        } else {
+            Some(rows.len() - 1)
+        }
+    } else {
+        None
+    };
+    if let Some(next) = next {
+        ui.memory_mut(|m| m.request_focus(rows[next]));
     }
 }
 
@@ -214,6 +269,68 @@ impl FindState {
     }
 }
 
+/// A centred confirm dialog: `title`, then `detail` (the first line is the explanation, any later line a warning, as
+/// `download_detail` writes), then `button` and Cancel. `Some(true)` on the button, `Some(false)` on Cancel or
+/// Escape, `None` while it waits.
+fn confirm_dialog(ui: &mut egui::Ui, area_id: &str, title: String, detail: &str, button: &str) -> Option<bool> {
+    let (mut yes, mut no) = (false, false);
+    egui::Area::new(egui::Id::new(area_id))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            dialog_frame(ui).show(ui, |ui| {
+                control_font(ui);
+                ui.set_min_width(240.0);
+                ui.label(heading_text(title));
+                ui.add_space(4.0);
+                for (i, line) in detail.lines().enumerate() {
+                    let text = egui::RichText::new(line).small();
+                    let text = if i == 0 { text.weak() } else { text.color(crate::theme::ACCENT) };
+                    ui.add(egui::Label::new(text).wrap());
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    yes = ui.button(button).clicked();
+                    no = ui.button("Cancel").clicked();
+                });
+            });
+        });
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        no = true;
+    }
+    if yes {
+        Some(true)
+    } else if no {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Opens `confirm` in `slot` only while no confirm dialog is up, `slot`'s own or the other kind's (`other_open`):
+/// `confirm_dialog` is non-modal and centred, so a second would replace the first unanswered or draw over it. A click
+/// that would open one meanwhile is ignored. Returns whether it opened.
+pub(crate) fn offer_confirm<T>(slot: &mut Option<T>, other_open: bool, confirm: T) -> bool {
+    let free = slot.is_none() && !other_open;
+    if free {
+        *slot = Some(confirm);
+    }
+    free
+}
+
+/// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
+fn download_detail(missing: &[&str]) -> String {
+    let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
+    if !missing.is_empty() {
+        detail.push_str(&format!(
+            "
+Missing system libraries: {}. Install them with your package manager, or CEF will not start.",
+            missing.join(", ")
+        ));
+    }
+    detail
+}
+
 impl App {
     /// `which`'s anchor rect and fade (0.0-1.0), or `None` once it has
     /// faded out or while its button isn't drawn. Call it every frame,
@@ -272,7 +389,7 @@ impl App {
         match outcome? {
             PickOutcome::Switch(kind) => Some(kind),
             PickOutcome::AskInstall(kind) => {
-                self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                self.offer_engine_confirm(EngineConfirm::Download(kind));
                 None
             }
             PickOutcome::AlreadyInstalling(kind) => {
@@ -283,6 +400,53 @@ impl App {
                 self.queue_toast(PickOutcome::unavailable_toast(kind, &reason));
                 None
             }
+        }
+    }
+
+    /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
+    pub(crate) fn confirm_open(&self) -> bool {
+        self.pending_engine_confirm.is_some()
+            || self.pending_jar_confirm.is_some()
+            || self.pending_session_delete.is_some()
+    }
+
+    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
+    pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
+        let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
+        offer_confirm(&mut self.pending_engine_confirm, other, confirm)
+    }
+
+    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
+    pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
+        let other = self.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
+        offer_confirm(&mut self.pending_jar_confirm, other, confirm)
+    }
+
+    /// Asks before deleting a named session (`offer_confirm`).
+    pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
+        let other = self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
+        offer_confirm(&mut self.pending_session_delete, other, name)
+    }
+
+    /// "Delete session <name>?" for the Settings session list's X.
+    pub(crate) fn build_session_delete_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(name) = self.pending_session_delete.clone() else { return };
+        let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
+        let title = format!("Delete session {shown}?");
+        match confirm_dialog(
+            ui,
+            "session_delete_popup",
+            title,
+            "Deletes the saved session and its copies from disk.",
+            "Delete",
+        ) {
+            Some(true) => {
+                self.pending_session_delete = None;
+                session::delete_named(&name);
+                crate::settings_page::forget_disk_cache(ui.ctx());
+            }
+            Some(false) => self.pending_session_delete = None,
+            None => {}
         }
     }
 
@@ -299,58 +463,65 @@ impl App {
                 } else {
                     "Download"
                 };
-                (
-                    format!("{verb} {}, {size}?", engine_label(kind)),
-                    "Downloaded once, checked against a pinned hash, then kept in your profile.",
-                    verb,
-                )
+                let detail = download_detail(&crate::cef_platform::PLATFORM.missing_system_libs());
+                (format!("{verb} {}, {size}?", engine_label(kind)), detail, verb)
             }
             EngineConfirm::Remove(kind)
                 if !crate::process_manager::engine_hosts_dir().is_some_and(|d| d.join("cef-runtime").exists()) =>
             {
                 (
                     format!("Clear {} leftovers?", engine_label(kind)),
-                    "Deletes the partial download and install leftovers.",
+                    "Deletes the partial download and install leftovers.".to_string(),
                     "Clear",
                 )
             }
             EngineConfirm::Remove(kind) => (
                 format!("Remove {}?", engine_label(kind)),
-                "Deletes the downloaded runtime. You can download it again later.",
+                "Deletes the downloaded runtime. You can download it again later.".to_string(),
                 "Remove",
             ),
         };
-        let (mut yes, mut no) = (false, false);
-        egui::Area::new(egui::Id::new("engine_confirm_popup"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                dialog_frame(ui).show(ui, |ui| {
-                    control_font(ui);
-                    ui.set_min_width(240.0);
-                    ui.label(heading_text(title));
-                    ui.add_space(4.0);
-                    ui.add(egui::Label::new(egui::RichText::new(detail).small().weak()).wrap());
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        yes = ui.button(button).clicked();
-                        no = ui.button("Cancel").clicked();
-                    });
-                });
-            });
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            no = true;
-        }
-        if yes {
-            self.pending_engine_confirm = None;
-            match confirm {
-                EngineConfirm::Download(kind) => {
-                    self.start_engine_install(kind);
+        match confirm_dialog(ui, "engine_confirm_popup", title, &detail, button) {
+            Some(true) => {
+                self.pending_engine_confirm = None;
+                match confirm {
+                    EngineConfirm::Download(kind) => {
+                        self.start_engine_install(kind);
+                    }
+                    EngineConfirm::Remove(kind) => self.remove_engine(kind),
                 }
-                EngineConfirm::Remove(kind) => self.remove_engine(kind),
             }
-        } else if no {
-            self.pending_engine_confirm = None;
+            Some(false) => self.pending_engine_confirm = None,
+            None => {}
+        }
+    }
+
+    /// The confirm before a Settings jar action that signs tabs out or loses a jar or its saved logins: "Clear cookies
+    /// in Work?", "Delete jar Work?" or "Make Work ephemeral?" (`jar_confirm_text`). A jar deleted (or made
+    /// ephemeral) on another device meanwhile just drops the question.
+    pub(crate) fn build_jar_confirm_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = self.pending_jar_confirm else { return };
+        let Some((title, detail, button)) = self.jar_confirm_text(confirm) else {
+            self.pending_jar_confirm = None;
+            return;
+        };
+        match confirm_dialog(ui, "jar_confirm_popup", title, &detail, button) {
+            Some(true) => {
+                self.pending_jar_confirm = None;
+                match confirm {
+                    crate::jar_defs::JarConfirm::Clear(key) => self.clear_jar_cookies(key),
+                    crate::jar_defs::JarConfirm::Delete(id) => {
+                        self.delete_jar(id);
+                        self.save_session();
+                    }
+                    crate::jar_defs::JarConfirm::Ephemeral(id) => {
+                        self.set_jar_ephemeral(id, true);
+                        self.save_session();
+                    }
+                }
+            }
+            Some(false) => self.pending_jar_confirm = None,
+            None => {}
         }
     }
 
@@ -406,29 +577,40 @@ impl App {
     }
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
-    /// into `ui` as a side effect, same as the row's other icons) and the
-    /// text -- `name` for a group (with its member count), `title` (its
-    /// recorded title) or else `url` for a tab, `text` for a note, `path`
-    /// for every file-backed kind.
+    /// into `ui` as a side effect, same as the row's other icons, and for a
+    /// group nothing more: `build_recently_closed_popup` draws its member
+    /// count after the text), the text, and its hover -- `name` for a
+    /// group, `title` (its recorded title) or else `url` for a tab, the
+    /// first non-blank line of `text` for a note, `path` for every
+    /// file-backed kind. A group's row and a note's row are styled jobs by
+    /// the display rule (name rules: a hidden character as a placeholder,
+    /// "Untitled" when nothing is left, so a note with no text, or only
+    /// blank lines, shows "Untitled"), with the hidden-character hint as
+    /// the hover; other rows have none.
     fn closed_entry_label(
         ui: &mut egui::Ui,
         node: &store::json::JsonNode,
         title: Option<&str>,
-        member_count: usize,
-    ) -> String {
+    ) -> (egui::WidgetText, Option<String>) {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        match node.kind.as_str() {
+        if node.kind == "group" {
+            ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+            let name = str_field("name");
+            let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+            return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
+        }
+        if node.kind == "note" {
+            ui.label(egui_phosphor::light::NOTE_PENCIL);
+            // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+            let text = str_field("text");
+            let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+            let segs = crate::names::display_name(first, crate::names::UNTITLED);
+            return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
+        }
+        let text: String = match node.kind.as_str() {
             "tab" => {
                 engine_dot(ui, EngineKind::from_name(&str_field("engine")).unwrap_or(EngineKind::Servo), 8.0);
                 title.map_or_else(|| str_field("url"), str::to_string)
-            }
-            "group" => {
-                ui.label(egui_phosphor::light::FOLDER_SIMPLE);
-                format!("{} ({member_count})", str_field("name"))
-            }
-            "note" => {
-                ui.label(egui_phosphor::light::NOTE_PENCIL);
-                str_field("text").lines().next().unwrap_or_default().to_string()
             }
             "image" => {
                 ui.label(egui_phosphor::light::IMAGE);
@@ -443,7 +625,8 @@ impl App {
                 ui.label(egui_phosphor::light::BRACKETS_CURLY);
                 str_field("path")
             }
-        }
+        };
+        (text.into(), None)
     }
 
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
@@ -458,9 +641,22 @@ impl App {
                     ui.horizontal(|ui| {
                         let root = &entry.doc.nodes[0];
                         let title = entry.local("title", &root.id).and_then(|v| v.as_str());
-                        let label = Self::closed_entry_label(ui, root, title, entry.doc.nodes.len() - 1);
-                        if list_row(ui, label).clicked() {
-                            reopen_index = Some(index);
+                        let mut row_ui = |ui: &mut egui::Ui| {
+                            let (label, hint) = Self::closed_entry_label(ui, root, title);
+                            let mut row = list_row(ui, label);
+                            if let Some(hint) = hint {
+                                row = row.on_hover_text(hint);
+                            }
+                            if row.clicked() {
+                                reopen_index = Some(index);
+                            }
+                        };
+                        if root.kind == "group" {
+                            // The count is laid out first, at the right, so a name cut short keeps it.
+                            let count = member_count_text(entry.doc.nodes.len() - 1);
+                            egui::Sides::new().shrink_left().truncate().show(ui, row_ui, |ui| ui.weak(count));
+                        } else {
+                            row_ui(ui);
                         }
                     });
                 }
@@ -526,7 +722,12 @@ impl App {
                             continue;
                         }
                         if let Some(name) = folder {
-                            ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
+                            let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                            // One line, cut with "…" at the popup's width (egui's hover then shows it all).
+                            let header = ui.add(egui::Label::new(folder_job(ui, &segs, TEXT_PRIMARY)).truncate());
+                            if let Some(hint) = crate::names::hidden_hint(&segs) {
+                                header.on_hover_text(hint);
+                            }
                         }
                         for (index, bookmark) in rows {
                             let (index, bookmark) = (*index, *bookmark);
@@ -560,13 +761,14 @@ impl App {
                                     }
                                 }
                             } else {
-                                let label = bookmark.folder.as_deref().unwrap_or("No folder");
+                                let segs = match &bookmark.folder {
+                                    Some(name) => crate::names::display_name(name, crate::names::UNTITLED),
+                                    None => vec![crate::names::NameSeg::Plain("No folder")],
+                                };
+                                let job = folder_job(ui, &segs, ui.visuals().weak_text_color());
                                 if ui
-                                    .add(
-                                        egui::Label::new(egui::RichText::new(label).small().weak())
-                                            .sense(egui::Sense::click()),
-                                    )
-                                    .on_hover_text("Click to set folder")
+                                    .add(egui::Label::new(job).truncate().sense(egui::Sense::click()))
+                                    .on_hover_text(crate::names::with_hint("Click to set folder", &segs))
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .clicked()
                                 {
@@ -591,9 +793,8 @@ impl App {
         }
         if let Some(draft) = folder_rename_commit {
             if let Some((url, _)) = self.renaming_bookmark_folder.take() {
-                let trimmed = draft.trim();
                 if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
-                    bookmark.folder = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                    bookmark.folder = folder_from_draft(&draft);
                     bookmarks::save(&self.bookmarks);
                 }
             }
@@ -640,17 +841,55 @@ impl App {
                 if self.history.is_empty() {
                     ui.label(egui::RichText::new("No history yet.").weak());
                 }
-                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                    for entry in self.history.iter().rev() {
-                        let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                        if !filter_matches(&self.history_filter, &[&entry.title, &entry.url]) {
-                            continue;
-                        }
-                        if list_row(ui, label).clicked() {
-                            navigate_url = Some(entry.url.clone());
-                        }
+                let key_ok = matches!(&self.history_matches_cache,
+                    Some((f, n, _)) if *f == self.history_filter && *n == self.history.len());
+                if !key_ok {
+                    let matches = history_matches(&self.history, &self.history_filter);
+                    self.history_matches_cache = Some((self.history_filter.clone(), self.history.len(), matches));
+                }
+                let matches = self.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
+                let row = |ui: &mut egui::Ui, i: usize, navigate_url: &mut Option<String>| {
+                    let entry = &self.history[i];
+                    let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                    // Keyed by the entry, not by position: a windowed list starts at a different row each
+                    // scroll, and positional ids would move keyboard focus to another entry. An explicit id,
+                    // not `push_id`: a child's id also mixes in the parent's running widget count, which is
+                    // positional. (An entry evicted at `MAX_HISTORY_ENTRIES` while the popup is open shifts
+                    // every index by one, so focus slips to the neighbouring entry for that frame; rare
+                    // enough to leave.)
+                    let id = egui::Id::new(("history_row", i));
+                    if ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, label)).inner.clicked() {
+                        *navigate_url = Some(entry.url.clone());
                     }
-                });
+                };
+                let scroll = egui::ScrollArea::vertical().max_height(280.0);
+                if matches.len() < HISTORY_WINDOW_FROM {
+                    scroll.show(ui, |ui| matches.iter().for_each(|&i| row(ui, i, &mut navigate_url)));
+                } else {
+                    // The height a row really lays out at: the popup's own font (`menu_item_style` overrides
+                    // the Body style), so the window is placed where the rows actually are.
+                    let font_id = egui::FontSelection::Default.resolve(ui.style());
+                    let spacing = ui.spacing().item_spacing.y;
+                    let pitch = ui.ctx().fonts_mut(|f| f.row_height(&font_id)) + spacing;
+                    scroll.show_viewport(ui, |ui, viewport| {
+                        ui.set_height((pitch * matches.len() as f32 - spacing).max(0.0));
+                        // `ScrollArea::show_rows`, but with one row of overlap above the view as well as
+                        // below: `show_rows` leaves out the row just above a view whose top edge falls on a
+                        // row boundary, and Up from the first laid-out row would then have nowhere to go.
+                        // The extra row takes the focus, and `list_row`'s `scroll_to_me` brings it in.
+                        let end = ((viewport.max.y / pitch).ceil() as usize + 1).min(matches.len());
+                        let first = ((viewport.min.y / pitch).floor() as usize).saturating_sub(1).min(end);
+                        let top = ui.max_rect().top();
+                        let rect = egui::Rect::from_x_y_ranges(
+                            ui.max_rect().x_range(),
+                            top + first as f32 * pitch..=top + end as f32 * pitch,
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            matches[first..end].iter().for_each(|&i| row(ui, i, &mut navigate_url));
+                        });
+                    });
+                    mark_list_partial(ui);
+                }
                 ui.separator();
                 if ui.button("Clear").clicked() {
                     clear_requested = true;
@@ -668,6 +907,7 @@ impl App {
         if clear_requested {
             self.history.clear();
             self.history_dirty = true;
+            self.history_matches_cache = None;
             close = true;
         }
         if clicked_outside {
@@ -1051,6 +1291,12 @@ impl App {
             .collect()
     }
 
+    /// Opens the quick switcher, empty, with its field focused (Ctrl+K and `QUICKSWITCHOPEN`).
+    pub(crate) fn open_quick_switcher(&mut self) {
+        self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+        self.pending_focus = Some(FocusTarget::QuickSwitcher);
+    }
+
     /// Moves the quick-switcher's selection by `delta` (+1/-1), clamped to
     /// the current match list — shared by the real ArrowUp/ArrowDown
     /// handling in `build_quick_switcher` and the headless `QUICKSWITCHUP`/
@@ -1077,7 +1323,8 @@ impl App {
     pub(crate) fn quick_switcher_confirm(&mut self) {
         let Some(switcher) = &self.quick_switcher else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
-        if let Some(id) = matches.get(switcher.selected).cloned() {
+        // Clamped: a query narrowed after moving down can leave `selected` past the end.
+        if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).cloned() {
             self.show_level_of(&id);
             self.focus_tab(&id);
         }
@@ -1129,8 +1376,9 @@ impl App {
         }
 
         let query = switcher.query.clone();
-        let selected_index = switcher.selected;
         let matches = self.quick_switcher_matches(&query);
+        // The row Enter would pick (`quick_switcher_confirm` clamps the same way).
+        let selected_index = switcher.selected.min(matches.len().saturating_sub(1));
         let mut jump_to: Option<String> = None;
 
         egui::Area::new(egui::Id::new("quick_switcher"))
@@ -1152,6 +1400,9 @@ impl App {
                                     .lock_focus(true)
                                     .hint_text("Search open tabs..."),
                             );
+                            if response.changed() {
+                                switcher.selected = 0; // a new query starts at its first match
+                            }
                             if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {
                                 response.request_focus();
                             }
@@ -1354,7 +1605,7 @@ impl App {
             });
         if confirm {
             if let Some(json) = self.pending_import.take() {
-                self.replace_running_session(&json);
+                self.replace_running_session(&json, crate::store::json::Trust::Foreign);
             }
         }
         if cancel {
@@ -1365,7 +1616,157 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn download_detail_warns_only_when_libraries_are_missing() {
+        assert!(!super::download_detail(&[]).contains("Missing"));
+        let d = super::download_detail(&["libnss3.so", "libnspr4.so"]);
+        assert!(d.contains("Missing system libraries: libnss3.so, libnspr4.so."), "{d}");
+    }
+
     use super::*;
+
+    #[test]
+    fn history_matches_lists_filtered_entries_newest_first() {
+        let entry = |title: &str, url: &str| crate::history::HistoryEntry { title: title.into(), url: url.into() };
+        let history = vec![entry("Rust", "https://a"), entry("", "https://rust.example"), entry("Go", "https://b")];
+        assert_eq!(history_matches(&history, ""), vec![2, 1, 0]);
+        assert_eq!(history_matches(&history, "rust"), vec![1, 0]);
+    }
+
+    /// Name rules: a bookmark folder is committed under its clean name; nothing left of it means no folder.
+    #[test]
+    fn a_bookmark_folder_commits_its_clean_name() {
+        assert_eq!(folder_from_draft("  Re\u{200B}ading\u{00A0}\u{00A0}list\n").as_deref(), Some("Reading list"));
+        assert_eq!(folder_from_draft(" \u{200B}\u{202E} "), None);
+        assert_eq!(folder_from_draft(""), None);
+    }
+
+    /// Name rules: a Recently Closed group row draws a hidden character in its name as a placeholder and gives the
+    /// hidden-character hint for its hover; its member count reads "(n)" (`member_count_text`).
+    #[test]
+    fn a_closed_group_row_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("name".into(), "Re\u{200B}ading".into());
+        let node = store::json::JsonNode { id: "g".into(), kind: "group".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            assert_eq!(label.text(), "Re⟦200B⟧ading");
+            assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
+        });
+        output.textures_delta.clear();
+        assert_eq!(member_count_text(3), "(3)");
+    }
+
+    /// A Recently Closed tab row has no name rule, so no hint.
+    #[test]
+    fn a_closed_tab_row_has_no_hint() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("url".into(), "https://example.org/".into());
+        let node = store::json::JsonNode { id: "t".into(), kind: "tab".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            assert_eq!((label.text(), hint), ("https://example.org/", None));
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Name rules: a Recently Closed note row shows the note's first non-blank line by the display rule.
+    #[test]
+    fn a_closed_note_row_shows_its_first_line_by_the_display_rule() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody".into());
+        let node = store::json::JsonNode { id: "n".into(), kind: "note".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (label, hint) = App::closed_entry_label(ui, &node, None);
+            assert_eq!(label.text(), "Re⟦200B⟧ading list");
+            assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped, both as a header
+    /// and as the "click to set folder" label under a bookmark.
+    #[test]
+    fn a_long_bookmark_folder_header_is_one_cut_line() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let mut app = App::default();
+        let folder = format!("w{}", " Wardrobe".repeat(7));
+        let bookmark = |title: &str| bookmarks::Bookmark {
+            title: title.into(),
+            url: format!("https://example.org/{title}"),
+            folder: Some(folder.clone()),
+        };
+        app.bookmarks = vec![bookmark("a")];
+        app.open_popup = Some(AnchoredPopup::Bookmarks);
+        let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
+        let mut galleys = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_bookmarks_popup(ui, anchor, 1.0));
+            output.textures_delta.clear();
+            galleys = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == folder => Some(t.galley),
+                    _ => None,
+                })
+                .collect();
+        }
+        let weak = ctx.global_style().visuals.weak_text_color();
+        for (what, color) in [("header", TEXT_PRIMARY), ("label", weak)] {
+            let galley = galleys.iter().find(|g| g.job.sections[0].format.color == color);
+            let galley = galley.unwrap_or_else(|| panic!("the folder {what} is drawn"));
+            assert_eq!(galley.rows.len(), 1, "{what}: one line: {:?}", galley.text());
+            assert!(galley.elided, "{what}: cut with an ellipsis: {:?}", galley.text());
+        }
+    }
+
+    /// Name rules: a bookmark folder's name is drawn in the popup's small font, a hidden character as a placeholder.
+    #[test]
+    fn a_bookmark_folder_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let segs = crate::names::display_name("Re\u{200B}ading", crate::names::UNTITLED);
+            let job = folder_job(ui, &segs, TEXT_PRIMARY);
+            assert_eq!(job.text, "Re⟦200B⟧ading");
+            assert_eq!(job.sections[0].format.font_id, egui::TextStyle::Small.resolve(ui.style()));
+            assert_eq!(job.sections[0].format.color, TEXT_PRIMARY);
+            assert_eq!(job.sections[1].format.font_id.family, egui::FontFamily::Monospace);
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Fix batch B5: a confirm opens only into an empty slot with the other kind's closed; it never replaces one.
+    #[test]
+    fn a_confirm_opens_only_while_none_is_up() {
+        let mut slot = None;
+        assert!(!offer_confirm(&mut slot, true, 1), "the other kind is up");
+        assert_eq!(slot, None);
+        assert!(offer_confirm(&mut slot, false, 1));
+        assert!(!offer_confirm(&mut slot, false, 2), "its own kind is up");
+        assert_eq!(slot, Some(1));
+    }
+
+    #[test]
+    fn a_session_delete_waits_for_a_free_confirm_slot() {
+        let mut app = App {
+            pending_jar_confirm: Some(crate::jar_defs::JarConfirm::Clear(crate::jar::JarKey::Default)),
+            ..App::default()
+        };
+        assert!(!app.offer_session_delete("work".into()));
+        app.pending_jar_confirm = None;
+        assert!(app.offer_session_delete("work".into()));
+        assert!(app.confirm_open());
+    }
 
     #[test]
     fn opening_a_popup_replaces_the_open_one() {
@@ -1417,6 +1818,30 @@ mod tests {
         let untitled = add(&mut app, sleeping_tab("https://b/", ""));
         assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
         assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
+    }
+
+    /// Review C-B2: a query narrowed after moving down confirms its first match, not nothing.
+    #[test]
+    fn a_narrowed_query_confirms_its_first_match() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-narrowed").join("session.mnf"), 1);
+        let ids: Vec<String> =
+            (0..6).map(|i| add(&mut app, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}")))).collect();
+        app.open_quick_switcher();
+        for _ in 0..5 {
+            app.quick_switcher_move(1);
+        }
+        assert_eq!(app.quick_switcher.as_ref().unwrap().selected, 5);
+        app.quick_switcher.as_mut().unwrap().query = "tab 2".into();
+        app.quick_switcher_confirm();
+        assert!(app.quick_switcher.is_none());
+        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "jumped to the one match");
+
+        app.open_quick_switcher();
+        app.quick_switcher.as_mut().unwrap().query = "no such tab".into();
+        app.quick_switcher_confirm(); // nothing matches: closes, no panic
+        assert!(app.quick_switcher.is_none());
+        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "focus unchanged");
     }
 }
 
@@ -1475,6 +1900,77 @@ mod engine_picker_tests {
         });
         output.textures_delta.clear(); // nothing uploads the font atlas here
         clicked
+    }
+
+    /// A long History popup lays out only the rows in view. Down walks one entry at a time past the first view
+    /// (the list scrolls), and Up walks back one at a time to the newest entry (the list scrolls back), without
+    /// wrapping at either end of the laid-out window.
+    #[test]
+    fn a_long_history_popup_lays_out_only_the_rows_in_view() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let history = (0..300)
+            .map(|i| crate::history::HistoryEntry { title: format!("entry {i}"), url: format!("https://e/{i}") })
+            .collect();
+        let mut app = App { history, open_popup: Some(AnchoredPopup::History), ..App::default() };
+        let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
+        // A second a frame, so `scroll_to_me`'s scroll animation finishes between frames.
+        let mut time = 0.0;
+        // One frame: the entry numbers painted, top to bottom, and the focused row's entry.
+        let mut frame = |events: Vec<egui::Event>| -> (Vec<usize>, Option<usize>) {
+            time += 1.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_history_popup(ui, anchor, 1.0));
+            output.textures_delta.clear();
+            let rows: Vec<(usize, egui::Pos2)> = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => {
+                        t.galley.job.text.strip_prefix("entry ").and_then(|n| n.parse().ok()).map(|n| (n, t.pos))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let focused = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).map(|r| r.rect);
+            let at = focused.and_then(|r| rows.iter().find(|(_, pos)| r.y_range().contains(pos.y + 1.0)).map(|p| p.0));
+            (rows.into_iter().map(|(n, _)| n).collect(), at)
+        };
+        for _ in 0..3 {
+            frame(vec![]);
+        }
+        let (rows, at) = frame(vec![]);
+        // Painted rows alone prove nothing (a label out of view is laid out but not painted): count the widgets.
+        let widgets = ctx.viewport(|v| v.this_pass.widgets.layers().map(|(_, w)| w.len()).sum::<usize>());
+        assert!(widgets < 100, "{widgets} widgets laid out for 300 entries");
+        assert_eq!((rows[0], at), (299, Some(299)), "newest first, and focused");
+        frame(vec![key(egui::Key::ArrowUp)]);
+        assert_eq!(frame(vec![]).1, Some(299), "Up on the first row does not wrap in a windowed list");
+        let steps = rows.len() + 5;
+        for k in 1..=steps {
+            frame(vec![key(egui::Key::ArrowDown)]);
+            frame(vec![]); // the focused row scrolls into view on the frame after it takes focus
+            let (rows, at) = frame(vec![]);
+            assert_eq!(at, Some(299 - k), "Down step {k}: {rows:?}");
+        }
+        let (rows, _) = frame(vec![]);
+        assert!(!rows.contains(&299), "Down walked past the first view: {rows:?}");
+        assert!(rows.windows(2).all(|w| w[0] == w[1] + 1), "a contiguous window, newest first: {rows:?}");
+        for k in (0..steps).rev() {
+            frame(vec![key(egui::Key::ArrowUp)]);
+            frame(vec![]); // the focused row scrolls into view on the frame after it takes focus
+            let (rows, at) = frame(vec![]);
+            assert_eq!(at, Some(299 - k), "Up back to {}: {rows:?}", 299 - k);
+        }
+        let (rows, at) = frame(vec![]);
+        assert_eq!((rows[0], at), (299, Some(299)), "back at the top, scrolled back: {rows:?}");
+        assert_eq!(app.open_popup, Some(AnchoredPopup::History));
     }
 
     /// A list popup opens on its first row; Down and Up move (wrapping) and Enter clicks the focused row.

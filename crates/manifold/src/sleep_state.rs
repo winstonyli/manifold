@@ -1,14 +1,17 @@
 //! Pure parts of two-phase sleep (`App::request_sleep` / `finish_sleep`) and
 //! of scroll restore after a wake (`App::saved_scroll`).
 
+use crate::jar::JarKey;
 use ipc_protocol::PageState;
 use std::time::{Duration, Instant};
 
-/// Why a tab is being put to sleep: the user asked, or the idle sweep did.
+/// Why a tab is being put to sleep: the user asked, the idle sweep did, or its jar changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SleepWhy {
     Manual,
     Idle,
+    /// The tab's jar changed while it ran (spec "Live tabs when `jar` changes"); follows the idle rules.
+    JarSwitch,
 }
 
 /// A `QueryPageState` sent and not yet answered.
@@ -26,12 +29,42 @@ pub(crate) enum Verdict {
     Stay,
 }
 
-/// Idle sleep never discards a dirty form; a manual Sleep is an explicit act.
+/// Only a manual sleep discards a dirty form: it is an explicit act; idle sleep and a jar switch wait.
 pub(crate) fn verdict(why: SleepWhy, state: &PageState) -> Verdict {
-    if why == SleepWhy::Idle && state.dirty_form {
+    if why != SleepWhy::Manual && state.dirty_form {
         Verdict::Stay
     } else {
         Verdict::Sleep
+    }
+}
+
+/// What a live tab does about its jar (`jar_switch`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum JarSwitch {
+    Nothing,
+    SleepNow,
+    Wait,
+}
+
+/// The spec's "Live tabs when `jar` changes" table, before the dirty-form check (`verdict`). `spawned_with` is the
+/// running host's jar (`None`: no host, so it will spawn into `wanted`). `reseed`: the host must be replaced although
+/// its key is unchanged (its jar was cleared).
+pub(crate) fn jar_switch(
+    spawned_with: Option<JarKey>,
+    wanted: JarKey,
+    reseed: bool,
+    busy: bool,
+    focused: bool,
+) -> JarSwitch {
+    match spawned_with {
+        Some(had) if had != wanted || reseed => {
+            if busy || focused {
+                JarSwitch::Wait
+            } else {
+                JarSwitch::SleepNow
+            }
+        }
+        _ => JarSwitch::Nothing,
     }
 }
 
@@ -72,11 +105,34 @@ mod tests {
         PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: dirty }
     }
 
+    /// Only a manual sleep discards a dirty form.
     #[test]
     fn only_idle_sleep_stays_awake_for_a_dirty_form() {
         assert_eq!(verdict(SleepWhy::Idle, &state(true)), Verdict::Stay);
         assert_eq!(verdict(SleepWhy::Idle, &state(false)), Verdict::Sleep);
         assert_eq!(verdict(SleepWhy::Manual, &state(true)), Verdict::Sleep);
+    }
+
+    #[test]
+    fn the_jar_switch_table() {
+        use crate::jar::JarKey;
+        use crate::store::model::{ActorId, NodeId};
+        let work = JarKey::Named(NodeId { actor: ActorId(1), counter: 1 });
+        let d = JarKey::Default;
+        assert_eq!(jar_switch(None, work, false, false, false), JarSwitch::Nothing, "asleep or not spawned yet");
+        assert_eq!(jar_switch(None, work, true, false, false), JarSwitch::Nothing, "no host to reseed");
+        assert_eq!(jar_switch(Some(work), work, false, false, false), JarSwitch::Nothing, "already on it");
+        assert_eq!(jar_switch(Some(work), work, true, false, false), JarSwitch::SleepNow, "its jar was cleared");
+        assert_eq!(jar_switch(Some(d), work, false, false, false), JarSwitch::SleepNow);
+        assert_eq!(jar_switch(Some(d), work, false, true, false), JarSwitch::Wait, "busy");
+        assert_eq!(jar_switch(Some(d), work, false, false, true), JarSwitch::Wait, "focused");
+        assert_eq!(jar_switch(Some(work), work, true, true, false), JarSwitch::Wait, "a busy reseed waits too");
+    }
+
+    #[test]
+    fn a_jar_switch_stays_awake_for_a_dirty_form() {
+        assert_eq!(verdict(SleepWhy::JarSwitch, &state(true)), Verdict::Stay);
+        assert_eq!(verdict(SleepWhy::JarSwitch, &state(false)), Verdict::Sleep);
     }
 
     #[test]
