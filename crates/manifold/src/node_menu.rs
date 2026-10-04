@@ -566,7 +566,9 @@ impl App {
         if open_tab {
             // The link came from the page: no `file:`/`javascript:` new tab (`popup_gate.rs`).
             if !crate::popup_gate::page_tab_url_allowed(&menu.href) {
-                self.queue_toast(format!("Can't open {} in a new tab", menu.href));
+                // The scheme only: the rest is page content (a `data:` or `javascript:` body).
+                let scheme = crate::popup_gate::scheme_for_log(&menu.href);
+                self.queue_toast(format!("Can't open a {scheme}: link in a new tab"));
             } else if let Some(opener) = self.focused.clone() {
                 self.spawn_tab_from(&opener, &menu.href);
             } else {

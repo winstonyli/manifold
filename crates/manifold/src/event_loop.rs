@@ -1282,7 +1282,7 @@ impl App {
                 // has (generalized to a plain message, see `save_toast`'s own
                 // doc comment) rather than a second, separate notification
                 // mechanism.
-                self.queue_toast(format!("Tab crashed, restarted: {url}"));
+                self.queue_toast(format!("Tab crashed, restarted: {}", Self::toast_url(url)));
                 self.nodes.remove(tab_id);
                 // Same stale-state guard `destroy_tab`/`finish_swap` apply — see
                 // `finish_swap`'s own comment on this.

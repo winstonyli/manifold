@@ -838,7 +838,7 @@ impl App {
             self.close_split();
         }
         self.tab_crashes.remove(id);
-        self.queue_toast(format!("Tab keeps crashing, left closed: {url}"));
+        self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
         self.save_session();
     }
 

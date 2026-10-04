@@ -2669,6 +2669,16 @@ impl App {
         self.save_toast_queue.push_back(message);
     }
 
+    /// `url` short enough for a toast: its first `TOAST_URL_CHARS` characters and an ellipsis. A toast sizes to its
+    /// text, and a `data:` URL can be megabytes.
+    fn toast_url(url: &str) -> String {
+        const TOAST_URL_CHARS: usize = 80;
+        match url.char_indices().nth(TOAST_URL_CHARS) {
+            Some((at, _)) => format!("{}\u{2026}", &url[..at]),
+            None => url.to_string(),
+        }
+    }
+
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);
         const TOAST_FADE_OUT: std::time::Duration = std::time::Duration::from_millis(400);
@@ -3465,6 +3475,17 @@ mod tests {
         assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
         app.save_named_session("Trip");
         assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    }
+
+    /// A toast shows a long URL's start and an ellipsis, cut on a character boundary.
+    #[test]
+    fn a_toast_url_is_cut_to_eighty_characters() {
+        assert_eq!(App::toast_url("https://a/"), "https://a/");
+        let long = format!("data:text/plain,{}", "é".repeat(500));
+        let shown = App::toast_url(&long);
+        assert_eq!(shown.chars().count(), 81);
+        assert!(shown.starts_with("data:text/plain,é") && shown.ends_with("é\u{2026}"), "{shown}");
+        assert_eq!(App::toast_url(&"x".repeat(80)), "x".repeat(80));
     }
 
     /// Save As while startup's personal state is unread carries none into the copy; once read, it carries this
