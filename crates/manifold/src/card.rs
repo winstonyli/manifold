@@ -140,10 +140,9 @@ pub(crate) fn paint_jar_chip(
 ) -> Option<egui::Rect> {
     const R: f32 = JAR_CHIP_R;
     let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
-    let arrow =
-        chip.will_switch.then(|| painter.layout_no_wrap(egui_phosphor::light::ARROW_RIGHT.into(), font.clone(), text));
+    let arrow = jar_chip_arrow(painter, chip, font.clone(), text);
     let name = painter.layout_no_wrap(chip.name.clone(), font.clone(), text);
-    let lead = arrow.as_ref().map_or(0.0, |a| 2.0 * R + 3.0 + a.size().x + 3.0);
+    let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
     let fit = fit_jar_chip(max_width, lead, name.size().x)?;
     let name = fit.name.map(|room| {
         if room >= name.size().x {
@@ -165,8 +164,43 @@ pub(crate) fn paint_jar_chip(
     };
     let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
     painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(210)); // legible on a white page
-    let mut x = at.x + JAR_CHIP_PAD;
-    if let Some(arrow) = arrow.filter(|_| fit.lead) {
+    let x = paint_jar_dots(painter, at.x + JAR_CHIP_PAD, cy, chip, arrow.filter(|_| fit.lead), text, warn);
+    if let Some(name) = name {
+        let size = name.size();
+        painter.galley(egui::pos2(x + JAR_CHIP_NAME_GAP, cy - size.y / 2.0), name, text);
+    }
+    Some(scrim)
+}
+
+/// The arrow between a waiting switch's two dots (`paint_jar_dots`); `None` unless the tab waits to switch.
+pub(crate) fn jar_chip_arrow(
+    painter: &egui::Painter,
+    chip: &crate::jar_defs::JarChip,
+    font: egui::FontId,
+    text: egui::Color32,
+) -> Option<std::sync::Arc<egui::Galley>> {
+    chip.will_switch.then(|| painter.layout_no_wrap(egui_phosphor::light::ARROW_RIGHT.into(), font, text))
+}
+
+/// How wide `paint_jar_dots` paints, with `arrow` (`jar_chip_arrow`) or without.
+pub(crate) fn jar_dots_width(arrow: Option<&egui::Galley>) -> f32 {
+    arrow.map_or(0.0, |a| 2.0 * JAR_CHIP_R + 3.0 + a.size().x + 3.0) + 2.0 * JAR_CHIP_R
+}
+
+/// A jar's dots from `x` (screen) on the line `cy`, shared by the card chip and Tab view: with `arrow`, the jar the
+/// live tab still runs on (`was_color`) and the arrow first; then its jar's dot, outlined when following the group and
+/// `warn`-coloured for a missing jar. Returns the x after the last dot.
+pub(crate) fn paint_jar_dots(
+    painter: &egui::Painter,
+    mut x: f32,
+    cy: f32,
+    chip: &crate::jar_defs::JarChip,
+    arrow: Option<std::sync::Arc<egui::Galley>>,
+    text: egui::Color32,
+    warn: egui::Color32,
+) -> f32 {
+    const R: f32 = JAR_CHIP_R;
+    if let Some(arrow) = arrow {
         painter.circle_filled(egui::pos2(x + R, cy), R, chip.was_color);
         x += 2.0 * R + 3.0;
         let size = arrow.size();
@@ -179,12 +213,7 @@ pub(crate) fn paint_jar_chip(
     } else {
         painter.circle_filled(egui::pos2(x + R, cy), R, color);
     }
-    x += 2.0 * R + JAR_CHIP_NAME_GAP;
-    if let Some(name) = name {
-        let size = name.size();
-        painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
-    }
-    Some(scrim)
+    x + 2.0 * R
 }
 
 /// Queues tab `chip` at world point `world` (the card's corner it hangs from), moved by `offset` screen points, at
@@ -2110,6 +2139,50 @@ mod tests {
         assert_eq!(fit(10.0, 20.0, 30.0), None);
         // A name already narrower than the minimum is kept whole when it fits.
         assert_eq!(fit(whole - 20.0, 0.0, 10.0), Some(ChipFit { lead: false, name: Some(10.0) }));
+    }
+
+    /// Fix batch B4: the dots the card chip and Tab view share show a waiting switch as the old jar's dot, an arrow,
+    /// then the new jar's; one dot otherwise. Tab view drew only the new jar's dot.
+    #[test]
+    fn the_jar_dots_show_a_waiting_switch() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        for will_switch in [false, true] {
+            let chip = crate::jar_defs::JarChip {
+                name: "Home".into(),
+                color: egui::Color32::RED,
+                following: false,
+                missing: false,
+                will_switch,
+                can_switch_now: true,
+                was_color: egui::Color32::GRAY,
+                engine_ignores: false,
+                tooltip: None,
+            };
+            let mut end = 0.0;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let arrow = jar_chip_arrow(ui.painter(), &chip, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+                assert_eq!(arrow.is_some(), will_switch);
+                let width = jar_dots_width(arrow.as_deref());
+                end = paint_jar_dots(ui.painter(), 0.0, 8.0, &chip, arrow, egui::Color32::WHITE, egui::Color32::YELLOW);
+                assert_eq!(end, width, "jar_dots_width matches what is painted");
+            });
+            output.textures_delta.clear();
+            let circles: Vec<egui::Color32> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Circle(c) => Some(c.fill),
+                    _ => None,
+                })
+                .collect();
+            let texts = output.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Text(_))).count();
+            if will_switch {
+                assert_eq!((circles, texts), (vec![egui::Color32::GRAY, egui::Color32::RED], 1));
+            } else {
+                assert_eq!((circles, texts), (vec![egui::Color32::RED], 0));
+            }
+        }
     }
 
     /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.

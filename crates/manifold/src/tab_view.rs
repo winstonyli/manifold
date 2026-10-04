@@ -343,16 +343,25 @@ impl App {
         if bookmark.clicked() {
             actions.toggle_bookmark_requested = true;
         }
-        // The jar dot, beside the address bar (spec "UI"): the card chip's colour, its name and warnings as hover
-        // text. A click switches a tab that is waiting to, unless another host change is already on its way.
+        // The jar dot, beside the address bar (spec "UI"): the card chip's dots (`card::paint_jar_dots`, so a tab
+        // waiting to switch shows its old jar's dot, an arrow, then the new one), its name and warnings as hover text.
+        // A click switches a tab that is waiting to, unless another host change is already on its way.
         if let Some(chip) = self.jar_chip(focused_id) {
-            let (rect, response) = trailing_ui.allocate_exact_size(egui::vec2(16.0, 28.0), egui::Sense::click());
-            let color = if chip.missing { trailing_ui.visuals().warn_fg_color } else { chip.color };
-            if chip.following {
-                trailing_ui.painter().circle_stroke(rect.center(), 3.5, egui::Stroke::new(1.5, color));
-            } else {
-                trailing_ui.painter().circle_filled(rect.center(), 4.0, color);
-            }
+            let text = trailing_ui.visuals().text_color();
+            let arrow =
+                crate::card::jar_chip_arrow(trailing_ui.painter(), &chip, egui::FontId::proportional(11.0), text);
+            let width = crate::card::jar_dots_width(arrow.as_deref()) + 8.0;
+            let (rect, response) = trailing_ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
+            let warn = trailing_ui.visuals().warn_fg_color;
+            crate::card::paint_jar_dots(
+                trailing_ui.painter(),
+                rect.left() + 4.0,
+                rect.center().y,
+                &chip,
+                arrow,
+                text,
+                warn,
+            );
             let follows = if chip.following { " (follows its group)" } else { "" };
             let mut hover = format!("Jar: {}{follows}", chip.name);
             if let Some(tooltip) = &chip.tooltip {
