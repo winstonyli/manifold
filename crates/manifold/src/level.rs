@@ -46,20 +46,26 @@ impl App {
     /// nodes kind by kind in `GRAPH_DRAW_ORDER`, and each kind in
     /// `node_order`.
     pub(crate) fn level_items(&self) -> Vec<LevelItem> {
+        self.level_items_from(&GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind)))
+    }
+
+    /// `level_items` from an `at_level` scan already made this frame
+    /// (`build_graph_ui`), so the level isn't walked twice.
+    pub(crate) fn level_items_from(&self, at_level: &[Vec<String>]) -> Vec<LevelItem> {
         if let Some(level) = &self.json_level {
             return (0..level.cards.len())
                 .map(|i| LevelItem { id: level.card_id(i), kind: LevelItemKind::JsonCard, rect: level.rects[i] })
                 .collect();
         }
-        GRAPH_DRAW_ORDER
+        at_level
             .iter()
-            .flat_map(|&kind| self.nodes_at_current_level(kind))
+            .flatten()
             .filter_map(|id| {
-                let node = self.nodes.get(&id)?;
+                let node = self.nodes.get(id)?;
                 Some(LevelItem {
                     kind: LevelItemKind::Node(item_node_kind(&node.payload)),
                     rect: node_card_rect(node),
-                    id,
+                    id: id.clone(),
                 })
             })
             .collect()
@@ -169,6 +175,16 @@ mod tests {
         app.current_group = Some("g".into());
         let inside: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();
         assert_eq!(inside, ["inner"]);
+    }
+
+    #[test]
+    fn level_items_from_a_precomputed_scan_match_a_fresh_one() {
+        let mut app = App::default();
+        for _ in 0..3 {
+            app.new_note_shortcut();
+        }
+        let at_level = GRAPH_DRAW_ORDER.map(|kind| app.nodes_at_current_level(kind));
+        assert_eq!(app.level_items_from(&at_level), app.level_items());
     }
 
     #[test]

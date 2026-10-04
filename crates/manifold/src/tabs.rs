@@ -661,6 +661,7 @@ impl App {
     /// paired with the specific tab it was opened against. An unloaded tab
     /// (`UnloadedTabPayload`) is woken.
     pub(crate) fn focus_tab(&mut self, id: &str) {
+        self.end_note_edits();
         if self.focused.as_deref() != Some(id) {
             self.hide_focused_tab();
         }
@@ -691,6 +692,7 @@ impl App {
         match self.nodes.get(id).map(|n| item_node_kind(&n.payload)) {
             Some(ItemNodeKind::Tab | ItemNodeKind::Unloaded) => self.focus_tab(id),
             Some(ItemNodeKind::Image) => {
+                self.end_note_edits();
                 self.hide_focused_tab();
                 self.viewed_image = Some(id.to_string());
                 self.image_view = ImageViewState::default();

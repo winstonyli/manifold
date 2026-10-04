@@ -730,6 +730,7 @@ impl App {
     /// the return view with `Settings` itself).
     pub(crate) fn open_settings_page(&mut self) {
         if self.view_mode != ViewMode::Settings {
+            self.end_note_edits();
             self.invalidate_cef_dir_check();
             self.settings_return_view = self.view_mode;
             self.view_mode = ViewMode::Settings;

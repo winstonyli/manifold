@@ -399,6 +399,7 @@ impl App {
     /// otherwise act on tabs no longer visible), the empty-canvas card and
     /// any open node menu.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
+        self.end_note_edits();
         self.current_group = group;
         self.sync_json_level();
         self.layout_current_level();
@@ -415,31 +416,11 @@ impl App {
         // while handling Enter, so later this frame it would read false.
         let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
         self.sync_json_level();
-        // Computed once per frame and reused everywhere below that only
-        // needs "every node of kind X at this level" unconditionally --
-        // **found during a performance audit**: each of these seven
-        // `*_at_current_level` accessors used to get called at least three
-        // separate times per frame from this one function alone (the
-        // toolbar's own group-count gates, the settle-key check, the
-        // minimap's dot-drawing pass, and the main card-rendering loop),
-        // each call redoing the identical `O(n)` `self.node_order` scan
-        // and allocating a fresh `Vec<String>` -- real, entirely avoidable
-        // cost that ran unconditionally every frame regardless of whether
-        // anything actually changed, since this app already redraws every
-        // frame. `self.current_group` can't change until `EnterGroup`/
-        // `LeaveGroup` actions are applied at the very end of this same
-        // function, so every unconditional per-frame use below sees the
-        // exact same, correct-for-this-frame level throughout. Left as
-        // fresh calls: the two `current_level_settle_key()` call sites
-        // that run *after* a group change is applied further down (they
-        // need a genuinely new key for the new level, not this frame's
-        // stale one) and the handful of conditional sites deeper in this
-        // function (drag-and-drop-into-group checks, the right-click
-        // hit-test chain) that don't run every idle frame, so caching them
-        // here would have added surface area without the same payoff.
+        // One level scan per frame, reused by the toolbar, settle key, minimap, items and cards;
+        // `current_group` only changes at the end of this function.
         let at_level = GRAPH_DRAW_ORDER.map(|kind| self.nodes_at_current_level(kind));
         let [_, _, _, _, _, _, _, groups_at_level] = &at_level;
-        let items = self.level_items();
+        let items = self.level_items_from(&at_level);
 
         self.update_graph_lod(&items);
 
@@ -1585,6 +1566,7 @@ impl App {
             }
             shown
         };
+        let members = self.group_members();
         let mut pass = CardPass {
             deferred_overlays,
             actions,
@@ -1594,6 +1576,7 @@ impl App {
             show_order: self.card_nav_active || self.hints_revealed,
             order: &tab_order,
             any_focused: false,
+            members: &members,
         };
         for (&kind, ids) in GRAPH_DRAW_ORDER.iter().zip(at_level.iter()) {
             for id in ids.iter() {

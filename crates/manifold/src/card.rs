@@ -575,6 +575,8 @@ pub(crate) struct CardPass<'a> {
     pub(crate) order: &'a [String],
     /// A card or one of its controls has keyboard focus this frame.
     pub(crate) any_focused: bool,
+    /// Every group's members (`App::group_members`), built once before the pass.
+    pub(crate) members: &'a HashMap<String, Vec<String>>,
 }
 
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
@@ -864,19 +866,38 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
 }
 
 impl App {
-    /// `id`'s `CardView`, or `None` when the node is gone.
-    pub(crate) fn card_view(&self, id: &str) -> Option<CardView> {
+    /// Ends every note edit, saving if one was on. A note's TextEdit that
+    /// stops being laid out (its level left, the view changed) loses focus
+    /// without `lost_focus()` ever firing, so `editing` would stay on.
+    pub(crate) fn end_note_edits(&mut self) -> bool {
+        let mut ended = false;
+        for note in self.nodes.values_mut().filter_map(|n| n.as_note_mut()) {
+            ended |= std::mem::take(&mut note.editing);
+        }
+        if ended {
+            self.save_session();
+        }
+        ended
+    }
+
+    /// Every group's members, in `node_order`: built once per card pass.
+    pub(crate) fn group_members(&self) -> HashMap<String, Vec<String>> {
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        for id in &self.node_order {
+            if let Some(group) = self.nodes.get(id).and_then(|n| n.group.as_ref()) {
+                members.entry(group.clone()).or_default().push(id.clone());
+            }
+        }
+        members
+    }
+
+    /// `id`'s `CardView`, or `None` when the node is gone. `members` is
+    /// `group_members`, built once for the whole pass.
+    pub(crate) fn card_view(&self, id: &str, members: &HashMap<String, Vec<String>>) -> Option<CardView> {
         let node = self.nodes.get(id)?;
         let kind = item_node_kind(&node.payload);
-        let members: Vec<String> = if kind == ItemNodeKind::Group {
-            self.nodes
-                .iter()
-                .filter(|(_, n)| n.group.as_deref() == Some(id))
-                .map(|(member, _)| member.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let members =
+            if kind == ItemNodeKind::Group { members.get(id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
         Some(CardView {
             kind,
@@ -913,13 +934,15 @@ impl App {
         // frame, so skipping it mid-drag would freeze the node
         // in place the instant it crossed the visible edge.
         // The Tab entry (first card) and the card holding keyboard focus stay registered too, so
-        // Tab can reach them and focus survives a pan that hasn't brought them into view yet.
+        // Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
+        // a note being edited, whose editor must stay laid out to keep its focus.
         let keeps_keyboard = pass.order.first().is_some_and(|first| first == id)
-            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))));
+            || ui.memory(|m| m.has_focus(egui::Id::new(("graph_card", id))))
+            || ui.memory(|m| m.has_focus(egui::Id::new(("note_edit", id))));
         if self.dragging.as_deref() != Some(id) && !keeps_keyboard && !rect.intersects(self.camera.rect) {
             return None;
         }
-        let view = self.card_view(id)?;
+        let view = self.card_view(id, pass.members)?;
         // Glow and fill go under the body, but hover is only known after
         // the interacts, which must follow the body (below). This slot is
         // filled in once it is.
@@ -2873,5 +2896,33 @@ mod tests {
     fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Sleeping), "Sleeping — click to load");
         assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Waking), "Loading…");
+    }
+
+    /// Review C-B3: leaving a level ends a note edit there.
+    #[test]
+    fn leaving_the_level_ends_a_note_edit() {
+        let mut app = App::default();
+        app.new_note_shortcut();
+        let id = app.node_order[0].clone();
+        app.nodes.get_mut(&id).unwrap().as_note_mut().unwrap().editing = true;
+        app.switch_group_level(None);
+        assert!(!app.nodes[&id].as_note().unwrap().editing);
+    }
+
+    /// Review C-B8: a group's members come in creation order, every time.
+    #[test]
+    fn group_members_follow_node_order() {
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        let mut made = Vec::new();
+        for _ in 0..20 {
+            app.new_note_shortcut();
+            let id = app.node_order.last().unwrap().clone();
+            app.nodes.get_mut(&id).unwrap().group = Some(g.clone());
+            made.push(id);
+        }
+        assert_eq!(app.group_members()[&g], made);
+        assert_eq!(app.card_view(&g, &app.group_members()).unwrap().members, made);
     }
 }
