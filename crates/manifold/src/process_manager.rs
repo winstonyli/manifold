@@ -386,8 +386,9 @@ pub fn finish_cache_removals() {
 }
 
 /// Frame files left by hosts that never got reaped (manifold killed or
-/// crashed): any `manifold-frame-*.bin` in temp that no running host has
-/// mapped and that is over ten minutes old.
+/// crashed): any `manifold-frame-*.bin` in temp that no running host holds
+/// (mapped on Windows, `flock`ed on Unix; `sweep_stale_frames_in`) and that is
+/// over ten minutes old. Another manifold's live files are spared the same way.
 pub fn sweep_frame_files() {
     let removed = ipc_protocol::sweep_stale_frames_in(&std::env::temp_dir(), Duration::from_secs(600));
     if removed > 0 {
