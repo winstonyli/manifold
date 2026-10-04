@@ -584,7 +584,7 @@ impl App {
                         leave_group_button_rect,
                     );
                     self.draw_pending_new_node_menu(ui, &mut deferred_overlays, &mut actions, inv_zoom, &project);
-                    self.draw_peek_preview(ui);
+                    self.draw_peek_preview(ui, &mut deferred_overlays);
                 }
                 deferred_overlays
             });
@@ -1877,15 +1877,14 @@ impl App {
     }
 
     /// Peek preview: an enlarged view of the hovered node's cached
-    /// thumbnail, floating near it, without changing focus. Painted
-    /// directly in this same world-space layer (not a separate
-    /// `egui::Area`, which would paint in un-transformed screen
-    /// space) so it pans/zooms together with its node and simply
-    /// ends up on top by paint order, drawn after every card
-    /// (`draw_graph_cards`). Skipped while `peek_suppressed` matches -- an
+    /// thumbnail, floating near it, without changing focus. Queued as a
+    /// deferred overlay (not a separate `egui::Area`) so it is projected
+    /// with the frame's final pan/zoom and paints after every card's
+    /// overlay text and chips (`draw_graph_cards`), which would
+    /// otherwise cover it. Skipped while `peek_suppressed` matches -- an
     /// Escape press dismissing this exact node's peek early,
     /// see that field's own doc comment.
-    pub(crate) fn draw_peek_preview(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn draw_peek_preview(&mut self, ui: &mut egui::Ui, deferred_overlays: &mut DeferredOverlays) {
         if self.peek_suppressed.is_some() && self.peek_suppressed != self.hovered {
             self.peek_suppressed = None;
         }
@@ -1911,15 +1910,27 @@ impl App {
                         ),
                         GRAPH_PEEK_SIZE,
                     );
-                    ui.set_opacity(peek_fade);
-                    ui.painter().rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                    // Queued, not painted here: card labels and chips paint on the overlay layer after the
+                    // scene, so a peek drawn in the scene would sit under a neighbour's text.
+                    let bg = ui.visuals().extreme_bg_color.gamma_multiply(peek_fade);
+                    deferred_overlays.push(Box::new(move |painter, project| {
+                        let (min, max) = (project(rect.min), project(rect.max));
+                        let rounding = 6.0 * (max.x - min.x) / rect.width();
+                        let rect = egui::Rect::from_min_max(min, max);
+                        painter.rect_filled(rect, rounding, bg);
+                        painter.image(
+                            tex_id,
+                            rect,
+                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE.gamma_multiply(peek_fade),
+                        );
+                        painter.rect_stroke(
+                            rect,
+                            rounding,
+                            egui::Stroke::new(1.5, ACCENT.gamma_multiply(peek_fade)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }));
                 }
             }
         }
