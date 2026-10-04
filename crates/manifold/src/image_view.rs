@@ -272,12 +272,7 @@ impl App {
         let rect = image_display_rect(body, image, scale, pan);
         match self.gpu.as_ref().and_then(|g| g.image_id(image_id)) {
             Some(tex_id) => {
-                painter.image(
-                    tex_id,
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                painter.image(tex_id, rect, crate::card::FULL_UV, egui::Color32::WHITE);
             }
             // Same placeholder the graph card uses for a missing texture.
             None => {

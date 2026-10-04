@@ -2761,12 +2761,7 @@ impl App {
                 ui.ctx()
                     .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("image_transition")))
                     .with_clip_rect(clip_rect)
-                    .image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    .image(tex_id, rect, crate::card::FULL_UV, egui::Color32::WHITE);
             }
             return;
         }

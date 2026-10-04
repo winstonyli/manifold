@@ -21,28 +21,56 @@ pub(crate) enum NodePayload {
     Json(JsonPayload),
 }
 
+/// `as_x` (and `as_x_mut` where listed) on `NodePayload`, and the same
+/// pair on `GraphNode` forwarding to its payload.
+macro_rules! payload_accessors {
+    ($( $variant:ident($ty:ty) => $as:ident $(, $as_mut:ident)?; )*) => {
+        impl NodePayload {
+            $(
+                pub(crate) fn $as(&self) -> Option<&$ty> {
+                    match self {
+                        NodePayload::$variant(p) => Some(p),
+                        _ => None,
+                    }
+                }
+                $(
+                    pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
+                        match self {
+                            NodePayload::$variant(p) => Some(p),
+                            _ => None,
+                        }
+                    }
+                )?
+            )*
+        }
+
+        impl GraphNode {
+            $(
+                pub(crate) fn $as(&self) -> Option<&$ty> {
+                    self.payload.$as()
+                }
+                $(
+                    pub(crate) fn $as_mut(&mut self) -> Option<&mut $ty> {
+                        self.payload.$as_mut()
+                    }
+                )?
+            )*
+        }
+    };
+}
+
+payload_accessors! {
+    Tab(TabPayload) => as_tab, as_tab_mut;
+    Unloaded(UnloadedTabPayload) => as_unloaded;
+    Download(DownloadPayload) => as_download, as_download_mut;
+    Group(GroupPayload) => as_group, as_group_mut;
+    Note(NotePayload) => as_note, as_note_mut;
+    Image(ImagePayload) => as_image;
+    Pdf(PdfPayload) => as_pdf, as_pdf_mut;
+    Json(JsonPayload) => as_json;
+}
+
 impl NodePayload {
-    pub(crate) fn as_tab(&self) -> Option<&TabPayload> {
-        match self {
-            NodePayload::Tab(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
-        match self {
-            NodePayload::Tab(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
-        match self {
-            NodePayload::Unloaded(t) => Some(t),
-            _ => None,
-        }
-    }
-
     /// The url and engine a live or unloaded tab is saved (and exported,
     /// and copied) with.
     pub(crate) fn saved_tab(&self) -> Option<(&str, EngineKind)> {
@@ -97,76 +125,6 @@ impl NodePayload {
             | NodePayload::Image(_)
             | NodePayload::Pdf(_)
             | NodePayload::Json(_) => false,
-        }
-    }
-
-    pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
-        match self {
-            NodePayload::Download(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
-        match self {
-            NodePayload::Download(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_group(&self) -> Option<&GroupPayload> {
-        match self {
-            NodePayload::Group(g) => Some(g),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
-        match self {
-            NodePayload::Group(g) => Some(g),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_note(&self) -> Option<&NotePayload> {
-        match self {
-            NodePayload::Note(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
-        match self {
-            NodePayload::Note(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_image(&self) -> Option<&ImagePayload> {
-        match self {
-            NodePayload::Image(i) => Some(i),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_pdf(&self) -> Option<&PdfPayload> {
-        match self {
-            NodePayload::Pdf(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_pdf_mut(&mut self) -> Option<&mut PdfPayload> {
-        match self {
-            NodePayload::Pdf(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_json(&self) -> Option<&JsonPayload> {
-        match self {
-            NodePayload::Json(j) => Some(j),
-            _ => None,
         }
     }
 }
@@ -515,58 +473,6 @@ pub(crate) struct GraphNode {
 }
 
 impl GraphNode {
-    pub(crate) fn as_tab(&self) -> Option<&TabPayload> {
-        self.payload.as_tab()
-    }
-
-    pub(crate) fn as_tab_mut(&mut self) -> Option<&mut TabPayload> {
-        self.payload.as_tab_mut()
-    }
-
-    pub(crate) fn as_unloaded(&self) -> Option<&UnloadedTabPayload> {
-        self.payload.as_unloaded()
-    }
-
-    pub(crate) fn as_download(&self) -> Option<&DownloadPayload> {
-        self.payload.as_download()
-    }
-
-    pub(crate) fn as_download_mut(&mut self) -> Option<&mut DownloadPayload> {
-        self.payload.as_download_mut()
-    }
-
-    pub(crate) fn as_group(&self) -> Option<&GroupPayload> {
-        self.payload.as_group()
-    }
-
-    pub(crate) fn as_group_mut(&mut self) -> Option<&mut GroupPayload> {
-        self.payload.as_group_mut()
-    }
-
-    pub(crate) fn as_note(&self) -> Option<&NotePayload> {
-        self.payload.as_note()
-    }
-
-    pub(crate) fn as_note_mut(&mut self) -> Option<&mut NotePayload> {
-        self.payload.as_note_mut()
-    }
-
-    pub(crate) fn as_image(&self) -> Option<&ImagePayload> {
-        self.payload.as_image()
-    }
-
-    pub(crate) fn as_pdf(&self) -> Option<&PdfPayload> {
-        self.payload.as_pdf()
-    }
-
-    pub(crate) fn as_pdf_mut(&mut self) -> Option<&mut PdfPayload> {
-        self.payload.as_pdf_mut()
-    }
-
-    pub(crate) fn as_json(&self) -> Option<&JsonPayload> {
-        self.payload.as_json()
-    }
-
     /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
     /// web source) is named by its file name.
     pub(crate) fn accessible_name(&self) -> String {

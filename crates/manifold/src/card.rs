@@ -7,7 +7,8 @@ pub(crate) const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 110.0);
 
 /// What a card's header says (`App::paint_card_header`).
 pub(crate) struct CardHeader<'a> {
-    pub(crate) glyph: &'static str,
+    /// `None`: the caller draws its own icon in the glyph's place (a live tab's favicon or engine dot).
+    pub(crate) glyph: Option<&'static str>,
     /// The glyph's color; the dim text color if `None`.
     pub(crate) glyph_color: Option<egui::Color32>,
     /// Drawn in the glyph's place, if the card has one (a favicon).
@@ -61,6 +62,27 @@ pub(crate) const HEADER_TITLE_SIZE: f32 = 13.0;
 pub(crate) const HEADER_SOURCE_SIZE: f32 = 11.0;
 /// Below this card height (screen points) the header gives way to the old strip over the thumbnail.
 const TAB_HEADER_MIN_CARD_POINTS: f32 = 80.0;
+/// Kept clear at a header's right edge, mirroring `HEADER_TEXT_X` at its left: the corner controls
+/// (the audio indicator, the hover-revealed close button) sit there.
+const HEADER_RIGHT_RESERVE: f32 = HEADER_TEXT_X;
+
+/// The whole texture: UVs for an image drawn uncropped.
+pub(crate) const FULL_UV: egui::Rect = egui::Rect { min: egui::Pos2::ZERO, max: egui::pos2(1.0, 1.0) };
+
+/// Behind a header's text drawn over a picture: dark enough to read light text on any image.
+const IMAGE_TEXT_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
+
+/// Behind a short card's title strip along its bottom: a lighter scrim, the strip is small.
+const TITLE_STRIP_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(160);
+
+/// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`).
+const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
+
+/// An audio card control's waveform while the tab plays.
+const WAVEFORM_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
+
+/// A note's text on its pale paper.
+const NOTE_TEXT: egui::Color32 = egui::Color32::from_black_alpha(220);
 
 /// Whether a Tab card of `rect` (world units, `inv_zoom` world units per screen point) is tall
 /// enough on screen to show its header.
@@ -274,9 +296,8 @@ fn chain_tooltip(tooltip: Option<String>, more: Option<String>) -> Option<String
 /// stretching: the full width or height, cropped on the other axis around the top-center, so a
 /// page's header stays in view.
 pub(crate) fn cover_uv(src: (u32, u32), dst: egui::Vec2) -> egui::Rect {
-    let full = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
     if src.0 == 0 || src.1 == 0 || dst.x <= 0.0 || dst.y <= 0.0 {
-        return full;
+        return FULL_UV;
     }
     let src_aspect = src.0 as f32 / src.1 as f32;
     let dst_aspect = dst.x / dst.y;
@@ -355,7 +376,7 @@ pub(crate) fn dim_if_filtered_out(
             overlay_painter.rect_filled(
                 egui::Rect::from_min_max(project(rect.min), project(rect.max)),
                 rounding,
-                egui::Color32::from_black_alpha(190),
+                FILTER_DIM_SCRIM,
             );
         }));
     }
@@ -589,7 +610,7 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 /// Returns its response: the frame turns a click into
 /// `control.action(kind)` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
 pub(crate) fn paint_card_control(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -629,16 +650,7 @@ pub(crate) fn paint_card_control(
         CardControl::Pin => {
             let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
             if !lod_simplified {
-                let pin_icon_pos = rect.center();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(pin_icon_pos),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::light::PUSH_PIN,
-                        egui::FontId::proportional(14.0),
-                        pin_color,
-                    );
-                }));
+                push_centered_text(deferred_overlays, rect.center(), egui_phosphor::light::PUSH_PIN, 14.0, pin_color);
             }
         }
         // Audio-playing/muted indicator: shown while playing so audio
@@ -661,16 +673,13 @@ pub(crate) fn paint_card_control(
                 // eject icons, not `ui.painter()` like the
                 // waveform's own vector bars below.
                 if !lod_simplified {
-                    let icon_pos = rect.center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::SPEAKER_X,
-                            egui::FontId::proportional(12.0),
-                            DANGER_COLOR,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::SPEAKER_X,
+                        12.0,
+                        DANGER_COLOR,
+                    );
                 }
             } else {
                 // Actually playing: a tiny 3-bar waveform
@@ -697,7 +706,6 @@ pub(crate) fn paint_card_control(
                 // recording-light color family), just shifted to
                 // sit with the rest of this app's warm palette
                 // instead of against it.
-                let waveform_color = egui::Color32::from_rgb(150, 190, 90);
                 // An idle window draws at a lower rate than the bars need.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
                 let t = std::time::SystemTime::now()
@@ -717,7 +725,7 @@ pub(crate) fn paint_card_control(
                     let x = base_x + i as f32 * (bar_w + gap);
                     let bar_rect =
                         egui::Rect::from_min_max(egui::Pos2::new(x, base_y - h), egui::Pos2::new(x + bar_w, base_y));
-                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, waveform_color);
+                    ui.painter().rect_filled(bar_rect, 1.0 * inv_zoom, WAVEFORM_COLOR);
                 }
             }
         }
@@ -751,7 +759,7 @@ pub(crate) fn paint_card_control(
 
 /// The ✕ and eject buttons' look: a small square in the card's close
 /// colors (`card_style`), filled `hover_fill` while hovered.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
 pub(crate) fn paint_control_square(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -769,17 +777,7 @@ pub(crate) fn paint_control_square(
         egui::Stroke::new(1.0 * inv_zoom, style.close_border),
         egui::StrokeKind::Inside,
     );
-    let icon_pos = rect.center();
-    let icon_color = style.close_icon;
-    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-        overlay_painter.text(
-            project(icon_pos),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            egui::FontId::proportional(14.0),
-            icon_color,
-        );
-    }));
+    push_centered_text(deferred_overlays, rect.center(), icon, 14.0, style.close_icon);
 }
 
 /// An image node's own card size: `width`x`height` scaled down (never up)
@@ -916,8 +914,7 @@ impl App {
     /// culled. The caller applies the kind's own click action from the
     /// returned response.
     pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
-        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
-        let deferred_overlays = &mut *pass.deferred_overlays;
+        let inv_zoom = pass.inv_zoom;
         let rect = node_card_rect(self.nodes.get(id)?);
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
@@ -942,7 +939,8 @@ impl App {
         // the interacts, which must follow the body (below). This slot is
         // filled in once it is.
         let background = ui.painter().add(egui::Shape::Noop);
-        let body = self.paint_card_body(ui, deferred_overlays, id, &view, rect, inv_zoom, zoom_scale);
+        let body = self.paint_card_body(ui, pass, id, &view, rect);
+        let deferred_overlays = &mut *pass.deferred_overlays;
 
         // Both interacts are registered *after* the body, never before:
         // egui (0.36, `interaction.rs`) gives the pointer to the
@@ -1153,24 +1151,23 @@ impl App {
     /// A graph card's own content, per kind -- everything under the
     /// shared frame's border (see `draw_graph_card`). Returns which part
     /// of the card is the click/drag handle and an optional tooltip.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_card_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
         view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         match view.kind {
             ItemNodeKind::Download => self.paint_download_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Note => self.paint_note_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Image => self.paint_image_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Pdf => self.paint_pdf_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Json => self.paint_json_body(ui, deferred_overlays, id, rect, zoom_scale),
-            ItemNodeKind::Group => self.paint_group_body(ui, deferred_overlays, id, view, rect, inv_zoom, zoom_scale),
+            ItemNodeKind::Group => self.paint_group_body(ui, pass, id, view, rect),
             ItemNodeKind::Tab => self.paint_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale),
             ItemNodeKind::Unloaded => {
                 self.paint_unloaded_tab_body(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale)
@@ -1239,7 +1236,7 @@ impl App {
         }
         let failed = matches!(state, UnloadedState::Failed(_));
         let header = CardHeader {
-            glyph: if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON },
+            glyph: Some(if failed { egui_phosphor::light::WARNING } else { egui_phosphor::light::MOON }),
             glyph_color: failed.then_some(DANGER_COLOR),
             icon_image: if failed { None } else { favicon },
             name: if title.is_empty() { url.clone() } else { title },
@@ -1321,7 +1318,7 @@ impl App {
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if !self.graph_lod_simplified {
             let header = CardHeader {
-                glyph: egui_phosphor::light::DOWNLOAD_SIMPLE,
+                glyph: Some(egui_phosphor::light::DOWNLOAD_SIMPLE),
                 glyph_color: None,
                 icon_image: None,
                 name: filename.to_owned(),
@@ -1416,7 +1413,7 @@ impl App {
         if !self.graph_lod_simplified {
             let words = self.nodes.get(id).and_then(|n| n.as_note()).map_or(0, |n| n.text.split_whitespace().count());
             let header = CardHeader {
-                glyph: egui_phosphor::light::NOTE_PENCIL,
+                glyph: Some(egui_phosphor::light::NOTE_PENCIL),
                 glyph_color: None,
                 icon_image: None,
                 name: "Note".to_owned(),
@@ -1440,7 +1437,7 @@ impl App {
                             .id(egui::Id::new(("note_edit", id)))
                             .frame(egui::Frame::NONE)
                             .font(egui::FontId::proportional(13.0))
-                            .text_color(egui::Color32::from_black_alpha(220))
+                            .text_color(NOTE_TEXT)
                             .hint_text("Type a note..."),
                     )
                     .lost_focus();
@@ -1479,7 +1476,7 @@ impl App {
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
                 |ui| {
-                    ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_black_alpha(220));
+                    ui.style_mut().visuals.override_text_color = Some(NOTE_TEXT);
                     egui_commonmark::CommonMarkViewer::new().show(ui, cache, text);
                 },
             );
@@ -1503,7 +1500,7 @@ impl App {
             return;
         }
         let header = CardHeader {
-            glyph: egui_phosphor::light::FILE_X,
+            glyph: Some(egui_phosphor::light::FILE_X),
             glyph_color: Some(DANGER_COLOR),
             icon_image: None,
             name,
@@ -1559,16 +1556,11 @@ impl App {
         if !self.graph_lod_simplified {
             match tex_id {
                 Some(tex_id) => {
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(image) = self.nodes.get(id).and_then(|n| n.as_image()) {
                         let (name, source, source_is_path) = file_header_text(&image.path, image.url.as_deref());
                         let header = CardHeader {
-                            glyph: egui_phosphor::light::IMAGE,
+                            glyph: Some(egui_phosphor::light::IMAGE),
                             glyph_color: None,
                             icon_image: None,
                             name,
@@ -1588,17 +1580,13 @@ impl App {
                 // placeholder uses, since this picture isn't *about*
                 // to arrive the way a first frame or fetch is.
                 None => {
-                    let broken_icon_pos = rect.center();
-                    let broken_icon_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(broken_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::IMAGE_BROKEN,
-                            egui::FontId::proportional(24.0),
-                            broken_icon_color,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::IMAGE_BROKEN,
+                        24.0,
+                        ui.visuals().weak_text_color(),
+                    );
                 }
             }
         }
@@ -1648,17 +1636,12 @@ impl App {
         if !self.graph_lod_simplified {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
-                    ui.painter().image(
-                        tex_id,
-                        rect,
-                        egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, rect, FULL_UV, egui::Color32::WHITE);
                     if let Some(pdf) = self.nodes.get(id).and_then(|n| n.as_pdf()) {
                         let (name, source, source_is_path) = file_header_text(&pdf.path, pdf.url.as_deref());
                         // The page count sits at the bottom right, so the fallback strip stops short of it.
                         let header = CardHeader {
-                            glyph: egui_phosphor::light::FILE_PDF,
+                            glyph: Some(egui_phosphor::light::FILE_PDF),
                             glyph_color: None,
                             icon_image: None,
                             name,
@@ -1691,29 +1674,22 @@ impl App {
                 // Reachable the same rare way an `Image` node's own
                 // `None` case is -- the node outlived its texture.
                 Some(Ok((None, _))) => {
-                    let broken_icon_pos = rect.center();
-                    let broken_icon_color = ui.visuals().weak_text_color();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(broken_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::IMAGE_BROKEN,
-                            egui::FontId::proportional(24.0),
-                            broken_icon_color,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::IMAGE_BROKEN,
+                        24.0,
+                        ui.visuals().weak_text_color(),
+                    );
                 }
                 Some(Err(_)) => {
-                    let error_icon_pos = rect.center();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        overlay_painter.text(
-                            project(error_icon_pos),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::light::FILE_X,
-                            egui::FontId::proportional(24.0),
-                            DANGER_COLOR,
-                        );
-                    }));
+                    push_centered_text(
+                        deferred_overlays,
+                        rect.center(),
+                        egui_phosphor::light::FILE_X,
+                        24.0,
+                        DANGER_COLOR,
+                    );
                 }
                 None => {
                     ui.put(rect, egui::Spinner::new().size(24.0 * inv_zoom));
@@ -1758,17 +1734,7 @@ impl App {
                 if key.chars().count() > 16 { format!("{}…", key.chars().take(15).collect::<String>()) } else { key };
             let summary = format!("{key_display}: {}", json_summary(&json.value));
             if text {
-                let center = rect.center();
-                let color = ui.visuals().text_color();
-                deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                    overlay_painter.text(
-                        project(center),
-                        egui::Align2::CENTER_CENTER,
-                        summary,
-                        egui::FontId::proportional(12.0),
-                        color,
-                    );
-                }));
+                push_centered_text(deferred_overlays, rect.center(), summary, 12.0, ui.visuals().text_color());
             }
             return body;
         }
@@ -1797,8 +1763,9 @@ impl App {
             // The folder, cut at the start so its last part stays visible, as a download's path is.
             let folder = file_header_text(&json.path, None).1;
             let folder = folder.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
-            let width =
-                (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale - 28.0;
+            // `paint_json_content`'s text width: the source starts at `HEADER_TEXT_X`.
+            let width = (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale
+                - HEADER_TEXT_X;
             header.source = folder.map(|dir| {
                 let font = egui::FontId::proportional(11.0);
                 truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &dir, &font, width.max(0.0))
@@ -1833,17 +1800,16 @@ impl App {
     /// Header F (folder glyph, name, item count) over a member thumbnail grid (header only when
     /// empty or with "Collapse Groups" on). LOD: skipped once simplified, leaving the frame's
     /// plain card.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_group_body(
         &mut self,
         ui: &mut egui::Ui,
-        deferred_overlays: &mut DeferredOverlays,
+        pass: &mut CardPass,
         id: &str,
         view: &CardView,
         rect: egui::Rect,
-        inv_zoom: f32,
-        zoom_scale: f32,
     ) -> CardBody {
+        let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
+        let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let member_ids = &view.members;
         let member_count = member_ids.len();
@@ -1854,7 +1820,7 @@ impl App {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
-                    glyph: egui_phosphor::light::FOLDER,
+                    glyph: Some(egui_phosphor::light::FOLDER),
                     glyph_color: None,
                     icon_image: None,
                     name: String::new(),
@@ -1883,12 +1849,7 @@ impl App {
                         let cell_rect = egui::Rect::from_min_size(cell_min, cell_size);
                         match self.gpu.as_ref().and_then(|g| g.thumbnail_id(member_id)) {
                             Some(tex_id) => {
-                                ui.painter().image(
-                                    tex_id,
-                                    cell_rect,
-                                    egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
-                                    egui::Color32::WHITE,
-                                );
+                                ui.painter().image(tex_id, cell_rect, FULL_UV, egui::Color32::WHITE);
                             }
                             None => {
                                 ui.painter().rect_filled(
@@ -1950,7 +1911,7 @@ impl App {
             } else {
                 egui::CornerRadius { nw: 0, ne: 0, sw: radius, se: radius }
             };
-            ui.painter().rect_filled(band, corners, egui::Color32::from_black_alpha(if tall { 190 } else { 160 }));
+            ui.painter().rect_filled(band, corners, if tall { IMAGE_TEXT_SCRIM } else { TITLE_STRIP_SCRIM });
         }
         let light = scrim || !tall;
         let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
@@ -1961,7 +1922,7 @@ impl App {
         let title_font = egui::FontId::proportional(title_size);
         let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
         let text_left = if tall { HEADER_TEXT_X } else { 8.0 };
-        let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
+        let max_width = (rect.width() * zoom_scale - text_left - HEADER_RIGHT_RESERVE - right_margin).max(0.0);
         // A stored group name with a hidden character is a styled job (placeholders in the marker style, truncated
         // by the layout); any other title is cut text, as before (`truncate_to_width`'s cache).
         let rich = user_name.filter(|segs| crate::names::has_hidden(segs)).map(|segs| {
@@ -1992,7 +1953,7 @@ impl App {
         };
         if let (true, Some(tex_id)) = (tall, icon_image) {
             let center = band.left_top() + egui::vec2(18.0, HEADER_CENTER_Y) * inv_zoom;
-            let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+            let uv = FULL_UV;
             ui.painter().image(
                 tex_id,
                 egui::Rect::from_center_size(center, FAVICON_SIZE * inv_zoom),
@@ -2002,11 +1963,11 @@ impl App {
         }
         let origin = band.left_top();
         let band_screen_height = band_height * zoom_scale;
-        let draw_glyph = tall && icon_image.is_none();
+        let glyph = glyph.filter(|_| tall && icon_image.is_none());
         deferred_overlays.push(Box::new(move |overlay_painter, project| {
             let base = project(origin);
             if tall {
-                if draw_glyph {
+                if let Some(glyph) = glyph {
                     overlay_painter.text(
                         base + egui::vec2(HEADER_GLYPH_X, HEADER_CENTER_Y),
                         egui::Align2::LEFT_CENTER,
@@ -2075,9 +2036,7 @@ impl App {
                     .gpu
                     .as_ref()
                     .and_then(|g| g.thumbnail_size(id))
-                    .map_or(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), |size| {
-                        cover_uv(size, thumb_rect.size())
-                    });
+                    .map_or(FULL_UV, |size| cover_uv(size, thumb_rect.size()));
                 ui.painter().image(tex_id, thumb_rect, uv, egui::Color32::WHITE);
             } else {
                 ui.put(
@@ -2102,7 +2061,7 @@ impl App {
                         ui.painter().image(
                             tex_id,
                             egui::Rect::from_center_size(icon_center, FAVICON_SIZE * inv_zoom),
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            FULL_UV,
                             egui::Color32::WHITE,
                         );
                     }
@@ -2110,44 +2069,26 @@ impl App {
                         ui.painter().circle_filled(icon_center, 4.0 * inv_zoom, engine_color(engine_kind));
                     }
                 }
-                if show_text {
-                    // Screen-constant text: the header is 40 screen points tall at any zoom.
-                    let text_left = GRAPH_THUMB_MARGIN + 22.0;
-                    // Leave room for the audio indicator at the top-right corner.
-                    let max_width = (rect.width() * zoom_scale - text_left - 28.0).max(0.0);
-                    let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
-                    let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
-                    let title_text =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &title_font, max_width);
-                    let source_text =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), &url, &source_font, max_width);
-                    let (title_color, source_color) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
-                    let origin = rect.left_top();
-                    deferred_overlays.push(Box::new(move |overlay_painter, project| {
-                        let base = project(origin) + egui::vec2(text_left, 0.0);
-                        overlay_painter.text(
-                            base + egui::vec2(0.0, 12.0),
-                            egui::Align2::LEFT_CENTER,
-                            title_text,
-                            title_font,
-                            title_color,
-                        );
-                        overlay_painter.text(
-                            base + egui::vec2(0.0, 28.0),
-                            egui::Align2::LEFT_CENTER,
-                            source_text,
-                            source_font,
-                            source_color,
-                        );
-                    }));
-                }
+                // Title and source line: the shared header, which leaves the icon above to this card.
+                let card_header = CardHeader {
+                    glyph: None,
+                    glyph_color: None,
+                    icon_image: None,
+                    name: label.to_owned(),
+                    user_name: None,
+                    source: url.clone(),
+                    source_is_path: false,
+                    scrim: false,
+                    right_margin: 0.0,
+                };
+                self.paint_card_header(ui, deferred_overlays, rect, inv_zoom, zoom_scale, card_header);
             } else {
                 // A flat scrim behind the title strip so it stays legible over a light thumbnail.
                 let title_strip = egui::Rect::from_min_max(
                     egui::Pos2::new(thumb_rect.left(), thumb_rect.bottom() - TAB_STRIP_POINTS * inv_zoom),
                     thumb_rect.right_bottom(),
                 );
-                ui.painter().rect_filled(title_strip, 0.0, egui::Color32::from_black_alpha(160));
+                ui.painter().rect_filled(title_strip, 0.0, TITLE_STRIP_SCRIM);
                 // Engine identity as a small colored dot; the strip is too small for more.
                 ui.painter().circle_filled(
                     egui::Pos2::new(title_strip.left() + 8.0 * inv_zoom, title_strip.center().y),
@@ -2177,12 +2118,7 @@ impl App {
                         rect.left_top() + egui::vec2(4.0, 4.0) * inv_zoom,
                         FAVICON_SIZE * inv_zoom,
                     );
-                    ui.painter().image(
-                        tex_id,
-                        favicon_rect,
-                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter().image(tex_id, favicon_rect, FULL_UV, egui::Color32::WHITE);
                 }
             }
             // The jar chip at the thumbnail's bottom-left, above a short card's title strip.
@@ -2457,7 +2393,7 @@ mod tests {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let mut overlays: DeferredOverlays = Vec::new();
                 let header = CardHeader {
-                    glyph: egui_phosphor::light::FOLDER,
+                    glyph: Some(egui_phosphor::light::FOLDER),
                     glyph_color: None,
                     icon_image: None,
                     name: if user_name { String::new() } else { name.into() },
@@ -2490,6 +2426,50 @@ mod tests {
         }
     }
 
+    /// A header with no glyph (a live tab's: the card draws its own favicon or engine dot) draws only its title and
+    /// source line, left-aligned at `HEADER_TEXT_X` and centred on `HEADER_TITLE_Y` and `HEADER_SOURCE_Y`, where the
+    /// tab card drew them by hand before it went through `CardHeader`.
+    #[test]
+    fn a_header_without_a_glyph_draws_title_and_source_at_the_header_lines() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut overlays: DeferredOverlays = Vec::new();
+            let header = CardHeader {
+                glyph: None,
+                glyph_color: None,
+                icon_image: None,
+                name: "Title".into(),
+                user_name: None,
+                source: "example.com".into(),
+                source_is_path: false,
+                scrim: false,
+                right_margin: 0.0,
+            };
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+            assert!(app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header));
+            for overlay in overlays {
+                overlay(ui.painter(), &|p| p);
+            }
+        });
+        output.textures_delta.clear();
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
+                _ => None,
+            })
+            .collect();
+        let names: Vec<_> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(names, ["Title", "example.com"]);
+        for ((_, at), y) in texts.iter().zip([HEADER_TITLE_Y, HEADER_SOURCE_Y]) {
+            assert!((at.left() - HEADER_TEXT_X).abs() <= 0.5, "{at:?}");
+            assert!((at.center().y - y).abs() <= 0.5, "{at:?} vs {y}");
+        }
+    }
+
     /// Name rules: a group card's hover names the hidden characters in its stored name; a clean name has none. Its
     /// header draws the same segments the hover came from.
     #[test]
@@ -2508,7 +2488,21 @@ mod tests {
                 let mut overlays: DeferredOverlays = Vec::new();
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
                 let view = test_view(ItemNodeKind::Group);
-                let body = app.paint_group_body(ui, &mut overlays, &g, &view, rect, 1.0, 1.0);
+                let mut actions = Vec::new();
+                let drop_preview = None;
+                let members = HashMap::new();
+                let mut pass = CardPass {
+                    deferred_overlays: &mut overlays,
+                    actions: &mut actions,
+                    inv_zoom: 1.0,
+                    zoom_scale: 1.0,
+                    drop_preview: &drop_preview,
+                    show_order: false,
+                    order: &[],
+                    any_focused: false,
+                    members: &members,
+                };
+                let body = app.paint_group_body(ui, &mut pass, &g, &view, rect);
                 assert_eq!(body.tooltip.as_deref(), want, "{name:?}");
                 for overlay in overlays {
                     overlay(ui.painter(), &|p| p);
@@ -2606,7 +2600,7 @@ mod tests {
     fn cover_uv_crops_the_longer_axis_and_never_stretches() {
         let uv = |src, w, h| cover_uv(src, egui::vec2(w, h));
         // Same shape: the whole texture.
-        assert_eq!(uv((256, 192), 128.0, 96.0), egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)));
+        assert_eq!(uv((256, 192), 128.0, 96.0), FULL_UV);
         // Wider source: sides cropped evenly.
         let wide = uv((200, 100), 100.0, 100.0);
         assert_eq!((wide.min.x, wide.max.x, wide.min.y, wide.max.y), (0.25, 0.75, 0.0, 1.0));

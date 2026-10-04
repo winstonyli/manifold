@@ -434,7 +434,7 @@ impl App {
             .cached_favicon_origin(&node.url.clone())
             .and_then(|origin| self.gpu.as_ref().and_then(|g| g.favicon_id(&origin)))
         {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let uv = crate::card::FULL_UV;
             ui.painter().image(tex_id, identity, uv, egui::Color32::WHITE);
         }
         if !response.has_focus() {

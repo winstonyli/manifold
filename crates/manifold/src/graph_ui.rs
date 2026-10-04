@@ -1908,7 +1908,7 @@ impl App {
                         painter.image(
                             tex_id,
                             rect,
-                            egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                            crate::card::FULL_UV,
                             egui::Color32::WHITE.gamma_multiply(peek_fade),
                         );
                         painter.rect_stroke(
