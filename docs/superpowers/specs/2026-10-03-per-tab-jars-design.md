@@ -192,6 +192,5 @@ localStorage and the other storage the v1 spec leaves out.
 - Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
-- Name rules (characters, length, reserved names such as Default) should be designed once for every user-editable name
-  (jars, groups, tabs...), not per kind; jar names today only trim and reject empty.
+- Name rules for every user-editable name (jars, groups, the saved-session name) are designed in `2026-10-03-name-rules-design.md`, not built yet; jar names today only trim and reject empty.
 - After "Clear cookies", every pull from that jar's running tabs is dropped until they switch, including a login made after the clear (plan deviation 14). Accepted as "cleared means cleared"; revisit if users sign in again in a tab still waiting to switch and expect it kept.
