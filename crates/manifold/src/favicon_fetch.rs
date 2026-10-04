@@ -93,10 +93,13 @@ impl FaviconFetcher {
         self.in_flight.insert(origin.clone());
         let (tx, cache_dir, fetch) = (self.tx.clone(), self.cache_dir.clone(), self.fetch);
         std::thread::spawn(move || {
-            let result = match &cache_dir {
+            // A panic still reports (as no favicon), so `tick` frees the
+            // slot; the panic hook has already printed it.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &cache_dir {
                 Some(dir) => cached_or_fetched(dir, &origin, fetch),
                 None => fetch(&origin),
-            };
+            }))
+            .unwrap_or(None);
             let _ = tx.send((origin, result));
         });
     }
@@ -300,5 +303,22 @@ mod tests {
         }
         done.sort();
         assert_eq!(done, (0..6).map(|n| format!("https://o{n}.example")).collect::<Vec<_>>());
+    }
+
+    /// A fetch that panics still reports and gives its slot back: otherwise
+    /// four such origins would stop every later favicon until a restart.
+    #[test]
+    fn a_panicking_fetch_gives_its_slot_back() {
+        let mut fetcher = FaviconFetcher::new(None);
+        fetcher.fetch = |_| panic!("stub fetch panics (expected in this test)");
+        fetcher.request("https://p.example".into());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut done = Vec::new();
+        while done.is_empty() && std::time::Instant::now() < deadline {
+            done.extend(fetcher.tick());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(done.as_slice(), [(origin, None)] if origin == "https://p.example"));
+        assert!(fetcher.in_flight.is_empty(), "the slot is free again");
     }
 }

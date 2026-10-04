@@ -48,13 +48,15 @@ pub struct RedirectFetcher {
     /// Nodes with a fetch running: a second Refresh (or a Retry racing a
     /// restore-time refetch) is dropped instead of writing the same file.
     in_flight: HashSet<String>,
+    /// `fetch`; tests swap in a stub.
+    fetch: fn(&Path, &str, &str, ContentKind) -> Option<WebBody>,
 }
 
 impl RedirectFetcher {
     /// `dir` is `profile::content_dir()`; `None` (tests) fails every fetch.
     pub fn new(dir: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { dir, tx, rx, in_flight: HashSet::new() }
+        Self { dir, tx, rx, in_flight: HashSet::new(), fetch }
     }
 
     /// Fetches `job.url` on a background thread. `false` (and nothing done)
@@ -63,10 +65,14 @@ impl RedirectFetcher {
         if !self.in_flight.insert(job.node_id.clone()) {
             return false;
         }
-        let tx = self.tx.clone();
-        let dir = self.dir.clone();
+        let (tx, dir, fetch) = (self.tx.clone(), self.dir.clone(), self.fetch);
         std::thread::spawn(move || {
-            let body = dir.as_deref().and_then(|d| fetch(d, &job.node_id, &job.url, job.kind));
+            // A panic still reports (as a failure), so `tick` frees the node;
+            // the panic hook has already printed it.
+            let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dir.as_deref().and_then(|d| fetch(d, &job.node_id, &job.url, job.kind))
+            }))
+            .unwrap_or(None);
             let _ = tx.send(FetchResult { job, body });
         });
         true
@@ -250,5 +256,28 @@ mod tests {
         }
         assert_eq!(results.len(), 1);
         assert!(fetcher.request(job()), "free again once its result is ticked");
+    }
+
+    /// A fetch that panics still reports (as a failure) and frees its node:
+    /// otherwise Refresh and Retry would be dead for it until a restart.
+    #[test]
+    fn a_panicking_fetch_still_frees_its_node() {
+        let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_panic")));
+        fetcher.fetch = |_, _, _, _| panic!("stub fetch panics (expected in this test)");
+        let job = || FetchJob {
+            target: FetchTarget::Node("7-2".into()),
+            node_id: "7-2".into(),
+            url: "https://example.invalid/x.pdf".into(),
+            kind: ContentKind::Pdf,
+        };
+        assert!(fetcher.request(job()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut results = Vec::new();
+        while results.is_empty() && std::time::Instant::now() < deadline {
+            results.extend(fetcher.tick());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(results.as_slice(), [FetchResult { body: None, .. }]), "reported as a failure");
+        assert!(fetcher.request(job()), "the node is free again");
     }
 }
