@@ -945,6 +945,19 @@ mod tests {
         assert!(!app.may_prune_content());
     }
 
+    /// Review fix: a store that wasn't a journal is set aside and a new one started; that launch must not prune
+    /// the old session's content against the new, empty one.
+    #[test]
+    fn a_store_set_aside_is_never_pruned_against() {
+        let path = crate::store::testutil::temp_dir("prune_aside").join("session.mnf");
+        std::fs::write(&path, b"not a session").unwrap();
+        let mut app = App::default();
+        app.open_store_at(&path);
+        assert!(app.journal.is_some());
+        assert!(app.store_recovered);
+        assert!(!app.may_prune_content());
+    }
+
     #[test]
     fn a_refresh_keeps_its_old_file_while_another_node_names_it() {
         let dir = crate::store::testutil::temp_dir("refresh_shared_file");

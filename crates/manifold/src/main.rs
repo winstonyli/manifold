@@ -1848,6 +1848,22 @@ impl App {
         self.settings_fingerprint = settings::fingerprint();
     }
 
+    /// `session::named_session_path`, toasting why there is none: "Not a session name" for a name that can't be a
+    /// file (`session_name_is_safe`; a device name such as `CON` survives `sanitize_session_name`), "No session
+    /// file" without a profile.
+    fn named_session_path_or_toast(&mut self, name: &str) -> Option<std::path::PathBuf> {
+        let path = session::named_session_path(name);
+        if path.is_none() {
+            self.queue_toast(if session::session_name_is_safe(name) {
+                "No session file".into()
+            } else {
+                let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
+                format!("Not a session name: {shown}")
+            });
+        }
+        path
+    }
+
     /// "Save Session As..." (settings popup) / headless `SAVESESSIONAS` --
     /// a full compacted copy of the running store (spec "Named sessions"),
     /// with this profile's own personal state, saved to `sessions/<name>
@@ -1860,10 +1876,7 @@ impl App {
         if name.is_empty() {
             return;
         }
-        let Some(path) = session::named_session_path(&name) else {
-            self.queue_toast("No session file".into());
-            return;
-        };
+        let Some(path) = self.named_session_path_or_toast(&name) else { return };
         if !self.save_session() {
             self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());
         }
@@ -1883,14 +1896,7 @@ impl App {
     /// and leaves the running session untouched.
     fn load_named_session(&mut self, name: &str) {
         let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
-        let Some(path) = session::named_session_path(name) else {
-            self.queue_toast(if session::session_name_is_safe(name) {
-                "No session file".into()
-            } else {
-                format!("Not a session name: {shown}")
-            });
-            return;
-        };
+        let Some(path) = self.named_session_path_or_toast(name) else { return };
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -2017,19 +2023,31 @@ impl App {
 
     /// Opens `session.mnf` under a fresh actor. A file that isn't a session
     /// file at all is set aside (`Journal::open_or_set_aside`) and a new one
-    /// started, toasting where the old one went. Any other failure is toasted
+    /// started, toasting where the old one went; that launch then counts as
+    /// recovered (`store_recovered`), so nothing is pruned against the new,
+    /// empty session. Any other failure is toasted
     /// and leaves the app running without a store.
     fn open_store(&mut self) {
-        let Some(path) = session::store_path() else { return };
+        if let Some(path) = session::store_path() {
+            self.open_store_at(&path);
+        }
+    }
+
+    /// `open_store` for the store at `path`.
+    fn open_store_at(&mut self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match store::journal::Journal::open_or_set_aside(&path, store::model::ActorId::random()) {
+        match store::journal::Journal::open_or_set_aside(path, store::model::ActorId::random()) {
             Ok((journal, aside)) => {
                 self.journal = Some(journal);
                 if let Some(aside) = aside {
+                    // The new, empty session names none of the old one's fetched content or jars: pruning
+                    // against it this launch would delete what the set-aside file still needs.
+                    self.store_recovered = true;
                     self.queue_toast(format!(
-                        "The session file wasn't readable; it was kept as {} and a new one started",
+                        "The session file wasn't readable; it was kept (with its .prev/.local) as {} and a new one \
+                         started",
                         aside.display()
                     ));
                 }
@@ -3231,5 +3249,14 @@ mod tests {
         assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
         app.save_named_session("Trip");
         assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    }
+
+    /// Review fix: a Windows device name survives `sanitize_session_name` but can't be a file; Save As says so
+    /// instead of "No session file".
+    #[test]
+    fn save_as_a_device_name_says_why() {
+        let mut app = App::default();
+        app.save_named_session("Con");
+        assert_eq!(Vec::from(app.save_toast_queue.clone()), ["Not a session name: Con"]);
     }
 }

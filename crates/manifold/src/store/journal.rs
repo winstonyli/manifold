@@ -782,32 +782,15 @@ impl Journal {
     }
 
     /// `open`, but a file that isn't a journal at all is renamed to
-    /// `<path>.unreadable-<secs>` and a fresh journal is created in its place.
-    /// Refusing used to leave the app without a store, so nothing more
-    /// was saved that run. Returns where the old file went.
+    /// `<path>.unreadable-<secs>[-<n>]`, with its `.prev` and `.local`
+    /// beside it (`set_aside_unless_journal`), and a fresh journal is
+    /// created in its place. Refusing used to leave the app without a
+    /// store, so nothing more was saved that run. Returns where the old
+    /// file went.
     pub fn open_or_set_aside(path: &Path, actor: ActorId) -> Result<(Journal, Option<PathBuf>), JournalError> {
         match Journal::open(path, actor) {
             Err(JournalError::NotAJournal) => {
-                let aside = {
-                    let _lock = lock_file(path)?;
-                    // Another process starting at the same time may already
-                    // have set it aside and started a journal: keep that one.
-                    match std::fs::read(path) {
-                        Ok(bytes) if matches!(read_header(&bytes), Err(JournalError::NotAJournal)) => {
-                            let secs =
-                                SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                            let mut aside = with_suffix(path, &format!(".unreadable-{secs}"));
-                            let mut n = 1;
-                            while aside.try_exists()? {
-                                aside = with_suffix(path, &format!(".unreadable-{secs}-{n}"));
-                                n += 1;
-                            }
-                            std::fs::rename(path, &aside)?;
-                            Some(aside)
-                        }
-                        _ => None,
-                    }
-                };
+                let aside = set_aside_unless_journal(path)?;
                 Ok((Journal::open(path, actor)?, aside))
             }
             other => other.map(|journal| (journal, None)),
@@ -1279,6 +1262,61 @@ fn lock_file(path: &Path) -> Result<File, JournalError> {
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(with_suffix(path, ".lock"))?;
     file.lock()?;
     Ok(file)
+}
+
+/// `open_or_set_aside`'s move, under the lock. The file is read again
+/// first: another process starting at the same time may already have set
+/// it aside and started a journal, which is kept. Its `.prev` (the best
+/// copy to recover from, which the new journal's first compaction would
+/// replace) and `.local` move with it, to `<aside>.prev` and
+/// `<aside>.local`. Returns where it went.
+fn set_aside_unless_journal(path: &Path) -> Result<Option<PathBuf>, JournalError> {
+    const COMPANIONS: [&str; 2] = [".prev", ".local"];
+    let _lock = lock_file(path)?;
+    match std::fs::read(path) {
+        Ok(bytes) if matches!(read_header(&bytes), Err(JournalError::NotAJournal)) => {}
+        _ => return Ok(None),
+    }
+    let secs = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let taken = |aside: &Path| -> io::Result<bool> {
+        for suffix in [""].into_iter().chain(COMPANIONS) {
+            if with_suffix(aside, suffix).try_exists()? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let mut aside = with_suffix(path, &format!(".unreadable-{secs}"));
+    let mut n = 1;
+    while taken(&aside)? {
+        aside = with_suffix(path, &format!(".unreadable-{secs}-{n}"));
+        n += 1;
+    }
+    // Companions first: if one can't move, nothing has, and the error
+    // leaves the user's files as they were.
+    let mut moved = Vec::new();
+    for suffix in COMPANIONS {
+        match std::fs::rename(with_suffix(path, suffix), with_suffix(&aside, suffix)) {
+            Ok(()) => moved.push(suffix),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                undo_companions(path, &aside, &moved);
+                return Err(err.into());
+            }
+        }
+    }
+    if let Err(err) = std::fs::rename(path, &aside) {
+        undo_companions(path, &aside, &moved);
+        return Err(err.into());
+    }
+    Ok(Some(aside))
+}
+
+/// Puts back what `set_aside_unless_journal` moved before a later step failed. Best effort.
+fn undo_companions(path: &Path, aside: &Path, moved: &[&str]) {
+    for suffix in moved {
+        let _ = std::fs::rename(with_suffix(aside, suffix), with_suffix(path, suffix));
+    }
 }
 
 /// `path` with `suffix` appended to its file name (`session.mnf` →
@@ -1945,6 +1983,55 @@ mod tests {
         assert!(aside.file_name().unwrap().to_string_lossy().starts_with("session.mnf.unreadable-"));
         drop(journal);
         assert!(Journal::open(&path, ActorId(2)).is_ok(), "a real journal now");
+    }
+
+    /// Review fix: the set-aside file's `.prev` (its best recovery copy) and
+    /// `.local` go with it, so the new journal's first compaction can't
+    /// replace them.
+    #[test]
+    fn setting_a_file_aside_takes_its_prev_and_local_along() {
+        let dir = temp_dir("aside-prev");
+        let path = dir.join("session.mnf");
+        let old = dir.join("old.mnf");
+        let mut journal = Journal::open(&old, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://old.example/");
+        txn.commit(vec![create]).unwrap();
+        drop(journal);
+        let prev_bytes = std::fs::read(&old).unwrap();
+        std::fs::write(prev_path(&path), &prev_bytes).unwrap();
+        std::fs::write(local::path_for(&path), b"old local").unwrap();
+        std::fs::write(&path, b"this is not a session").unwrap();
+
+        let (mut journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
+        let aside = aside.expect("moved aside");
+        let mut txn = journal.begin().unwrap();
+        let (_, create) = create_tab(&mut txn, "https://new.example/");
+        txn.commit(vec![create]).unwrap();
+        let txn = journal.begin().unwrap();
+        txn.journal.compact().unwrap();
+        drop(txn);
+
+        assert_eq!(std::fs::read(prev_path(&aside)).unwrap(), prev_bytes, "the old .prev survives beside the aside");
+        assert_eq!(std::fs::read(local::path_for(&aside)).unwrap(), b"old local");
+        assert_ne!(std::fs::read(prev_path(&path)).unwrap(), prev_bytes, "the new journal has its own .prev");
+    }
+
+    /// Review fix: the re-check under the lock. A file that is a journal by
+    /// the time the lock is held (another instance set the bad one aside
+    /// first) stays where it is.
+    #[test]
+    fn a_file_that_is_a_journal_under_the_lock_is_not_set_aside() {
+        let dir = temp_dir("aside-recheck");
+        let path = dir.join("session.mnf");
+        drop(Journal::open(&path, ActorId(1)).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(set_aside_unless_journal(&path).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "only the file and its lock: {dir:?}");
+        std::fs::write(&path, b"junk").unwrap();
+        assert!(set_aside_unless_journal(&path).unwrap().is_some());
+        assert!(!path.exists());
     }
 
     #[test]

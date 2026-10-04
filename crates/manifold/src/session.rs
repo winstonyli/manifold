@@ -65,11 +65,39 @@ pub(crate) fn content_names(dir: &Path) -> Option<HashSet<String>> {
     Some(names)
 }
 
-/// Whether `name` is a bare file stem: no separator, drive or stream colon,
-/// NUL, and not `.`/`..`. "Save As" names are already stricter
-/// (`sanitize_session_name`); this guards the other ways in (`OPENSESSION`).
+/// The longest name `session_name_is_safe` accepts, in chars; with `sessions\`
+/// and `.mnf.<suffix>` it stays well inside Windows' 255-unit file name.
+const MAX_SESSION_NAME: usize = 200;
+
+/// Whether `name` can be a file stem in `sessions/` on every platform: not
+/// empty, `.`/`..` or over `MAX_SESSION_NAME` chars; no separator, drive
+/// or stream colon, control character or other character Windows refuses
+/// (`<>"|?*`); not a Windows device name (`is_windows_device_name`).
+/// "Save As" names are already filtered by `sanitize_session_name`, which
+/// lets a device name through; this guards every way in (`OPENSESSION`).
 pub(crate) fn session_name_is_safe(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.chars().count() <= MAX_SESSION_NAME
+        && !name.chars().any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
+        && !is_windows_device_name(name)
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, or `COM`/`LPT` with a
+/// digit or superscript digit, in any case, judged on the part before the
+/// first dot with trailing spaces dropped (`nul.txt` and `CON ` open the
+/// device too).
+fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let rest: Vec<char> = chars.collect();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(rest.as_slice(), [c] if c.is_ascii_digit() || matches!(c, '\u{b9}' | '\u{b2}' | '\u{b3}'))
 }
 
 /// `None` without a profile, or for a name that isn't `session_name_is_safe`.
@@ -100,14 +128,18 @@ pub fn list_named() -> Vec<String> {
 /// Deletes a named save: the store file and every file the store keeps
 /// beside it (`<name>.mnf.*`: personal state, `.prev`, lock, temps and
 /// `.damaged-*` copies, which are whole sessions too). A missing one is
-/// not an error.
+/// not an error. A `<name>.mnf.<more>.mnf` is another named save
+/// (`list_named` shows it), so it and its own `.mnf.*` files stay.
 pub(crate) fn delete_session_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let (Some(dir), Some(file)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else { return };
-    let prefix = format!("{file}.");
+    let ours = |n: &str| {
+        n.strip_prefix(file)
+            .is_some_and(|tail| tail.starts_with('.') && !tail.ends_with(".mnf") && !tail.contains(".mnf."))
+    };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        if entry.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)) {
+        if entry.file_name().to_str().is_some_and(ours) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -138,6 +170,9 @@ mod tests {
             "a.mnf.damaged-00ff",
             "ab.mnf",
             "a b.mnf",
+            "a.mnf.old.mnf",
+            "a.mnf.old.mnf.local",
+            "a.mnf.mnf",
         ];
         for n in names {
             std::fs::write(dir.join(n), b"x").unwrap();
@@ -145,15 +180,55 @@ mod tests {
         delete_session_files(&dir.join("a.mnf"));
         let left: std::collections::BTreeSet<String> =
             std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(left, ["a b.mnf", "ab.mnf"].map(String::from).into());
+        let kept = ["a b.mnf", "a.mnf.mnf", "a.mnf.old.mnf", "a.mnf.old.mnf.local", "ab.mnf"];
+        assert_eq!(left, kept.map(String::from).into(), "other saves and their files are kept");
     }
 
     #[test]
     fn a_session_name_cannot_leave_the_sessions_folder() {
-        for ok in ["work", "a b", "x-1_2", "名前"] {
+        let longest = "x".repeat(200);
+        for ok in ["work", "a b", "x-1_2", "名前", "console", "COM10", "LPTX", "nul-ish", "CONIN", "a.con", &longest]
+        {
             assert!(session_name_is_safe(ok), "{ok}");
         }
-        for bad in ["", ".", "..", "..\\..\\x", "../x", "a/b", "c:x", "a\0b"] {
+        let too_long = "x".repeat(201);
+        let bad_names = [
+            "",
+            ".",
+            "..",
+            "..\\..\\x",
+            "../x",
+            "a/b",
+            "c:x",
+            "a\0b",
+            "a\tb",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "CON",
+            "con",
+            "Prn",
+            "aux",
+            "NUL",
+            "nul.txt",
+            "CON.backup",
+            "com1",
+            "COM9",
+            "lpt1",
+            "LPT9",
+            "COM\u{b9}",
+            "lpt\u{b2}",
+            "COM\u{b3}",
+            "CON ",
+            "LPT0",
+            "conin$",
+            "CONOUT$",
+            &too_long,
+        ];
+        for bad in bad_names {
             assert!(!session_name_is_safe(bad), "{bad:?}");
         }
     }
