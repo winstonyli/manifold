@@ -2306,8 +2306,5 @@ Re-run on 2026-10-03 after the spec revision (emoji sequences, bookmark folders,
 
 The final review's fix wave landed in a0d07e2..8271154: a 256-character budget beside the 64-cluster cap, valid flag tags only, a capped name ends in "…", Move to rows and saved-session buttons shortened, one-line bookmark folder headers, Recently Closed hover hints and member counts. The scoped re-review found nothing load-bearing. Parked minors:
 
-- `take_units` pushes an empty `Plain("")` before breaking, so a `Plain(" ")` just before it escapes the trim: `ab⟦200B⟧ …` shows a space before the ellipsis (mixed hidden-character and space names only).
-- `name_hover` runs `fits` on the already-cut text, so at `max` = 64 a raw 257+-character name in few clusters gets the generic hover. Latent: callers pass 20 or 32.
-- Recently Closed shows the member count as a bare "3" before the name, not "(3)" after it; a hidden character past the 64-unit cap is not named in the hover.
-- The "click to set folder" label under each bookmark still wraps (one `.truncate()`).
+- Recently Closed: a hidden character past the 64-unit cap is not named in the hover. (The member count now reads "(n)" at the row's right edge, kept when the name is cut; the "take_units" space-before-ellipsis, `name_hover` fit-on-cut-text and "click to set folder" wrap minors were fixed on 2026-10-04.)
 - Still deferred from the final review: a typed look-alike marker is identical in plain text; the Settings jar field shows the stored text; the guard test's gaps (`.display()` matches `Path::display()`, test modules assumed last, destructured reads).
