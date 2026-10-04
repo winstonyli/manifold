@@ -128,7 +128,8 @@ fn fetch_favicon(origin: &str) -> Option<FaviconImage> {
     let url = format!("{origin}/favicon.ico");
     let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let bytes = response.into_body().with_config().limit(2_000_000).read_to_vec().ok()?;
-    let image = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let image = crate::rgba::decode_limited(&bytes, 512).ok()?;
+    let image = crate::rgba::fit_image(image, crate::rgba::FAVICON_SIDE);
     let (width, height) = image.dimensions();
     Some(FaviconImage { rgba: image.into_raw(), width, height })
 }
@@ -163,7 +164,8 @@ fn cached_or_fetched(
 }
 
 fn read_png(path: &Path) -> Option<FaviconImage> {
-    let image = image::open(path).ok()?.into_rgba8();
+    // A cache file written before favicons were fitted may be full size.
+    let image = crate::rgba::fit_image(image::open(path).ok()?.into_rgba8(), crate::rgba::FAVICON_SIDE);
     let (width, height) = image.dimensions();
     Some(FaviconImage { rgba: image.into_raw(), width, height })
 }

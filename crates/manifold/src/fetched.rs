@@ -491,7 +491,8 @@ impl App {
                 return Err(err);
             }
         };
-        let rgba = img.to_rgba8();
+        // `into_rgba8` moves when the image is already RGBA8; `to_rgba8` copied it.
+        let rgba = crate::rgba::fit_image(img.into_rgba8(), crate::rgba::MAX_TEXTURE_SIDE);
         let (width, height) = rgba.dimensions();
         if let Some(gpu) = &mut self.gpu {
             gpu.upload_image(&id, rgba.as_raw(), width, height);

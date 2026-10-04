@@ -38,6 +38,7 @@ mod popups;
 mod process_manager;
 mod profile;
 mod redirect_fetch;
+mod rgba;
 mod session;
 mod session_sync;
 mod settings;

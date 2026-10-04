@@ -745,15 +745,25 @@ impl GpuState {
         self.tab_textures.contains_key(tab_id)
     }
 
-    /// `rgba` is already tightly-packed RGBA -- registered the same way as
-    /// a thumbnail, in its own map since a favicon and a tab's content
-    /// thumbnail are unrelated sizes and update independently. `key` is an
-    /// *origin* (see `favicons`' own doc comment), not a tab id.
-    pub fn upload_favicon(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+    /// One texture for tightly packed RGBA8, or `None` (logged) when it can't
+    /// be one: a wrong byte count, or a side past the device limit. Callers
+    /// downscale with `rgba::fit_image` first; this is the last guard, since
+    /// wgpu's default error handler panics on an oversize texture.
+    fn register_rgba(
+        &mut self,
+        label: &str,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        if !frame_is_valid(rgba.len(), width, height, self.device.limits().max_texture_dimension_2d) {
+            eprintln!("{label}: refusing a {width}x{height} texture ({} bytes)", rgba.len());
+            return None;
+        }
         let texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
-                label: Some("favicon texture"),
+                label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -766,6 +776,15 @@ impl GpuState {
             rgba,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Some((texture, view))
+    }
+
+    /// `rgba` is already tightly-packed RGBA -- registered the same way as
+    /// a thumbnail, in its own map since a favicon and a tab's content
+    /// thumbnail are unrelated sizes and update independently. `key` is an
+    /// *origin* (see `favicons`' own doc comment), not a tab id.
+    pub fn upload_favicon(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
+        let Some((texture, view)) = self.register_rgba("favicon texture", rgba, width, height) else { return };
         if let Some(existing) = self.favicons.get(key) {
             self.egui_renderer.update_egui_texture_from_wgpu_texture(
                 &self.device,
@@ -798,26 +817,14 @@ impl GpuState {
     /// `create_texture_with_data` registration as `upload_favicon`, in its
     /// own map since an image node's picture is unrelated in size/lifetime
     /// to a favicon or a tab's content thumbnail. `key` is a *node id* (see
-    /// `images`' own doc comment), called at creation, restore or after a
-    /// Refresh (which frees the old one first), not every frame like a
-    /// tab's thumbnail.
+    /// `images`' own doc comment), called at creation, restore or Refresh,
+    /// not every frame like a tab's thumbnail. Uploading over an existing
+    /// key frees the old registration itself.
     pub fn upload_image(&mut self, key: &str, rgba: &[u8], width: u32, height: u32) {
-        let texture = self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("image node texture"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            rgba,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let Some((texture, view)) = self.register_rgba("image node texture", rgba, width, height) else { return };
+        // A second upload for one key (a PDF re-rendered before its first
+        // render landed) must not leak the first registration.
+        self.free_image(key);
         let egui_id = self.egui_renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
         self.images.insert(key.to_string(), ThumbTexture { texture, width, height, egui_id });
     }
