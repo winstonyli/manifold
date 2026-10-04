@@ -1966,7 +1966,7 @@ impl App {
 
     /// "Save Session As..." (settings popup) / headless `SAVESESSIONAS` --
     /// a full compacted copy of the running store (spec "Named sessions"),
-    /// with this profile's own personal state, saved to `sessions/<name>
+    /// with this profile's own personal state (`local_state_for_copy`), saved to `sessions/<name>
     /// .mnf`. Saves the running session first so the copy isn't missing
     /// recent edits; a failure there or in the copy itself is toasted, not
     /// fatal (the running session is untouched either way). `raw` is sanitised here (`sanitize_session_name`), for
@@ -1980,11 +1980,19 @@ impl App {
         if !self.save_session() {
             self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());
         }
+        let local = self.local_state_for_copy();
         let Some(journal) = self.journal.as_ref() else { return };
-        if let Err(err) = journal.save_copy(&path, Some(&self.local_state().to_bytes())) {
+        if let Err(err) = journal.save_copy(&path, local.as_deref()) {
             let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
             self.queue_toast(format!("Couldn't save as {shown}: {err}"));
         }
+    }
+
+    /// The personal state Save As gives its copy: this profile's, or none while startup's is still unread
+    /// (`App::local_unread`). The live view then lacks what the file holds (its Recently Closed, say); a copy
+    /// with none opens with defaults rather than a partial state passed off as this profile's.
+    fn local_state_for_copy(&self) -> Option<Vec<u8>> {
+        self.local_unread.is_none().then(|| self.local_state().to_bytes())
     }
 
     /// "Open Session" (settings popup) / headless `OPENSESSION` -- reads a
@@ -3457,6 +3465,16 @@ mod tests {
         assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
         app.save_named_session("Trip");
         assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
+    }
+
+    /// Save As while startup's personal state is unread carries none into the copy; once read, it carries this
+    /// profile's.
+    #[test]
+    fn save_as_while_personal_state_is_unread_carries_none() {
+        let mut app = App::default();
+        assert!(app.local_state_for_copy().is_some());
+        app.local_unread = Some(session_sync::LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+        assert_eq!(app.local_state_for_copy(), None);
     }
 
     /// Review fix: a Windows device name survives `sanitize_session_name` but can't be a file; Save As says so
