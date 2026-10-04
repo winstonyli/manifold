@@ -140,21 +140,32 @@ action) and the settings page's sections.
   missing jar; a second dot with an arrow means "will switch", its tooltip offering "switch now". The same dot sits beside
   the address bar in Tab view.
 - **Settings, "Jars" section:** one row per jar: swatch, editable name, count of tabs using it, ephemeral toggle, "Clear
-  cookies" (confirm) and "Delete" (shows "N tabs use this; they'll use Default." and deletes on confirm; the file goes with
+  cookies" (confirm) and "Delete" (shows "N tabs use this; they'll use Default (built-in)." and deletes on confirm; the file goes with
   it). The default jar is listed first and cannot be renamed or deleted; "Clear cookies" is available on it.
 
 **Names.** A jar is its node id; its name is only what it is called, and need not be unique. A rename to a name in use is
 allowed, and import never matches jars by name. Every view shows a jar's *label*, derived each time and never stored or
-synced (`jar_defs::named_jar_label`):
-- A name no other jar has, compared trimmed and in any case, is shown as stored.
-- When two or more jars share a name, each one is shown as `"<name> · #<frag>"`. `<frag>` is the start of the SHA-256 hex of
-  the node id's text, 4 characters, or as many more as it takes to differ from the other same-named jars'. It derives from the
-  id alone, so it stays the same for the jar's life.
+synced (`jar_defs::JarLabel`, from `named_jar_label` and `App::jar_label`). A label is a name and an optional marker:
+- A name no other jar has, compared trimmed and in any case, is shown as stored, with no marker.
+- When two or more jars share a name, each one's marker is `#<frag>`. `<frag>` is the start of the SHA-256 hex of the node
+  id's text, 4 characters, or as many more as it takes to differ from the other same-named jars'. It derives from the id
+  alone, so it stays the same for the jar's life.
+- The built-in Default jar's label is "Default" with the marker `built-in` (also what a tab naming a deleted jar shows, as it
+  uses the built-in jar). A user jar may be called "Default"; it is shown as stored.
 
-The label is used in the tab, unloaded and group menus, on the chip and in its hover text, on Tab view's dot, in the confirm
-dialogs and in the will-switch text. Settings' name field edits the stored name. A same-named jar's marker (`· #1a2b`) sits
-beside the field as separate read-only text, so it can never be saved into a name. Headless `SETJAR` takes a label first,
-then a stored name. When several jars share that stored name, the lowest node id wins.
+Rich-text sites draw the marker in its own style: after the name, in monospace at 80% of the name's size, in the theme's weak
+text colour, centred on the line, and without the plain text's " · ". The built-in's name is also italic. A name typed to
+look like a marker ("Work · #1a2b") is drawn as an ordinary name, so it never looks like a genuine marker, and the built-in
+jar never looks like a user jar named "Default". The rich sites are the tab, unloaded and group menus, Settings' "Jars"
+rows, the card chip and Tab view's dot hover. The chip ellipsizes only the name and keeps the marker whole; on a card too
+narrow for a short name and the marker it shows just the dots. Its scrim is always dark, so its marker is the chip text
+dimmed by the theme's weak text alpha. Plain-text sites (the confirm dialogs, the chip's warning and will-switch tooltip)
+use the plain string: `"<name> · #<frag>"`, the name alone, or "Default (built-in)" for the built-in jar.
+
+Settings' name field edits the stored name. A same-named jar's marker sits beside the field as separate read-only text, so
+it can never be saved into a name; the built-in's row shows its styled label. Headless `SETJAR` takes a label's plain string
+first, then a stored name. When several jars share that stored name, the lowest node id wins. `SETJAR default`, any case,
+still names the built-in jar, so `SETJAR` cannot reach a user jar named "Default" (the menus can).
 
 Deleting a jar is an ordinary node delete: tabs that named it resolve to `Default`.
 
@@ -181,6 +192,6 @@ localStorage and the other storage the v1 spec leaves out.
 - Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
-- Jar names are not unique (see "Names"). A user may name a jar exactly like another jar's label ("Work · #1a2b"); both then
-  show the same text. `SETJAR` picks the labelled jar. Left as is: it takes a deliberate copy of a marker.
+- Name rules (characters, length, reserved names such as Default) should be designed once for every user-editable name
+  (jars, groups, tabs...), not per kind; jar names today only trim and reject empty.
 - After "Clear cookies", every pull from that jar's running tabs is dropped until they switch, including a login made after the clear (plan deviation 14). Accepted as "cleared means cleared"; revisit if users sign in again in a tab still waiting to switch and expect it kept.
