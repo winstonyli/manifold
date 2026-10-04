@@ -453,21 +453,39 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
         ui.label(heading_text("Jars"));
+        // Each jar takes two lines, so a narrow window (480 px) clips nothing: its swatch, name and tab count (counts
+        // aligned on the right, the name field taking the rest), then its actions under the name, wrapping if need be.
         let count_text = |n: usize| egui::RichText::new(tab_count_label(n)).small().weak();
-        ui.horizontal(|ui| {
-            jar_swatch(ui, egui::Color32::GRAY);
+        let head = |ui: &mut egui::Ui, color, count: usize, name: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                jar_swatch(ui, color);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(count_text(count));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| name(ui));
+                });
+            });
+        };
+        let actions = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(JAR_SWATCH_WIDTH + ui.spacing().item_spacing.x);
+                add(ui);
+            });
+            ui.add_space(4.0);
+        };
+        head(ui, egui::Color32::GRAY, self.jar_tab_count(JarKey::Default), &mut |ui| {
             ui.label("Default");
-            ui.label(count_text(self.jar_tab_count(JarKey::Default)));
+        });
+        actions(ui, &mut |ui| {
             if ui.button("Clear Cookies").clicked() {
                 req.jar_confirm = Some(JarConfirm::Clear(JarKey::Default));
             }
         });
         for (&id, def) in &self.jar_defs {
-            ui.horizontal(|ui| {
-                jar_swatch(ui, self.jar_color(JarKey::Named(id)));
+            head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), &mut |ui| {
                 let mut draft = jar_name_draft(ui, id, &def.name);
                 let key = egui::Id::new(("jar_name", id));
-                let edit = egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(120.0);
+                let edit =
+                    egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(ui.available_width());
                 let response = ui.add(edit);
                 if response.lost_focus() {
                     ui.data_mut(|d| d.remove::<String>(key));
@@ -481,7 +499,8 @@ impl App {
                     // would be dropped each frame.
                     ui.data_mut(|d| d.insert_temp(key, draft));
                 }
-                ui.label(count_text(self.jar_tab_count(JarKey::Named(id))));
+            });
+            actions(ui, &mut |ui| {
                 let mut ephemeral = def.ephemeral;
                 if ui
                     .checkbox(&mut ephemeral, "Ephemeral")
@@ -693,9 +712,12 @@ impl App {
     }
 }
 
+/// A Settings jar swatch's width; its actions line is indented by this much plus one item gap, under the name.
+const JAR_SWATCH_WIDTH: f32 = 12.0;
+
 /// A jar's colour dot in the Settings rows.
 fn jar_swatch(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(JAR_SWATCH_WIDTH), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 5.0, color);
 }
 
@@ -781,6 +803,37 @@ mod tests {
             let req = jars_frame_with(&mut app, &ctx, input(vec![]));
             assert_eq!(req.rename_jar, Some((work, draft.unwrap())), "window focused {window_focused}: committed");
         }
+    }
+
+    /// Fix batch B1: at a 480 px window (the page's 480 max, less its 16 px margins and a scroll bar) no jar row runs
+    /// past the page's width; before, a named jar's one row put Delete under the scroll bar.
+    #[test]
+    fn the_jar_rows_fit_a_480_px_window() {
+        const CONTENT: f32 = 480.0 - 2.0 * 16.0 - 8.0;
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        for name in ["Work", "Home", "A much longer jar name than most"] {
+            app.create_jar(name);
+        }
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 800.0))),
+            ..Default::default()
+        };
+        let mut width = 0.0;
+        for _ in 0..2 {
+            let mut req = SettingsRequests::default();
+            let mut output = ctx.run_ui(input(), |ui| {
+                ui.set_max_width(CONTENT);
+                control_font(ui);
+                let left = ui.min_rect().left();
+                app.settings_jars_section(ui, &mut req);
+                width = ui.min_rect().right() - left;
+            });
+            output.textures_delta.clear();
+        }
+        assert!(width <= CONTENT + 0.5, "the Jars section is {width} wide in {CONTENT}");
     }
 
     #[test]
