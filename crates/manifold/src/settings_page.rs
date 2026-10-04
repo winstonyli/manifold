@@ -412,8 +412,10 @@ impl App {
             ui.add(egui::Label::new(egui::RichText::new("No saved sessions").small().weak()).wrap());
         }
         for name in names {
+            let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             ui.horizontal(|ui| {
-                if ui.button(&name).on_hover_text("Open").clicked() {
+                let text = crate::names::name_job(ui, "", &segs, "");
+                if ui.button(text).on_hover_text(crate::names::with_hint("Open", &segs)).clicked() {
                     req.open_session_name = Some(name.clone());
                 }
                 if ui.small_button(egui_phosphor::light::X).on_hover_text("Delete").clicked() {
@@ -502,6 +504,11 @@ impl App {
                 let edit =
                     egui::TextEdit::singleline(&mut draft).id(jar_name_edit_id(id)).desired_width(ui.available_width());
                 let response = ui.add(edit);
+                let hint = crate::names::hidden_hint(&crate::names::display_name(&def.name, crate::names::UNTITLED));
+                let response = match hint {
+                    Some(hint) => response.on_hover_text(hint),
+                    None => response,
+                };
                 if response.lost_focus() {
                     ui.data_mut(|d| d.remove::<String>(key));
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1091,6 +1098,37 @@ mod tests {
             );
             ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(jar)));
             assert_eq!(jars_frame(&mut app, &ctx).rename_jar, None, "{typed:?}");
+        }
+    }
+
+    /// Name rules: a jar's name field shows its stored name as typed, so its hover names any hidden character in it;
+    /// a clean name's field has no hover.
+    #[test]
+    fn a_jar_field_hover_names_a_hidden_character() {
+        for (name, want) in [("Wo\u{200B}rk", true), ("Work", false)] {
+            let ctx = egui::Context::default();
+            crate::theme::apply_fonts(&ctx);
+            crate::theme::apply_style(&ctx);
+            let mut app = App::default();
+            let jar = app.create_jar("x");
+            app.jar_defs.get_mut(&jar).unwrap().name = name.into();
+            jars_frame(&mut app, &ctx);
+            let field = ctx.read_response(jar_name_edit_id(jar)).expect("the jar's field").rect.center();
+            let mut texts = Vec::new();
+            for i in 0..4 {
+                // The pointer moves onto the field once, then rests there past the tooltip delay.
+                let events = if i == 0 { vec![egui::Event::PointerMoved(field)] } else { Vec::new() };
+                let input = egui::RawInput { time: Some(f64::from(i)), events, ..Default::default() };
+                let mut req = SettingsRequests::default();
+                let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
+                output.textures_delta.clear();
+                texts.extend(output.shapes.into_iter().filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                }));
+            }
+            let hinted = texts.iter().any(|t| t == "Hidden characters: U+200B zero width space");
+            assert_eq!(hinted, want, "{name:?}: {texts:?}");
         }
     }
 }

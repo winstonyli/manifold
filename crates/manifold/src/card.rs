@@ -13,6 +13,9 @@ pub(crate) struct CardHeader {
     /// Drawn in the glyph's place, if the card has one (a favicon).
     pub(crate) icon_image: Option<egui::TextureId>,
     pub(crate) name: String,
+    /// `name` is a stored group name: drawn by the display rule (`names::display_name`), so a hidden character shows
+    /// as a placeholder. Other cards' titles come from pages and files and are drawn as they are.
+    pub(crate) user_name: bool,
     pub(crate) source: String,
     /// `source` is a local path, so it is elided at the start (a web address, at the end).
     pub(crate) source_is_path: bool,
@@ -154,9 +157,11 @@ pub(crate) fn paint_jar_chip(
     const R: f32 = JAR_CHIP_R;
     let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
     let arrow = jar_chip_arrow(painter, chip, font.clone(), text);
+    let weak = text.gamma_multiply(painter.ctx().global_style().visuals.weak_text_alpha);
+    let (segs, name_format) = (chip.name.display(), chip.name.name_format(font.clone()));
     let name_job = |wrap: Option<f32>| {
-        let mut job =
-            egui::text::LayoutJob::single_section(chip.name.name.clone(), chip.name.name_format(font.clone()));
+        let mut job = egui::text::LayoutJob::default();
+        crate::names::append_name(&mut job, &segs, &name_format, weak);
         if let Some(room) = wrap {
             job.wrap = egui::text::TextWrapping {
                 max_width: room,
@@ -169,7 +174,6 @@ pub(crate) fn paint_jar_chip(
     };
     let name = name_job(None);
     let marker = chip.name.marker_text().map(|m| {
-        let weak = text.gamma_multiply(painter.ctx().global_style().visuals.weak_text_alpha);
         painter.layout_job(egui::text::LayoutJob::single_section(
             m,
             crate::jar_defs::JarLabel::marker_format(font.size, weak),
@@ -1219,6 +1223,7 @@ impl App {
             glyph_color: failed.then_some(DANGER_COLOR),
             icon_image: if failed { None } else { favicon },
             name: if title.is_empty() { url.clone() } else { title },
+            user_name: false,
             source: url,
             source_is_path: false,
             scrim: false,
@@ -1300,6 +1305,7 @@ impl App {
                 glyph_color: None,
                 icon_image: None,
                 name: filename.to_owned(),
+                user_name: false,
                 source_is_path: download_url.is_none(),
                 source: download_url.unwrap_or_else(|| download_path.clone()),
                 scrim: false,
@@ -1394,6 +1400,7 @@ impl App {
                 glyph_color: None,
                 icon_image: None,
                 name: "Note".to_owned(),
+                user_name: false,
                 source: format!("{words} word{}", if words == 1 { "" } else { "s" }),
                 source_is_path: false,
                 scrim: false,
@@ -1483,6 +1490,7 @@ impl App {
             glyph_color: Some(DANGER_COLOR),
             icon_image: None,
             name,
+            user_name: false,
             source,
             source_is_path,
             scrim: false,
@@ -1547,6 +1555,7 @@ impl App {
                             glyph_color: None,
                             icon_image: None,
                             name,
+                            user_name: false,
                             source,
                             source_is_path,
                             scrim: true,
@@ -1636,6 +1645,7 @@ impl App {
                             glyph_color: None,
                             icon_image: None,
                             name,
+                            user_name: false,
                             source,
                             source_is_path,
                             scrim: true,
@@ -1817,17 +1827,19 @@ impl App {
         inv_zoom: f32,
         zoom_scale: f32,
     ) -> CardBody {
-        let body = CardBody { interact_rect: rect, tooltip: None };
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
         let member_ids = &view.members;
         let member_count = member_ids.len();
         if !self.graph_lod_simplified {
             if let Some(node) = self.nodes.get(id).and_then(|n| n.as_group()) {
-                let name = node.name.clone();
+                body.tooltip =
+                    crate::names::hidden_hint(&crate::names::display_name(&node.name, crate::names::UNTITLED));
                 let header = CardHeader {
                     glyph: egui_phosphor::light::FOLDER,
                     glyph_color: None,
                     icon_image: None,
-                    name,
+                    name: node.name.clone(), // name rule: drawn by display_name in paint_card_header (user_name)
+                    user_name: true,
                     source: format!("{member_count} item{}", if member_count == 1 { "" } else { "s" }),
                     source_is_path: false,
                     scrim: false,
@@ -1904,7 +1916,8 @@ impl App {
         if rect.width() * zoom_scale < MIN_LABEL_CARD_SCREEN_WIDTH {
             return tall;
         }
-        let CardHeader { glyph, glyph_color, icon_image, name, source, source_is_path, scrim, right_margin } = header;
+        let CardHeader { glyph, glyph_color, icon_image, name, user_name, source, source_is_path, scrim, right_margin } =
+            header;
         let band_height = if tall { TAB_HEADER_POINTS } else { TAB_STRIP_POINTS } * inv_zoom;
         let band = if tall {
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), band_height))
@@ -1928,7 +1941,32 @@ impl App {
         let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
         let text_left = if tall { HEADER_TEXT_X } else { 8.0 };
         let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
-        let title = truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width);
+        // A stored group name with a hidden character is a styled job (placeholders in the marker style, truncated
+        // by the layout); any other title is cut text, as before (`truncate_to_width`'s cache).
+        let segs = if user_name {
+            crate::names::display_name(&name, crate::names::UNTITLED)
+        } else {
+            vec![crate::names::NameSeg::Plain(&name)]
+        };
+        let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
+        let rich = crate::names::has_hidden(&segs).then(|| {
+            let mut job = egui::text::LayoutJob::default();
+            let format = egui::TextFormat::simple(egui::FontId::proportional(title_size), title_color);
+            crate::names::append_name(&mut job, &segs, &format, source_color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+            job
+        });
+        let title = match rich {
+            Some(_) => String::new(),
+            None => {
+                // A clean name is one borrowed segment: cut it without copying (spaces collapsed need `to_plain`).
+                let plain = match segs.as_slice() {
+                    [crate::names::NameSeg::Plain(p)] => std::borrow::Cow::Borrowed(*p),
+                    _ => std::borrow::Cow::Owned(crate::names::to_plain(&segs)),
+                };
+                truncate_to_width(&mut self.truncate_cache, ui.ctx(), &plain, &title_font, max_width)
+            }
+        };
         let source = match (tall, source_is_path) {
             (false, _) => String::new(),
             (true, true) => {
@@ -1961,9 +1999,10 @@ impl App {
                         glyph_color,
                     );
                 }
-                overlay_painter.text(
+                paint_card_title(
+                    overlay_painter,
                     base + egui::vec2(text_left, HEADER_TITLE_Y),
-                    egui::Align2::LEFT_CENTER,
+                    rich,
                     title,
                     title_font,
                     title_color,
@@ -1976,13 +2015,8 @@ impl App {
                     source_color,
                 );
             } else {
-                overlay_painter.text(
-                    base + egui::vec2(text_left, band_screen_height / 2.0),
-                    egui::Align2::LEFT_CENTER,
-                    title,
-                    egui::FontId::proportional(12.0),
-                    title_color,
-                );
+                let pos = base + egui::vec2(text_left, band_screen_height / 2.0);
+                paint_card_title(overlay_painter, pos, rich, title, egui::FontId::proportional(12.0), title_color);
             }
         }));
         tall
@@ -2145,6 +2179,27 @@ impl App {
             }
         }
         body
+    }
+}
+
+/// A card title, left-centred at `pos`: the styled `rich` job when there is one, else the plain `title`.
+fn paint_card_title(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    rich: Option<egui::text::LayoutJob>,
+    title: String,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    match rich {
+        Some(job) => {
+            let galley = painter.layout_job(job);
+            let y = pos.y - galley.size().y / 2.0;
+            painter.galley(egui::pos2(pos.x, y), galley, color);
+        }
+        None => {
+            painter.text(pos, egui::Align2::LEFT_CENTER, title, font, color);
+        }
     }
 }
 
@@ -2321,6 +2376,120 @@ mod tests {
                 );
                 assert!(painted.is_none_or(|r| r.width() <= max), "{max}: {painted:?}");
                 assert_eq!(painted.is_none(), max < 20.0, "{max}");
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    /// Name rules: a chip draws a hidden character in its jar's name as a placeholder, in the marker style.
+    #[test]
+    fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: crate::jar_defs::JarLabel { name: "Wo\u{200B}rk".into(), marker: None },
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: false,
+            can_switch_now: false,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::FontId::proportional(11.0);
+            paint_jar_chip(
+                ui.painter(),
+                egui::Pos2::ZERO,
+                300.0,
+                &chip,
+                font,
+                egui::Color32::WHITE,
+                egui::Color32::YELLOW,
+            );
+        });
+        output.textures_delta.clear();
+        let galleys: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        let name = galleys.iter().find(|g| g.text() == "Wo⟦200B⟧rk");
+        let name = name.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
+        let hidden = name.job.sections.iter().find(|s| s.format.font_id.family == egui::FontFamily::Monospace);
+        assert_eq!(hidden.expect("a monospace placeholder").format.font_id.size, 11.0 * crate::jar_defs::MARKER_SCALE);
+    }
+
+    /// Name rules: a group card's header draws its stored name through the display rule (placeholders, collapsed
+    /// spaces, the fallback); another card's title is drawn as before.
+    #[test]
+    fn a_group_header_draws_its_name_by_the_display_rule() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        for (name, user_name, want) in [
+            ("Re\u{200B}ading", true, "Re⟦200B⟧ading"),
+            ("  Two\u{00A0}\u{00A0}spaces ", true, "Two spaces"),
+            ("", true, "Untitled"),
+            ("Re\u{200B}ading", false, "Re\u{200B}ading"),
+        ] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut overlays: DeferredOverlays = Vec::new();
+                let header = CardHeader {
+                    glyph: egui_phosphor::light::FOLDER,
+                    glyph_color: None,
+                    icon_image: None,
+                    name: name.into(),
+                    user_name,
+                    source: "3 items".into(),
+                    source_is_path: false,
+                    scrim: false,
+                    right_margin: 0.0,
+                };
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+                app.paint_card_header(ui, &mut overlays, rect, 1.0, 1.0, header);
+                for overlay in overlays {
+                    overlay(ui.painter(), &|p| p);
+                }
+            });
+            output.textures_delta.clear();
+            let galleys: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.clone()),
+                    _ => None,
+                })
+                .collect();
+            let title = galleys.iter().find(|g| g.text() == want);
+            let title =
+                title.unwrap_or_else(|| panic!("{want}: {:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
+            let mono = title.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace);
+            assert_eq!(mono, want.contains('⟦'), "{want}");
+        }
+    }
+
+    /// Name rules: a group card's hover names the hidden characters in its stored name; a clean name has none.
+    #[test]
+    fn a_group_card_tooltip_names_a_hidden_character() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        for (name, want) in [("Re\u{200B}ading", Some("Hidden characters: U+200B zero width space")), ("Reading", None)]
+        {
+            app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = name.into();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut overlays: DeferredOverlays = Vec::new();
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0));
+                let view = test_view(ItemNodeKind::Group);
+                let body = app.paint_group_body(ui, &mut overlays, &g, &view, rect, 1.0, 1.0);
+                assert_eq!(body.tooltip.as_deref(), want, "{name:?}");
             });
             output.textures_delta.clear();
         }

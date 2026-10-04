@@ -892,17 +892,18 @@ impl App {
                 // `json_summary` already bounds a JSON card's
                 // own label, for the same "small fixed chrome,
                 // not a place for arbitrarily long text" reason.
-                let display_name = if name.chars().count() > 20 {
-                    format!("{}…", name.chars().take(19).collect::<String>())
-                } else {
-                    name.clone()
-                };
+                // Shortened by the name rules (`names::shorten`),
+                // so a placeholder counts as one and cannot dodge
+                // the bound.
+                let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                let shown = crate::names::shorten(&segs, CRUMB_UNITS);
+                let text = crate::names::name_job(ui, "", shown.as_deref().unwrap_or(&segs), "");
                 if i + 1 == crumb_count && on_json_level {
                     // The Json node itself: its name is its file's,
                     // so there is nothing to rename.
-                    let label = ui.label(&display_name);
-                    if display_name != *name {
-                        label.on_hover_text(name);
+                    let label = ui.label(text);
+                    if shown.is_some() || crate::names::has_hidden(&segs) {
+                        label.on_hover_text(crumb_hover(&segs, "", str::to_string));
                     }
                 } else if i + 1 == crumb_count {
                     let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
@@ -922,12 +923,10 @@ impl App {
                             }
                         }
                     } else if ui
-                        .button(&display_name)
-                        .on_hover_text(if display_name == *name {
-                            "Click to rename (F2)".to_string()
-                        } else {
-                            format!("Click to rename, F2 ({name})")
-                        })
+                        .button(text)
+                        .on_hover_text(crumb_hover(&segs, "Click to rename (F2)", |f| {
+                            format!("Click to rename, F2 ({f})")
+                        }))
                         .clicked()
                     {
                         actions.push(GraphAction::Node(id.clone(), NodeAction::Rename));
@@ -940,12 +939,10 @@ impl App {
                     // double-clicking a group card triggers;
                     // it doesn't care which direction that is).
                     if ui
-                        .button(&display_name)
-                        .on_hover_text(if display_name == *name {
-                            "Jump to this group".to_string()
-                        } else {
-                            format!("Jump to this group ({name})")
-                        })
+                        .button(text)
+                        .on_hover_text(crumb_hover(&segs, "Jump to this group", |f| {
+                            format!("Jump to this group ({f})")
+                        }))
                         .clicked()
                     {
                         actions.push(GraphAction::EnterGroup(id.clone()));
@@ -1937,6 +1934,18 @@ impl App {
     }
 }
 
+/// The most units a breadcrumb crumb shows (`names::shorten`; a placeholder counts one).
+const CRUMB_UNITS: usize = 20;
+
+/// A crumb's hover: `short`, or `long(full name)` when the crumb is shortened, then the hidden-character hint.
+fn crumb_hover(segs: &[crate::names::NameSeg], short: &str, long: impl Fn(&str) -> String) -> String {
+    let base = match crate::names::shorten(segs, CRUMB_UNITS) {
+        Some(_) => long(&crate::names::to_plain(segs)),
+        None => short.to_string(),
+    };
+    crate::names::with_hint(&base, segs)
+}
+
 /// Ctrl held alone this long reveals the key hints.
 const CTRL_REVEAL_AFTER: f64 = 0.35;
 
@@ -2132,5 +2141,53 @@ mod tests {
         let update = output.platform_output.accesskit_update.expect("accesskit update");
         let named = update.nodes.iter().find(|(_, n)| n.label() == Some("Group: Reading"));
         assert_eq!(named.map(|(_, n)| n.role()), Some(egui::accesskit::Role::Button));
+    }
+
+    /// Name rules: crumbs draw hidden characters as placeholders and shorten to 20 units, a placeholder counting one.
+    #[test]
+    fn breadcrumb_crumbs_follow_the_display_rule() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let mut app = App::default();
+        let (outer, inner) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(outer.clone(), None);
+        app.insert_group_at(inner.clone(), None);
+        app.nodes.get_mut(&inner).unwrap().group = Some(outer.clone());
+        app.nodes.get_mut(&outer).unwrap().as_group_mut().unwrap().name = "x".repeat(30);
+        app.nodes.get_mut(&inner).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.current_group = Some(inner);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| app.toolbar_breadcrumb(ui, false, &mut Vec::new()));
+        });
+        output.textures_delta.clear();
+        let galleys: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<String> = galleys.iter().map(|g| g.text().to_string()).collect();
+        assert!(texts.contains(&format!("{}…", "x".repeat(19))), "{texts:?}");
+        let current = galleys.iter().find(|g| g.text() == "Re⟦200B⟧ading").unwrap_or_else(|| panic!("{texts:?}"));
+        assert!(current.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
+    }
+
+    #[test]
+    fn a_crumb_hover_names_the_full_name_and_its_hidden_characters() {
+        let long = "x".repeat(30);
+        let segs = crate::names::display_name(&long, crate::names::UNTITLED);
+        assert_eq!(
+            crumb_hover(&segs, "Jump to this group", |f| format!("Jump to this group ({f})")),
+            format!("Jump to this group ({long})")
+        );
+        let segs = crate::names::display_name("Re\u{200B}ading", crate::names::UNTITLED);
+        assert_eq!(
+            crumb_hover(&segs, "Click to rename (F2)", |f| format!("Click to rename, F2 ({f})")),
+            "Click to rename (F2)\nHidden characters: U+200B zero width space"
+        );
+        // The JSON crumb's label: no base text when it is short, so the hint alone.
+        assert_eq!(crumb_hover(&segs, "", str::to_string), "Hidden characters: U+200B zero width space");
     }
 }

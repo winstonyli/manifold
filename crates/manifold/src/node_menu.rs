@@ -209,7 +209,13 @@ pub(crate) fn build_node_context_menu(
                     }
                     NodeMenuItem::MoveTo(targets) => {
                         for (group, name) in targets {
-                            if menu_button(ui, format!("Move to {name}"), None, &mut first_item).clicked() {
+                            let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                            let text = crate::names::name_job(ui, "Move to ", &segs, "");
+                            let mut response = menu_button(ui, text, None, &mut first_item);
+                            if let Some(hint) = crate::names::hidden_hint(&segs) {
+                                response = response.on_hover_text(hint);
+                            }
+                            if response.clicked() {
                                 action = Some(NodeAction::MoveToGroup(group.clone()));
                             }
                         }
@@ -1083,6 +1089,38 @@ mod tests {
         let g = crate::session_sync::tests::add(&mut app, NodePayload::Group(crate::node::GroupPayload::named("G")));
         let rows = app.node_menu_view(&g).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
+    }
+
+    /// Name rules: "Move to <group>" draws a hidden character in the group's name as a placeholder.
+    #[test]
+    fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
+        let ctx = menu_ctx();
+        let mut app = App::default();
+        let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
+        let mut galleys = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
+            output.textures_delta.clear();
+            galleys = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => Some(t.galley),
+                    _ => None,
+                })
+                .collect();
+        }
+        let row = galleys.iter().find(|g| g.text() == "Move to Re⟦200B⟧ading");
+        let row = row.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
+        assert!(row.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
     }
 
     fn menu_ctx() -> egui::Context {

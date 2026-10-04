@@ -32,7 +32,8 @@ pub(crate) struct JarChip {
     pub(crate) was_color: egui::Color32,
     /// A Servo or WebKit tab on a named jar: its engine ignores jars (spec "Hosts").
     pub(crate) engine_ignores: bool,
-    /// The warnings above, one per line, for the card's hover text; `None` when there are none.
+    /// The name's hidden-character hint (`JarLabel::hidden_hint`, name rules), then the warnings above, one per line,
+    /// for the card's hover text; `None` when there are none.
     pub(crate) tooltip: Option<String>,
 }
 
@@ -165,10 +166,22 @@ impl JarLabel {
         }
     }
 
-    /// Appends the name in `font`, then the marker (after a space in its own style) in `marker_color`.
+    /// The name as the display rule shows it (`names::display_name`): placeholders for hidden characters, the
+    /// "Untitled" fallback.
+    pub(crate) fn display(&self) -> Vec<crate::names::NameSeg<'_>> {
+        crate::names::display_name(&self.name, crate::names::UNTITLED)
+    }
+
+    /// What a hover says about the hidden characters in the name (`names::hidden_hint`).
+    pub(crate) fn hidden_hint(&self) -> Option<String> {
+        crate::names::hidden_hint(&self.display())
+    }
+
+    /// Appends the name in `font` (its hidden characters as placeholders, `names::append_name`), then the marker
+    /// (after a space, in its own style), both in `marker_color` where styled.
     pub(crate) fn append_to(&self, job: &mut egui::text::LayoutJob, font: egui::FontId, marker_color: egui::Color32) {
         let size = font.size;
-        job.append(&self.name, 0.0, self.name_format(font));
+        crate::names::append_name(job, &self.display(), &self.name_format(font), marker_color);
         if let Some(marker) = self.marker_text() {
             job.append(&format!(" {marker}"), 0.0, Self::marker_format(size, marker_color));
         }
@@ -223,6 +236,9 @@ impl App {
         let name = self.jar_label(key);
         let was = self.jar_tabs.get(id).map_or(key, |(k, _)| *k);
         let mut tips = Vec::new();
+        if let Some(hint) = name.hidden_hint() {
+            tips.push(hint);
+        }
         if missing {
             tips.push("This tab's jar was deleted; it uses the default jar".to_string());
         }
@@ -1307,5 +1323,39 @@ mod tests {
         assert_eq!(app.tab_jar(&t).map(|c| c.jar), Some(Some(work)));
         assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
         assert!(app.jar_defs.values().any(|d| d.name == "New one"));
+    }
+
+    /// Name rules: a label draws a hidden character as a placeholder in the marker style, between the plain name
+    /// parts and before a marker, and its hint names it.
+    #[test]
+    fn a_label_shows_a_hidden_character_in_the_marker_style() {
+        let label = JarLabel { name: "Wo\u{200B}rk".into(), marker: Some(JarMarker::Fragment("3f2a".into())) };
+        let mut job = egui::text::LayoutJob::default();
+        label.append_to(&mut job, egui::FontId::proportional(14.0), egui::Color32::GRAY);
+        assert_eq!(job.text, "Wo⟦200B⟧rk #3f2a");
+        let parts: Vec<(String, bool)> = job
+            .sections
+            .iter()
+            .map(|s| {
+                let text = job.text[s.byte_range.start.0..s.byte_range.end.0].to_string();
+                (text, s.format.font_id.family == egui::FontFamily::Monospace)
+            })
+            .collect();
+        let want = [("Wo", false), ("⟦200B⟧", true), ("rk", false), (" #3f2a", true)];
+        assert_eq!(parts, want.map(|(t, m)| (t.to_string(), m)));
+        assert_eq!(label.hidden_hint().as_deref(), Some("Hidden characters: U+200B zero width space"));
+        assert_eq!(JarLabel::built_in().hidden_hint(), None);
+    }
+
+    /// Name rules: a chip on a jar whose synced name holds a hidden character says so in its hover.
+    #[test]
+    fn a_jar_chip_hover_names_a_hidden_character() {
+        let mut app = App::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        let jar = app.create_jar("x");
+        app.jar_defs.get_mut(&jar).unwrap().name = "Wo\u{200B}rk".into();
+        app.set_tab_jar(&t, Some(jar));
+        let tip = app.jar_chip(&t).and_then(|c| c.tooltip).unwrap_or_default();
+        assert!(tip.contains("Hidden characters: U+200B zero width space"), "{tip}");
     }
 }

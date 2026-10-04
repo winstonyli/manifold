@@ -79,6 +79,15 @@ fn folder_from_draft(draft: &str) -> Option<String> {
     (!clean.is_empty()).then(|| clean.into_owned())
 }
 
+/// A bookmark folder's name in the popup's small font and `color`, its hidden characters as placeholders (name
+/// rules).
+fn folder_job(ui: &egui::Ui, segs: &[crate::names::NameSeg], color: egui::Color32) -> egui::text::LayoutJob {
+    let format = egui::TextFormat::simple(egui::TextStyle::Small.resolve(ui.style()), color);
+    let mut job = egui::text::LayoutJob::default();
+    crate::names::append_name(&mut job, segs, &format, ui.visuals().weak_text_color());
+    job
+}
+
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
@@ -499,27 +508,36 @@ impl App {
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
     /// into `ui` as a side effect, same as the row's other icons) and the
     /// text -- `name` for a group (with its member count), `title` (its
-    /// recorded title) or else `url` for a tab, `text` for a note, `path`
-    /// for every file-backed kind.
+    /// recorded title) or else `url` for a tab, the first non-blank line of
+    /// `text` for a note, `path` for every file-backed kind. A group's row
+    /// and a note's row are styled jobs by the display rule (name rules:
+    /// a hidden character as a placeholder, "Untitled" when nothing is
+    /// left, so a note with no text, or only blank lines, shows "Untitled").
     fn closed_entry_label(
         ui: &mut egui::Ui,
         node: &store::json::JsonNode,
         title: Option<&str>,
         member_count: usize,
-    ) -> String {
+    ) -> egui::WidgetText {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        match node.kind.as_str() {
+        if node.kind == "group" {
+            ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+            let name = str_field("name");
+            let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+            return crate::names::name_job(ui, "", &segs, &format!(" ({member_count})")).into();
+        }
+        if node.kind == "note" {
+            ui.label(egui_phosphor::light::NOTE_PENCIL);
+            // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+            let text = str_field("text");
+            let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+            let segs = crate::names::display_name(first, crate::names::UNTITLED);
+            return crate::names::name_job(ui, "", &segs, "").into();
+        }
+        let text: String = match node.kind.as_str() {
             "tab" => {
                 engine_dot(ui, EngineKind::from_name(&str_field("engine")).unwrap_or(EngineKind::Servo), 8.0);
                 title.map_or_else(|| str_field("url"), str::to_string)
-            }
-            "group" => {
-                ui.label(egui_phosphor::light::FOLDER_SIMPLE);
-                format!("{} ({member_count})", str_field("name"))
-            }
-            "note" => {
-                ui.label(egui_phosphor::light::NOTE_PENCIL);
-                str_field("text").lines().next().unwrap_or_default().to_string()
             }
             "image" => {
                 ui.label(egui_phosphor::light::IMAGE);
@@ -534,7 +552,8 @@ impl App {
                 ui.label(egui_phosphor::light::BRACKETS_CURLY);
                 str_field("path")
             }
-        }
+        };
+        text.into()
     }
 
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
@@ -617,7 +636,11 @@ impl App {
                             continue;
                         }
                         if let Some(name) = folder {
-                            ui.label(egui::RichText::new(name).small().strong().color(TEXT_PRIMARY));
+                            let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                            let header = ui.label(folder_job(ui, &segs, TEXT_PRIMARY));
+                            if let Some(hint) = crate::names::hidden_hint(&segs) {
+                                header.on_hover_text(hint);
+                            }
                         }
                         for (index, bookmark) in rows {
                             let (index, bookmark) = (*index, *bookmark);
@@ -651,13 +674,14 @@ impl App {
                                     }
                                 }
                             } else {
-                                let label = bookmark.folder.as_deref().unwrap_or("No folder");
+                                let segs = match &bookmark.folder {
+                                    Some(name) => crate::names::display_name(name, crate::names::UNTITLED),
+                                    None => vec![crate::names::NameSeg::Plain("No folder")],
+                                };
+                                let job = folder_job(ui, &segs, ui.visuals().weak_text_color());
                                 if ui
-                                    .add(
-                                        egui::Label::new(egui::RichText::new(label).small().weak())
-                                            .sense(egui::Sense::click()),
-                                    )
-                                    .on_hover_text("Click to set folder")
+                                    .add(egui::Label::new(job).sense(egui::Sense::click()))
+                                    .on_hover_text(crate::names::with_hint("Click to set folder", &segs))
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .clicked()
                                 {
@@ -1470,6 +1494,47 @@ mod tests {
         assert_eq!(folder_from_draft("  Re\u{200B}ading\u{00A0}\u{00A0}list\n").as_deref(), Some("Reading list"));
         assert_eq!(folder_from_draft(" \u{200B}\u{202E} "), None);
         assert_eq!(folder_from_draft(""), None);
+    }
+
+    /// Name rules: a Recently Closed group row draws a hidden character in its name as a placeholder.
+    #[test]
+    fn a_closed_group_row_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("name".into(), "Re\u{200B}ading".into());
+        let node = store::json::JsonNode { id: "g".into(), kind: "group".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(App::closed_entry_label(ui, &node, None, 3).text(), "Re⟦200B⟧ading (3)");
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Name rules: a Recently Closed note row shows the note's first non-blank line by the display rule.
+    #[test]
+    fn a_closed_note_row_shows_its_first_line_by_the_display_rule() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody".into());
+        let node = store::json::JsonNode { id: "n".into(), kind: "note".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(App::closed_entry_label(ui, &node, None, 0).text(), "Re⟦200B⟧ading list");
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Name rules: a bookmark folder's name is drawn in the popup's small font, a hidden character as a placeholder.
+    #[test]
+    fn a_bookmark_folder_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let segs = crate::names::display_name("Re\u{200B}ading", crate::names::UNTITLED);
+            let job = folder_job(ui, &segs, TEXT_PRIMARY);
+            assert_eq!(job.text, "Re⟦200B⟧ading");
+            assert_eq!(job.sections[0].format.font_id, egui::TextStyle::Small.resolve(ui.style()));
+            assert_eq!(job.sections[0].format.color, TEXT_PRIMARY);
+            assert_eq!(job.sections[1].format.font_id.family, egui::FontFamily::Monospace);
+        });
+        output.textures_delta.clear();
     }
 
     /// Fix batch B5: a confirm opens only into an empty slot with the other kind's closed; it never replaces one.
