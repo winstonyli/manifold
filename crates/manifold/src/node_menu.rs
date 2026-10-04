@@ -223,14 +223,15 @@ pub(crate) fn build_node_context_menu(
                         });
                         for row in rows {
                             let tick = if row.ticked { "\u{2713} " } else { "   " };
-                            let count = row.count.map_or(String::new(), |n| format!("  ({n})"));
                             // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
-                            let font = egui::TextStyle::Button.resolve(ui.style());
+                            let font = egui::FontSelection::Default.resolve(ui.style());
                             let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
                             let mut text = egui::text::LayoutJob::default();
                             text.append(tick, 0.0, plain.clone());
                             row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
-                            text.append(&count, 0.0, plain);
+                            if let Some(n) = row.count {
+                                text.append(&format!("  ({n})"), 0.0, plain);
+                            }
                             let response = ui
                                 .horizontal(|ui| {
                                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -1124,6 +1125,8 @@ mod tests {
                 .collect();
         }
         let weak = ctx.global_style().visuals.weak_text_color();
+        let open =
+            galleys.iter().find(|g| g.text() == "Open").expect("an Open row").job.sections[0].format.font_id.clone();
         // (row text, italic name, the marker sections' text) of the row whose text ends in `label`.
         let row = |label: &str| {
             let g = galleys.iter().find(|g| g.text().trim_start_matches(['\u{2713}', ' ']) == label);
@@ -1133,6 +1136,13 @@ mod tests {
             let job = &g.job;
             let text = |s: &egui::text::LayoutSection| job.text[s.byte_range.start.0..s.byte_range.end.0].to_string();
             let italic = job.sections.iter().any(|s| s.format.italics);
+            // The name, tick and count in the menu rows' own font (the control font), as a plain row such as "Open".
+            let plain = job.sections.iter().filter(|s| s.format.font_id.family != egui::FontFamily::Monospace);
+            assert!(
+                plain.clone().all(|s| s.format.font_id == open),
+                "{label}: {:?} vs {open:?}",
+                plain.collect::<Vec<_>>()
+            );
             let markers: Vec<String> = job
                 .sections
                 .iter()

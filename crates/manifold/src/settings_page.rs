@@ -466,7 +466,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(count_text(count));
                         if let Some(marker) = marker {
-                            let size = egui::TextStyle::Body.resolve(ui.style()).size;
+                            let size = egui::FontSelection::Default.resolve(ui.style()).size;
                             let format = JarLabel::marker_format(size, ui.visuals().weak_text_color());
                             ui.label(egui::text::LayoutJob::single_section(marker, format))
                                 .on_hover_text("Another jar has this name; this marks which one it is");
@@ -485,7 +485,7 @@ impl App {
         head(ui, egui::Color32::GRAY, self.jar_tab_count(JarKey::Default), None, &mut |ui| {
             // The built-in jar's label, styled as in the menus (`JarLabel::append_to`).
             let mut job = egui::text::LayoutJob::default();
-            let font = egui::TextStyle::Body.resolve(ui.style());
+            let font = egui::FontSelection::Default.resolve(ui.style());
             JarLabel::built_in().append_to(&mut job, font, ui.visuals().weak_text_color());
             ui.label(job);
         });
@@ -815,7 +815,7 @@ mod tests {
         let shown = galleys(&ctx, &mut app);
         let weak = ctx.global_style().visuals.weak_text_color();
         let mut want = egui::text::LayoutJob::default();
-        let body = egui::TextStyle::Body.resolve(&ctx.global_style());
+        let body = egui::FontSelection::Default.resolve(&ctx.global_style());
         crate::jar_defs::JarLabel::built_in().append_to(&mut want, body, weak);
         let built_in: Vec<_> = shown.iter().filter(|g| g.text() == "Default built-in").collect();
         assert_eq!(built_in.len(), 1, "{:?}", shown.iter().map(|g| g.text()).collect::<Vec<_>>());

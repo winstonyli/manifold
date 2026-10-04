@@ -362,7 +362,7 @@ impl App {
                 text,
                 warn,
             );
-            let font = egui::TextStyle::Body.resolve(trailing_ui.style());
+            let font = egui::FontSelection::Default.resolve(&trailing_ui.ctx().global_style());
             let response = response.on_hover_text(chip.hover_job(font, trailing_ui.visuals().weak_text_color()));
             let response =
                 if chip.can_switch_now { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
