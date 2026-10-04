@@ -99,6 +99,10 @@ const JAR_CHIP_PAD: f32 = 5.0;
 const JAR_CHIP_NAME_END: f32 = 6.0;
 /// The gap between the jar's dot and its name.
 const JAR_CHIP_NAME_GAP: f32 = 4.0;
+/// The chip's black scrim, so its light name reads on a white page. The frame blends in linear light, which makes a
+/// scrim look far thinner than its alpha suggests: measured on a white thumbnail (2026-10-03), alpha 210 came out
+/// sRGB grey 123 (about 3.7:1 against the name), so it is 240 (about grey 69, 8:1).
+const JAR_CHIP_SCRIM_ALPHA: u8 = 240;
 /// Narrower than this, a chip's name (about one letter and "…") is left out rather than squeezed.
 const JAR_CHIP_MIN_NAME: f32 = 14.0;
 
@@ -163,7 +167,7 @@ pub(crate) fn paint_jar_chip(
         None => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_PAD,
     };
     let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
-    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(210)); // legible on a white page
+    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(JAR_CHIP_SCRIM_ALPHA));
     let x = paint_jar_dots(painter, at.x + JAR_CHIP_PAD, cy, chip, arrow.filter(|_| fit.lead), text, warn);
     if let Some(name) = name {
         let size = name.size();
