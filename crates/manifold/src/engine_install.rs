@@ -58,10 +58,49 @@ pub(crate) enum RuntimeOnDisk {
 /// The file written last by an install; holds the pinned version it installed.
 pub(crate) const MARKER: &str = "ready";
 
-/// Ready when the marker names the pin's version, Stale when it names another, Missing without one.
+/// How a CEF runtime's version relates to the pin's, by CEF major version: the host is built against one
+/// CEF API version (CEF_API_VERSION 15200 for CEF 152), which libcef of that major and later majors serve
+/// and earlier ones refuse (the 2026-10-04 spike: a host built for 152 ran on CEF 154, and CEF 151 refused it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Compat {
+    /// The pin's major.
+    Current,
+    /// A later major: usable, though not what the app was tested with.
+    Newer,
+    /// An earlier major: the host can't start on it.
+    Older,
+    /// Either version has no leading major number.
+    Unknown,
+}
+
+/// The CEF major of a version string: its leading number, in every form we read ("152.0.6",
+/// "152.0.6+g708dc14+chromium-152.0.7977.83", the cef crate's "152.1.0+152.0.6").
+fn cef_major(version: &str) -> Option<u32> {
+    let version = version.trim();
+    let end = version.find(|c: char| !c.is_ascii_digit()).unwrap_or(version.len());
+    let rest = &version[end..];
+    if end == 0 || !(rest.is_empty() || rest.starts_with(['.', '+'])) {
+        return None;
+    }
+    version[..end].parse().ok()
+}
+
+/// `runtime_version` against `pin_version`, by CEF major (`Compat`).
+pub(crate) fn runtime_compat(pin_version: &str, runtime_version: &str) -> Compat {
+    match (cef_major(pin_version), cef_major(runtime_version)) {
+        (Some(pin), Some(runtime)) if runtime == pin => Compat::Current,
+        (Some(pin), Some(runtime)) if runtime > pin => Compat::Newer,
+        (Some(_), Some(_)) => Compat::Older,
+        _ => Compat::Unknown,
+    }
+}
+
+/// Ready when the marker names the pin's version or a later CEF major (`Compat::Newer`: an install by a
+/// newer app, which this host still runs on), Stale when it names any other (an older major, or another
+/// build of the pin's major, so a re-pin within a major still offers its update), Missing without one.
 pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     match std::fs::read_to_string(dir.join(MARKER)) {
-        Ok(v) if v.trim() == pin.version => RuntimeOnDisk::Ready,
+        Ok(v) if v.trim() == pin.version || runtime_compat(pin.version, &v) == Compat::Newer => RuntimeOnDisk::Ready,
         Ok(_) => RuntimeOnDisk::Stale,
         Err(_) => RuntimeOnDisk::Missing,
     }
@@ -99,9 +138,11 @@ fn custom_version(dir: &Path) -> Result<String, String> {
     }
 }
 
-/// Whether `dir` is a CEF runtime of the pinned version: it holds the platform's runtime library
-/// (`CefPlatform::runtime_lib`) and its version (`custom_version`: `archive.json` or our `MARKER`) is
-/// `pin.version`. An `Err` says what is wrong, naming both versions on a mismatch.
+/// Whether `dir` is a CEF runtime this host runs on: it holds the platform's runtime library
+/// (`CefPlatform::runtime_lib`; nothing else is required, e.g. CEF 154's archive has no `libEGL.dll`)
+/// and its version (`custom_version`: `archive.json` or our `MARKER`) is the pin's CEF major or a later one
+/// (`runtime_compat`); a version with no readable major must be `pin.version` exactly. An `Err` says
+/// what is wrong, naming both versions on a mismatch.
 pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
@@ -111,10 +152,25 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
         return Err(format!("no {lib} in that directory"));
     }
     let found = custom_version(dir)?;
-    if found != pin.version {
-        return Err(format!("found CEF {found}, expected {}", pin.version));
+    let usable = match runtime_compat(pin.version, &found) {
+        Compat::Current | Compat::Newer => true,
+        Compat::Older => false,
+        Compat::Unknown => found == pin.version,
+    };
+    if !usable {
+        return Err(format!("found CEF {found}, expected {} or a later CEF version", pin.version));
     }
     Ok(())
+}
+
+/// A note for a usable bring-your-own runtime of a later CEF major than the pin's, which runs but was
+/// not what this build was tested with; `None` for any other.
+pub(crate) fn newer_than_tested(dir: &Path, pin: &Pin) -> Option<String> {
+    let found = custom_version(dir).ok()?;
+    (runtime_compat(pin.version, &found) == Compat::Newer).then(|| {
+        let tested = pin.version.split('+').next().unwrap_or(pin.version);
+        format!("CEF {} is newer than the tested {tested}", found.split('+').next().unwrap_or(&found))
+    })
 }
 
 /// Why an install step failed.
@@ -856,6 +912,78 @@ mod tests {
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Ready);
         std::fs::write(dir.join(MARKER), "0.9").unwrap();
         assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
+    }
+
+    /// Versions in the forms the CDN index, `archive.json` and the cef crate use, around a 152.0.6 pin.
+    const V151: &str = "151.3.24+g2384915+chromium-151.0.7922.174";
+    const V152: &str = "152.0.6+g708dc14+chromium-152.0.7977.83";
+    const V154: &str = "154.0.33+ga03e714+chromium-154.0.8037.94";
+
+    #[test]
+    fn runtime_compat_compares_the_cef_major() {
+        assert_eq!(runtime_compat(V152, V152), Compat::Current);
+        assert_eq!(runtime_compat(V152, "152.0.4+gabc+chromium-152.0.1.2"), Compat::Current);
+        assert_eq!(runtime_compat(V152, "152.1.0+152.0.6"), Compat::Current);
+        assert_eq!(runtime_compat(V152, " 152.0.6\n"), Compat::Current, "a marker's newline");
+        assert_eq!(runtime_compat(V152, "152"), Compat::Current);
+        assert_eq!(runtime_compat(V152, V154), Compat::Newer);
+        assert_eq!(runtime_compat(V152, V151), Compat::Older);
+        assert_eq!(runtime_compat(V152, "99.0.1"), Compat::Older, "numbers, not text");
+        assert_eq!(runtime_compat(V152, "1000.0.0"), Compat::Newer);
+        for garbage in ["", "garbage", "v152.0.6", "152x.0", ".152", "-152.0"] {
+            assert_eq!(runtime_compat(V152, garbage), Compat::Unknown, "{garbage:?}");
+            assert_eq!(runtime_compat(garbage, V152), Compat::Unknown, "{garbage:?}");
+        }
+    }
+
+    /// The downloaded runtime's marker: the pin or a later major is Installed, anything else Update needed.
+    #[test]
+    fn the_marker_is_installed_for_the_pin_or_a_later_major_and_update_needed_otherwise() {
+        let pin = Pin { version: V152, ..PIN };
+        let app = App::default();
+        let dir = temp_dir("compat-marker");
+        let state = |marker: &str| {
+            std::fs::write(dir.join(MARKER), marker).unwrap();
+            let on_disk = runtime_state(&dir, &pin);
+            (on_disk, app.engine_state_at(EngineKind::Cef, on_disk))
+        };
+        let update = (RuntimeOnDisk::Stale, EngineState::UpdateNeeded { size: cef_pin().size });
+        let installed = (RuntimeOnDisk::Ready, EngineState::Installed);
+        assert_eq!(state(V152), installed);
+        assert_eq!(state(V154), installed, "installed by a newer app: the host runs on it");
+        assert_eq!(state(V151), update);
+        assert_eq!(state("152.0.4+gabc+chromium-152.0.1.2"), update, "a re-pin within a major still updates");
+        assert_eq!(state("garbage"), update);
+    }
+
+    #[test]
+    fn a_custom_directory_of_the_pins_major_or_later_validates_and_an_earlier_one_does_not() {
+        let pin = Pin { version: V152, ..PIN };
+        let dir = |tag: &str, version: &str| {
+            custom_dir(tag, Some(&crate::cef_platform::PLATFORM.archive_name(version)), true)
+        };
+        let newer = dir("compat-c154", V154);
+        assert_eq!(validate_custom(&newer, &pin), Ok(()));
+        assert_eq!(newer_than_tested(&newer, &pin).as_deref(), Some("CEF 154.0.33 is newer than the tested 152.0.6"));
+        let same_major = dir("compat-c152", "152.0.4+gabc+chromium-152.0.1.2");
+        assert_eq!(validate_custom(&same_major, &pin), Ok(()));
+        assert_eq!(newer_than_tested(&same_major, &pin), None);
+        let err = validate_custom(&dir("compat-c151", V151), &pin).unwrap_err();
+        assert!(err.contains(V151) && err.contains(V152), "{err}");
+        assert!(validate_custom(&dir("compat-cbad", "garbage"), &pin).is_err());
+    }
+
+    /// CEF 154's minimal archive has no `libEGL.dll`/`libGLESv2.dll` (ANGLE is inside libcef): a runtime
+    /// without them is complete, both as our install and as a bring-your-own directory.
+    #[test]
+    fn a_runtime_without_angle_dlls_counts_as_installed() {
+        let pin = cef_pin();
+        let dir = custom_dir("compat-noangle", None, true);
+        std::fs::write(dir.join(MARKER), pin.version).unwrap();
+        assert!(!dir.join("libEGL.dll").exists() && !dir.join("libGLESv2.dll").exists());
+        assert_eq!(runtime_state(&dir, pin), RuntimeOnDisk::Ready);
+        assert_eq!(App::default().engine_state_at(EngineKind::Cef, runtime_state(&dir, pin)), EngineState::Installed);
+        assert_eq!(validate_custom(&dir, pin), Ok(()));
     }
 
     /// The pin of the platform the tests run on (Windows or Linux).

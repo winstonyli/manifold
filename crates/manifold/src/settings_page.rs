@@ -380,8 +380,21 @@ impl App {
             }
             self.cef_dir_draft = None;
         }
-        if let Some((_, Err(message))) = self.cef_dir_verdict() {
-            ui.add(egui::Label::new(egui::RichText::new(message).small().color(DANGER_COLOR)).wrap());
+        match self.cef_dir_verdict() {
+            Some((_, Err(message))) => {
+                ui.add(egui::Label::new(egui::RichText::new(message).small().color(DANGER_COLOR)).wrap());
+            }
+            Some((dir, Ok(()))) => {
+                let note = crate::cef_pin::pin_for_platform().and_then(|pin| {
+                    cached(ui.ctx(), ("cef_newer_than_tested", &dir), DISK_CACHE_AGE, || {
+                        crate::engine_install::newer_than_tested(&dir, pin)
+                    })
+                });
+                if let Some(note) = note {
+                    ui.add(egui::Label::new(egui::RichText::new(note).small().weak()).wrap());
+                }
+            }
+            None => {}
         }
     }
 
