@@ -104,8 +104,9 @@ fn max_bytes(kind: ContentKind) -> u64 {
 }
 
 /// Checks `bytes` are `kind` and saves them (or returns a note's text).
-/// Written to `<name>.<pid>.tmp` first and renamed over, so a reader never
-/// sees half a file and two instances saving one node don't collide.
+/// Written to a temp file first, fsynced and renamed over (`store::atomic`),
+/// so a reader never sees half a file. The temp is unique per call, so two
+/// fetches for one node never share it.
 pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Option<WebBody> {
     if !content::passes(kind, &bytes) {
         return None;
@@ -115,12 +116,8 @@ pub fn save(dir: &Path, node_id: &str, kind: ContentKind, bytes: Vec<u8>) -> Opt
     }
     std::fs::create_dir_all(dir).ok()?;
     let name = format!("{node_id}.{}", content::extension(kind, &bytes));
-    let (path, tmp) = (dir.join(&name), dir.join(format!("{name}.{}.tmp", std::process::id())));
-    let saved = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
-    if saved.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return None;
-    }
+    let path = dir.join(&name);
+    crate::store::atomic::replace(&path, &bytes).ok()?;
     Some(WebBody::File { kind, path: path.to_string_lossy().into_owned() })
 }
 

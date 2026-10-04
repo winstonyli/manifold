@@ -218,15 +218,15 @@ fn process_alive(pid: u32) -> bool {
     !proc.is_dir() || proc.join(pid.to_string()).exists()
 }
 
-/// Deletes the `<file>.<pid>.tmp` files in `dir` (`file` is a jar's file name, e.g. `default.json`) whose process is
-/// gone: a save interrupted by a crash, each a full copy of the jar. A live process's file is its save in progress and
-/// is left alone.
+/// Deletes the `<file>.<pid>[-<n>].tmp` files in `dir` (`file` is a jar's file name, e.g. `default.json`) whose process
+/// is gone: a save interrupted by a crash, each a full copy of the jar. A live process's file is its save in progress
+/// and is left alone.
 fn remove_dead_tmps(dir: &Path, file: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
         let Some(pid) =
-            name.to_str().and_then(|n| n.strip_prefix(file)?.strip_prefix('.')?.strip_suffix(".tmp")?.parse().ok())
+            name.to_str().and_then(|n| crate::store::atomic::temp_pid(n.strip_prefix(file)?.strip_prefix('.')?))
         else {
             continue;
         };
@@ -268,15 +268,14 @@ fn prune_asides(dir: &Path, file: &str) {
     }
 }
 
-/// The named jar a file in the jars folder belongs to: `<id>.json`, `<id>.json.unreadable-…` or `<id>.json.<pid>.tmp`,
-/// with `<id>` spelled exactly as a node id prints. `None` for any other name, `default.json` and its copies included.
+/// The named jar a file in the jars folder belongs to: `<id>.json`, `<id>.json.unreadable-…` or
+/// `<id>.json.<pid>[-<n>].tmp`, with `<id>` spelled exactly as a node id prints. `None` for any other name,
+/// `default.json` and its copies included.
 fn named_jar_of(file: &str) -> Option<NodeId> {
     let (stem, rest) = file.split_once(".json")?;
     let id: NodeId = stem.parse().ok().filter(|id: &NodeId| id.to_string() == stem)?;
-    let pid = rest.strip_prefix('.').and_then(|r| r.strip_suffix(".tmp"));
-    let ours = rest.is_empty()
-        || rest.starts_with(".unreadable-")
-        || pid.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let tmp = rest.strip_prefix('.').and_then(crate::store::atomic::temp_pid);
+    let ours = rest.is_empty() || rest.starts_with(".unreadable-") || tmp.is_some();
     ours.then_some(id)
 }
 
@@ -298,23 +297,6 @@ pub fn prune_orphans(dir: &Path, keep: &BTreeSet<NodeId>) -> usize {
         }
     }
     orphans.len()
-}
-
-/// Writes `bytes` to a new file only the current user can read where the OS has file modes (0600 on Unix). On
-/// Windows the file gets the profile folder's ACL; the content is DPAPI-protected there.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        // `mode` applies only when the file is created, so a leftover with looser permissions goes first.
-        let _ = std::fs::remove_file(path);
-        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?.write_all(bytes)
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes)
-    }
 }
 
 /// `<file>.unreadable-<unix seconds>`, or, when that second already has one, `-<n>` past its highest `n`, so a new
@@ -404,20 +386,19 @@ impl Jar {
         Jar { locked: true, ..Jar::default() }
     }
 
-    /// Writes beside the target and renames, so a crash mid-write leaves the old jar. The temp file carries the process
-    /// id, so two instances saving at once do not write into one file. (They still overwrite each other's jar: two
-    /// instances on one profile are not supported in v1.) The file is `MJR1` then the protected JSON. A locked jar
-    /// writes nothing (`load` already logged why).
+    /// Writes beside the target, fsyncs and renames (`store::atomic`), so a crash or power loss mid-write leaves the
+    /// old jar. The temp file is new on every call and carries the process id, so two saves at once do not write into
+    /// one file, and it is removed when the write or rename fails, so no stray copy of the credentials is left. (They
+    /// still overwrite each other's jar: two instances on one profile are not supported in v1.) The file is `MJR1` then
+    /// the protected JSON. A locked jar writes nothing (`load` already logged why).
     pub fn save(&self, dir: &Path, key: JarKey) -> std::io::Result<()> {
         if self.locked {
             return Ok(());
         }
         std::fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!("{}.{}.tmp", key.file_name(), std::process::id()));
         let mut out = MAGIC.to_vec();
         out.extend(protect(&serde_json::to_vec(self).map_err(std::io::Error::other)?)?);
-        write_private(&tmp, &out)?;
-        std::fs::rename(&tmp, Self::path(dir, key))
+        crate::store::atomic::replace_private(&Self::path(dir, key), &out)
     }
 
     /// Folds tab `tab`'s cookie dump into the jar and updates what the tab is believed to hold. Returns whether the
@@ -761,6 +742,15 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_counter_form_tmp_is_deleted_too() {
+        let dir = temp_dir("jar-dead-tmp-n");
+        let dead = dir.join("default.json.4294967295-3.tmp");
+        std::fs::write(&dead, "crashed save").unwrap();
+        Jar::load(&dir, JarKey::Default);
+        assert!(!dead.exists());
+    }
+
+    #[test]
     fn only_the_five_newest_unreadable_files_are_kept() {
         let dir = temp_dir("jar-aside-cap");
         for i in 0..7 {
@@ -876,9 +866,12 @@ mod tests {
     #[test]
     fn named_jar_of_reads_only_named_jar_file_names() {
         let id = NodeId { actor: ActorId(0xab), counter: 3 };
-        for name in
-            ["00000000000000ab-3.json", "00000000000000ab-3.json.unreadable-9-1", "00000000000000ab-3.json.42.tmp"]
-        {
+        for name in [
+            "00000000000000ab-3.json",
+            "00000000000000ab-3.json.unreadable-9-1",
+            "00000000000000ab-3.json.42.tmp",
+            "00000000000000ab-3.json.42-7.tmp",
+        ] {
             assert_eq!(named_jar_of(name), Some(id), "{name}");
         }
         for name in [

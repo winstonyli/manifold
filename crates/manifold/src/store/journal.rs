@@ -769,7 +769,9 @@ impl Journal {
     pub fn open(path: &Path, actor: ActorId) -> Result<Journal, JournalError> {
         let mut journal = Journal::blank(path, actor);
         let _lock = journal.lock()?;
-        if !path.exists() {
+        // `exists()` is false on any error; a transient access error must not
+        // replace the user's session with an empty one.
+        if !path.try_exists()? {
             write_compacted(path, &Doc::new(DocId::random()), 0, false)?;
         }
         let bytes = std::fs::read(path)?;
@@ -1254,13 +1256,6 @@ pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Creates `path` holding `bytes`, and fsyncs it.
-pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
 fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()?))
@@ -1273,12 +1268,11 @@ fn file_seen(path: &Path) -> Option<(u64, SystemTime)> {
 fn write_compacted(path: &Path, doc: &Doc, prev_generation: u64, rotate: bool) -> Result<Vec<u8>, JournalError> {
     let mut bytes = header_bytes(getrandom::u64().expect("the OS random source failed"), prev_generation);
     bytes.extend(snapshot_bytes(doc));
-    let tmp = with_suffix(path, ".tmp");
-    write_synced(&tmp, &bytes)?;
-    if rotate {
-        keep_prev(path);
-    }
-    std::fs::rename(&tmp, path)?;
+    super::atomic::replace_with(path, &bytes, false, || {
+        if rotate {
+            keep_prev(path);
+        }
+    })?;
     Ok(bytes)
 }
 
@@ -1312,12 +1306,10 @@ pub fn damaged_path(path: &Path, bytes: &[u8]) -> PathBuf {
 /// Writes `bytes` to `path` unless it exists, through a temp file, so a
 /// file there is always whole.
 fn save_damaged(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if path.exists() {
+    if path.try_exists()? {
         return Ok(());
     }
-    let tmp = with_suffix(path, ".tmp");
-    write_synced(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    super::atomic::replace(path, bytes)
 }
 
 // ---- Inspection (`--dump`, `--check`) --------------------------------------
@@ -1526,10 +1518,8 @@ mod tests {
     fn a_failed_compaction_does_not_fail_the_commit() {
         let dir = temp_dir("compact-fail");
         let path = dir.join("session.mnf");
-        let mut tmp = path.clone().into_os_string();
-        tmp.push(".tmp");
         let mut journal = Journal::open(&path, ActorId(1)).unwrap();
-        std::fs::create_dir(&tmp).unwrap(); // the rewrite's temp file can't be created
+        crate::store::atomic::block_for_test(&path, true); // the rewrite can't replace the file
         let mut txn = journal.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://0.example/");
         txn.commit(vec![create]).unwrap();
@@ -1542,7 +1532,7 @@ mod tests {
         }
         assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
         assert!(journal.close().is_err());
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&path, false);
         journal.close().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
         let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
@@ -1953,7 +1943,12 @@ mod tests {
         assert_eq!(reopened.read_local().unwrap().as_deref(), Some(&b"view two"[..]));
         let bytes = std::fs::read(&path).unwrap();
         assert!(inspect(&bytes).unwrap().frames.iter().all(|f| f.1 == frame::SNAPSHOT || f.1 == frame::OPS));
-        assert!(!with_suffix(&local::path_for(&path), ".tmp").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
@@ -2281,10 +2276,9 @@ mod tests {
         damaged[offset + size - 1] ^= 1;
         std::fs::write(&path, &damaged).unwrap();
 
-        // Block `save_damaged`'s temp file with a directory of the same name.
+        // Make `save_damaged` fail.
         let saved = damaged_path(&path, &damaged);
-        let tmp = with_suffix(&saved, ".tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, true);
 
         let mut journal = Journal::open(&path, ActorId(3)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), damaged); // the repair's rewrite never ran
@@ -2298,7 +2292,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), damaged);
 
         // Once the save can succeed, the next operation retries it and proceeds.
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, false);
         let mut txn = journal.begin().unwrap();
         let (_, create) = create_tab(&mut txn, "https://ok.example/");
         txn.commit(vec![create]).unwrap();
@@ -2319,14 +2313,13 @@ mod tests {
         // Block this journal's own save, so it opens with the damage
         // unsaved and never rewritten.
         let saved = damaged_path(&path, &damaged);
-        let tmp = with_suffix(&saved, ".tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, true);
         let mut journal = Journal::open(&path, ActorId(3)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), damaged);
         journal.take_recovery();
 
         // Another replica repairs the file cleanly.
-        std::fs::remove_dir(&tmp).unwrap();
+        crate::store::atomic::block_for_test(&saved, false);
         drop(Journal::open(&path, ActorId(4)).unwrap());
         assert_eq!(std::fs::read(&saved).unwrap(), damaged);
         assert_ne!(std::fs::read(&path).unwrap(), damaged);

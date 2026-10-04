@@ -72,7 +72,7 @@ pub fn save<T: Serialize + ?Sized>(value: &T, path: &Path, what: &str) {
         Ok(json) => json,
         Err(err) => return eprintln!("{what}: failed to serialize: {err}"),
     };
-    if let Err(err) = crate::store::local::replace(path, json.as_bytes()) {
+    if let Err(err) = crate::store::atomic::replace(path, json.as_bytes()) {
         eprintln!("{what}: failed to write {}: {err}", path.display());
     }
 }
