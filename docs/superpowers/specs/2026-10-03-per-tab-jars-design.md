@@ -36,7 +36,8 @@ and a jar has no position or card. Jar definitions live in `App.jar_defs: BTreeM
 document at the three places the app and the store meet: `shared_nodes` adds a `Kind::Jar` entry per definition (otherwise
 `diff` would delete the document's jar nodes as "missing from live"), `materialize` routes a `Kind::Jar` change into
 `jar_defs`, and `remove_remotely_deleted` removes a definition another replica deleted. `store::json` export and import
-already handle any `Kind` by name, so a whole-document export includes jar nodes.
+already handle any `Kind` by name, so a whole-document export includes jar nodes. An imported jar is always a new jar under its
+fresh id, never matched to an existing jar by name (see "Names").
 
 The reference is a field, not an edge. In this codebase an edge is already an Id field (`parent`, `group`), so the field is
 the edge's storage; it enforces one jar per tab, reuses the sync machinery and is written atomically by the cascade. Drawing
@@ -142,6 +143,19 @@ action) and the settings page's sections.
   cookies" (confirm) and "Delete" (shows "N tabs use this; they'll use Default." and deletes on confirm; the file goes with
   it). The default jar is listed first and cannot be renamed or deleted; "Clear cookies" is available on it.
 
+**Names.** A jar is its node id; its name is only what it is called, and need not be unique. A rename to a name in use is
+allowed, and import never matches jars by name. Every view shows a jar's *label*, derived each time and never stored or
+synced (`jar_defs::named_jar_label`):
+- A name no other jar has, compared trimmed and in any case, is shown as stored.
+- When two or more jars share a name, each one is shown as `"<name> · #<frag>"`. `<frag>` is the start of the SHA-256 hex of
+  the node id's text, 4 characters, or as many more as it takes to differ from the other same-named jars'. It derives from the
+  id alone, so it stays the same for the jar's life.
+
+The label is used in the tab, unloaded and group menus, on the chip and in its hover text, on Tab view's dot, in the confirm
+dialogs and in the will-switch text. Settings' name field edits the stored name. A same-named jar's marker (`· #1a2b`) sits
+beside the field as separate read-only text, so it can never be saved into a name. Headless `SETJAR` takes a label first,
+then a stored name. When several jars share that stored name, the lowest node id wins.
+
 Deleting a jar is an ordinary node delete: tabs that named it resolve to `Default`.
 
 ## Testing
@@ -167,4 +181,6 @@ localStorage and the other storage the v1 spec leaves out.
 - Whether "apply to group" needs a confirm once groups are large (there is no undo, so a mistaken default is corrected by setting it again).
 - Ephemeral lifetime: per session is the rule here; "until the last tab using it closes" is the alternative.
 - Whether a remote jar delete should offer to keep the local cookie file (today the file goes with the delete).
+- Jar names are not unique (see "Names"). A user may name a jar exactly like another jar's label ("Work · #1a2b"); both then
+  show the same text. `SETJAR` picks the labelled jar. Left as is: it takes a deliberate copy of a marker.
 - After "Clear cookies", every pull from that jar's running tabs is dropped until they switch, including a login made after the clear (plan deviation 14). Accepted as "cleared means cleared"; revisit if users sign in again in a tab still waiting to switch and expect it kept.

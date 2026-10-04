@@ -23,11 +23,11 @@ Each item is a decision the spec leaves open, or a small departure, with the rea
 1. **`jar_defs` is keyed by `NodeId`, not `String`.** The spec writes `BTreeMap<String, JarDef>`. `JarKey::Named` and the `jar`/`default_jar` fields already hold `NodeId`, so a `NodeId` key avoids parsing on every lookup. The graph keys by `String` only because it holds hand-built non-store ids in tests.
 2. **The group menu's list omits "Default".** The default jar has no node, so `default_jar = None` already means "inherit from the parent group, else Default". The group menu therefore lists only named jars, plus "Clear Default Jar". A group cannot name the default jar as an explicit default that overrides an outer group's named default. Pick a named jar instead, or clear the outer default.
 3. **Tabs a tab opens copy its jar.** Duplicate, split, page-opened tabs (`OpenTabRequested`, the page context menu's "Open in new tab") copy the source tab's `JarChoice`, both `jar` and `jar_set`. The spec only covers "a new tab in a group". Without this, a link opened from an account-B tab would land signed in as account A.
-4. **Open Session and Import Session dedupe jars by name.**
-   - Imported nodes get fresh ids, so an exported jar "Work" would otherwise come back as a second, empty "Work".
-   - `materialize_imported` maps an imported jar to an existing `jar_defs` entry with the same name, and rewrites the imported tabs' `jar` and groups' `default_jar` to it.
-   - An unmatched imported jar becomes a new jar.
-   - `teardown_running_session` keeps `jar_defs`: jars outlive a session swap, as cookie files do.
+4. ~~**Open Session and Import Session dedupe jars by name.**~~ **Retired 2026-10-03** (`docs/superpowers/plans/2026-10-03-jar-name-labels.md`).
+   - It matched by name, but jar names are not unique. Two jars named "Work" on one device, or a file's "Work" that was never this device's, merged two accounts' sign-ins into one jar.
+   - A jar is now its node id, never its name. `materialize_imported` makes every imported jar a new jar under its fresh id. `store::json::import` already points the file's tabs and group defaults at that id.
+   - An imported "Work" beside an existing one is told apart by its label ("Work · #1a2b"; spec "Names"). The cost: the imported jar starts empty, as cookie files never travel in an export.
+   - Still true: `teardown_running_session` keeps `jar_defs`, because jars outlive a session swap, as cookie files do.
 5. **A pull with no `jar_tabs` entry is dropped.** v1 started an empty entry and merged it into the one jar. With several jars there is no safe jar to merge into. An entry is missing only for a host that was closed or replaced since the pull was sent.
 6. **`restore_session` materializes jar nodes before anything else, and its emptiness check ignores them.** Otherwise a document holding only jars would start fresh, and the first save would delete the jars as "missing from live".
 7. **Menu labels are Title Case,** matching the existing menus: "New Jar...", "Follow Group's Jar", "Switch Jar Now", "Clear Default Jar".
@@ -736,7 +736,7 @@ Delete the later `let toasts = ...` line that this replaces. `collapse_toasts_si
 
 `teardown_running_session` must **not** clear `jar_defs`. Add a one-line comment saying so beside the `last_shared.clear()` line. `last_shared` entries for jars are rebuilt by the next `materialize`, and a missing entry only means "all fields changed".
 
-`materialize_imported` (deviation 4). Before the main loop, build the alias map and drop matched jars:
+`materialize_imported` (deviation 4; retired 2026-10-03, so the alias map below is gone: keep only the sort). Before the main loop, build the alias map and drop matched jars:
 
 ```rust
         // A jar named like an existing one is that jar (deviation 4): its tabs and groups point at the existing id.
