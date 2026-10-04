@@ -612,13 +612,13 @@ impl crate::App {
         if let Some(state) = self.engine_state_cache.borrow().get(&kind) {
             return state.clone();
         }
-        let state = self.engine_state_at(kind, crate::process_manager::cef_on_disk());
+        let state = self.engine_state_at(kind, crate::process_manager::engine_on_disk(kind));
         self.engine_state_cache.borrow_mut().insert(kind, state.clone());
         state
     }
 
-    /// `engine_state` with the runtime's on-disk state given (tests use a temporary directory).
-    pub(crate) fn engine_state_at(&self, kind: EngineKind, cef_on_disk: RuntimeOnDisk) -> EngineState {
+    /// `engine_state` with the engine's on-disk state (`engine_on_disk`) given (tests use a temporary directory).
+    pub(crate) fn engine_state_at(&self, kind: EngineKind, on_disk: RuntimeOnDisk) -> EngineState {
         let installing = self
             .engine_installs
             .get(&kind)
@@ -626,7 +626,7 @@ impl crate::App {
             .map(|job| (job.progress.load(Ordering::Relaxed), job.total));
         let failed = self.engine_failures.get(&kind).map(String::as_str);
         let custom = (kind == EngineKind::Cef).then(|| self.custom_cef_dir()).flatten();
-        crate::process_manager::engine_availability(kind, cef_on_disk, installing, failed, custom.as_deref())
+        crate::process_manager::engine_availability(kind, on_disk, installing, failed, custom.as_deref())
     }
 
     /// The configured bring-your-own CEF directory, only when it validates against the pin.
@@ -964,7 +964,9 @@ mod tests {
         let mut app = App::default();
         app.set_cef_directory(good.to_str().unwrap());
         assert_eq!(app.engine_state_at(EngineKind::Cef, RuntimeOnDisk::Missing), EngineState::Custom(good.clone()));
-        assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Installed);
+        // The CEF folder is CEF's alone: Servo still follows its own host exe.
+        assert_eq!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Ready), EngineState::Installed);
+        assert!(matches!(app.engine_state_at(EngineKind::Servo, RuntimeOnDisk::Missing), EngineState::Unavailable(_)));
 
         let bad = custom_dir("vc8", Some(&crate::cef_platform::PLATFORM.archive_name("1.0")), true);
         app.set_cef_directory(bad.to_str().unwrap());

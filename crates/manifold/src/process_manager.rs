@@ -631,12 +631,49 @@ pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
     }
 }
 
-/// How `kind` is available, in one place. Engines that ship with the app are
-/// always Installed; CEF follows the disk (`cef_on_disk`). A custom path and a running install
-/// override it; a failed install overrides Missing and Stale but not a current runtime.
+/// Why Servo is Unavailable when its host exe is not where `engine_binary_path` looks.
+const SERVO_HOST_MISSING: &str = "the Servo host isn't installed next to the app";
+
+/// Whether Servo's host exe is where `engine_binary_path` finds it: Ready, or Missing.
+fn servo_on_disk() -> RuntimeOnDisk {
+    if engine_binary_path(EngineKind::Servo).exists() {
+        RuntimeOnDisk::Ready
+    } else {
+        RuntimeOnDisk::Missing
+    }
+}
+
+/// How long `engine_on_disk` reuses its Servo answer: the engine lists read it every frame they draw.
+const SERVO_CHECK_TTL: Duration = Duration::from_secs(5);
+
+/// The `on_disk` that `engine_availability` takes for `kind`, for the engine lists: CEF's runtime
+/// (`cef_on_disk`), Servo's host exe (`servo_on_disk`, reread at most every `SERVO_CHECK_TTL`), Ready for the rest.
+pub(crate) fn engine_on_disk(kind: EngineKind) -> RuntimeOnDisk {
+    static SERVO: std::sync::Mutex<Option<(std::time::Instant, RuntimeOnDisk)>> = std::sync::Mutex::new(None);
+    match kind {
+        EngineKind::Cef => cef_on_disk(),
+        EngineKind::Servo => {
+            let mut check = SERVO.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match *check {
+                Some((at, on_disk)) if at.elapsed() <= SERVO_CHECK_TTL => on_disk,
+                _ => {
+                    let on_disk = servo_on_disk();
+                    *check = Some((std::time::Instant::now(), on_disk));
+                    on_disk
+                }
+            }
+        }
+        EngineKind::Webview2 | EngineKind::Webkit => RuntimeOnDisk::Ready,
+    }
+}
+
+/// How `kind` is available, in one place. `on_disk` is what the engine needs on disk (`engine_on_disk`):
+/// Servo is Installed when its host exe is there, else Unavailable (`SERVO_HOST_MISSING`); WebView2 and
+/// WebKit ignore it and are Installed; CEF follows its runtime. A custom path and a running install
+/// override CEF's; a failed install overrides Missing and Stale but not a current runtime.
 pub(crate) fn engine_availability(
     kind: EngineKind,
-    cef_on_disk: RuntimeOnDisk,
+    on_disk: RuntimeOnDisk,
     installing: Option<(u64, u64)>,
     failed: Option<&str>,
     custom: Option<&Path>,
@@ -645,7 +682,7 @@ pub(crate) fn engine_availability(
         std::env::consts::OS,
         crate::cef_pin::pin_for_platform(),
         kind,
-        cef_on_disk,
+        on_disk,
         installing,
         failed,
         custom,
@@ -679,7 +716,7 @@ fn availability_with(
     os: &str,
     pin: Option<&Pin>,
     kind: EngineKind,
-    cef_on_disk: RuntimeOnDisk,
+    on_disk: RuntimeOnDisk,
     installing: Option<(u64, u64)>,
     failed: Option<&str>,
     custom: Option<&Path>,
@@ -687,8 +724,12 @@ fn availability_with(
     if let Some(reason) = platform_unavailable_reason(os, kind) {
         return EngineState::Unavailable(reason.to_string());
     }
-    if kind != EngineKind::Cef {
-        return EngineState::Installed;
+    match kind {
+        EngineKind::Cef => {}
+        EngineKind::Servo if on_disk != RuntimeOnDisk::Ready => {
+            return EngineState::Unavailable(SERVO_HOST_MISSING.to_string());
+        }
+        EngineKind::Servo | EngineKind::Webview2 | EngineKind::Webkit => return EngineState::Installed,
     }
     if let Some(path) = custom {
         return EngineState::Custom(path.to_path_buf());
@@ -698,14 +739,14 @@ fn availability_with(
     }
     // A runtime that is there and current outranks a recorded failure (the failure was an update or a
     // retry that did not matter in the end); a failure outranks Missing and Stale.
-    if cef_on_disk == RuntimeOnDisk::Ready {
+    if on_disk == RuntimeOnDisk::Ready {
         return EngineState::Installed;
     }
     let Some(pin) = pin else { return EngineState::Unavailable(NO_PIN_REASON.to_string()) };
     if let Some(message) = failed {
         return EngineState::Failed(message.to_string());
     }
-    match cef_on_disk {
+    match on_disk {
         RuntimeOnDisk::Ready => EngineState::Installed,
         RuntimeOnDisk::Missing => EngineState::NotInstalled { size: pin.size },
         RuntimeOnDisk::Stale => EngineState::UpdateNeeded { size: pin.size },
@@ -717,6 +758,8 @@ fn availability_with(
 pub enum SpawnError {
     /// The engine's runtime isn't on disk (or is out of date); nothing was launched.
     EngineMissing(EngineKind),
+    /// The engine's state is Unavailable (the reason is the state's), so nothing was launched.
+    EngineUnavailable(EngineKind, String),
     Io(std::io::Error),
 }
 
@@ -725,6 +768,9 @@ impl std::fmt::Display for SpawnError {
         match self {
             SpawnError::EngineMissing(kind) => {
                 write!(f, "{} is not installed", crate::engine_info::engine_label(*kind))
+            }
+            SpawnError::EngineUnavailable(kind, reason) => {
+                f.write_str(&crate::engine_info::PickOutcome::unavailable_toast(*kind, reason))
             }
             SpawnError::Io(e) => e.fmt(f),
         }
@@ -815,10 +861,12 @@ fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Opti
     }
 }
 
-/// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom.
-fn check_spawnable(kind: EngineKind, cef_on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
-    match engine_availability(kind, cef_on_disk, None, None, custom) {
+/// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom: by its reason when
+/// Unavailable (Servo without its host exe), else as not installed.
+fn check_spawnable(kind: EngineKind, on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
+    match engine_availability(kind, on_disk, None, None, custom) {
         EngineState::Installed | EngineState::Custom(_) => Ok(()),
+        EngineState::Unavailable(reason) => Err(SpawnError::EngineUnavailable(kind, reason)),
         _ => Err(SpawnError::EngineMissing(kind)),
     }
 }
@@ -1097,7 +1145,12 @@ pub fn spawn_tab(
         return Ok(spawn_webkit_tab(tab_id, initial_url)?);
     }
     let custom_cef = custom_cef.filter(|_| kind == EngineKind::Cef);
-    check_spawnable(kind, if kind == EngineKind::Cef { cef_on_disk() } else { RuntimeOnDisk::Ready }, custom_cef)?;
+    // Read fresh, not through `engine_on_disk`'s cache: a Servo host built a moment ago should launch.
+    let on_disk = match kind {
+        EngineKind::Servo => servo_on_disk(),
+        _ => engine_on_disk(kind),
+    };
+    check_spawnable(kind, on_disk, custom_cef)?;
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
@@ -1421,14 +1474,9 @@ mod tests {
     #[test]
     fn bundled_engines_are_always_installed_where_the_os_can_run_them() {
         let a = |os, kind, disk, installing, failed| availability_with(os, None, kind, disk, installing, failed, None);
-        for (os, kind) in [
-            ("windows", EngineKind::Servo),
-            ("linux", EngineKind::Servo),
-            ("macos", EngineKind::Servo),
-            ("windows", EngineKind::Webview2),
-            ("windows", EngineKind::Webkit),
-            ("linux", EngineKind::Webkit),
-        ] {
+        for (os, kind) in
+            [("windows", EngineKind::Webview2), ("windows", EngineKind::Webkit), ("linux", EngineKind::Webkit)]
+        {
             assert_eq!(a(os, kind, RuntimeOnDisk::Missing, None, None), EngineState::Installed, "{os} {kind:?}");
             assert_eq!(
                 a(os, kind, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")),
@@ -1436,6 +1484,49 @@ mod tests {
                 "{os} {kind:?}"
             );
         }
+    }
+
+    /// Servo follows its host exe on every OS: Installed when it is there, else Unavailable with the reason the
+    /// lists show. An install or failure (Servo has neither) changes nothing.
+    #[test]
+    fn servo_is_installed_only_when_its_host_is_on_disk() {
+        let a = |os, disk, installing, failed| {
+            availability_with(os, None, EngineKind::Servo, disk, installing, failed, None)
+        };
+        let missing = EngineState::Unavailable(SERVO_HOST_MISSING.to_string());
+        for os in ["windows", "linux", "macos"] {
+            assert_eq!(a(os, RuntimeOnDisk::Ready, None, None), EngineState::Installed, "{os}");
+            assert_eq!(a(os, RuntimeOnDisk::Ready, Some((1, 2)), Some("x")), EngineState::Installed, "{os}");
+            assert_eq!(a(os, RuntimeOnDisk::Missing, None, None), missing, "{os}");
+            assert_eq!(a(os, RuntimeOnDisk::Stale, Some((1, 2)), Some("x")), missing, "{os}");
+        }
+        assert_eq!(
+            crate::engine_info::pick_outcome(EngineKind::Servo, &missing),
+            crate::engine_info::PickOutcome::Unavailable(EngineKind::Servo, SERVO_HOST_MISSING.to_string())
+        );
+        assert!(crate::engine_info::engine_state_label(&missing).0.contains(SERVO_HOST_MISSING));
+    }
+
+    /// A missing Servo host is refused by name before any launch, not by the os error a spawn would hit.
+    #[test]
+    fn a_missing_servo_host_is_refused_with_the_reason() {
+        let err = check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, None).unwrap_err();
+        assert!(
+            matches!(&err, SpawnError::EngineUnavailable(EngineKind::Servo, reason) if reason == SERVO_HOST_MISSING),
+            "{err:?}"
+        );
+        assert_eq!(err.to_string(), format!("Servo is unavailable: {SERVO_HOST_MISSING}"));
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Ready, None).is_ok());
+        // A custom CEF folder is CEF's alone (spawn_tab drops it for other kinds; it changes nothing here either).
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, Some(Path::new("D:/cef"))).is_err());
+    }
+
+    /// The lists' Servo answer matches the disk the spawn reads (the test exe has no Servo host beside it
+    /// unless one was copied there, and the data dir is `None` under test).
+    #[test]
+    fn the_lists_read_the_same_servo_host_the_spawn_looks_for() {
+        assert_eq!(engine_on_disk(EngineKind::Servo), servo_on_disk());
+        assert_eq!(engine_on_disk(EngineKind::Webview2), RuntimeOnDisk::Ready);
     }
 
     /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show.
@@ -1451,7 +1542,7 @@ mod tests {
         assert_eq!(unavailable("windows", EngineKind::Webview2), EngineState::Installed);
         assert_eq!(unavailable("windows", EngineKind::Webkit), EngineState::Installed);
         assert_eq!(unavailable("linux", EngineKind::Webkit), EngineState::Installed);
-        // Servo runs everywhere; CEF follows its pin, not the OS table.
+        // Servo runs everywhere (with its host on disk); CEF follows its pin, not the OS table.
         assert_eq!(unavailable("macos", EngineKind::Servo), EngineState::Installed);
         assert_eq!(unavailable("macos", EngineKind::Cef), EngineState::Installed);
         // The spawn refusal reads the same table.
@@ -1518,7 +1609,7 @@ mod tests {
         let p = Path::new("C:/my/cef");
         assert_eq!(a(RuntimeOnDisk::Missing, None, None, Some(p)), EngineState::Custom(p.to_path_buf()));
         assert_eq!(
-            availability_with("windows", None, EngineKind::Servo, RuntimeOnDisk::Missing, None, None, None),
+            availability_with("windows", None, EngineKind::Servo, RuntimeOnDisk::Ready, None, None, None),
             EngineState::Installed
         );
         // The pick says so rather than asking to download, and the label gives the reason.
@@ -1543,7 +1634,7 @@ mod tests {
             Err(SpawnError::EngineMissing(EngineKind::Cef))
         ));
         assert!(check_spawnable(EngineKind::Cef, RuntimeOnDisk::Ready, None).is_ok());
-        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Missing, None).is_ok());
+        assert!(check_spawnable(EngineKind::Servo, RuntimeOnDisk::Ready, None).is_ok());
     }
 
     #[test]

@@ -121,7 +121,10 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 - **Launching verified (2026-10-02):** a real CEF host ran and loaded a page from a runtime unpacked by `unpack` into the data directory, and from a custom directory (with the host copied in). The first attempt failed: no code put a host beside the downloaded runtime (spawn looked for `engine-hosts/cef-runtime/manifold-engine-cef.exe`), fixed in `process_manager::spawn_tab` with `host_home`/`shipped_cef_host`.
 - Whether to trim locales or other files after unpack.
 - Where the Settings "Engines" section lives relative to the existing sections.
-- Servo and WebKit availability: both "Installed" where the OS can run them, else Unavailable; the same states apply if either ever becomes downloadable.
+- Servo and WebKit availability: WebKit is "Installed" where the OS can run it, else Unavailable. Servo is "Installed"
+  when its host exe is present (`engine_binary_path`: beside the app, else `engine-hosts/`), Unavailable ("the Servo
+  host isn't installed next to the app") otherwise, on every OS (2026-10-04). The same states apply if either ever
+  becomes downloadable.
 
 ## System-library preflight (2026-10-02)
 
