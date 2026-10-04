@@ -18,22 +18,29 @@
 ## Tasks
 
 ### Task 1: `JarLabel`, with every caller on it
-- [ ] RED: tests in `jar_defs` for the split (unique: no marker; clash: `Fragment`; built-in and a missing jar: `BuiltIn`), the plain strings (`"Work"`, `"Work · #frag"`, `"Default (built-in)"`), and that existing plain callers (confirm text, will-switch target, `jar_named`) are unchanged for named jars.
-- [ ] GREEN: the type, `Display`; `named_jar_label`/`jar_label` return it; `JarChip.name` and `JarRow.name` hold it; plain sites call `to_string()`. The delete confirm's "they'll use Default." names the built-in through `jar_label`.
+- [x] RED: tests in `jar_defs` for the split (unique: no marker; clash: `Fragment`; built-in and a missing jar: `BuiltIn`), the plain strings (`"Work"`, `"Work · #frag"`, `"Default (built-in)"`), and that existing plain callers (confirm text, will-switch target, `jar_named`) are unchanged for named jars.
+- [x] GREEN: the type, `Display`; `named_jar_label`/`jar_label` return it; `JarChip.name` and `JarRow.name` hold it; plain sites call `to_string()`. The delete confirm's "they'll use Default." names the built-in through `jar_label`.
 
 ### Task 2: the shared style, in menus and Tab view
-- [ ] RED: `append_to` tests: name section placeholder-coloured and upright (italic for built-in), marker section monospace, smaller, weak-coloured, text `#frag` / `built-in`; no marker section for a unique name.
-- [ ] GREEN: `append_to`, `name_format`, `marker_format`, `JarChip::hover_job`; menu rows and Tab view hover use them.
+- [x] RED: `append_to` tests: name section placeholder-coloured and upright (italic for built-in), marker section monospace, smaller, weak-coloured, text `#frag` / `built-in`; no marker section for a unique name.
+- [x] GREEN: `append_to`, `name_format`, `marker_format`, `JarChip::hover_job`; menu rows and Tab view hover use them.
 
 ### Task 3: Settings
-- [ ] Default row: the built-in label's job; the fragment marker beside a name field uses `marker_format`. The field edits the stored name (existing tests stay green).
+- [x] Default row: the built-in label's job; the fragment marker beside a name field uses `marker_format`. The field edits the stored name (existing tests stay green).
 
 ### Task 4: chip keeps the marker
-- [ ] RED: `fit_jar_chip` tests: a marker always shown while the name ellipsizes; too narrow for name + marker falls back to dots as today; no marker behaves as before.
-- [ ] GREEN: `fit_jar_chip(max, lead, name, marker)`; `paint_jar_chip` lays out name and marker apart.
+- [x] RED: `fit_jar_chip` tests: a marker always shown while the name ellipsizes; too narrow for name + marker falls back to dots as today; no marker behaves as before.
+- [x] GREEN: `fit_jar_chip(max, lead, name, marker)`; `paint_jar_chip` lays out name and marker apart.
 
 ### Task 5: docs
-- [ ] Spec "Names" and Open questions (drop the look-alike item; add app-wide name rules), README "Per-tab jars".
+- [x] Spec "Names" and Open questions (drop the look-alike item; add app-wide name rules), README "Per-tab jars".
 
 ### Task 6: live check (no commit)
-- [ ] `scripts/drive.sh` on a seeded throwaway profile: two "Work", a user "Default", a typed "Work · #3f2a"; tab menu, group menu, Settings at 480 px and wider, a narrow card's chip, into `target/shots/jarstyle/`. The app forces a dark theme (`theme::apply_style`), so there is no light theme to shoot.
+- [x] `scripts/drive.sh` on a seeded throwaway profile: two "Work", a user "Default", a typed "Work · #3f2a"; tab menu, group menu, Settings at 480 px and wider, a narrow card's chip, into `target/shots/jarstyle/`. The app forces a dark theme (`theme::apply_style`), so there is no light theme to shoot.
+
+## Outcome (2026-10-03)
+
+- Done as planned, except: there is no `JarLabel::layout_job`; every rich site builds its own `LayoutJob` through `append_to`.
+- The live check found the menu rows drawn in the body serif, with the tick's glyph missing: menus and Settings set an override font (`theme::control_font`) that `TextStyle::Body`/`Button` ignore. The styled sites now resolve `FontSelection::Default`, as egui widgets do, and the menu test compares the row font with a plain row's.
+- Shots in `target/shots/jarstyle/` (not committed). Only the dark theme exists.
+- At about 48% zoom a chip with a marker keeps the marker and only "…" of the name (`JAR_CHIP_MIN_NAME` is 14 points); below that it falls back to the dots, sooner than a chip without a marker would.
