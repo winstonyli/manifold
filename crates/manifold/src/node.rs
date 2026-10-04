@@ -574,9 +574,13 @@ impl GraphNode {
             NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Download(d) => ("Download", d.path.rsplit(['/', '\\']).next().map(str::to_string)),
-            NodePayload::Group(g) => ("Group", first_nonempty(&[&g.name])),
+            NodePayload::Group(g) => {
+                ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
+            }
             NodePayload::Note(n) => {
-                ("Note", n.text.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
+                // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+                let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
+                ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
             NodePayload::Image(_) => ("Image", self.source_url().map(str::to_string)),
             NodePayload::Pdf(_) => ("PDF", self.source_url().map(str::to_string)),
@@ -735,6 +739,14 @@ second"
         assert_eq!(name(&app, &n), "Note: first line");
         app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Reading".into();
         assert_eq!(name(&app, &g), "Group: Reading");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
+        assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = " ".into();
+        assert_eq!(name(&app, &g), "Group: Untitled");
+        let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
+        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
+        assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
+        assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

@@ -1860,7 +1860,8 @@ impl App {
         }
         let Some(journal) = self.journal.as_ref() else { return };
         if let Err(err) = journal.save_copy(&path, Some(&self.local_state().to_bytes())) {
-            self.queue_toast(format!("Couldn't save as {name}: {err}"));
+            let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
+            self.queue_toast(format!("Couldn't save as {shown}: {err}"));
         }
     }
 
@@ -1872,6 +1873,7 @@ impl App {
     /// read` still reads it, just says so in its `Display`), is toasted
     /// and leaves the running session untouched.
     fn load_named_session(&mut self, name: &str) {
+        let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
         let Some(path) = session::named_session_path(name) else {
             self.queue_toast("No session file".into());
             return;
@@ -1879,14 +1881,14 @@ impl App {
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                self.queue_toast(format!("Couldn't open {shown}: {err}"));
                 return;
             }
         };
         let doc = match store::journal::Journal::read(&bytes) {
             Ok(doc) => doc,
             Err(err) => {
-                self.queue_toast(format!("Couldn't open {name}: {err}"));
+                self.queue_toast(format!("Couldn't open {shown}: {err}"));
                 return;
             }
         };

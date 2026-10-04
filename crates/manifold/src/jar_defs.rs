@@ -93,9 +93,10 @@ fn id_digest(id: NodeId) -> String {
     sha2::Sha256::digest(id.to_string().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// What makes two jar names the same name (jar name labels): trimmed, any case.
+/// What makes two jar names the same name (jar name labels): their clean forms (name rules: trimmed, hidden
+/// characters dropped, spaces collapsed), any case.
 fn name_key(name: &str) -> String {
-    name.trim().to_lowercase()
+    crate::names::clean_name(name).to_lowercase()
 }
 
 /// The marker fragment that tells jar `id` apart from the other jars with its name; `None` when no other jar has it
@@ -197,13 +198,15 @@ impl From<&str> for JarLabel {
     }
 }
 
-/// The plain string: `"Work"`, `"Work · #3f2a"`, or `"Default (built-in)"`.
+/// The plain string: `"Work"`, `"Work · #3f2a"`, or `"Default (built-in)"`, with the name by the display rule
+/// (`names::to_plain`: a hidden character reads `<U+200B>`).
 impl std::fmt::Display for JarLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = crate::names::to_plain(&self.display());
         match &self.marker {
-            None => f.write_str(&self.name),
-            Some(JarMarker::Fragment(frag)) => write!(f, "{} · #{frag}", self.name),
-            Some(JarMarker::BuiltIn) => write!(f, "{} (built-in)", self.name),
+            None => f.write_str(&name),
+            Some(JarMarker::Fragment(frag)) => write!(f, "{name} · #{frag}"),
+            Some(JarMarker::BuiltIn) => write!(f, "{name} (built-in)"),
         }
     }
 }
@@ -1096,13 +1099,30 @@ mod tests {
         defs.insert(id(3), def(" work "));
         defs.insert(id(4), def("WORK"));
         let labels: Vec<String> = [1, 3, 4].map(|n| plain(n, &defs).unwrap()).to_vec();
-        for (n, (label, name)) in labels.iter().zip(["Work", " work ", "WORK"]).enumerate() {
+        // The plain label shows the name by the display rule (trimmed), so " work " reads "work · #frag".
+        for (n, (label, name)) in labels.iter().zip(["Work", "work", "WORK"]).enumerate() {
             let frag = label.strip_prefix(&format!("{name} · #")).unwrap_or_else(|| panic!("{n}: {label}"));
             assert_eq!(frag.len(), 4, "{label}");
             assert!(frag.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{label}");
         }
         assert_eq!(labels.iter().collect::<BTreeSet<_>>().len(), 3, "every clashing label differs: {labels:?}");
         assert_eq!(plain(2, &defs).as_deref(), Some("Home"), "an unrelated jar stays plain");
+    }
+
+    /// Name rules: clash detection compares clean names, so a hidden character cannot make two same-looking jars
+    /// look distinct; the plain label shows it as `<U+200B>`.
+    #[test]
+    fn a_hidden_character_does_not_make_a_name_distinct() {
+        let mut defs = BTreeMap::new();
+        defs.insert(id(1), def("Work"));
+        defs.insert(id(2), def("Wo\u{200B}rk"));
+        defs.insert(id(3), def("Work\u{00A0}"));
+        for n in [1, 2, 3] {
+            assert!(jar_fragment(id(n), &defs).is_some(), "{n} clashes");
+        }
+        let label = named_jar_label(id(2), &defs).unwrap().to_string();
+        assert!(label.starts_with("Wo<U+200B>rk · #"), "{label}");
+        assert_eq!(JarLabel::built_in().to_string(), "Default (built-in)");
     }
 
     /// Styled jar label markers: a label is a name and an optional marker, and its plain string is the text every view
