@@ -335,7 +335,9 @@ pub enum DebugCommand {
     /// seconds instead of the setting's minutes. See `App::sweep_idle_tabs`.
     IdleSweep(u64),
     /// `SETJAR <name|default>` -- the focused tab picks that jar (a new
-    /// named jar if none has the name), as from its menu. See
+    /// named jar if none has the name), as from its menu. `name` is a
+    /// label ("Work · #1a2b") or a stored name; a stored name several jars
+    /// share picks the lowest node id (`App::jar_named`). See
     /// `App::set_tab_jar`.
     SetJar(String),
     /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
@@ -487,7 +489,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
     ("SLEEPNODE id", "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" context-menu action; it sleeps when the engine answers the page-state query (wait a second)"),
     ("IDLESWEEP secs", "Run one idle auto-sleep sweep: tabs out of sight for `secs` seconds are asked to sleep, and those with a changed form stay awake (the clock updates on every sweep)"),
-    ("SETJAR <name|default>", "The focused tab uses that jar (a new named jar if none has the name)"),
+    ("SETJAR <name|default>", "The focused tab uses that jar, by label or name (a new named jar if none has it)"),
     ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),

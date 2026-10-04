@@ -219,12 +219,17 @@ impl App {
         id
     }
 
-    pub(crate) fn jar_named(&self, name: &str) -> Option<NodeId> {
-        self.jar_defs.iter().find(|(_, d)| d.name == name).map(|(id, _)| *id)
+    /// The jar whose label (`named_jar_label`) is `text`, else one whose stored name is: of several with that name, the
+    /// lowest node id (`jar_defs` iterates in id order), so the pick is the same every time and on every device. Both
+    /// compared exactly, after trimming `text`.
+    pub(crate) fn jar_named(&self, text: &str) -> Option<NodeId> {
+        let text = text.trim();
+        let label = self.jar_defs.keys().find(|&&id| named_jar_label(id, &self.jar_defs).as_deref() == Some(text));
+        label.or_else(|| self.jar_defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 
-    /// `SETJAR`: the focused tab picks the jar named `name` ("default", any case, for the default jar), made first if
-    /// none has that name. Nothing happens, and no jar is made, when the focused node is not a tab. Returns whether
+    /// `SETJAR`: the focused tab picks the jar `name` names (`jar_named`: a label or a stored name; "default", any
+    /// case, for the default jar), made first if none has that name. Nothing happens, and no jar is made, when the focused node is not a tab. Returns whether
     /// it acted.
     pub(crate) fn set_focused_tab_jar_named(&mut self, name: &str) -> bool {
         let Some(tab) = self.focused.clone().filter(|t| self.tab_jar(t).is_some()) else { return false };
@@ -861,6 +866,29 @@ mod tests {
         assert_eq!(app.jar_defs.len(), 1, "an existing name is reused");
         assert!(app.set_focused_tab_jar_named("DEFAULT"));
         assert_eq!(jar_of(&app, &t).jar, None);
+    }
+
+    /// Jar name labels: `SETJAR` takes a label first, then a stored name; a stored name several jars share picks the
+    /// lowest node id, and no jar is made.
+    #[test]
+    fn setjar_takes_a_label_or_an_ambiguous_stored_name() {
+        let mut app = App::default();
+        let (w1, w2, home) = (app.create_jar("Work"), app.create_jar("Work"), app.create_jar("Home"));
+        assert!(w1 < w2, "made in order");
+        let t = tab_in(&mut app, None);
+        app.focused = Some(t.clone());
+        let l2 = app.jar_label(JarKey::Named(w2));
+        assert_eq!(app.jar_named(&l2), Some(w2));
+        assert!(app.set_focused_tab_jar_named(&l2));
+        assert_eq!(jar_of(&app, &t).jar, Some(w2), "by label");
+        assert!(app.set_focused_tab_jar_named("Work"));
+        assert_eq!(jar_of(&app, &t).jar, Some(w1), "an ambiguous stored name: the lowest id");
+        assert!(app.set_focused_tab_jar_named("Home"));
+        assert_eq!(jar_of(&app, &t).jar, Some(home), "a unique name is its own label");
+        assert_eq!(app.jar_defs.len(), 3, "no jar made");
+        // A jar literally named like another's label: the label wins, as it is matched first.
+        app.create_jar(&l2);
+        assert_eq!(app.jar_named(&l2), Some(w2));
     }
 
     #[test]
