@@ -9,7 +9,18 @@ use std::collections::{HashMap, HashSet};
 /// the tab it was opened from), but the layout itself doesn't need to know
 /// that; it only sees a flat edge list.
 const REPULSION_STRENGTH: f32 = 900_000.0;
+/// Guards the spring's direction against dividing by zero.
 const MIN_DISTANCE: f32 = 1.0;
+/// Repulsion stops growing below this distance: closer nodes push with the
+/// force they'd have at this distance (900,000 / 40² ≈ 560). An inverse-square
+/// force clamped only at `MIN_DISTANCE` pushed two nodes on one point
+/// (two files dropped on the same spot, a card dragged onto another) with
+/// 900,000 on the first tick; that alone saturates `MAX_SPEED`, and under
+/// `DAMPING` each card then coasted ~670 px, off the canvas. Capped here,
+/// the pair builds up at most ~180 px/s, so it eases apart to the usual
+/// spacing (~230 px for two free nodes) near where it was, and nodes
+/// further apart than this feel exactly the force they did before.
+const REPULSION_SOFT_DISTANCE: f32 = 40.0;
 const SPRING_STRENGTH: f32 = 8.0;
 const REST_LENGTH: f32 = 320.0;
 const CENTERING_STRENGTH: f32 = 0.15;
@@ -65,13 +76,14 @@ pub fn step(
             let delta = pos[i] - pos[j];
             let length = delta.length();
             // Two nodes on one point have no direction between them: pick a
-            // fixed one from their ids so they still push apart.
+            // fixed one from their ids so they still push apart, gently (see
+            // `REPULSION_SOFT_DISTANCE`).
             let dir = if length > f32::EPSILON {
                 delta / length
             } else {
                 spawn_jitter(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
             };
-            let dist = length.max(MIN_DISTANCE);
+            let dist = length.max(REPULSION_SOFT_DISTANCE);
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
             forces[i] += force;
             forces[j] -= force;
@@ -126,8 +138,8 @@ pub fn step(
 
 /// Deterministic pseudo-random-ish spawn offset for a newly created node,
 /// derived from its own id so repeated spawns don't all land exactly on
-/// top of their parent (which would otherwise produce a near-infinite
-/// repulsion force on the very first tick — see `MIN_DISTANCE`). Radius is
+/// top of their parent (where repulsion is at its cap and still has to
+/// push them a full spacing apart — see `REPULSION_SOFT_DISTANCE`). Radius is
 /// close to `REST_LENGTH` itself (not a small fixed offset) so a new child
 /// spawns near where the spring will settle it anyway, instead of starting
 /// deep inside its parent's/siblings' repulsion field and relying on the
@@ -201,6 +213,32 @@ mod tests {
         assert!((positions["a"] - positions["b"]).length() > 100.0, "{positions:?}");
     }
 
+    /// Two files dropped on one spot (or a card dragged onto another) ease
+    /// apart to about a card's width, near the drop: never flung off-canvas,
+    /// as an unbounded repulsion at distance ~0 did (~670 px each). Four
+    /// 90-tick settles, as `settle_current_level` runs them.
+    #[test]
+    fn stacked_nodes_settle_a_card_apart_near_the_drop() {
+        let drop = egui::vec2(400.0, 300.0);
+        for pinned in [HashSet::new(), HashSet::from(["a".to_string()])] {
+            let (mut positions, mut velocities) = pair_at(drop, drop);
+            let mut farthest: f32 = 0.0;
+            for tick in 1..=360 {
+                step(&mut positions, &mut velocities, &[], &pinned, drop, 1.0 / 60.0);
+                farthest = farthest.max((positions["a"] - drop).length()).max((positions["b"] - drop).length());
+                if tick == 90 {
+                    let gap = (positions["a"] - positions["b"]).length();
+                    assert!(gap > 100.0, "one settle already parts them: {gap} ({pinned:?})");
+                }
+            }
+            let gap = (positions["a"] - positions["b"]).length();
+            // About a card's width (`card::GRAPH_NODE_SIZE` is 160 wide): ~200 for a free
+            // pair, ~160 when one is held in place.
+            assert!(gap > 150.0, "too close: {gap} ({pinned:?})");
+            assert!(farthest < 200.0, "a node strayed {farthest} px from the drop ({pinned:?})");
+        }
+    }
+
     /// Same input, same output, whatever order the maps iterate in.
     #[test]
     fn the_layout_is_deterministic() {
@@ -213,7 +251,10 @@ mod tests {
             let mut velocities = HashMap::new();
             for id in order {
                 let i: f32 = id[1..].parse().unwrap();
-                positions.insert(id.clone(), egui::vec2(i * 7.0 % 50.0, i * 13.0 % 40.0));
+                // n1 sits on n0 (at the origin): a stacked pair takes its push
+                // direction from the ids, not from the maps.
+                let at = if i == 1.0 { egui::Vec2::ZERO } else { egui::vec2(i * 7.0 % 50.0, i * 13.0 % 40.0) };
+                positions.insert(id.clone(), at);
                 velocities.insert(id.clone(), egui::Vec2::ZERO);
             }
             for _ in 0..90 {

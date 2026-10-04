@@ -479,10 +479,15 @@ json_id=$(BEFORE="$before_drop_ids" query after_drop \
     '([i for i, c in cards.items() if c["kind"] == "Json" and i not in eval(env["BEFORE"])] or ["none"])[0]')
 check_query after_drop "a dropped .txt becomes a Note card" "'$note_id' != 'none'"
 check_query after_drop "a dropped .json becomes a Json card" "'$json_id' != 'none'"
-check_query after_drop "the dropped note's screen center is within 60px of (400, 300)" \
-    "abs(cards['$note_id']['screen'][0] - 400) < 60 and abs(cards['$note_id']['screen'][1] - 300) < 60"
-check_query after_drop "the dropped json's screen center is within 60px of (400, 300)" \
-    "abs(cards['$json_id']['screen'][0] - 400) < 60 and abs(cards['$json_id']['screen'][1] - 300) < 60"
+# Both land on one point, so the layout eases them about a card apart
+# (graph_layout's REPULSION_SOFT_DISTANCE): each moves half a card or so
+# (~120px at this zoom), not off-canvas (~700px each before that cap).
+check_query after_drop "the dropped note's screen center is within 200px of (400, 300)" \
+    "abs(cards['$note_id']['screen'][0] - 400) < 200 and abs(cards['$note_id']['screen'][1] - 300) < 200"
+check_query after_drop "the dropped json's screen center is within 200px of (400, 300)" \
+    "abs(cards['$json_id']['screen'][0] - 400) < 200 and abs(cards['$json_id']['screen'][1] - 300) < 200"
+check_query after_drop "the two cards dropped on one point no longer overlap" \
+    "(lambda a, b: a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])(cards['$note_id']['rect'], cards['$json_id']['rect'])"
 
 # Entering the dropped JSON file: its level, driven by the JSON commands,
 # then back out. `{"a": 1}` is one root card with one row.
