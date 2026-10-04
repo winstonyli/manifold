@@ -44,10 +44,17 @@ pub fn record_state(state: impl std::fmt::Display) {
 
 /// `url` as a crash report may keep it: the origin only (no path, query,
 /// fragment or userinfo, any of which can carry a token), or just the
-/// scheme of a URL with no `://`.
+/// scheme of a URL with no `://`. Nothing when what follows the `:` has an
+/// `@`: in `user:pw@host` the "scheme" is a user name (a `mailto:` loses
+/// its scheme too, which a report can spare).
 pub fn redacted_url(url: &str) -> String {
-    crate::favicon_fetch::url_origin(url)
-        .unwrap_or_else(|| url.split_once(':').map_or(String::new(), |(scheme, _)| format!("{scheme}:")))
+    if let Some(origin) = crate::favicon_fetch::url_origin(url) {
+        return origin;
+    }
+    match url.split_once(':') {
+        Some((_, rest)) if !rest.contains('@') => format!("{}:", crate::popup_gate::scheme_for_log(url)),
+        _ => String::new(),
+    }
 }
 
 fn write_report(info: &std::panic::PanicHookInfo<'_>) {
@@ -71,5 +78,8 @@ mod tests {
         assert_eq!(redacted_url("https://u:p@Mail.example/inbox?token=abc#x"), "https://mail.example");
         assert_eq!(redacted_url("data:text/html,secret"), "data:");
         assert_eq!(redacted_url(""), "");
+        assert_eq!(redacted_url("user:pw@host/x"), "", "a scheme-less URL's user name isn't kept");
+        assert_eq!(redacted_url("about:blank"), "about:");
+        assert_eq!(redacted_url("not a scheme:x"), "?:");
     }
 }
