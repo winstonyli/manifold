@@ -632,7 +632,7 @@ pub(crate) fn cef_on_disk() -> RuntimeOnDisk {
 }
 
 /// Why Servo is Unavailable when its host exe is not where `engine_binary_path` looks.
-const SERVO_HOST_MISSING: &str = "the Servo host isn't installed next to the app";
+const SERVO_HOST_MISSING: &str = "the Servo host wasn't found";
 
 /// Whether Servo's host exe is where `engine_binary_path` finds it: Ready, or Missing.
 fn servo_on_disk() -> RuntimeOnDisk {

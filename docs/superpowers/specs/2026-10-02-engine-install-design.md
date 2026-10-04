@@ -123,7 +123,7 @@ The download-and-verify unit takes its URL from the pin, so tests point it at a 
 - Where the Settings "Engines" section lives relative to the existing sections.
 - Servo and WebKit availability: WebKit is "Installed" where the OS can run it, else Unavailable. Servo is "Installed"
   when its host exe is present (`engine_binary_path`: beside the app, else `engine-hosts/`), Unavailable ("the Servo
-  host isn't installed next to the app") otherwise, on every OS (2026-10-04). The same states apply if either ever
+  host wasn't found") otherwise, on every OS (2026-10-04). The same states apply if either ever
   becomes downloadable.
 
 ## System-library preflight (2026-10-02)
