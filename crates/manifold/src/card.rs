@@ -112,7 +112,7 @@ pub(crate) fn paint_jar_chip(
     let lead = arrow.as_ref().map_or(0.0, |a| 2.0 * R + 3.0 + a.size().x + 3.0);
     let width = 5.0 + lead + 2.0 * R + 4.0 + name.size().x + 6.0;
     let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
-    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(160));
+    painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(210)); // legible on a white page
     let mut x = at.x + 5.0;
     if let Some(arrow) = arrow {
         painter.circle_filled(egui::pos2(x + R, cy), R, chip.was_color);
