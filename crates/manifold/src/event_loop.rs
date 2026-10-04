@@ -1158,11 +1158,14 @@ impl App {
     /// navigation (CEF reports loading first): that keeps `current`, the
     /// typed url, rather than flashing back and adding the old url to
     /// history again. Any other url, or `NAVIGATE_START_WINDOW` passing,
-    /// ends that.
-    pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, current: String) -> String {
+    /// ends that. So does a finished load (`!loading`) at the old url after
+    /// one reported loading: the navigation started and never left the page
+    /// (an attachment download, a 204), and CEF reports nothing after it.
+    pub(crate) fn reported_url(&mut self, tab_id: &str, url: String, loading: bool, current: String) -> String {
         const NAVIGATE_START_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
-        let Some((from, at)) = self.navigated_from.get(tab_id) else { return url };
-        if *from == url && at.elapsed() < NAVIGATE_START_WINDOW {
+        let Some((from, at, started)) = self.navigated_from.get_mut(tab_id) else { return url };
+        if *from == url && at.elapsed() < NAVIGATE_START_WINDOW && (loading || !*started) {
+            *started |= loading;
             return current;
         }
         self.navigated_from.remove(tab_id);
@@ -1204,7 +1207,7 @@ impl App {
                 let Some(current) = self.nodes.get(tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
                     return false;
                 };
-                let url = self.reported_url(tab_id, url, current);
+                let url = self.reported_url(tab_id, url, loading, current);
                 self.nav_history.entry(tab_id.to_string()).or_default().observe(&url, loading);
                 let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;

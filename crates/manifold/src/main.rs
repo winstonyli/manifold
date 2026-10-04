@@ -1009,9 +1009,9 @@ struct App {
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
     host_loads: HashMap<String, std::time::Instant>,
-    /// Tabs `navigate_tab` just moved on, with the url each left and when
-    /// (`App::reported_url`).
-    navigated_from: HashMap<String, (String, std::time::Instant)>,
+    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
+    /// whether the engine has reported loading since (`App::reported_url`).
+    navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
@@ -1837,7 +1837,7 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             if node.url != url {
-                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now()));
+                self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
             node.tab.send(&HostToEngine::Navigate { url, referrer: None });

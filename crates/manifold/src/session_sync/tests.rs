@@ -588,15 +588,30 @@ fn the_engines_cause_decides_whether_a_url_change_is_shared() {
 #[test]
 fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
     let mut app = App::default();
-    let report = |app: &mut App, url: &str| app.reported_url("7", url.into(), "https://typed/".into());
+    let report = |app: &mut App, url: &str| app.reported_url("7", url.into(), true, "https://typed/".into());
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now()));
+    app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
     assert_eq!(report(&mut app, "https://old/"), "https://typed/");
     assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
     let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
-    app.navigated_from.insert("7".into(), ("https://old/".into(), long_ago));
+    app.navigated_from.insert("7".into(), ("https://old/".into(), long_ago, false));
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
+}
+
+/// A typed navigation that never leaves the page (an attachment, a 204): CEF
+/// reports it started and finished, both still at the old url, and nothing
+/// after. The finish is the page's real url, not a stale report.
+#[test]
+fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
+    let mut app = App::default();
+    let report =
+        |app: &mut App, url: &str, loading: bool| app.reported_url("7", url.into(), loading, "https://typed/".into());
+    app.navigated_from.insert("7".into(), ("https://old/".into(), std::time::Instant::now(), false));
+    assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
+    assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
+    assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");
+    assert!(app.navigated_from.is_empty());
 }
 
 #[test]
