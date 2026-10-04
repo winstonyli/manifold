@@ -299,11 +299,15 @@ fn take_units<'a>(segs: &[NameSeg<'a>], max_units: usize, max_chars: usize) -> V
             }
         }
     }
-    if let Some(NameSeg::Plain(p)) = out.last_mut() {
-        let text = *p;
-        *p = text.trim_end_matches(CUT_TRIM);
-    }
+    // The break can leave an empty `Plain` after a lone space, so drop empties before trimming the end.
     out.retain(|s| *s != NameSeg::Plain(""));
+    while let Some(NameSeg::Plain(p)) = out.last_mut() {
+        *p = p.trim_end_matches(CUT_TRIM);
+        if !p.is_empty() {
+            break;
+        }
+        out.pop();
+    }
     out
 }
 
@@ -373,10 +377,11 @@ pub(crate) fn with_hint(base: &str, segs: &[NameSeg]) -> String {
 /// characters, which only a name that never went through `clean_name` can reach. Empty when there is nothing to
 /// say: no hover then.
 pub(crate) fn name_hover(s: &str, max: usize, whole: &str, cut: impl Fn(&str) -> String) -> String {
-    let full = reveal(s, UNTITLED);
-    let full = self::cut(&full, usize::MAX, NAME_MAX_CHARS).unwrap_or(full);
+    let whole_name = reveal(s, UNTITLED);
+    let full = self::cut(&whole_name, usize::MAX, NAME_MAX_CHARS).unwrap_or_else(|| whole_name.clone());
     let max = max.min(NAME_CAP);
-    let base = if fits(&full, max, chars_for(max)) { whole.to_string() } else { cut(&to_plain(&full)) };
+    // Fit is judged on the whole name: the hover's own cut ends in "…", which would count as a unit.
+    let base = if fits(&whole_name, max, chars_for(max)) { whole.to_string() } else { cut(&to_plain(&full)) };
     with_hint(&base, &full)
 }
 
@@ -773,6 +778,8 @@ mod tests {
         let acute = format!("a{}", "\u{0301}".repeat(1000));
         let hover = name_hover(&acute, 20, "", str::to_string);
         assert!(hover.ends_with('…') && hover.chars().count() == NAME_MAX_CHARS, "{}", hover.chars().count());
+        // Over the character budget in few clusters: the hover is the cut text even at the display cap.
+        assert_eq!(name_hover(&acute, NAME_CAP, "whole", str::to_string), hover);
     }
 
     #[test]
@@ -784,6 +791,20 @@ mod tests {
         assert_eq!(shorten(&display_name(&"x".repeat(20), UNTITLED), 20), None);
         let hidden = display_name("ab\u{200B}\u{200B}cd", UNTITLED);
         assert_eq!(to_plain(&shorten(&hidden, 4).unwrap()), "ab<U+200B>…");
+    }
+
+    /// A cut never leaves a space before the ellipsis, even when the space is the last unit kept after a hidden one.
+    #[test]
+    fn a_cut_after_a_hidden_character_and_a_space_drops_the_space() {
+        for text in ["ab\u{200B} cdef", "ab\u{200B} \u{200B}cdef", "ab \u{200B}\u{200B}cdef"] {
+            let segs = display_name(text, UNTITLED);
+            for max in 2..=6 {
+                let Some(short) = shorten(&segs, max) else { continue };
+                let plain = to_plain(&short);
+                assert!(!plain.ends_with(" …"), "{text:?} at {max}: {plain:?}");
+                assert!(!short.contains(&NameSeg::Plain("")), "{text:?} at {max}: {short:?}");
+            }
+        }
     }
 
     #[test]
