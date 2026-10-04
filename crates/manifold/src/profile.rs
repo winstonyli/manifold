@@ -2,7 +2,8 @@
 //! `settings.json`, `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
 //! the named sessions, fetched content (`content_dir`) and CEF's throwaway
 //! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
-//! or, for engines, `engine_data_dir()`.
+//! or, for engines, `engine_data_dir()`. The one user folder outside it,
+//! the screenshot folder, comes from `pictures_dir()`.
 
 use std::path::PathBuf;
 
@@ -12,21 +13,41 @@ use std::path::PathBuf;
 /// "nothing saved", so tests start from defaults. A test that needs files
 /// uses `store::testutil::temp_dir` and passes the path in.
 ///
-/// `--profile-dir <dir>` names the folder itself instead (for a run that
-/// can't set `APPDATA`, like one started by the elevated `Samply` task).
+/// `--profile-dir <dir>` or `--profile-dir=<dir>` names the folder itself
+/// instead (for a run that can't set `APPDATA`, like one started by the
+/// elevated `Samply` task). Read once per run.
 pub fn dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    let args: Vec<String> = std::env::args().collect();
-    dir_from(&args, std::env::var_os("APPDATA"))
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let args: Vec<String> = std::env::args().collect();
+        dir_from(&args, std::env::var_os("APPDATA"))
+    })
+    .clone()
 }
 
 fn dir_from(args: &[String], appdata: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    match args.iter().position(|a| a == "--profile-dir").and_then(|i| args.get(i + 1)) {
+    let flag = args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--profile-dir") {
+        Some("") => args.get(i + 1).cloned(),
+        Some(rest) => rest.strip_prefix('=').map(str::to_string),
+        None => None,
+    });
+    match flag {
         Some(dir) => Some(PathBuf::from(dir)),
         None => Some(PathBuf::from(appdata?).join("manifold")),
     }
+}
+
+/// The user's Pictures folder, where the toolbar's Screenshot saves. `None`
+/// without a home folder, and always under `cargo test`, like `dir()`.
+pub fn pictures_dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+    Some(PathBuf::from(home).join("Pictures"))
 }
 
 /// Where CEF engine-hosts keep their browser data: one throwaway
@@ -79,6 +100,19 @@ mod tests {
         assert_eq!(super::cef_cache_dir(), None);
         assert_eq!(super::content_dir(), None);
         assert_eq!(super::jars_dir(), None);
+        assert_eq!(super::pictures_dir(), None);
+    }
+
+    #[test]
+    fn profile_dir_accepts_the_equals_form() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let appdata = Some(std::ffi::OsString::from("A"));
+        assert_eq!(super::dir_from(&args(&["m", "--profile-dir=P"]), appdata.clone()), Some("P".into()));
+        assert_eq!(
+            super::dir_from(&args(&["m", "--profile-directory", "X"]), appdata),
+            Some(Path::new("A").join("manifold")),
+            "only the exact flag"
+        );
     }
 
     #[test]
@@ -101,7 +135,9 @@ mod tests {
         assert_eq!(app.settings_fingerprint, None);
 
         let mut offenders = Vec::new();
-        scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &["\"APPDATA\"", "etcetera"], &mut offenders);
+        let needles =
+            ["\"APPDATA\"", "\"LOCALAPPDATA\"", "\"USERPROFILE\"", "\"HOME\"", "etcetera", "dirs::", "known_folder"];
+        scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &needles, &mut offenders);
         assert_eq!(offenders, Vec::<String>::new(), "look up the profile folder with profile::dir()");
     }
 

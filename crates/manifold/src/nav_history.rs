@@ -163,30 +163,47 @@ fn path() -> Option<PathBuf> {
 
 /// The saved lists. A missing or corrupt file (moved aside) gives none.
 pub(crate) fn load() -> HashMap<String, NavHistory> {
-    let Some(path) = path() else { return HashMap::new() };
-    let saved: HashMap<String, Saved> =
-        crate::json_file::load_or_move_aside(&path, "tab history").ok().flatten().unwrap_or_default();
-    saved
-        .into_iter()
-        .filter(|(_, s)| s.index < s.entries.len())
-        .map(|(id, s)| (id, NavHistory { entries: s.entries, index: s.index, ..NavHistory::default() }))
-        .collect()
+    path().map_or_else(HashMap::new, |path| load_from(&path))
 }
 
-/// Writes the lists of the tabs `keep` accepts (one-page lists add nothing
-/// and are left out) when any changed since the last save.
+pub(crate) fn load_from(path: &std::path::Path) -> HashMap<String, NavHistory> {
+    let saved: HashMap<String, Saved> =
+        crate::json_file::load_or_move_aside(path, "tab history").ok().flatten().unwrap_or_default();
+    saved.into_iter().filter(|(_, s)| s.index < s.entries.len()).map(|(id, s)| (id, capped(s))).collect()
+}
+
+/// At most `MAX_ENTRIES` entries: the current one and as many before it as
+/// fit, then forward ones, the window `observe` would have kept.
+fn capped(s: Saved) -> NavHistory {
+    let start = (s.index + 1).saturating_sub(MAX_ENTRIES);
+    let entries: Vec<String> = s.entries.into_iter().skip(start).take(MAX_ENTRIES).collect();
+    NavHistory { entries, index: s.index - start, ..NavHistory::default() }
+}
+
+/// Drops the lists of tabs `keep` refuses, then writes the rest (one-page
+/// lists add nothing and are left out) when any changed or any was dropped.
 pub(crate) fn save(lists: &mut HashMap<String, NavHistory>, keep: impl Fn(&str) -> bool) {
-    if !lists.values().any(|h| h.dirty) {
+    save_to(lists, keep, path().as_deref());
+}
+
+pub(crate) fn save_to(
+    lists: &mut HashMap<String, NavHistory>,
+    keep: impl Fn(&str) -> bool,
+    path: Option<&std::path::Path>,
+) {
+    let before = lists.len();
+    lists.retain(|id, _| keep(id));
+    let dropped = lists.len() != before;
+    if !dropped && !lists.values().any(|h| h.dirty) {
         return;
     }
-    let Some(path) = path() else { return };
-    lists.retain(|id, _| keep(id));
+    let Some(path) = path else { return };
     let saved: HashMap<&String, Saved> = lists
         .iter()
         .filter(|(_, h)| h.entries.len() > 1)
         .map(|(id, h)| (id, Saved { entries: h.entries.clone(), index: h.index }))
         .collect();
-    crate::json_file::save(&saved, &path, "tab history");
+    crate::json_file::save(&saved, path, "tab history");
     lists.values_mut().for_each(|h| h.dirty = false);
 }
 
@@ -301,6 +318,42 @@ mod tests {
         assert!(!h.dirty);
         h.observe("c", true);
         assert!(h.dirty);
+    }
+
+    #[test]
+    fn a_saved_list_past_the_cap_is_cut_around_its_current_entry() {
+        let dir = crate::store::testutil::temp_dir("nav_cap");
+        let path = dir.join("tab-history.json");
+        let entries: Vec<String> = (0..120).map(|n| format!("p{n}")).collect();
+        let saved = serde_json::json!({
+            "late": { "entries": entries, "index": 100 },
+            "early": { "entries": entries, "index": 3 },
+        });
+        std::fs::write(&path, saved.to_string()).unwrap();
+        let lists = load_from(&path);
+        let late = &lists["late"];
+        assert_eq!((late.entries.len(), late.index), (MAX_ENTRIES, MAX_ENTRIES - 1));
+        assert_eq!(late.entries[late.index], "p100");
+        let early = &lists["early"];
+        assert_eq!((early.entries.len(), early.index), (MAX_ENTRIES, 3));
+        assert_eq!(early.entries[0], "p0");
+    }
+
+    #[test]
+    fn closed_tabs_leave_the_file_even_when_nothing_navigated() {
+        let dir = crate::store::testutil::temp_dir("nav_prune");
+        let path = dir.join("tab-history.json");
+        let mut lists = HashMap::new();
+        for id in ["a", "b"] {
+            let mut h = NavHistory::default();
+            visit(&mut h, &["x", "y"]);
+            lists.insert(id.to_string(), h);
+        }
+        save_to(&mut lists, |_| true, Some(&path));
+        assert!(lists.values().all(|h| !h.dirty));
+        save_to(&mut lists, |id| id == "a", Some(&path));
+        assert_eq!(lists.keys().collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(load_from(&path).keys().cloned().collect::<Vec<_>>(), vec!["a".to_string()]);
     }
 
     #[test]

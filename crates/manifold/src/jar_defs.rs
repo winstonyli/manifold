@@ -379,8 +379,8 @@ impl App {
     /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), the same for a local toggle (after
     /// `request_jar_ephemeral`'s confirm) and a remote one (`materialize_jar`). The jar is loaded from its file first,
     /// while it still counts as saved, so nothing on disk is dropped unread:
-    /// - on: its cookies stay in memory until quit, then its files go (`Jar::delete_files`). Not a locked jar's: an
-    ///   unreadable file is never touched, and a locked jar saves nothing anyway.
+    /// - on: its files are deleted now (`Jar::delete_files`); its cookies stay in memory until quit. Not a locked
+    ///   jar's: an unreadable file is never touched, and a locked jar saves nothing anyway.
     /// - off: the loaded jar is saved (a locked one writes nothing).
     pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         if self.jar_defs.get(&id).is_none_or(|d| d.ephemeral == on) {

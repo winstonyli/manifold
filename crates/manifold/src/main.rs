@@ -361,7 +361,7 @@ fn default_graph_scene_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::Pos2::new(0.0, 0.0), GRAPH_SCENE_DEFAULT_SIZE)
 }
 
-/// `%USERPROFILE%\Pictures\manifold-<unix-seconds>.png` — same
+/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
 /// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
 /// (in each engine-host's own download-handling code) already takes, just
 /// on the manifold side for the toolbar's "Screenshot" button. The
@@ -369,7 +369,7 @@ fn default_graph_scene_rect() -> egui::Rect {
 /// state; a real "Save As" dialog would be the alternative, but this
 /// project doesn't build custom save UI anywhere else either.
 fn screenshot_default_path() -> std::path::PathBuf {
-    let dir = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default().join("Pictures");
+    let dir = profile::pictures_dir().unwrap_or_else(std::env::temp_dir);
     let _ = std::fs::create_dir_all(&dir);
     let timestamp =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
