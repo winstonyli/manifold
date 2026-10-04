@@ -1964,16 +1964,17 @@ impl App {
         let title_color = if light { egui::Color32::from_gray(240) } else { ui.visuals().text_color() };
         let source_color = if light { egui::Color32::from_gray(190) } else { ui.visuals().weak_text_color() };
         let glyph_color = glyph_color.unwrap_or(source_color);
-        let title_font = egui::FontId::proportional(HEADER_TITLE_SIZE);
+        // One size for measuring and drawing the title, so a strip's plain and rich (hidden-character) titles match.
+        let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
+        let title_font = egui::FontId::proportional(title_size);
         let source_font = egui::FontId::proportional(HEADER_SOURCE_SIZE);
         let text_left = if tall { HEADER_TEXT_X } else { 8.0 };
         let max_width = (rect.width() * zoom_scale - text_left - 28.0 - right_margin).max(0.0);
         // A stored group name with a hidden character is a styled job (placeholders in the marker style, truncated
         // by the layout); any other title is cut text, as before (`truncate_to_width`'s cache).
-        let title_size = if tall { HEADER_TITLE_SIZE } else { 12.0 };
         let rich = user_name.filter(|segs| crate::names::has_hidden(segs)).map(|segs| {
             let mut job = egui::text::LayoutJob::default();
-            let format = egui::TextFormat::simple(egui::FontId::proportional(title_size), title_color);
+            let format = egui::TextFormat::simple(title_font.clone(), title_color);
             crate::names::append_name(&mut job, segs, &format, source_color);
             job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
             job
@@ -2039,7 +2040,7 @@ impl App {
                 );
             } else {
                 let pos = base + egui::vec2(text_left, band_screen_height / 2.0);
-                paint_card_title(overlay_painter, pos, rich, title, egui::FontId::proportional(12.0), title_color);
+                paint_card_title(overlay_painter, pos, rich, title, title_font, title_color);
             }
         }));
         tall

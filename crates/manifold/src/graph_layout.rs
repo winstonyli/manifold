@@ -36,11 +36,11 @@ const SETTLE_SPEED: f32 = 1.0;
 /// One force-directed simulation tick.
 ///
 /// `positions`/`velocities` are keyed by node id and updated in place.
-/// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids
-/// currently being dragged by the user: their position is assumed already
-/// set by the caller (e.g. to the cursor position) and they're excluded
-/// from force accumulation and integration entirely — they neither push
-/// nor get pushed by the simulation while held.
+/// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids being
+/// dragged: their position is the caller's and they don't move, but they
+/// still push the others (a dragged card shoulders its neighbours aside).
+/// Ids are processed in sorted order, so the result doesn't depend on the
+/// maps' iteration order.
 pub fn step(
     positions: &mut HashMap<String, egui::Vec2>,
     velocities: &mut HashMap<String, egui::Vec2>,
@@ -52,72 +52,70 @@ pub fn step(
     if dt <= 0.0 {
         return;
     }
+    // Owned ids: `positions` is mutated below.
+    let mut ids: Vec<String> = positions.keys().cloned().collect();
+    ids.sort_unstable();
+    let index: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
+    let mut forces = vec![egui::Vec2::ZERO; ids.len()];
 
-    let ids: Vec<String> = positions.keys().cloned().collect();
-    let mut forces: HashMap<String, egui::Vec2> = ids.iter().map(|id| (id.clone(), egui::Vec2::ZERO)).collect();
-
-    // Pairwise repulsion — O(n^2), fine for the tens-of-tabs scale this UI
-    // is meant for.
-    for i in 0..ids.len() {
-        for j in (i + 1)..ids.len() {
-            let (id_a, id_b) = (&ids[i], &ids[j]);
-            let pos_a = positions[id_a];
-            let pos_b = positions[id_b];
-            let delta = pos_a - pos_b;
-            let dist = delta.length().max(MIN_DISTANCE);
-            let dir = delta / dist;
+    // Pairwise repulsion: O(n^2) over plain vectors.
+    for i in 0..pos.len() {
+        for j in (i + 1)..pos.len() {
+            let delta = pos[i] - pos[j];
+            let length = delta.length();
+            // Two nodes on one point have no direction between them: pick a
+            // fixed one from their ids so they still push apart.
+            let dir = if length > f32::EPSILON {
+                delta / length
+            } else {
+                spawn_jitter(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
+            };
+            let dist = length.max(MIN_DISTANCE);
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
-            *forces.get_mut(id_a).unwrap() += force;
-            *forces.get_mut(id_b).unwrap() -= force;
+            forces[i] += force;
+            forces[j] -= force;
         }
     }
 
     // Spring attraction along parent->child edges toward a rest length.
     for (parent, child) in edges {
-        let (Some(&pos_p), Some(&pos_c)) = (positions.get(parent), positions.get(child)) else {
-            continue; // an edge referencing a since-removed node; ignore
-        };
-        let delta = pos_c - pos_p;
+        // An edge to a since-removed node is ignored.
+        let (Some(&p), Some(&c)) = (index.get(parent.as_str()), index.get(child.as_str())) else { continue };
+        let delta = pos[c] - pos[p];
         let dist = delta.length().max(MIN_DISTANCE);
-        let dir = delta / dist;
-        let stretch = dist - REST_LENGTH;
-        let force = dir * (SPRING_STRENGTH * stretch);
-        if let Some(f) = forces.get_mut(parent) {
-            *f += force;
-        }
-        if let Some(f) = forces.get_mut(child) {
-            *f -= force;
-        }
+        let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
+        forces[p] += force;
+        forces[c] -= force;
     }
 
-    // Gentle pull toward the canvas center so a disconnected node (or an
-    // entire orphaned subtree) doesn't drift off-screen indefinitely.
-    for id in &ids {
-        let pos = positions[id];
-        let force = (center - pos) * CENTERING_STRENGTH;
-        *forces.get_mut(id).unwrap() += force;
-    }
-
-    // Integrate. Pinned (dragged) nodes are left exactly where the caller
-    // placed them, with zero velocity, so releasing the drag doesn't fling
-    // the node from accumulated velocity it never actually had control over.
-    for id in &ids {
+    for (i, id) in ids.iter().enumerate() {
+        // Pinned (dragged) nodes stay exactly where the caller put them, with
+        // no velocity, so releasing the drag doesn't fling them.
         if pinned.contains(id) {
             velocities.insert(id.clone(), egui::Vec2::ZERO);
             continue;
         }
-        let force = forces[id];
+        // Gentle pull toward the canvas center, so a disconnected node
+        // doesn't drift away.
+        let force = forces[i] + (center - pos[i]) * CENTERING_STRENGTH;
         let mut vel = velocities.get(id).copied().unwrap_or(egui::Vec2::ZERO);
         vel = (vel + force * dt) * DAMPING;
         if vel.length() > MAX_SPEED {
-            vel = vel * (MAX_SPEED / vel.length());
+            vel *= MAX_SPEED / vel.length();
         }
         if vel.length() < SETTLE_SPEED {
             vel = egui::Vec2::ZERO;
         }
-        let pos = positions.get_mut(id).unwrap();
-        *pos += vel * dt;
-        velocities.insert(id.clone(), vel);
+        if let Some(p) = positions.get_mut(id) {
+            *p += vel * dt;
+        }
+        match velocities.get_mut(id) {
+            Some(v) => *v = vel,
+            None => {
+                velocities.insert(id.clone(), vel);
+            }
+        }
     }
 }
 
@@ -180,6 +178,54 @@ mod tests {
 
         assert_eq!(velocities["a"], egui::Vec2::ZERO);
         assert_eq!(velocities["b"], egui::Vec2::ZERO);
+    }
+
+    fn pair_at(a: egui::Vec2, b: egui::Vec2) -> (HashMap<String, egui::Vec2>, HashMap<String, egui::Vec2>) {
+        let positions = HashMap::from([("a".to_string(), a), ("b".to_string(), b)]);
+        let velocities = HashMap::from([("a".to_string(), egui::Vec2::ZERO), ("b".to_string(), egui::Vec2::ZERO)]);
+        (positions, velocities)
+    }
+
+    /// Review C-B9: two nodes on one point push apart.
+    #[test]
+    fn coincident_nodes_separate() {
+        let (mut positions, mut velocities) = pair_at(egui::Vec2::ZERO, egui::Vec2::ZERO);
+        for _ in 0..600 {
+            step(&mut positions, &mut velocities, &[], &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+        }
+        assert!((positions["a"] - positions["b"]).length() > 100.0, "{positions:?}");
+    }
+
+    /// Same input, same output, whatever order the maps iterate in.
+    #[test]
+    fn the_layout_is_deterministic() {
+        let ids: Vec<String> = (0..30).map(|i| format!("n{i}")).collect();
+        let run = |order: &[String]| {
+            let mut positions = HashMap::new();
+            let mut velocities = HashMap::new();
+            for id in order {
+                let i: f32 = id[1..].parse().unwrap();
+                positions.insert(id.clone(), egui::vec2(i * 7.0 % 50.0, i * 13.0 % 40.0));
+                velocities.insert(id.clone(), egui::Vec2::ZERO);
+            }
+            let edges = vec![("n0".to_string(), "n1".to_string())];
+            for _ in 0..90 {
+                step(&mut positions, &mut velocities, &edges, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+            }
+            let mut out: Vec<_> = positions.into_iter().collect();
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out
+        };
+        let reversed: Vec<String> = ids.iter().rev().cloned().collect();
+        assert_eq!(run(&ids), run(&reversed));
+    }
+
+    /// A pinned (dragged) node still pushes its neighbours aside.
+    #[test]
+    fn a_pinned_node_still_pushes() {
+        let (mut positions, mut velocities) = pair_at(egui::Vec2::ZERO, egui::vec2(10.0, 0.0));
+        step(&mut positions, &mut velocities, &[], &HashSet::from(["a".to_string()]), egui::vec2(5.0, 0.0), 1.0 / 60.0);
+        assert!(positions["b"].x > 10.0, "{positions:?}");
     }
 
     #[test]

@@ -566,14 +566,18 @@ impl GraphNode {
         self.payload.as_json()
     }
 
-    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
-    /// What a screen reader announces for the node's card: its kind, then what identifies it.
+    /// What a screen reader announces for the node's card: its kind, then what identifies it. A local file (no
+    /// web source) is named by its file name.
     pub(crate) fn accessible_name(&self) -> String {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
+        // Either separator: a saved path may come from the other platform.
+        let file_name =
+            |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
+        let source_or_file = |path: &str| self.source_url().map(str::to_string).or_else(|| file_name(path));
         let (kind, detail) = match &self.payload {
             NodePayload::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
             NodePayload::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
-            NodePayload::Download(d) => ("Download", d.path.rsplit(['/', '\\']).next().map(str::to_string)),
+            NodePayload::Download(d) => ("Download", file_name(&d.path)),
             NodePayload::Group(g) => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
             }
@@ -582,9 +586,9 @@ impl GraphNode {
                 let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
                 ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
             }
-            NodePayload::Image(_) => ("Image", self.source_url().map(str::to_string)),
-            NodePayload::Pdf(_) => ("PDF", self.source_url().map(str::to_string)),
-            NodePayload::Json(_) => ("JSON", self.source_url().map(str::to_string)),
+            NodePayload::Image(p) => ("Image", source_or_file(&p.path)),
+            NodePayload::Pdf(p) => ("PDF", source_or_file(&p.path)),
+            NodePayload::Json(p) => ("JSON", source_or_file(&p.path)),
         };
         match detail {
             Some(detail) => format!("{kind}: {detail}"),
@@ -592,6 +596,7 @@ impl GraphNode {
         }
     }
 
+    /// The web source of an Image, Pdf, Json (not a leaf) or Note node.
     pub(crate) fn source_url(&self) -> Option<&str> {
         match &self.payload {
             NodePayload::Image(p) => p.url.as_deref(),
@@ -747,6 +752,45 @@ second"
         app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
         assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
         assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
+    }
+
+    /// Review C-B12: a local file's card is named by its file name; a web source still wins.
+    #[test]
+    fn a_local_file_card_has_an_accessible_name() {
+        let node = |payload| GraphNode {
+            parent: None,
+            group: None,
+            pos: egui::Vec2::ZERO,
+            vel: egui::Vec2::ZERO,
+            color: None,
+            payload,
+        };
+        let pdf = |url: Option<&str>| {
+            node(NodePayload::Pdf(PdfPayload {
+                path: r"C:\docs\report.pdf".into(),
+                outcome: None,
+                url: url.map(str::to_string),
+            }))
+        };
+        assert_eq!(pdf(None).accessible_name(), "PDF: report.pdf");
+        assert_eq!(pdf(Some("https://example.org/r.pdf")).accessible_name(), "PDF: https://example.org/r.pdf");
+        let image = node(NodePayload::Image(ImagePayload {
+            path: "/home/u/cat.png".into(),
+            width: 1,
+            height: 1,
+            error: None,
+            url: None,
+        }));
+        assert_eq!(image.accessible_name(), "Image: cat.png");
+        let json = node(NodePayload::Json(JsonPayload {
+            path: r"D:\data\x.json".into(),
+            value: serde_json::Value::Null,
+            key: None,
+            error: None,
+            url: None,
+            view: JsonView::default(),
+        }));
+        assert_eq!(json.accessible_name(), "JSON: x.json");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

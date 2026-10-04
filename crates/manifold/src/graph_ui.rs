@@ -251,16 +251,7 @@ impl App {
     /// the same projection `Scene` applies, computed outside it (see
     /// `graph_world_to_screen_transform`).
     pub(crate) fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
-        let screen = self.screen_size_points();
-        // A JSON level's outline is drawn on the right, so the scene keeps
-        // its left edge and loses the outline's width (plan ruling 12).
-        let outline =
-            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
-        let scene_outer_rect = egui::Rect::from_min_size(
-            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
-        );
-        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
         egui::Rect::from_min_max(
             (translation + scale * world.min.to_vec2()).to_pos2(),
             (translation + scale * world.max.to_vec2()).to_pos2(),
@@ -273,13 +264,23 @@ impl App {
     /// `handle_rect_select`'s own `world_pos`). Used to place a file
     /// dropped on the window (`drop_file`).
     pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
-        let screen = self.screen_size_points();
-        let scene_outer_rect = egui::Rect::from_min_size(
-            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2(screen.x, (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
-        );
-        let (scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
+        let (scale, translation) = self.graph_world_to_screen_transform(self.graph_scene_outer_rect());
         (point.to_vec2() - translation) / scale
+    }
+
+    /// The Graph view's scene area in window points: below the toolbar,
+    /// minus a JSON level's outline on the right (plan ruling 12). The one
+    /// definition both screen<->world conversions use; `build_graph_ui`
+    /// reads the live layout rect instead, which this mirrors for code
+    /// outside the frame.
+    pub(crate) fn graph_scene_outer_rect(&self) -> egui::Rect {
+        let screen = self.screen_size_points();
+        let outline =
+            if self.json_level.is_some() && self.json_outline_visible { self.json_outline_width } else { 0.0 };
+        egui::Rect::from_min_size(
+            egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
+            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+        )
     }
 
     /// Applies one of `build_graph_ui`'s collected clicks. Called in click
@@ -507,6 +508,13 @@ impl App {
         self.build_json_outline(ui);
         let scene_outer_rect = ui.available_rect_before_wrap();
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
+        // Advance first: everything below (strokes, `zoom_pct`, the new-node
+        // menu) must use the rect the Scene draws this frame.
+        self.camera.advance();
+        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
+            ui.ctx().request_repaint();
+        }
+        self.camera.fill(scene_outer_rect);
         let (zoom_scale, translation) = self.graph_world_to_screen_transform(scene_outer_rect);
         self.camera.zoom_pct = zoom_scale * 100.0;
         let inv_zoom = 1.0 / zoom_scale;
@@ -526,12 +534,6 @@ impl App {
         );
 
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
-
-        self.camera.advance();
-        if self.camera.tween.is_some() || self.camera.momentum.is_some() {
-            ui.ctx().request_repaint();
-        }
-        self.camera.fill(scene_outer_rect);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
         // Compared against after `Scene`'s own closure runs, below --
