@@ -25,7 +25,8 @@ use crate::UserEvent;
 /// feature. Keyboard commands can't go through winit the same way:
 /// `winit::event::KeyEvent` has no public constructor outside the winit
 /// crate (its `platform_specific` field is `pub(crate)`). The address-bar
-/// keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`) are
+/// keys (`ADDRESSBAR`, `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP`), and
+/// `EGUITEXT`/`BACKSPACE` for any focused egui field, are
 /// instead injected one level down, as `egui::Event::Key`/`Text` in the
 /// next frame's `RawInput`, so the UI's own `key_pressed` checks and the
 /// real `TextEdit` see them. Headless mode also marks the window as focused
@@ -76,6 +77,12 @@ pub enum DebugCommand {
     /// An egui Escape key press: dismisses the suggestion dropdown if one
     /// is showing, otherwise leaves Tab view for Graph view.
     Escape,
+    /// An egui Backspace key press: erases in the focused egui text field.
+    Backspace,
+    /// `EGUITEXT <text>` -- an egui `Text` event: types into whichever egui
+    /// text field has focus (a jar's name in Settings, "New Jar..."'s field, a
+    /// group rename), not the page (`TYPE`). Nothing focused: nothing typed.
+    EguiText(String),
     /// egui Down/Up key presses: in the address bar, move the highlighted
     /// suggestion row (wrapping at both ends); `Enter` afterward accepts
     /// whichever row ends up highlighted.
@@ -385,6 +392,8 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("ADDRESSBAR text", "Set the address bar's text and focus"),
     ("ENTER", "Accept the address bar / confirm a dropdown row"),
     ("ESCAPE", "Dismiss a suggestion dropdown, or leave Tab view for Graph view"),
+    ("BACKSPACE", "A Backspace key press in the focused egui text field"),
+    ("EGUITEXT text", "Type into the focused egui text field (a jar or group name; TYPE goes to the page)"),
     ("ARROWRIGHT", "A Right arrow key press (JSON level: open the selected outline row)"),
     ("ARROWLEFT", "A Left arrow key press (JSON level: close it, or select its parent)"),
     ("DIGITKEY n", "A plain digit key press (0-9): in the Graph view, jumps to the card with that number"),
@@ -576,6 +585,8 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "ADDRESSBAR" => Some(DebugCommand::AddressBar(rest.to_string())),
         "ENTER" => Some(DebugCommand::Enter),
         "ESCAPE" => Some(DebugCommand::Escape),
+        "BACKSPACE" => Some(DebugCommand::Backspace),
+        "EGUITEXT" => non_empty(DebugCommand::EguiText),
         "ARROWRIGHT" => Some(DebugCommand::ArrowRight),
         "ARROWLEFT" => Some(DebugCommand::ArrowLeft),
         "SPACEKEY" => Some(DebugCommand::SpaceKey),
@@ -765,6 +776,19 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fix batch A5: `EGUITEXT` types into the focused egui field (a jar name, a group rename) and `BACKSPACE` erases
+    /// there; `TYPE` still goes to the page.
+    #[test]
+    fn egui_typing_commands_parse() {
+        assert!(matches!(parse_line("EGUITEXT Work Stuff"), Some(DebugCommand::EguiText(t)) if t == "Work Stuff"));
+        assert!(parse_line("EGUITEXT").is_none(), "text is required");
+        assert!(matches!(parse_line("backspace"), Some(DebugCommand::Backspace)));
+        assert!(matches!(parse_line("TYPE abc"), Some(DebugCommand::TypeIntoPage(t)) if t == "abc"));
+        for usage in ["EGUITEXT text", "BACKSPACE"] {
+            assert!(COMMAND_HELP.iter().any(|(u, _)| *u == usage), "{usage} is in HELP");
+        }
+    }
 
     #[test]
     fn jar_commands_parse() {

@@ -919,6 +919,11 @@ impl App {
             DebugCommand::Escape => {
                 self.debug_input_events.push(debug_key_event(egui::Key::Escape, egui::Modifiers::NONE))
             }
+            DebugCommand::Backspace => {
+                self.debug_input_events.push(debug_key_event(egui::Key::Backspace, egui::Modifiers::NONE))
+            }
+            // The focused egui field takes it, as from a keyboard (`TYPE` goes to the page instead).
+            DebugCommand::EguiText(text) => self.debug_input_events.push(egui::Event::Text(text)),
             DebugCommand::ArrowDown => {
                 self.debug_input_events.push(debug_key_event(egui::Key::ArrowDown, egui::Modifiers::NONE))
             }

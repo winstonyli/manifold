@@ -360,6 +360,7 @@ Commands:
 - `ENTER` — in the focused address bar, navigates using its text or the highlighted suggestion.
 - `ESCAPE` — dismisses the suggestion dropdown, or leaves Item view (a maximized tab or image) for Graph view if none is showing.
 - `ARROWDOWN` / `ARROWUP` — moves the address-bar dropdown's highlighted row (wrapping at both ends); a following `ENTER` accepts it.
+- `EGUITEXT <text>` — types into whichever egui text field has focus (a jar's name in Settings, "New Jar..."'s field, a group rename), as an `egui::Event::Text` in the next frame's input; `BACKSPACE` is a real Backspace press there. With `ENTER`/`ESCAPE` they drive those fields end to end. Leading and trailing spaces are trimmed off the text.
 - `TYPE <text>` — sends each character to the focused tab's page (not the address bar).
 - `KEYPAGE <name>` — sends a KeyDown+KeyUp of the named key (`Enter`, `Backspace`, `ArrowLeft`, a single letter/digit, etc.) to the focused tab's page.
 - `NEWTAB` / `CLOSETAB` / `FOCUSADDRESS` / `NEXTTAB` / `PREVTAB` — the `Ctrl+T`/`Ctrl+W`/`Ctrl+L`/`Ctrl+Tab`/`Ctrl+Shift+Tab` shortcuts' exact same effect, called directly (same rationale as `TYPE`/`KEYPAGE`: no public way to synthesize a real `Ctrl`-chorded `KeyboardInput`). `FOCUSADDRESS` is the one command among these that isn't instant — it drives a real `egui::Response::request_focus()`, which (immediate-mode) only takes visible effect starting the *next* frame, so it also forces a redraw itself rather than relying on some later, unrelated command to eventually trigger one.
