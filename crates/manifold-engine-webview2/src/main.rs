@@ -141,6 +141,13 @@ fn main() {
     let socket_id = std::env::var("ENGINE_SOCKET_ID").expect("ENGINE_SOCKET_ID env var required");
     let initial_url = std::env::var("ENGINE_INITIAL_URL").unwrap_or_else(|_| "https://example.com".to_string());
 
+    // A machine without the WebView2 runtime fails here, before connecting, with one `HOST_FATAL` line that
+    // manifold shows as the reason, instead of a panic creating the environment that reads as a crash.
+    if let Some(reason) = missing_runtime_reason(installed_runtime_version()) {
+        eprintln!("{}{reason}", ipc_protocol::HOST_FATAL);
+        std::process::exit(1);
+    }
+
     // Same convention as manifold-engine-cef/-servo: manifold already created
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_engine`/`control` are one-directional (HostToEngine
@@ -545,6 +552,32 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
     }
 }
 
+/// The installed WebView2 runtime's version, as the loader finds it (honouring
+/// `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`); an error or an empty string when there is none.
+fn installed_runtime_version() -> windows::core::Result<String> {
+    let mut version = windows::core::PWSTR::null();
+    unsafe {
+        webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString(
+            windows::core::PCWSTR::null(),
+            &mut version,
+        )?;
+    }
+    Ok(webview2_com::take_pwstr(version))
+}
+
+/// Why this host can't run, given `installed_runtime_version`'s answer: `None` when a runtime was found.
+fn missing_runtime_reason(version: windows::core::Result<String>) -> Option<String> {
+    let code = match version {
+        Ok(v) if !v.is_empty() => return None,
+        Ok(_) => String::new(),
+        Err(err) => format!(" ({:#010x})", err.code().0),
+    };
+    Some(format!(
+        "WebView2 runtime not found{code}: install the WebView2 runtime (Microsoft Edge WebView2, Evergreen) \
+         from https://developer.microsoft.com/microsoft-edge/webview2/"
+    ))
+}
+
 fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     let options = scheme::environment_options().map_err(webview2_com::Error::WindowsError)?;
     let (tx, rx) = mpsc::channel();
@@ -684,4 +717,21 @@ fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &Contain
         let _ = controller.SetBounds(bounds);
     }
     composition::resize_root_visual(root_visual, width, height);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_runtime_reason;
+
+    #[test]
+    fn a_missing_runtime_says_to_install_it() {
+        let not_found = windows::core::Error::from(windows::Win32::Foundation::ERROR_FILE_NOT_FOUND.to_hresult());
+        let reason = missing_runtime_reason(Err(not_found)).expect("no runtime is a reason");
+        assert!(
+            reason.starts_with("WebView2 runtime not found (0x80070002): install the WebView2 runtime"),
+            "{reason}"
+        );
+        assert!(missing_runtime_reason(Ok(String::new())).is_some(), "an empty version is no runtime either");
+        assert_eq!(missing_runtime_reason(Ok("131.0.2903.70".into())), None);
+    }
 }
