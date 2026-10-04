@@ -88,7 +88,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.prune_jar_files();
     }
 
-    /// A clean exit (a window close, or headless `QUIT`): the tabs' last
+    /// A clean exit (a window close, or headless `QUIT`): a window geometry
+    /// change still waiting (`flush_pending_settings`), the tabs' last
     /// cookies (`final_cookie_pull`, at most 1 s), the store's last
     /// save and close, then everything tied to the window, while the event
     /// loop still exists. `run_app` drops the event loop (on Wayland, its
@@ -98,6 +99,7 @@ impl ApplicationHandler<UserEvent> for App {
     /// WSLg. Children before the window: egui's state and the surface hold
     /// handles to it.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.flush_pending_settings();
         self.final_cookie_pull();
         self.close_store();
         self.egui_state = None;
@@ -152,6 +154,9 @@ impl ApplicationHandler<UserEvent> for App {
             self.jar_pull_all();
             self.jar_last_pull = Some(std::time::Instant::now());
         }
+        // A window drag's geometry, once it has been quiet for `SETTINGS_SAVE_DELAY`. The loop wakes at least
+        // every idle frame or `MINIMIZED_TICK`, so it lands within about a second.
+        self.flush_settings_if_due(std::time::Instant::now());
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -276,14 +281,14 @@ impl ApplicationHandler<UserEvent> for App {
                     let ppp = self.ppp();
                     self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
                     self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
-                    self.save_settings();
+                    self.note_settings_changed();
                 }
             }
             WindowEvent::Moved(position) => {
                 if !self.headless {
                     self.settings.window_x = Some(position.x);
                     self.settings.window_y = Some(position.y);
-                    self.save_settings();
+                    self.note_settings_changed();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -447,7 +452,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .as_deref()
                     .and_then(|id| self.nodes.get(id))
                     .and_then(|n| n.as_tab())
-                    .map(|t| format!("{:?} {}", t.tab.kind, t.url));
+                    .map(|t| format!("{:?} {}", t.tab.kind, crash_report::redacted_url(&t.url)));
                 crash_report::record_state(format!(
                     "view_mode={:?} headless={} node_count={} focused_tab={:?}",
                     self.view_mode,

@@ -287,7 +287,9 @@ impl App {
                     TEXT_PRIMARY
                 }));
             });
-            let runtime = crate::process_manager::engine_runtime_dir(kind).filter(|dir| dir.exists());
+            let runtime = cached(ui.ctx(), ("engine_runtime", kind), DISK_CACHE_AGE, || {
+                crate::process_manager::engine_runtime_dir(kind).filter(|dir| dir.exists())
+            });
             match &state {
                 EngineState::Installed | EngineState::UpdateNeeded { .. } if runtime.is_some() => {
                     let size = runtime.as_deref().map(|dir| cached_dir_size(ui.ctx(), dir)).unwrap_or(0);
@@ -303,7 +305,9 @@ impl App {
             // Leftovers (a kept `.part`, a failed install's `.tmp`) can exist with no runtime; they get a
             // button too, since nothing else would ever delete them.
             let leftovers = kind == EngineKind::Cef
-                && crate::process_manager::engine_hosts_dir().is_some_and(|d| crate::engine_install::has_leftovers(&d));
+                && cached(ui.ctx(), "engine_leftovers", DISK_CACHE_AGE, || {
+                    crate::process_manager::engine_hosts_dir().is_some_and(|d| crate::engine_install::has_leftovers(&d))
+                });
             let removable = (runtime.is_some() || leftovers) && !matches!(state, EngineState::Installing { .. });
             if matches!(state, EngineState::Installed | EngineState::Custom(_)) && !removable {
                 continue;
@@ -427,7 +431,7 @@ impl App {
                 req.save_as_requested = true;
             }
         });
-        let names = session::list_named();
+        let names = cached(ui.ctx(), "named_sessions", DISK_CACHE_AGE, session::list_named);
         if names.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new("No saved sessions").small().weak()).wrap());
         }
@@ -614,6 +618,7 @@ impl App {
         if req.save_as_requested {
             let draft = self.session_name_draft.clone();
             self.save_named_session(&draft);
+            forget_disk_cache(&self.egui_ctx);
         }
         if let Some(name) = &req.open_session_name {
             self.load_named_session(name);
@@ -799,21 +804,70 @@ fn jar_name_draft(ui: &egui::Ui, id: NodeId, name: &str) -> String {
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
 /// runtime's files on every frame.
 fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
-    let key = egui::Id::new(("engine_dir_size", dir));
+    cached(ctx, ("engine_dir_size", dir), DISK_CACHE_AGE, || crate::engine_install::dir_size(dir))
+}
+
+/// How long the page's disk reads (`cached`) are reused before they are read again.
+const DISK_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The key all disk-read caches on this page share a namespace under, so
+/// `forget_disk_cache` clears them together.
+const DISK_CACHE: &str = "settings_disk_cache";
+
+/// `compute()`, recomputed at most every `max_age` (egui temp memory): the
+/// page redraws every frame, and these are disk reads.
+fn cached<T: Clone + Send + Sync + 'static>(
+    ctx: &egui::Context,
+    key: impl std::hash::Hash + std::fmt::Debug, // egui 0.36's `Id::new` wants `Debug` too
+
+    max_age: std::time::Duration,
+    compute: impl FnOnce() -> T,
+) -> T {
+    let id = egui::Id::new((DISK_CACHE, key));
+    let generation = ctx.data(|d| d.get_temp::<u64>(egui::Id::new(DISK_CACHE)).unwrap_or(0));
     let now = std::time::Instant::now();
-    if let Some((at, size)) = ctx.data(|d| d.get_temp::<(std::time::Instant, u64)>(key)) {
-        if now.duration_since(at) < std::time::Duration::from_secs(3) {
-            return size;
+    if let Some((at, seen, value)) = ctx.data(|d| d.get_temp::<(std::time::Instant, u64, T)>(id)) {
+        if seen == generation && now.duration_since(at) < max_age {
+            return value;
         }
     }
-    let size = crate::engine_install::dir_size(dir);
-    ctx.data_mut(|d| d.insert_temp(key, (now, size)));
-    size
+    let value = compute();
+    ctx.data_mut(|d| d.insert_temp(id, (now, generation, value.clone())));
+    value
+}
+
+/// Makes every `cached` value recompute on its next read: after a change
+/// the page asked for (Save As, a session deleted, an engine removed or its
+/// leftovers cleared, an install finished). A generation counter, not
+/// removal: egui's temp map can't remove by key prefix.
+pub(crate) fn forget_disk_cache(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        let id = egui::Id::new(DISK_CACHE);
+        let next = d.get_temp::<u64>(id).unwrap_or(0) + 1;
+        d.insert_temp(id, next);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cached_disk_read_runs_once_until_forgotten() {
+        let ctx = egui::Context::default();
+        let calls = std::cell::Cell::new(0);
+        let read = || {
+            calls.set(calls.get() + 1);
+            vec!["a".to_string()]
+        };
+        let hour = std::time::Duration::from_secs(3600);
+        assert_eq!(cached(&ctx, "names", hour, read), vec!["a".to_string()]);
+        assert_eq!(cached(&ctx, "names", hour, read), vec!["a".to_string()]);
+        assert_eq!(calls.get(), 1);
+        forget_disk_cache(&ctx);
+        cached(&ctx, "names", hour, read);
+        assert_eq!(calls.get(), 2);
+    }
 
     /// Review C-B5: Escape in a Settings field reverts that field and keeps the page open.
     #[test]

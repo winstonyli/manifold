@@ -562,6 +562,23 @@ impl App {
         true
     }
 
+    /// Starts a pass that materializes many nodes: one content-dir scan
+    /// answers all of them (`content_index`). `true` when this call set the
+    /// index, so only that caller's `end_content_pass` clears it.
+    fn begin_content_pass(&mut self) -> bool {
+        if self.content_index.is_some() {
+            return false;
+        }
+        self.content_index = Some(crate::ContentIndex::scan(crate::profile::content_dir().as_deref()));
+        true
+    }
+
+    fn end_content_pass(&mut self, began: bool) {
+        if began {
+            self.content_index = None;
+        }
+    }
+
     /// Creates the node `id` of `kind` from `fields` (a file card whose file is gone gets a placeholder).
     fn insert_materialized(
         &mut self,
@@ -575,9 +592,14 @@ impl App {
         let color = fields.get(&field::COLOR).and_then(color_of);
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
-        // else `stored` (`resolve_content_path`).
+        // else `stored` (`ContentIndex`): the pass's own index when one is
+        // running (`content_index`), so a restore reads the dir once.
         let content_path = matches!(kind, Kind::Image | Kind::Pdf | Kind::Json).then(|| {
-            crate::resolve_content_path(crate::profile::content_dir().as_deref(), &id, &str_of(fields, field::PATH))
+            let stored = str_of(fields, field::PATH);
+            match &self.content_index {
+                Some(index) => index.resolve(&id, &stored),
+                None => crate::ContentIndex::scan(crate::profile::content_dir().as_deref()).resolve(&id, &stored),
+            }
         });
         // Missing file, URL known (spec "Where fetched files live"):
         // refetched instead of shown as an error, whether it's genuinely
@@ -734,6 +756,7 @@ impl App {
             _ => 2,
         });
         let toasts = self.save_toast_queue.len();
+        let pass = self.begin_content_pass();
         for (id, change) in changes {
             let key = id.to_string();
             match change {
@@ -747,6 +770,7 @@ impl App {
                 }
             }
         }
+        self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
         // A remote jar edit follows the same table (spec "Live tabs when `jar` changes"); once the whole batch is in, so
         // a tab is judged by where the batch leaves it.
@@ -1033,6 +1057,7 @@ impl App {
             return false;
         }
         nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
+        let pass = self.begin_content_pass();
         for (id, kind, fields, group) in &nodes {
             let group = group.map(|g| g.to_string());
             // The store's own `pos` still becomes `last_shared` inside
@@ -1040,6 +1065,7 @@ impl App {
             let entry = local.nodes.get(&id.to_string());
             self.materialize(id.to_string(), *kind, fields, group, entry);
         }
+        self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
         // Graph view with the first tab focused, re-fit once restored tabs
         // land; `apply_local` below overrides both from personal state when
@@ -1413,6 +1439,7 @@ impl App {
             _ => 2,
         });
         let toasts = self.save_toast_queue.len();
+        let pass = self.begin_content_pass();
         for node in imported {
             let is_root = Some(node.id) == root_id;
             let group = match node.fields.get(&field::GROUP) {
@@ -1429,6 +1456,7 @@ impl App {
             }
             self.materialize(node.id.to_string(), node.kind, &fields, group, None);
         }
+        self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);
     }
 

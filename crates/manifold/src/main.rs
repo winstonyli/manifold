@@ -258,24 +258,44 @@ fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
-/// Where node `id`'s file is on this machine (spec "Where fetched files
+/// How long settings wait after the last change before they are written:
+/// a window drag sends dozens of moves a second.
+const SETTINGS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Where nodes' files are on this machine (spec "Where fetched files
 /// live"): this machine's own fetch in the content dir (`<id>.<ext>`, the
 /// newest if a Refresh changed the extension), which a Refresh replaces
-/// without touching the shared `path`; else `stored`. A missing `stored`
-/// shows as missing, and `session_sync::materialize` refetches it when the
-/// node has a URL. An unfinished `.tmp` save is never picked.
-fn resolve_content_path(dir: Option<&std::path::Path>, id: &str, stored: &str) -> String {
-    let prefix = format!("{id}.");
-    dir.and_then(|dir| std::fs::read_dir(dir).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
+/// without touching the shared `path`; else the stored path. A missing
+/// stored path shows as missing, and `session_sync::materialize` refetches
+/// it when the node has a URL. An unfinished `.tmp` save is never picked.
+/// One directory read answers a whole restore or apply pass.
+#[derive(Debug, Default)]
+pub(crate) struct ContentIndex(HashMap<String, (std::time::SystemTime, std::path::PathBuf)>);
+
+impl ContentIndex {
+    pub(crate) fn scan(dir: Option<&std::path::Path>) -> Self {
+        let mut newest: HashMap<String, (std::time::SystemTime, std::path::PathBuf)> = HashMap::new();
+        let entries = dir.and_then(|dir| std::fs::read_dir(dir).ok()).into_iter().flatten().flatten();
+        for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with(&prefix) && !name.ends_with(".tmp")
-        })
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-        .map_or_else(|| stored.to_string(), |e| e.path().to_string_lossy().into_owned())
+            let Some((id, _)) = name.split_once('.') else { continue };
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            match newest.get(id) {
+                Some((at, _)) if *at >= modified => {}
+                _ => {
+                    newest.insert(id.to_string(), (modified, e.path()));
+                }
+            }
+        }
+        Self(newest)
+    }
+
+    pub(crate) fn resolve(&self, id: &str, stored: &str) -> String {
+        self.0.get(id).map_or_else(|| stored.to_string(), |(_, path)| path.to_string_lossy().into_owned())
+    }
 }
 
 /// A one-line shape summary for a JSON node's own small graph card:
@@ -1261,6 +1281,13 @@ struct App {
     /// until the file has actually been loaded or saved once this run,
     /// which also means "skip the conflict check" the first time.
     settings_fingerprint: Option<u64>,
+    /// When settings changed by a window move or resize are due to be
+    /// written (`note_settings_changed`, `flush_settings_if_due`); `None`
+    /// when nothing is waiting.
+    settings_save_due: Option<std::time::Instant>,
+    /// Set for the length of one restore or apply pass, so each node's file
+    /// lookup doesn't read the content dir again.
+    content_index: Option<ContentIndex>,
 
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
@@ -1526,6 +1553,8 @@ impl Default for App {
             store_notices: std::collections::BTreeSet::new(),
             store_recovered: false,
             settings_fingerprint,
+            settings_save_due: None,
+            content_index: None,
             find: FindState::default(),
             engine_installs: HashMap::new(),
             engine_failures: HashMap::new(),
@@ -1840,8 +1869,10 @@ impl App {
     /// or wrote it: then the write goes to `settings::conflict_path()` and a
     /// toast says so, rather than clobbering theirs. The first save of a run
     /// (`settings_fingerprint` still `None`) always proceeds. Replaces every
-    /// direct `self.settings.save()` call site.
+    /// direct `self.settings.save()` call site. It writes the window
+    /// geometry too, so a debounced save still waiting is done by it.
     fn save_settings(&mut self) {
+        self.settings_save_due = None;
         let on_disk = settings::fingerprint();
         if self.settings_fingerprint.is_some() && on_disk != self.settings_fingerprint {
             if let Some(path) = settings::conflict_path() {
@@ -1859,6 +1890,31 @@ impl App {
         }
         self.settings.save();
         self.settings_fingerprint = settings::fingerprint();
+    }
+
+    /// Settings changed (window size or position): written once things
+    /// are quiet for `SETTINGS_SAVE_DELAY`, or at exit.
+    pub(crate) fn note_settings_changed(&mut self) {
+        self.settings_save_due = Some(std::time::Instant::now() + SETTINGS_SAVE_DELAY);
+    }
+
+    /// Writes settings if a change is due by `now`. Returns whether it wrote.
+    pub(crate) fn flush_settings_if_due(&mut self, now: std::time::Instant) -> bool {
+        match self.settings_save_due {
+            Some(due) if due <= now => {
+                self.settings_save_due = None;
+                self.save_settings();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// At exit: writes a debounced settings change still waiting.
+    pub(crate) fn flush_pending_settings(&mut self) {
+        if self.settings_save_due.is_some() {
+            self.save_settings();
+        }
     }
 
     /// `session::named_session_path`, toasting why there is none: "Not a session name" for a name that can't be a
@@ -2827,6 +2883,20 @@ mod tests {
     #[test]
     fn explorer_select_quotes_the_path() {
         assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+    }
+
+    #[test]
+    fn window_geometry_is_saved_after_a_quiet_spell_not_per_event() {
+        let mut app = App::default();
+        let t0 = std::time::Instant::now();
+        app.note_settings_changed();
+        assert!(!app.flush_settings_if_due(t0), "not at once");
+        app.note_settings_changed();
+        assert!(app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 2));
+        assert!(!app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 3), "flushed once");
+        app.note_settings_changed();
+        app.save_settings();
+        assert!(!app.flush_settings_if_due(t0 + SETTINGS_SAVE_DELAY * 4), "an immediate save covers a pending one");
     }
 
     fn sid_key() -> jar::Key {

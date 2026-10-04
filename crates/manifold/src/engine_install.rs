@@ -730,7 +730,10 @@ impl crate::App {
         let running =
             !self.spawning.is_empty() || self.nodes.values().any(|n| n.as_tab().is_some_and(|t| t.tab.kind == kind));
         let installing = self.engine_installs.contains_key(&kind);
-        match remove_runtime(&dir, running, installing) {
+        let removed = remove_runtime(&dir, running, installing);
+        // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
+        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        match removed {
             Ok(()) => {
                 // A recorded failure described the files just deleted.
                 self.engine_failures.remove(&kind);
@@ -763,6 +766,8 @@ impl crate::App {
             self.engine_installs.iter().filter(|(_, job)| job.handle.is_finished()).map(|(kind, _)| *kind).collect();
         if !finished.is_empty() {
             self.engine_state_cache.borrow_mut().clear();
+            // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
+            crate::settings_page::forget_disk_cache(&self.egui_ctx);
         }
         for kind in finished {
             let Some(job) = self.engine_installs.remove(&kind) else { continue };

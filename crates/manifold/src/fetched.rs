@@ -799,20 +799,35 @@ mod tests {
         let dir = crate::store::testutil::temp_dir("resolve_content");
         write_aged(&dir.join("5-9.png"), std::time::Duration::from_secs(60));
         let elsewhere = r"Z:\nowhere\5-9.png";
-        assert_eq!(resolve_content_path(Some(&dir), "5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
-        assert_eq!(resolve_content_path(Some(&dir), "5-8", elsewhere), elsewhere);
-        assert_eq!(resolve_content_path(None, "5-9", elsewhere), elsewhere);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", elsewhere), dir.join("5-9.png").to_string_lossy());
+        assert_eq!(index.resolve("5-8", elsewhere), elsewhere);
+        assert_eq!(crate::ContentIndex::scan(None).resolve("5-9", elsewhere), elsewhere);
         // A stored file that exists (a re-id'd node's old copy) still loses
         // to the node's own fetch, and a Refresh's newer extension wins.
         let old = dir.join("5-1.png");
         write_aged(&old, std::time::Duration::from_secs(60));
         let old = old.to_string_lossy().into_owned();
         write_aged(&dir.join("5-9.jpg"), std::time::Duration::ZERO);
-        assert_eq!(resolve_content_path(Some(&dir), "5-9", &old), dir.join("5-9.jpg").to_string_lossy());
-        assert_eq!(resolve_content_path(Some(&dir), "5-1", &old), old);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", &old), dir.join("5-9.jpg").to_string_lossy());
+        assert_eq!(index.resolve("5-1", &old), old);
         // An unfinished save is never a node's file.
         write_aged(&dir.join("5-2.png.1234.tmp"), std::time::Duration::ZERO);
-        assert_eq!(resolve_content_path(Some(&dir), "5-2", elsewhere), elsewhere);
+        assert_eq!(crate::ContentIndex::scan(Some(&dir)).resolve("5-2", elsewhere), elsewhere);
+    }
+
+    #[test]
+    fn one_index_answers_every_node_of_a_pass() {
+        use crate::content::tests::write_aged;
+        let dir = crate::store::testutil::temp_dir("content_index");
+        write_aged(&dir.join("5-9.png"), std::time::Duration::from_secs(60));
+        write_aged(&dir.join("5-9.jpg"), std::time::Duration::ZERO);
+        write_aged(&dir.join("5-10.json"), std::time::Duration::ZERO);
+        let index = crate::ContentIndex::scan(Some(&dir));
+        assert_eq!(index.resolve("5-9", "x"), dir.join("5-9.jpg").to_string_lossy(), "the newest wins");
+        assert_eq!(index.resolve("5-10", "x"), dir.join("5-10.json").to_string_lossy());
+        assert_eq!(index.resolve("5-1", "x"), "x", "an id that is a prefix of another's isn't matched");
     }
 
     #[test]

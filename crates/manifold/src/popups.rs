@@ -409,6 +409,7 @@ impl App {
             Some(true) => {
                 self.pending_session_delete = None;
                 session::delete_named(&name);
+                crate::settings_page::forget_disk_cache(ui.ctx());
             }
             Some(false) => self.pending_session_delete = None,
             None => {}
