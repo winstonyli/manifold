@@ -72,6 +72,13 @@ fn list_rows_key(ui: &egui::Ui) -> egui::Id {
     ui.layer_id().id.with("list_rows")
 }
 
+/// A bookmark folder as committed from the folder field: the draft's clean form (name rules), or no folder when
+/// nothing is left of it.
+fn folder_from_draft(draft: &str) -> Option<String> {
+    let clean = crate::names::clean_name(draft);
+    (!clean.is_empty()).then(|| clean.into_owned())
+}
+
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
@@ -675,9 +682,8 @@ impl App {
         }
         if let Some(draft) = folder_rename_commit {
             if let Some((url, _)) = self.renaming_bookmark_folder.take() {
-                let trimmed = draft.trim();
                 if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
-                    bookmark.folder = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                    bookmark.folder = folder_from_draft(&draft);
                     bookmarks::save(&self.bookmarks);
                 }
             }
@@ -1457,6 +1463,14 @@ mod tests {
     }
 
     use super::*;
+
+    /// Name rules: a bookmark folder is committed under its clean name; nothing left of it means no folder.
+    #[test]
+    fn a_bookmark_folder_commits_its_clean_name() {
+        assert_eq!(folder_from_draft("  Re\u{200B}ading\u{00A0}\u{00A0}list\n").as_deref(), Some("Reading list"));
+        assert_eq!(folder_from_draft(" \u{200B}\u{202E} "), None);
+        assert_eq!(folder_from_draft(""), None);
+    }
 
     /// Fix batch B5: a confirm opens only into an empty slot with the other kind's closed; it never replaces one.
     #[test]

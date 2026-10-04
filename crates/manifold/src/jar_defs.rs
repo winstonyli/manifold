@@ -304,7 +304,7 @@ impl App {
         }
     }
 
-    /// A new named jar with the first palette colour no jar shows (one without a colour shows the first, `jar_color`),
+    /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without a colour shows the first, `jar_color`),
     /// so deleting a jar doesn't make the next one repeat a colour; with every colour taken, they cycle by count.
     /// Saved by the caller's `save_session`.
     pub(crate) fn create_jar(&mut self, name: &str) -> NodeId {
@@ -312,7 +312,7 @@ impl App {
         let shown = |c: &egui::Color32| self.jar_defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
         let free = TAG_COLOR_PALETTE.iter().find(|c| !shown(c));
         let color = Some(*free.unwrap_or(&TAG_COLOR_PALETTE[self.jar_defs.len() % TAG_COLOR_PALETTE.len()]));
-        self.jar_defs.insert(id, JarDef { name: name.trim().to_string(), color, ephemeral: false });
+        self.jar_defs.insert(id, JarDef { name: crate::names::clean_name(name).into_owned(), color, ephemeral: false });
         id
     }
 
@@ -328,24 +328,30 @@ impl App {
         label.or_else(|| self.jar_defs.iter().find(|(_, d)| d.name == text).map(|(id, _)| id)).copied()
     }
 
-    /// `SETJAR`: the focused tab picks the jar `name` names (`jar_named`: a label or a stored name; "default", any
-    /// case, for the default jar), made first if none has that name. Nothing happens, and no jar is made, when the focused node is not a tab. Returns whether
-    /// it acted.
+    /// `SETJAR`: the focused tab picks the jar `name` names (`jar_named`: a label or a stored name, tried as typed and
+    /// then cleaned; "default", any case, for the default jar), made under the clean name first if none has it.
+    /// Nothing happens, and no jar is made, when the focused node is not a tab or nothing is left of the name once
+    /// cleaned (name rules). Returns whether it acted.
     pub(crate) fn set_focused_tab_jar_named(&mut self, name: &str) -> bool {
         let Some(tab) = self.focused.clone().filter(|t| self.tab_jar(t).is_some()) else { return false };
-        let jar = if name.eq_ignore_ascii_case("default") {
+        let clean = crate::names::clean_name(name).into_owned();
+        if clean.is_empty() {
+            return false;
+        }
+        let jar = if clean.eq_ignore_ascii_case("default") {
             None
         } else {
-            Some(self.jar_named(name).unwrap_or_else(|| self.create_jar(name)))
+            Some(self.jar_named(name).or_else(|| self.jar_named(&clean)).unwrap_or_else(|| self.create_jar(&clean)))
         };
         self.set_tab_jar(&tab, jar);
         true
     }
 
+    /// Renames jar `id` to `name`'s clean form (name rules); nothing left once cleaned leaves the name as it is.
     pub(crate) fn rename_jar(&mut self, id: NodeId, name: &str) {
-        let name = name.trim();
-        if let (false, Some(def)) = (name.is_empty(), self.jar_defs.get_mut(&id)) {
-            def.name = name.to_string();
+        let clean = crate::names::clean_name(name);
+        if let (false, Some(def)) = (clean.is_empty(), self.jar_defs.get_mut(&id)) {
+            def.name = clean.into_owned();
         }
     }
 
@@ -1272,5 +1278,34 @@ mod tests {
         let held = crate::tabs::Held::Snapshot(crate::process_manager::EngineKind::Cef, "http://x/".into());
         assert!(app.hold_for_cookies("t", held).is_none());
         assert!(app.host_change_pending("t"), "a swap or switch parked waiting for its cookies");
+    }
+
+    /// Name rules: a jar is made and renamed under the clean name; a rename with nothing left is ignored.
+    #[test]
+    fn a_jar_is_made_and_renamed_with_the_clean_name() {
+        let mut app = App::default();
+        let jar = app.create_jar(" Wo\u{200B}rk\n");
+        assert_eq!(app.jar_defs[&jar].name, "Work");
+        app.rename_jar(jar, "\u{00A0}Home\u{2028}Office");
+        assert_eq!(app.jar_defs[&jar].name, "Home Office");
+        app.rename_jar(jar, "\u{200B}");
+        assert_eq!(app.jar_defs[&jar].name, "Home Office");
+    }
+
+    /// Name rules: `SETJAR` with nothing left of the name does nothing; a name that is clean only after cleaning
+    /// finds the jar it cleans to rather than making a twin.
+    #[test]
+    fn setjar_matches_and_makes_by_the_clean_name() {
+        let mut app = App::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.focused = Some(t.clone());
+        assert!(!app.set_focused_tab_jar_named("\u{200B} "));
+        assert!(app.jar_defs.is_empty());
+        let work = app.create_jar("Work");
+        assert!(app.set_focused_tab_jar_named("Wo\u{200B}rk"));
+        assert_eq!(app.jar_defs.len(), 1, "no twin made");
+        assert_eq!(app.tab_jar(&t).map(|c| c.jar), Some(Some(work)));
+        assert!(app.set_focused_tab_jar_named(" New\u{00A0}\u{00A0}one "));
+        assert!(app.jar_defs.values().any(|d| d.name == "New one"));
     }
 }

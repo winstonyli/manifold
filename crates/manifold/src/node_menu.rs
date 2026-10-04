@@ -281,6 +281,13 @@ pub(crate) fn build_node_context_menu(
     (action, clicked_outside)
 }
 
+/// Export Group's suggested file name: the group's clean name (name rules), or "Untitled" when nothing is left, then
+/// ".json". Never the placeholder form, whose `<` `>` Windows forbids in file names.
+fn export_file_name(name: &str) -> String {
+    let clean = crate::names::clean_name(name);
+    format!("{}.json", if clean.is_empty() { crate::names::UNTITLED } else { &clean })
+}
+
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
 fn menu_button(
     ui: &mut egui::Ui,
@@ -765,10 +772,10 @@ impl App {
             }
             NodeAction::CommitRename(name) => {
                 self.renaming_group = None;
-                let trimmed = name.trim();
-                if !trimmed.is_empty() {
+                let clean = crate::names::clean_name(&name);
+                if !clean.is_empty() {
                     if let Some(group) = self.nodes.get_mut(id).and_then(|n| n.as_group_mut()) {
-                        group.name = trimmed.to_string();
+                        group.name = clean.into_owned();
                     }
                 }
             }
@@ -790,9 +797,10 @@ impl App {
             NodeAction::MoveToGroup(group) => self.apply_drop(id, Some((DropEffect::Join, Some(group)))),
             NodeAction::Dissolve => self.dissolve_group(id),
             NodeAction::ExportGroup => {
-                let name = self.nodes.get(id).and_then(|n| n.as_group()).map(|g| g.name.clone()).unwrap_or_default();
+                let group = self.nodes.get(id).and_then(|n| n.as_group());
+                let name = export_file_name(group.map_or("", |g| &g.name)); // name rule: export_file_name cleans it
                 if let Some(json) = self.export_group_json(id) {
-                    if let Some((path, toast)) = save_dialog_with_toast(format!("{name}.json"), "Group") {
+                    if let Some((path, toast)) = save_dialog_with_toast(name, "Group") {
                         write_json_export(&json, &path, "group");
                         self.queue_toast(toast.0);
                     }
@@ -806,7 +814,7 @@ impl App {
             }
             NodeAction::NewJar(name) => {
                 self.naming_jar = None;
-                if !name.trim().is_empty() {
+                if !crate::names::clean_name(&name).is_empty() {
                     let jar = self.create_jar(&name);
                     self.set_tab_jar(id, Some(jar));
                 }
@@ -1295,5 +1303,36 @@ mod tests {
         let note = app.alloc_node_id();
         app.insert_note_at(note.clone(), None);
         assert!(app.node_menu_view(&note).unwrap().jars.is_none(), "only tabs and groups have jars");
+    }
+
+    /// Name rules: a group rename commits the clean name; one with nothing left keeps the old name.
+    #[test]
+    fn a_group_rename_commits_the_clean_name() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        app.apply_node_action(&ctx, &g, NodeAction::CommitRename("  Re\u{200B}ading\u{00A0}\u{00A0}list\n".into()));
+        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+        app.apply_node_action(&ctx, &g, NodeAction::CommitRename("\u{200B} \u{202E}".into()));
+        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Reading list");
+    }
+
+    /// Name rules: "New Jar..." makes a jar under the clean name, and none from a name with nothing left.
+    #[test]
+    fn new_jar_takes_the_clean_name() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.apply_node_action(&ctx, &t, NodeAction::NewJar("\u{200B} ".into()));
+        assert!(app.jar_defs.is_empty());
+        app.apply_node_action(&ctx, &t, NodeAction::NewJar(" Wo\u{200B}rk ".into()));
+        assert_eq!(app.jar_defs.values().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Work"]);
+    }
+
+    #[test]
+    fn a_group_exports_under_its_clean_name() {
+        assert_eq!(export_file_name("Re\u{200B}ading\n"), "Reading.json");
+        assert_eq!(export_file_name("\u{202E}"), "Untitled.json");
     }
 }

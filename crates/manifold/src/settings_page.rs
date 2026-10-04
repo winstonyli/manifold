@@ -505,7 +505,7 @@ impl App {
                 if response.lost_focus() {
                     ui.data_mut(|d| d.remove::<String>(key));
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    if !escape && draft.trim() != def.name {
+                    if !escape && draft != def.name && *crate::names::clean_name(&draft) != *def.name {
                         req.rename_jar = Some((id, draft));
                     }
                 } else if ui.memory(|m| m.has_focus(response.id)) {
@@ -582,10 +582,8 @@ impl App {
             self.save_session();
         }
         if req.save_as_requested {
-            let name = sanitize_session_name(&self.session_name_draft);
-            if !name.is_empty() {
-                self.save_named_session(&name);
-            }
+            let draft = self.session_name_draft.clone();
+            self.save_named_session(&draft);
         }
         if let Some(name) = &req.open_session_name {
             self.load_named_session(name);
@@ -1065,5 +1063,34 @@ mod tests {
         let req = jars_frame(&mut app, &ctx);
         assert_eq!(req.rename_jar, None);
         assert_eq!(ctx.data(|d| d.get_temp::<String>(key)), None, "the closed page's draft is dropped");
+    }
+
+    /// Name rules: an edit that cleans back to the stored name requests no rename, and neither does focusing a
+    /// synced name that holds a hidden character and leaving it unchanged (stored names are never rewritten).
+    #[test]
+    fn a_jar_field_requests_no_rename_for_the_same_clean_name() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let synced = app.create_jar("x");
+        app.jar_defs.get_mut(&synced).unwrap().name = "Ho\u{200B}me".into();
+        let text = |t: &str| egui::RawInput { events: vec![egui::Event::Text(t.into())], ..Default::default() };
+        for (jar, typed) in [(work, Some("\u{200B}")), (synced, None)] {
+            ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(jar)));
+            jars_frame(&mut app, &ctx);
+            if let Some(typed) = typed {
+                jars_frame_with(&mut app, &ctx, text(typed));
+            }
+            jars_frame(&mut app, &ctx);
+            let draft = ctx.data(|d| d.get_temp::<String>(egui::Id::new(("jar_name", jar))));
+            assert!(
+                draft.as_deref().is_some_and(|d| d.contains('\u{200B}')),
+                "the draft holds the hidden character: {draft:?}"
+            );
+            ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(jar)));
+            assert_eq!(jars_frame(&mut app, &ctx).rename_jar, None, "{typed:?}");
+        }
     }
 }

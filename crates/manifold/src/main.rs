@@ -124,9 +124,12 @@ const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 /// hyphen, underscore only. No path separators or `.` survive, so there's
 /// no path-traversal or extension-confusion risk from typed input, and no
 /// separate validation step is needed before treating the result as a bare
-/// file stem.
+/// file stem. Cleaned first and last by the name rules (`names::clean_name`), so a hidden character
+/// never reaches the file name and the spaces the filter leaves behind collapse.
 fn sanitize_session_name(raw: &str) -> String {
-    raw.trim().chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect::<String>()
+    let clean = crate::names::clean_name(raw);
+    let safe: String = clean.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect();
+    crate::names::clean_name(&safe).into_owned()
 }
 
 /// Case-insensitive substring match against any of `haystacks` -- shared
@@ -1841,9 +1844,14 @@ impl App {
     /// with this profile's own personal state, saved to `sessions/<name>
     /// .mnf`. Saves the running session first so the copy isn't missing
     /// recent edits; a failure there or in the copy itself is toasted, not
-    /// fatal (the running session is untouched either way).
-    fn save_named_session(&mut self, name: &str) {
-        let Some(path) = session::named_session_path(name) else {
+    /// fatal (the running session is untouched either way). `raw` is sanitised here (`sanitize_session_name`), for
+    /// Settings and the headless command alike; nothing left of it saves nothing.
+    fn save_named_session(&mut self, raw: &str) {
+        let name = sanitize_session_name(raw);
+        if name.is_empty() {
+            return;
+        }
+        let Some(path) = session::named_session_path(&name) else {
             self.queue_toast("No session file".into());
             return;
         };
@@ -3176,5 +3184,25 @@ mod tests {
         assert_eq!(app.default_group_name(), "Group 2", "a dissolved group's number is reused, never duplicated");
         add(&mut app, "Group 2");
         assert_eq!(app.default_group_name(), "Group 4");
+    }
+
+    /// Name rules: a session name is cleaned, made file-safe, then cleaned again (spaces the filter leaves collapse).
+    #[test]
+    fn a_session_name_is_cleaned_then_made_file_safe() {
+        assert_eq!(sanitize_session_name("  Trip\u{200B} to\u{00A0}\u{00A0}Rome: day 1 "), "Trip to Rome day 1");
+        assert_eq!(sanitize_session_name("a . b"), "a b");
+        assert_eq!(sanitize_session_name("\u{202E}..\\"), "");
+        assert_eq!(sanitize_session_name(&"é".repeat(80)).chars().count(), 64);
+    }
+
+    /// Save As (Settings or headless `SAVESESSIONAS`) with nothing left of the name does nothing; before, the headless
+    /// path skipped `sanitize_session_name`.
+    #[test]
+    fn save_as_with_nothing_left_of_the_name_does_nothing() {
+        let mut app = App::default();
+        app.save_named_session("\u{200B} ..");
+        assert!(app.save_toast_queue.is_empty(), "{:?}", app.save_toast_queue);
+        app.save_named_session("Trip");
+        assert_eq!(app.save_toast_queue.len(), 1, "under test there is no session file");
     }
 }
