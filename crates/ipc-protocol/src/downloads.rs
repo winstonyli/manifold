@@ -21,13 +21,16 @@ pub fn downloads_dir() -> PathBuf {
 ///   `_`, so a `:` can't name an alternate data stream (`a.txt:x`);
 /// - trailing dots and spaces dropped (Windows drops them itself, and the
 ///   file would then not be at the path this returns);
+/// - at most `MAX_NAME_UNITS` UTF-16 units, cut from the stem so the
+///   extension stays (`cap_length`);
 /// - a Windows device name (`is_windows_device_name`) gets a leading `_`;
 /// - "download" if nothing is left, or only `.`/`..`.
 pub fn safe_name(suggested: &str) -> String {
     let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String =
         last.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
-    let name = cleaned.trim_end_matches(['.', ' ']);
+    let capped = cap_length(cleaned.trim_end_matches(['.', ' ']));
+    let name = capped.as_str();
     if name.is_empty() {
         "download".to_string()
     } else if is_windows_device_name(name) {
@@ -35,6 +38,38 @@ pub fn safe_name(suggested: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// The longest name `safe_name` returns, in UTF-16 units: NTFS and most
+/// other file systems take 255 per component, less room for the ` (n)`
+/// `unique_path` may add. One rule on every platform, like the rest.
+const MAX_NAME_UNITS: usize = 255 - 15;
+
+/// An extension longer than this (in UTF-16 units) isn't kept whole when a
+/// name is cut: it's part of a long name, not a file type.
+const MAX_KEPT_EXTENSION_UNITS: usize = 32;
+
+/// `name` cut to `MAX_NAME_UNITS` UTF-16 units: its stem is cut and its
+/// extension (`split_extension`) kept, unless that is itself too long, when
+/// the whole name is cut. Trailing dots and spaces the cut exposes go too.
+fn cap_length(name: &str) -> String {
+    let units = |s: &str| s.encode_utf16().count();
+    if units(name) <= MAX_NAME_UNITS {
+        return name.to_string();
+    }
+    let (stem, ext) = split_extension(name);
+    let tail = ext.map(|e| format!(".{e}")).filter(|t| units(t) <= MAX_KEPT_EXTENSION_UNITS).unwrap_or_default();
+    let head = if tail.is_empty() { name } else { stem };
+    let mut budget = MAX_NAME_UNITS - units(&tail);
+    let cut: String = head
+        .chars()
+        .take_while(|c| {
+            let fits = c.len_utf16() <= budget;
+            budget = budget.saturating_sub(c.len_utf16());
+            fits
+        })
+        .collect();
+    format!("{}{tail}", cut.trim_end_matches(['.', ' ']))
 }
 
 /// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, or `COM`/`LPT` with a
@@ -93,14 +128,29 @@ pub fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> Pat
 /// Whether two download paths name the same file, for `unique_path`'s
 /// `taken` check against downloads in flight: ignoring case on Windows, whose
 /// file systems do (so `A.pdf` in flight takes `a.pdf`, as `exists()` would
-/// once it's written), exactly elsewhere. Unicode lowercase, which can differ
-/// from NTFS's own case table in rare letters.
+/// once it's written), exactly elsewhere. Compared as NTFS does: each
+/// character uppercased on its own (`ntfs_upper`).
 pub fn same_download_path(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
-        Path::new(&a.to_string_lossy().to_lowercase()) == Path::new(&b.to_string_lossy().to_lowercase())
+        Path::new(&ntfs_upper(&a.to_string_lossy())) == Path::new(&ntfs_upper(&b.to_string_lossy()))
     } else {
         a == b
     }
+}
+
+/// Close to NTFS's case folding: it uppercases through a one-to-one table, so
+/// a character whose Unicode uppercase is several (`ß` -> `SS`) stays as it
+/// is, and `ß.txt` and `ss.txt` are different files.
+fn ntfs_upper(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect()
 }
 
 /// One tick's engine messages with each download's progress reduced to the
@@ -159,6 +209,31 @@ mod tests {
     }
 
     #[test]
+    fn a_long_name_is_cut_keeping_its_extension() {
+        let units = |s: &str| s.encode_utf16().count();
+        let long = format!("{}.pdf", "a".repeat(300));
+        let name = safe_name(&long);
+        assert_eq!(units(&name), MAX_NAME_UNITS);
+        assert!(name.ends_with("a.pdf"), "{name}");
+        let archive = safe_name(&format!("{}.tar.gz", "b".repeat(300)));
+        assert!(archive.ends_with("b.tar.gz") && units(&archive) == MAX_NAME_UNITS, "{archive}");
+        // An astral character is two units: never split, so the cut may fall one short.
+        let emoji = safe_name(&format!("{}.txt", "\u{1F600}".repeat(200)));
+        assert!(emoji.ends_with(".txt") && units(&emoji) <= MAX_NAME_UNITS, "{emoji}");
+        let no_ext = safe_name(&"c".repeat(300));
+        assert_eq!(no_ext, "c".repeat(MAX_NAME_UNITS));
+        let huge_ext = safe_name(&format!("x.{}", "e".repeat(300)));
+        assert_eq!(units(&huge_ext), MAX_NAME_UNITS, "a too-long extension is cut with the rest");
+        assert!(huge_ext.starts_with("x.e"));
+        let dots = safe_name(&format!("{}{}.pdf", "d".repeat(230), ". ".repeat(30)));
+        assert!(dots.ends_with("d.pdf"), "the cut's trailing dots and spaces go: {dots}");
+        assert_eq!(safe_name("short.pdf"), "short.pdf");
+        let numbered = unique_path(Path::new("d"), &name, |p: &Path| p.ends_with(&name));
+        let numbered = numbered.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(units(&numbered) <= 255, "room is left for the number");
+    }
+
+    #[test]
     fn a_device_name_is_prefixed() {
         for (raw, want) in [
             ("CON", "_CON"),
@@ -210,6 +285,8 @@ mod tests {
         assert_eq!(same_download_path(&dir.join("Report.PDF"), &dir.join("report.pdf")), cfg!(windows));
         assert_eq!(same_download_path(&dir.join("Ärger.txt"), &dir.join("ärger.txt")), cfg!(windows));
         assert!(!same_download_path(&dir.join("a.pdf"), &dir.join("b.pdf")));
+        assert!(!same_download_path(&dir.join("ß.txt"), &dir.join("ss.txt")), "NTFS folds one character at a time");
+        assert_eq!(same_download_path(&dir.join("ǆ.txt"), &dir.join("Ǆ.txt")), cfg!(windows));
         let in_flight = [dir.join("A.pdf")];
         let taken = |p: &Path| in_flight.iter().any(|t| same_download_path(t, p));
         let want = if cfg!(windows) { "a (1).pdf" } else { "a.pdf" };
