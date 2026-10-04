@@ -2077,6 +2077,9 @@ impl App {
     /// name a node that's gone, or `insertion_group` would orphan new nodes.
     fn remove_node(&mut self, id: &str) {
         let removed = self.nodes.remove(id);
+        if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
+            self.pdf_fetcher.cancel(id);
+        }
         if self.current_group.as_deref() == Some(id) {
             self.switch_group_level(removed.and_then(|n| n.group));
         }

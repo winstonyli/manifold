@@ -59,14 +59,14 @@ pub(crate) fn image_pixel_size(image: &ImagePayload) -> egui::Vec2 {
     egui::vec2(image.width.max(1) as f32, image.height.max(1) as f32)
 }
 
-/// Contain `image` within `body`, never above 1.0 -- same "scale down,
-/// never up" rule `image_node_card_size` uses, so a small image isn't
-/// blurred by magnification it didn't ask for.
+/// Contain `image` within `body`, never above 1.0 (a small image isn't
+/// magnified). No lower clamp: Fit pins the pan, so a scale clamped above
+/// the true fit would leave the edges unreachable.
 pub(crate) fn image_fit_scale(image: egui::Vec2, body: egui::Vec2) -> f32 {
     if image.x <= 0.0 || image.y <= 0.0 {
         return 1.0;
     }
-    (body.x / image.x).min(body.y / image.y).clamp(IMAGE_ZOOM_MIN, 1.0)
+    (body.x / image.x).min(body.y / image.y).clamp(f32::MIN_POSITIVE, 1.0)
 }
 
 /// Whether a just-(re)spawned tab's engine view should be shown, used by
@@ -99,10 +99,11 @@ pub(crate) fn clamp_image_pan(pan: egui::Vec2, scaled: egui::Vec2, body: egui::V
     egui::vec2(axis(pan.x, scaled.x, body.x), axis(pan.y, scaled.y, body.y))
 }
 
-/// Zooms by `factor` (clamped to `IMAGE_ZOOM_MIN..=IMAGE_ZOOM_MAX`) so the
-/// image point under `anchor` (relative to the body center) stays put.
+/// Zooms by `factor` (clamped to `IMAGE_ZOOM_MIN..=IMAGE_ZOOM_MAX`, or to
+/// the current scale if Fit already went below the minimum) so the image
+/// point under `anchor` (relative to the body center) stays put.
 pub(crate) fn zoom_about(scale: f32, pan: egui::Vec2, factor: f32, anchor: egui::Vec2) -> (f32, egui::Vec2) {
-    let new_scale = (scale * factor).clamp(IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+    let new_scale = (scale * factor).clamp(IMAGE_ZOOM_MIN.min(scale), IMAGE_ZOOM_MAX);
     let ratio = new_scale / scale;
     (new_scale, anchor - (anchor - pan) * ratio)
 }
@@ -307,6 +308,15 @@ mod tests {
         assert_eq!(image_fit_scale(egui::vec2(2000.0, 1000.0), body), 0.5);
         assert_eq!(image_fit_scale(egui::vec2(1000.0, 4000.0), body), 0.2);
         assert_eq!(image_fit_scale(egui::vec2(64.0, 64.0), body), 1.0);
+    }
+
+    /// Review D-R8: Fit really fits an image over 10x the body, and zooming out from there doesn't jump in.
+    #[test]
+    fn fit_fits_a_huge_image_and_zoom_out_keeps_going_down() {
+        let fit = image_fit_scale(egui::vec2(8000.0, 100.0), egui::vec2(700.0, 500.0));
+        assert!((fit - 700.0 / 8000.0).abs() < 1e-6, "{fit}");
+        assert_eq!(zoom_about(0.05, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, 0.05, "never up on zoom-out");
+        assert_eq!(zoom_about(0.11, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, IMAGE_ZOOM_MIN);
     }
 
     #[test]
