@@ -8,7 +8,9 @@
 #
 # --check  unzips the newest zip into a temp folder and asserts on it (no libcef.dll or .pak files; a headless
 #          manifold starts, reports CEF as not installed, and a WebView2 tab loads a local page that reports its load). Downloads nothing.
-# SKIP_BUILD=1  package whatever target/release holds (for a build you ran yourself, e.g. at BelowNormal priority).
+# SKIP_BUILD=1  package whatever target/release holds (for a build you ran yourself, e.g. at BelowNormal priority;
+#               build it with RUSTFLAGS="-C target-feature=+crt-static" as below, or --check fails it).
+# JOBS=N        cargo's -j for the build (default 8).
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
@@ -35,6 +37,17 @@ check() {
     for f in manifold.exe manifold-engine-webview2.exe manifold-engine-cef.exe README.md PACKAGING.md; do
         [ -f "$pkg/$f" ] && ok "zip has $f" || bad "zip lacks $f"
     done
+    # The CRT is linked statically, so no exe needs the Visual C++ Redistributable (vcruntime140, msvcp140).
+    if command -v llvm-objdump >/dev/null 2>&1; then
+        for f in "$pkg"/*.exe; do
+            dlls="$(llvm-objdump -p "$f" | sed -n 's/^ *DLL Name: //p' | tr '\n' ' ')"
+            echo "    $(basename "$f") imports: $dlls"
+            echo "$dlls" | grep -qiE 'vcruntime|msvcp' && bad "$(basename "$f") needs the VC++ Redistributable" ||
+                ok "$(basename "$f") needs no VC++ Redistributable"
+        done
+    else
+        echo "SKIP: no llvm-objdump to list the exes' DLL imports"
+    fi
     heavy="$(find "$pkg" \( -iname 'libcef.dll' -o -iname '*.pak' -o -iname 'icudtl.dat' \) | head -1)"
     [ -z "$heavy" ] && ok "zip has no CEF runtime files" || bad "zip carries a CEF runtime file: $heavy"
 
@@ -65,8 +78,10 @@ if [ "${1:-}" = "--check" ]; then check; fi
 if [ -n "$(git status --porcelain)" ]; then echo "package.sh: the working tree is dirty; commit first" >&2; exit 1; fi
 if [ -z "${SKIP_BUILD:-}" ]; then
     # depot_tools' extensionless `ninja` shadows the real ninja.exe and breaks CEF's build (README, "Building").
+    # A static CRT spares users the VC++ Redistributable; CEF's wrapper is built against the static one already.
+    # RUSTFLAGS (not .cargo/config.toml) keeps it to this build: debug builds would otherwise rebuild everything.
     PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -F depot_tools | tr '\n' ':')" \
-        cargo build --release -j 12 -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
+        RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -j "${JOBS:-8}" -p manifold -p manifold-engine-webview2 -p manifold-engine-cef
 fi
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
@@ -78,12 +93,17 @@ cp README.md "$stage/$name/"
 cat >"$stage/$name/PACKAGING.md" <<EOF
 # manifold $version (Windows x64)
 
-Run manifold.exe. Keep the three .exe files in the same folder.
+Run manifold.exe. Keep the three .exe files in the same folder. The C runtime is linked in, so the Visual C++
+Redistributable is not needed.
 
-This package carries two engines: WebView2 (needs the WebView2 runtime that Windows 11
-includes) and a small CEF host. CEF's runtime (about 172 MB compressed, 423 MB unpacked) is not included. It is an
-optional download: pick CEF in the engine picker, or Settings > Engines > Download, and confirm. It installs under
-%APPDATA%\\manifold\\engine-hosts\\cef-runtime and can be removed from the same page.
+This package carries two engines: WebView2 and a small CEF host. WebView2 needs the Microsoft Edge WebView2 runtime,
+which Windows 11 includes; without it a tab fails with "WebView2 runtime not found: install the WebView2 runtime".
+Install the Evergreen runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and open the tab again.
+
+CEF's runtime (about 172 MB compressed, 423 MB unpacked) is not included. It is an optional download: pick CEF in
+the engine picker, or Settings > Engines > Download, and confirm. It installs under
+%APPDATA%\\manifold\\manifold\\data\\engine-hosts\\cef-runtime and can be removed from the same page.
+Settings > Engines can also use your own CEF folder of the same major version or a later one (newer than tested).
 
 The executables are unsigned, so Windows SmartScreen may warn on first run.
 EOF
