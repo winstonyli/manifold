@@ -1,6 +1,8 @@
 //! Tab lifecycle on App: spawn, respawn, focus, hide, split, leave to graph, destroy and remove.
 
 use super::*;
+use ipc_protocol::PageState;
+use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 /// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
 pub(crate) enum Held {
@@ -10,6 +12,12 @@ pub(crate) enum Held {
 
 /// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
 const COOKIE_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long quitting waits for the tabs' last `Cookies` replies (`App::final_cookie_pull`).
+const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
+const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A tab whose last `MAX_SILENT_PULLS` pulls all went unanswered is given up on: its host cannot answer (the WebView2
 /// shared-profile fallback, a CDP error), so it is no longer asked and nothing waits on it.
@@ -44,12 +52,6 @@ pub(crate) fn pull_pending(pulls: &HashMap<String, std::time::Instant>, id: &str
     pulls.get(id).is_some_and(|sent| now.saturating_duration_since(*sent) < JAR_PULL_TIMEOUT)
 }
 
-/// How long quitting waits for the tabs' last `Cookies` replies (`App::final_cookie_pull`).
-const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
-const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// A tab whose engine crashes this many times within `CRASH_WINDOW` is left
 /// as a failed card instead of respawning again.
 pub(crate) const CRASH_LIMIT: usize = 3;
@@ -76,8 +78,6 @@ fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
         jar: tab.jar,
     }
 }
-use ipc_protocol::PageState;
-use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 impl App {
     /// Spawns the very first tab at startup: no parent, becomes focused,
@@ -553,12 +553,6 @@ impl App {
         }
     }
 
-    /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
-    /// if `parent` is `None`), spawned invisible — it stays in Graph view
-    /// rather than auto-focusing (see plan's M5 scope decision 5), and
-    /// background tabs render nothing until focused anyway. Also used for
-    /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
-    /// that request's URL instead of the configured home page.
     /// Tab context menu's "Duplicate": a new tab at `id`'s current url and
     /// engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
@@ -574,6 +568,12 @@ impl App {
         self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar);
     }
 
+    /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
+    /// if `parent` is `None`), spawned invisible — it stays in Graph view
+    /// rather than auto-focusing (see plan's M5 scope decision 5), and
+    /// background tabs render nothing until focused anyway. Also used for
+    /// a page-triggered new tab (`EngineToHost::OpenTabRequested`), with
+    /// that request's URL instead of the configured home page.
     pub(crate) fn spawn_new_tab(&mut self, parent: Option<String>, group: Option<String>, url: &str) {
         let kind = self.settings.default_starting_engine;
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None);

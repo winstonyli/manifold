@@ -247,6 +247,8 @@ pub(crate) fn dialog_frame(ui: &egui::Ui) -> egui::Frame {
     popup_frame(ui).corner_radius(6u8).inner_margin(egui::Margin::same(14))
 }
 
+/// One click on a card's color swatch advances to the next entry of `TAG_COLOR_PALETTE`, wrapping back to `None`
+/// (the plain default border) after the last: `None` -> the first entry -> ... -> the last -> `None`.
 pub(crate) fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Color32> {
     match current.and_then(|c| TAG_COLOR_PALETTE.iter().position(|&p| p == c)) {
         None => Some(TAG_COLOR_PALETTE[0]),

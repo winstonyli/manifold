@@ -2,7 +2,6 @@
 
 use super::*;
 
-/// One "Recently Closed" entry: a store-shaped JSON snapshot of the
 /// Prunes `dir` of files neither `keep` nor any named session in
 /// `sessions` names. `None`, deleting nothing, when a session can't be
 /// read whole (`session::content_names`).

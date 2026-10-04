@@ -1,5 +1,4 @@
 use cef::{self, rc::Rc, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, *};
-use std::cell::RefCell;
 
 use crate::render_process_handler::{EngineRenderProcessHandler, RenderProcessHandlerBuilder};
 
@@ -73,13 +72,11 @@ impl AppBuilder {
 }
 
 #[derive(Clone)]
-pub struct EngineBrowserProcessHandler {
-    is_cef_ready: RefCell<bool>,
-}
+pub struct EngineBrowserProcessHandler {}
 
 impl EngineBrowserProcessHandler {
     pub fn new() -> Self {
-        Self { is_cef_ready: RefCell::new(false) }
+        Self {}
     }
 }
 
@@ -88,11 +85,7 @@ wrap_browser_process_handler! {
         handler: EngineBrowserProcessHandler,
     }
 
-    impl BrowserProcessHandler {
-        fn on_context_initialized(&self) {
-            *self.handler.is_cef_ready.borrow_mut() = true;
-        }
-    }
+    impl BrowserProcessHandler {}
 }
 
 impl BrowserProcessHandlerBuilder {

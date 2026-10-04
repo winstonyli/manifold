@@ -21,8 +21,7 @@ use crate::messages::HostToEngine;
 pub type LocalTransport = MessageChannel<LocalStream>;
 
 /// Control-channel connection to a WSL2-hosted engine-host (WPE). No
-/// shared memory crosses the Windows/WSL2 boundary, so frame bytes are
-/// sent inline on this same TCP stream via `send_raw`/`recv_raw`.
+/// shared memory crosses the Windows/WSL2 boundary.
 pub type RemoteTransport = MessageChannel<TcpStream>;
 
 /// An engine's reader thread: forwards each `HostToEngine` from
@@ -168,18 +167,9 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
     Ok((receiver, sender))
 }
 
-/// Used only for the WSL2-hosted WebKit engine-host: manifold listens on
-/// a TCP port, the WebKit host (spawned via `wsl.exe`) connects to it.
-///
-/// Bound on all interfaces (0.0.0.0), not just loopback: WSL2's NAT-mode
-/// networking does NOT forward a WSL2 process's connection to
-/// 127.0.0.1:port on the Windows side (verified directly — it comes back
-/// `ECONNREFUSED`, not a timeout). The WSL2 guest instead reaches the
-/// Windows host at its default-gateway IP (`ip route`'s `default via`
-/// address, which is the host's own `vEthernet (WSL)` adapter) — see
-/// `connect_remote`'s caller in manifold-engine-webkit for the matching side.
-/// The secret a spawned WSL engine-host must present (`ENGINE_TOKEN`, as hex).
+/// Bytes in the one-time token a remote engine host sends first.
 pub const TOKEN_LEN: usize = 16;
+/// The secret a spawned WSL engine-host must present (`ENGINE_TOKEN`, as hex).
 pub type Token = [u8; TOKEN_LEN];
 
 pub fn token_to_hex(token: &Token) -> String {
@@ -197,6 +187,16 @@ pub fn token_from_hex(hex: &str) -> Option<Token> {
     Some(token)
 }
 
+/// Used only for the WSL2-hosted WebKit engine-host: manifold listens on
+/// a TCP port, the WebKit host (spawned via `wsl.exe`) connects to it.
+///
+/// Bound on all interfaces (0.0.0.0), not just loopback: WSL2's NAT-mode
+/// networking does NOT forward a WSL2 process's connection to
+/// 127.0.0.1:port on the Windows side (verified directly — it comes back
+/// `ECONNREFUSED`, not a timeout). The WSL2 guest instead reaches the
+/// Windows host at its default-gateway IP (`ip route`'s `default via`
+/// address, which is the host's own `vEthernet (WSL)` adapter) — see
+/// `connect_remote`'s caller in manifold-engine-webkit for the matching side.
 pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("0.0.0.0", port))
 }

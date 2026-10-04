@@ -119,10 +119,6 @@ const CHROME_HEIGHT_POINTS: f32 = 38.0;
 /// visibly cut off at the old 26.0).
 const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 
-/// One click on a card's color swatch advances to the next palette entry,
-/// wrapping back to `None` (the plain default border) after the last --
-/// `None` -> red -> orange -> ... -> purple -> `None`, matching how the pin
-/// dot's own binary toggle needs no separate popup/menu to operate.
 /// Strips a "Save Session As..." name down to characters safe to use
 /// verbatim as a filename (`sessions/<name>.mnf`) -- alphanumeric, space,
 /// hyphen, underscore only. No path separators or `.` survive, so there's

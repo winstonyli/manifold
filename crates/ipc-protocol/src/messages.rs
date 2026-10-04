@@ -20,28 +20,28 @@ pub enum MouseButton {
     Middle,
 }
 
-/// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
-/// (not guaranteed FFI/serialization-stable across winit versions) or any
-/// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
-/// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
-/// winit's key into this; each engine-host translates this into whatever
-/// its own embedding API wants. Two encodings are standards rather than one
-/// engine's own, so they live here with the table (`key_codes!`): the DOM
-/// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
-/// Servo's `Code`/`Key` stay in their engine crates.
-///
-/// Deliberately not exhaustive — common keys only (letters, digits,
-/// navigation, the usual modifiers and editing keys) covers real usage
-/// (typing into a page's form fields, basic shortcuts) without trying to
-/// enumerate every key on every keyboard layout.
-/// One row per key: the variant (which is also its DOM `KeyboardEvent.code`),
-/// its Windows virtual-key code, and its DOM `KeyboardEvent.key`. Generates
-/// the enum, `KeyCode::ALL` and the accessors, so the table exists once.
+// One row per key: the variant (which is also its DOM `KeyboardEvent.code`), its Windows virtual-key
+// code, and its DOM `KeyboardEvent.key`. Generates the enum, `KeyCode::ALL` and the accessors, so the
+// table exists once. A doc comment on a row lands on its variant.
 macro_rules! key_codes {
-    ($($name:ident $vk:literal $key:literal;)*) => {
+    ($($(#[$m:meta])* $name:ident $vk:literal $key:literal;)*) => {
+        /// A physical key, engine-agnostic — deliberately not winit's own `KeyCode`
+        /// (not guaranteed FFI/serialization-stable across winit versions) or any
+        /// one engine's native representation (Windows `VK_*` for CEF, a GDK keyval
+        /// for WebKitGTK, `keyboard_types::Code` for Servo). `manifold` translates
+        /// winit's key into this; each engine-host translates this into whatever
+        /// its own embedding API wants. Two encodings are standards rather than one
+        /// engine's own, so they live here with the table (`key_codes!`): the DOM
+        /// `code`/`key` strings and Windows virtual-key codes. GDK keyvals and
+        /// Servo's `Code`/`Key` stay in their engine crates.
+        ///
+        /// Deliberately not exhaustive — common keys only (letters, digits,
+        /// navigation, the usual modifiers and editing keys) covers real usage
+        /// (typing into a page's form fields, basic shortcuts) without trying to
+        /// enumerate every key on every keyboard layout.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
         pub enum KeyCode {
-            $($name,)*
+            $($(#[$m])* $name,)*
         }
 
         impl KeyCode {
@@ -489,7 +489,7 @@ pub enum EngineToHost {
     /// `path` its own `DownloadStarted` reported.
     DownloadProgress { path: String, bytes_received: u64 },
     /// A download finished — `path` is the same one its `DownloadStarted`
-    /// reported. `manifold` shows a brief "Saved <path>" toast here and
+    /// reported. `manifold` shows a brief "Saved `<path>`" toast here and
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
@@ -562,6 +562,22 @@ mod key_code_tests {
         assert_eq!(KeyCode::ShiftLeft.dom_key(), "Shift");
         assert_eq!(KeyCode::Space.dom_key(), " ");
         assert_eq!(KeyCode::KeyQ.dom_key(), "q");
+    }
+
+    // The macro also emits `ALL`, `dom_code` and `windows_vk`, which this one-key table never calls.
+    #[allow(dead_code)]
+    mod attrs_pass_through {
+        // A doc comment on a variant must compile: `key_codes!` forwards attributes.
+        use serde::{Deserialize, Serialize};
+        key_codes! {
+            /// A documented key.
+            KeyA 0x41 "a";
+        }
+
+        #[test]
+        fn a_documented_variant_compiles() {
+            assert_eq!(KeyCode::KeyA.dom_key(), "a");
+        }
     }
 }
 

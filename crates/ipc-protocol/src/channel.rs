@@ -2,6 +2,9 @@ use std::io::{self, Read, Write};
 
 use serde::{de::DeserializeOwned, Serialize};
 
+/// The largest message either side accepts; a longer length prefix is an error, not an allocation.
+pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
 /// Length-prefixed postcard framing over any duplex byte stream. One
 /// `MessageChannel` implementation covers both `LocalTransport` (a
 /// named-pipe / Unix-socket stream from `interprocess`) and
@@ -10,11 +13,6 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Uses `postcard`, not `bincode`: bincode is unmaintained as of
 /// RUSTSEC-2025-0141 (the whole crate, not just a bad 3.0.0 release) and
 /// its own advisory recommends postcard as a replacement.
-/// The most one message (or one raw frame) may carry: a 4096x4096 RGBA frame is
-/// 64 MiB. A peer announcing more is broken or hostile, and is refused before
-/// any buffer is allocated.
-pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
-
 pub struct MessageChannel<S> {
     stream: S,
 }
@@ -57,24 +55,6 @@ impl<S: Read + Write> MessageChannel<S> {
         let mut buf = [0u8; 4];
         self.stream.read_exact(&mut buf)?;
         Ok(u32::from_le_bytes(buf))
-    }
-
-    /// Used only by `RemoteTransport`: read `len` raw frame bytes sent
-    /// immediately after an `EngineToHost::FrameReady` message, since a
-    /// WSL2-hosted engine-host has no shared memory segment with the
-    /// Windows host process.
-    pub fn recv_raw(&mut self, len: usize) -> io::Result<Vec<u8>> {
-        if len > MAX_MESSAGE_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "raw frame larger than MAX_MESSAGE_BYTES"));
-        }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf)?;
-        Ok(buf)
-    }
-
-    pub fn send_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.stream.write_all(bytes)?;
-        self.stream.flush()
     }
 
     pub fn into_inner(self) -> S {
