@@ -186,9 +186,16 @@ pub(crate) fn clean_name(s: &str) -> Cow<'_, str> {
 }
 
 /// The display rule: `s` as segments, with each hidden character (`classify`) a `Hidden`, each whitespace run one
-/// plain space, trimmed, and at most `NAME_CAP` units (`units`). It gives `fallback` when nothing is left. A clean
-/// name is one segment borrowing all of `s`: the `Vec` is the only allocation, and the name is not copied.
+/// plain space, trimmed, and at most `NAME_CAP` units (`units`) and `NAME_MAX_CHARS` characters: a longer name is
+/// cut by `shorten`, so it ends in "…". It gives `fallback` when nothing is left. A clean name is one segment
+/// borrowing all of `s`: the `Vec` is the only allocation, and the name is not copied.
 pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>> {
+    let segs = reveal(s, fallback);
+    shorten(&segs, NAME_CAP).unwrap_or(segs)
+}
+
+/// `display_name` without its cap.
+fn reveal<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>> {
     if is_clean(s) {
         return vec![NameSeg::Plain(if s.is_empty() { fallback } else { s })];
     }
@@ -217,7 +224,6 @@ pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>
     if let Some(start) = run {
         segs.push(NameSeg::Plain(&s[start..]));
     }
-    let segs = take_units(&segs, NAME_CAP, NAME_MAX_CHARS);
     if segs.is_empty() {
         vec![NameSeg::Plain(fallback)]
     } else {
@@ -356,6 +362,20 @@ pub(crate) fn with_hint(base: &str, segs: &[NameSeg]) -> String {
         (true, Some(hint)) => hint,
         (false, Some(hint)) => format!("{base}\n{hint}"),
     }
+}
+
+/// The hover for a stored name `s` drawn by `display_name` and cut to `max` units (`shorten`): `whole` when the name
+/// is drawn whole, else `cut(full name)`; then `hidden_hint` on its own line (`with_hint`). The full name is `s` by
+/// the display rule without its cluster cap, in the plain form (`to_plain`), so the hover shows what the cut, or the
+/// display cap, left out, and names every hidden character in it. It is still cut, with "…", at `NAME_MAX_CHARS`
+/// characters, which only a name that never went through `clean_name` can reach. Empty when there is nothing to
+/// say: no hover then.
+pub(crate) fn name_hover(s: &str, max: usize, whole: &str, cut: impl Fn(&str) -> String) -> String {
+    let full = reveal(s, UNTITLED);
+    let full = self::cut(&full, usize::MAX, NAME_MAX_CHARS).unwrap_or(full);
+    let max = max.min(NAME_CAP);
+    let base = if fits(&full, max, chars_for(max)) { whole.to_string() } else { cut(&to_plain(&full)) };
+    with_hint(&base, &full)
 }
 
 /// A short name for a hidden character, falling back to its kind.
@@ -641,7 +661,7 @@ mod tests {
         assert_eq!(to_plain(&segs), "👩<U+200B><U+200D>💻");
         let coders = CODER.repeat(70);
         let segs = display_name(&coders, UNTITLED);
-        assert_eq!((units(&segs), to_plain(&segs)), (64, CODER.repeat(64)));
+        assert_eq!((units(&segs), to_plain(&segs)), (64, CODER.repeat(63) + "…"));
     }
 
     #[test]
@@ -670,16 +690,47 @@ mod tests {
 
     #[test]
     fn placeholders_count_against_the_cap() {
+        let hidden_count = |segs: &[NameSeg]| segs.iter().filter(|s| matches!(s, NameSeg::Hidden(_))).count();
         let hidden = "\u{200B}".repeat(70);
         let segs = display_name(&hidden, UNTITLED);
-        assert_eq!((segs.len(), units(&segs)), (64, 64));
+        assert_eq!((segs.len(), units(&segs), hidden_count(&segs)), (64, 64, 63));
+        assert_eq!(segs.last(), Some(&NameSeg::Plain("…")), "a capped name says so");
         let raw = "a".repeat(10) + &"\u{200B}".repeat(60);
         let segs = display_name(&raw, UNTITLED);
         assert_eq!(units(&segs), 64);
         assert_eq!(segs[0], NameSeg::Plain("aaaaaaaaaa"));
-        assert_eq!(segs.iter().filter(|s| matches!(s, NameSeg::Hidden(_))).count(), 54);
+        assert_eq!(hidden_count(&segs), 53);
         let raw = "x".repeat(70) + "\u{200B}";
-        assert_eq!(display_name(&raw, UNTITLED), [NameSeg::Plain(&raw[..64])]);
+        assert_eq!(display_name(&raw, UNTITLED), [NameSeg::Plain(&raw[..63]), NameSeg::Plain("…")]);
+        let raw = "x".repeat(64) + "\u{200B}";
+        assert_eq!(units(&display_name(&raw, UNTITLED)), 64, "64 units and a placeholder over");
+        assert_eq!(display_name(&"x".repeat(64), UNTITLED), [NameSeg::Plain(&"x".repeat(64))], "64 fit whole");
+    }
+
+    /// A shortened name's hover gives the whole name, past the display cap, and every hidden character in it.
+    #[test]
+    fn a_name_hover_gives_the_full_name_and_its_hidden_characters() {
+        let long = "x".repeat(30);
+        let jump = |f: &str| format!("Jump to this group ({f})");
+        assert_eq!(name_hover(&long, 20, "Jump to this group", jump), format!("Jump to this group ({long})"));
+        assert_eq!(name_hover("Work", 20, "Jump to this group", jump), "Jump to this group");
+        assert_eq!(
+            name_hover("Re\u{200B}ading", 20, "Click to rename (F2)", |f| format!("Click to rename, F2 ({f})")),
+            "Click to rename (F2)\nHidden characters: U+200B zero width space"
+        );
+        // A label with no hover of its own: the hint alone, or nothing.
+        assert_eq!(name_hover("Re\u{200B}ading", 20, "", str::to_string), "Hidden characters: U+200B zero width space");
+        assert_eq!(name_hover("Work", 20, "", str::to_string), "");
+        // Past the display cap: the hover is not the capped display, and names a hidden character past it.
+        let past = "x".repeat(100) + "\u{200B}";
+        assert_eq!(
+            name_hover(&past, 20, "", str::to_string),
+            format!("{}<U+200B>\nHidden characters: U+200B zero width space", "x".repeat(100))
+        );
+        // Still bounded: one cluster of 1000 characters is cut to the character budget, with an ellipsis.
+        let acute = format!("a{}", "\u{0301}".repeat(1000));
+        let hover = name_hover(&acute, 20, "", str::to_string);
+        assert!(hover.ends_with('…') && hover.chars().count() == NAME_MAX_CHARS, "{}", hover.chars().count());
     }
 
     #[test]
