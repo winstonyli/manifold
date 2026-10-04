@@ -84,12 +84,24 @@ fn unused(path: &Path) -> bool {
 /// opened is left alone.
 #[cfg(not(windows))]
 fn unused(path: &Path) -> bool {
-    OpenOptions::new().read(true).open(path).is_ok_and(|file| file.try_lock().is_ok())
+    OpenOptions::new().read(true).open(path).is_ok_and(|file| lock_probe_unused(file.try_lock()))
+}
+
+/// Reads a `try_lock` result: only `WouldBlock` means a live holder. On a filesystem
+/// without `flock` (`Unsupported`) no file is ever locked, so the sweep's age limit
+/// alone decides; any other error leaves the file alone.
+#[cfg(not(windows))]
+fn lock_probe_unused(result: Result<(), std::fs::TryLockError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(std::fs::TryLockError::WouldBlock) => false,
+        Err(std::fs::TryLockError::Error(err)) => err.kind() == io::ErrorKind::Unsupported,
+    }
 }
 
 /// Takes the shared lock `unused` probes for. On a filesystem without `flock`
-/// (`Unsupported`) the file stays unlocked, as before locks existed, and the
-/// sweep's age limit is the only guard.
+/// (`Unsupported`) the file stays unlocked, as before locks existed, and `unused`
+/// treats such files as free, so the sweep's age limit is the only guard.
 #[cfg(unix)]
 fn lock_shared(file: &std::fs::File) -> io::Result<()> {
     match file.lock_shared() {
@@ -179,8 +191,10 @@ impl SharedFrameBuffer {
             ));
         }
         let mmap = unsafe { MmapMut::map_mut(&file)? };
+        // Best-effort: the host's own lock is what protects the file from the sweep, and
+        // a reader failing here (e.g. ENOLCK) would blank the tab for nothing.
         #[cfg(unix)]
-        lock_shared(&file)?;
+        let _ = file.lock_shared();
         Ok(Self {
             mmap,
             path,
@@ -217,6 +231,16 @@ impl SharedFrameBuffer {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn lock_probe_treats_only_wouldblock_and_other_errors_as_in_use() {
+        use std::fs::TryLockError;
+        assert!(lock_probe_unused(Ok(())));
+        assert!(lock_probe_unused(Err(TryLockError::Error(io::ErrorKind::Unsupported.into()))));
+        assert!(!lock_probe_unused(Err(TryLockError::WouldBlock)));
+        assert!(!lock_probe_unused(Err(TryLockError::Error(io::ErrorKind::PermissionDenied.into()))));
+    }
 
     /// A unique directory per test, so no test sweeps the real temp dir, where
     /// a running manifold's frame files live.
