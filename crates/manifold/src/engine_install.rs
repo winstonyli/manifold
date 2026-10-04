@@ -229,8 +229,10 @@ fn fetch(
     // which would otherwise leak for ever. A link slower than the floor fails with a `Network` error
     // and resumes from the `.part`.
     let body_budget = crate::net::body_budget(total - have.min(total), SLOW_BYTES_PER_SEC, Duration::from_secs(120));
-    let mut request = ureq::get(url)
+    let mut request = crate::net::agent()
+        .get(url)
         .config()
+        .timeout_resolve(Some(Duration::from_secs(15)))
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_recv_body(Some(body_budget))
@@ -241,7 +243,7 @@ fn fetch(
     let response = match request.call() {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(416)) if have > 0 => return Ok(Fetched::Restart),
-        Err(e) => return Err(InstallError::Network(e.to_string())),
+        Err(e) => return Err(InstallError::Network(crate::net::describe(&e))),
     };
     if response.status().as_u16() == 206 {
         let start = response
@@ -1155,6 +1157,31 @@ Connection: close
         let err = download(&url, &part, b.len() as u64, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
         assert!(matches!(err, InstallError::Network(_)), "{err:?}");
         assert_eq!(std::fs::metadata(&part).unwrap().len(), 40_000);
+    }
+
+    /// The installer fetches on the shared agent (`net::agent`), so it sends manifold's User-Agent.
+    #[test]
+    fn download_sends_the_user_agent() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase());
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK
+Content-Length: 3
+Connection: close
+
+abc",
+            );
+        });
+        let part = temp_dir("ei-ua").join("f.part");
+        download(&url, &part, 3, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let request = rx.recv().unwrap();
+        assert!(request.contains("user-agent: manifold/"), "{request}");
     }
 
     #[test]

@@ -218,7 +218,8 @@ fn spawn_fetch(query: String, generation: u64, tx: mpsc::Sender<(u64, Vec<String
 /// load-bearing).
 fn fetch_suggestions(query: &str) -> Option<Vec<String>> {
     let url = suggestions_url(std::env::var("MANIFOLD_SUGGESTIONS_URL").ok().as_deref(), query);
-    let response = ureq::get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
+    let response =
+        crate::net::agent().get(&url).config().timeout_global(Some(Duration::from_secs(3))).build().call().ok()?;
     let body = response.into_body().with_config().limit(200_000).read_to_vec().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
     let phrases = value.as_array()?.get(1)?.as_array()?;

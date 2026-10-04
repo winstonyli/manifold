@@ -1,8 +1,9 @@
-//! The HTTP client for content conversions, node Refresh and favicons: a
-//! shared ureq agent with a User-Agent, and a fetch that keeps the error's
-//! reason (with any URL left out). Engines fetch pages themselves. The
-//! search suggestions and the engine installer still make their own ureq
-//! calls; the installer shares `body_budget`.
+//! The HTTP client for content conversions, node Refresh, favicons, search
+//! suggestions and the engine installer: a shared ureq agent with a
+//! User-Agent, and a fetch that keeps the error's reason (with any URL left
+//! out). Engines fetch pages themselves. The suggestions and the installer
+//! build their own requests on `agent()`; the installer shares
+//! `body_budget` and `describe`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -26,7 +27,7 @@ fn agent_config() -> ureq::config::Config {
     ureq::Agent::config_builder().user_agent(USER_AGENT).build()
 }
 
-fn agent() -> &'static ureq::Agent {
+pub(crate) fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| agent_config().into())
 }
@@ -57,7 +58,7 @@ fn get_limited_with(agent: &ureq::Agent, url: &str, limit: u64, budget: Budget) 
 
 /// `e` for a log line. The variants that carry the request's URI (which can
 /// hold userinfo or a token) give only their kind.
-fn describe(e: &ureq::Error) -> String {
+pub(crate) fn describe(e: &ureq::Error) -> String {
     match e {
         ureq::Error::BadUri(_) => "bad uri".into(),
         ureq::Error::Http(_) => "http: invalid request".into(),
