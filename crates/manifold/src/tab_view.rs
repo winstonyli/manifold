@@ -362,13 +362,8 @@ impl App {
                 text,
                 warn,
             );
-            let follows = if chip.following { " (follows its group)" } else { "" };
-            let mut hover = format!("Jar: {}{follows}", chip.name);
-            if let Some(tooltip) = &chip.tooltip {
-                hover =
-                    format!("{hover}\n{}", tooltip.replace(crate::jar_defs::SWITCH_NOW_HINT, "click to switch now"));
-            }
-            let response = response.on_hover_text(hover);
+            let font = egui::TextStyle::Body.resolve(trailing_ui.style());
+            let response = response.on_hover_text(chip.hover_job(font, trailing_ui.visuals().weak_text_color()));
             let response =
                 if chip.can_switch_now { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
             if response.clicked() {

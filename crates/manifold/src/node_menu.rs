@@ -199,7 +199,7 @@ pub(crate) fn build_node_context_menu(
             for item in &config.items {
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = menu_button(ui, label, item_action.key_hint(), &mut first_item);
+                        let mut response = menu_button(ui, *label, item_action.key_hint(), &mut first_item);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
@@ -209,7 +209,7 @@ pub(crate) fn build_node_context_menu(
                     }
                     NodeMenuItem::MoveTo(targets) => {
                         for (group, name) in targets {
-                            if menu_button(ui, &format!("Move to {name}"), None, &mut first_item).clicked() {
+                            if menu_button(ui, format!("Move to {name}"), None, &mut first_item).clicked() {
                                 action = Some(NodeAction::MoveToGroup(group.clone()));
                             }
                         }
@@ -224,7 +224,13 @@ pub(crate) fn build_node_context_menu(
                         for row in rows {
                             let tick = if row.ticked { "\u{2713} " } else { "   " };
                             let count = row.count.map_or(String::new(), |n| format!("  ({n})"));
-                            let text = format!("{tick}{}{count}", row.name);
+                            // The label's marker in its own style (`JarLabel::append_to`); the rest in the button's.
+                            let font = egui::TextStyle::Button.resolve(ui.style());
+                            let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
+                            let mut text = egui::text::LayoutJob::default();
+                            text.append(tick, 0.0, plain.clone());
+                            row.name.append_to(&mut text, font, ui.visuals().weak_text_color());
+                            text.append(&count, 0.0, plain);
                             let response = ui
                                 .horizontal(|ui| {
                                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -238,7 +244,7 @@ pub(crate) fn build_node_context_menu(
                                             ui.painter().circle_stroke(dot.center(), 4.0, stroke);
                                         }
                                     }
-                                    menu_button(ui, &text, None, &mut first_item)
+                                    menu_button(ui, text, None, &mut first_item)
                                 })
                                 .inner;
                             let response = match row.count {
@@ -275,7 +281,12 @@ pub(crate) fn build_node_context_menu(
 }
 
 /// A menu row; takes focus when `first_item` is set (clearing it), and shows the focus ring.
-fn menu_button(ui: &mut egui::Ui, label: &str, key: Option<&str>, first_item: &mut bool) -> egui::Response {
+fn menu_button(
+    ui: &mut egui::Ui,
+    label: impl Into<egui::WidgetText>,
+    key: Option<&str>,
+    first_item: &mut bool,
+) -> egui::Response {
     // As wide as the menu so far, so a key hint lands at the row's right edge.
     let mut button = egui::Button::new(label).min_size(egui::vec2(ui.min_rect().width(), 0.0));
     if let Some(key) = key {
@@ -1081,6 +1092,61 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
         output.textures_delta.clear(); // nothing uploads the font atlas here
+    }
+
+    /// Styled jar label markers: the tab menu draws a marker in the marker style (monospace, the weak colour), so a
+    /// same-named jar's `#frag` and the built-in's italic "Default" + `built-in` stand apart from a user jar named
+    /// "Default" and one typed as "Work · #3f2a", which are drawn as plain names.
+    #[test]
+    fn the_jar_menu_draws_markers_in_their_own_style() {
+        let ctx = menu_ctx();
+        let mut app = App::default();
+        let (w1, _) = (app.create_jar("Work"), app.create_jar("Work"));
+        app.create_jar("Default");
+        app.create_jar("Work · #3f2a");
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.node_menu = Some((t, egui::pos2(100.0, 100.0)));
+        let mut galleys = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
+            output.textures_delta.clear();
+            galleys = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => Some(t.galley),
+                    _ => None,
+                })
+                .collect();
+        }
+        let weak = ctx.global_style().visuals.weak_text_color();
+        // (row text, italic name, the marker sections' text) of the row whose text ends in `label`.
+        let row = |label: &str| {
+            let g = galleys.iter().find(|g| g.text().trim_start_matches(['\u{2713}', ' ']) == label);
+            let g = g.unwrap_or_else(|| {
+                panic!("no row {label:?} in {:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>())
+            });
+            let job = &g.job;
+            let text = |s: &egui::text::LayoutSection| job.text[s.byte_range.start.0..s.byte_range.end.0].to_string();
+            let italic = job.sections.iter().any(|s| s.format.italics);
+            let markers: Vec<String> = job
+                .sections
+                .iter()
+                .filter(|s| s.format.font_id.family == egui::FontFamily::Monospace)
+                .inspect(|s| assert_eq!(s.format.color, weak, "{label}"))
+                .map(text)
+                .collect();
+            (italic, markers)
+        };
+        assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
+        assert_eq!(row("Default"), (false, vec![]), "a user jar named Default is plain");
+        let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs).unwrap();
+        assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
+        assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
     }
 
     /// A left press, then its release a frame later, at (700, 500): outside a menu opened at (100, 100).

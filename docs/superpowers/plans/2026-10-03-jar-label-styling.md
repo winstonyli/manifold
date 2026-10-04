@@ -8,7 +8,7 @@
 - **Two-part label.** `jar_defs::JarLabel { name: String, marker: Option<JarMarker> }`, `JarMarker::{Fragment(String), BuiltIn}`. `named_jar_label` and `App::jar_label` return it; it is still derived each time, never stored or synced.
   - `Display` gives the plain string: `"Work"`, `"Work · #3f2a"` (today's text, unchanged), and `"Default (built-in)"` for the built-in jar (today `"Default"`, which a user jar may also be called). Plain sites (confirm dialogs, the chip's will-switch tooltip, `SETJAR` label matching) call `to_string()`.
   - `App::jar_label(JarKey::Default)`, and a named key whose jar is gone, give the built-in label.
-- **One look for every marker** (`JarLabel::layout_job`, plus `name_format`/`marker_format` for the chip, which lays the parts out apart): the marker follows the name after a small gap, in monospace at 80% of the name's size, in the weak text colour, centred on the line. The fragment marker drops the ` · ` (rich text shows `Work  #3f2a`), so a typed `Work · #3f2a` differs in both style and text. The built-in's name is also italic. The name uses `Color32::PLACEHOLDER`, so a button or label still paints it in its own (hover, selected) colour.
+- **One look for every marker** (`JarLabel::append_to`, built on `name_format`/`marker_format`, which the chip uses directly to lay the parts out apart): the marker follows the name after a small gap, in monospace at 80% of the name's size, in the weak text colour, centred on the line. The fragment marker drops the ` · ` (rich text shows `Work  #3f2a`), so a typed `Work · #3f2a` differs in both style and text. The built-in's name is also italic. The name uses `Color32::PLACEHOLDER`, so a button or label still paints it in its own (hover, selected) colour.
 - **Rich sites:** tab, unloaded and group menu rows (`JarRow.name: JarLabel`; `menu_button` takes `WidgetText`), Settings' Default row (italic "Default" + `built-in` marker) and a same-named jar's marker beside its name field (the field still edits only the stored name), Tab view's dot hover ("Jar: " + the styled label), and the card chip.
 - **Chip:** the name and marker are separate galleys. `fit_jar_chip` reserves the marker's width first and ellipsizes only the name; when even a short name plus the marker do not fit, the chip falls back to today's dots-only steps. The chip's scrim is always near-black, so its marker colour is the chip text dimmed by the theme's `weak_text_alpha` (the same rule as egui's `weak_text_color`), not the panel's weak colour.
 - **Not changed:** jar names are not restricted or sanitized (spec Open questions gains the app-wide name-rules item); `SETJAR default` (any case) still means the built-in jar.
@@ -22,8 +22,8 @@
 - [ ] GREEN: the type, `Display`; `named_jar_label`/`jar_label` return it; `JarChip.name` and `JarRow.name` hold it; plain sites call `to_string()`. The delete confirm's "they'll use Default." names the built-in through `jar_label`.
 
 ### Task 2: the shared style, in menus and Tab view
-- [ ] RED: `layout_job` tests: name section placeholder-coloured and upright (italic for built-in), marker section monospace, smaller, weak-coloured, text `#frag` / `built-in`; no marker section for a unique name.
-- [ ] GREEN: `layout_job`, `name_format`, `marker_format`; menu rows and Tab view hover use them.
+- [ ] RED: `append_to` tests: name section placeholder-coloured and upright (italic for built-in), marker section monospace, smaller, weak-coloured, text `#frag` / `built-in`; no marker section for a unique name.
+- [ ] GREEN: `append_to`, `name_format`, `marker_format`, `JarChip::hover_job`; menu rows and Tab view hover use them.
 
 ### Task 3: Settings
 - [ ] Default row: the built-in label's job; the fragment marker beside a name field uses `marker_format`. The field edits the stored name (existing tests stay green).

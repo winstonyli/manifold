@@ -36,6 +36,25 @@ pub(crate) struct JarChip {
     pub(crate) tooltip: Option<String>,
 }
 
+impl JarChip {
+    /// Tab view's jar dot hover text in `font`: "Jar: " and the label (its marker styled, `JarLabel::append_to`, in
+    /// `marker_color`), whether it follows its group, then the warnings, offering a click rather than a right-click.
+    pub(crate) fn hover_job(&self, font: egui::FontId, marker_color: egui::Color32) -> egui::text::LayoutJob {
+        let plain = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
+        let mut job = egui::text::LayoutJob::default();
+        job.append("Jar: ", 0.0, plain.clone());
+        self.name.append_to(&mut job, font, marker_color);
+        let mut rest = if self.following { " (follows its group)".to_string() } else { String::new() };
+        if let Some(tooltip) = &self.tooltip {
+            rest = format!("{rest}\n{}", tooltip.replace(SWITCH_NOW_HINT, "click to switch now"));
+        }
+        if !rest.is_empty() {
+            job.append(&rest, 0.0, plain);
+        }
+        job
+    }
+}
+
 /// A Settings jar action waiting for its confirm dialog (`App::build_jar_confirm_popup`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum JarConfirm {
@@ -96,7 +115,7 @@ pub(crate) fn jar_fragment(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Optio
 }
 
 /// A jar's label (spec "Names"): its name, and a marker when the name alone may not say which jar it is. Derived each
-/// time, never stored or synced. Rich-text sites draw the marker in its own style (`layout_job`), so a name typed to
+/// time, never stored or synced. Rich-text sites draw the marker in its own style (`append_to`), so a name typed to
 /// look like a marker never looks like one; plain-text sites (tooltips, confirm dialogs) use `Display`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct JarLabel {
@@ -112,10 +131,47 @@ pub(crate) enum JarMarker {
     BuiltIn,
 }
 
+/// A marker's size, relative to its name's.
+pub(crate) const MARKER_SCALE: f32 = 0.8;
+
 impl JarLabel {
     /// The built-in Default jar's label.
     pub(crate) fn built_in() -> Self {
         Self { name: "Default".into(), marker: Some(JarMarker::BuiltIn) }
+    }
+
+    /// The marker as rich text shows it, `#3f2a` or `built-in`: without the plain text's " · " or brackets, which the
+    /// marker's own style replaces.
+    pub(crate) fn marker_text(&self) -> Option<String> {
+        self.marker.as_ref().map(|m| match m {
+            JarMarker::Fragment(frag) => format!("#{frag}"),
+            JarMarker::BuiltIn => "built-in".into(),
+        })
+    }
+
+    /// The name's format in `font`: the fallback colour (`Color32::PLACEHOLDER`), so a button or label paints it in
+    /// its own state's colour; italic for the built-in jar.
+    pub(crate) fn name_format(&self, font: egui::FontId) -> egui::TextFormat {
+        let italics = self.marker == Some(JarMarker::BuiltIn);
+        egui::TextFormat { italics, ..egui::TextFormat::simple(font, egui::Color32::PLACEHOLDER) }
+    }
+
+    /// Every marker's format, beside a name `size` points high: monospace, `MARKER_SCALE` of the size, in `color` (the
+    /// weak text colour), centred on the name's line.
+    pub(crate) fn marker_format(size: f32, color: egui::Color32) -> egui::TextFormat {
+        egui::TextFormat {
+            valign: egui::Align::Center,
+            ..egui::TextFormat::simple(egui::FontId::monospace(size * MARKER_SCALE), color)
+        }
+    }
+
+    /// Appends the name in `font`, then the marker (after a space in its own style) in `marker_color`.
+    pub(crate) fn append_to(&self, job: &mut egui::text::LayoutJob, font: egui::FontId, marker_color: egui::Color32) {
+        let size = font.size;
+        job.append(&self.name, 0.0, self.name_format(font));
+        if let Some(marker) = self.marker_text() {
+            job.append(&format!(" {marker}"), 0.0, Self::marker_format(size, marker_color));
+        }
     }
 }
 
@@ -1064,6 +1120,75 @@ mod tests {
         );
         app.jar_defs.remove(&user);
         assert_eq!(app.jar_label(JarKey::Named(user)), JarLabel::built_in(), "gone: its tabs use the built-in jar");
+    }
+
+    /// Styled jar label markers: rich text draws a marker after its name in monospace, smaller, in the weak colour and
+    /// without the plain text's " · ", so a name typed to look like a marker never looks like one; the built-in jar's
+    /// name is italic too. The name keeps the fallback colour, so a button paints it in its own state's colour.
+    #[test]
+    fn a_marker_is_drawn_smaller_monospace_and_weak_after_its_name() {
+        let font = egui::FontId::proportional(14.0);
+        let weak = egui::Color32::from_gray(120);
+        let marker_format = egui::TextFormat {
+            font_id: egui::FontId::monospace(14.0 * super::MARKER_SCALE),
+            color: weak,
+            valign: egui::Align::Center,
+            ..Default::default()
+        };
+        let parts = |job: &egui::text::LayoutJob| {
+            job.sections
+                .iter()
+                .map(|s| (job.text[s.byte_range.start.0..s.byte_range.end.0].to_string(), s.format.clone()))
+                .collect::<Vec<_>>()
+        };
+        let job = |label: &JarLabel| {
+            let mut job = egui::text::LayoutJob::default();
+            label.append_to(&mut job, font.clone(), weak);
+            job
+        };
+        let name_format = egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER);
+        assert_eq!(parts(&job(&JarLabel::from("Work"))), [("Work".into(), name_format.clone())]);
+        let typed = job(&JarLabel::from("Work · #3f2a"));
+        assert_eq!(parts(&typed), [("Work · #3f2a".into(), name_format.clone())], "a typed look-alike is all name");
+        let clash = JarLabel { name: "Work".into(), marker: Some(JarMarker::Fragment("3f2a".into())) };
+        assert_eq!(clash.marker_text().as_deref(), Some("#3f2a"));
+        assert_eq!(
+            parts(&job(&clash)),
+            [("Work".into(), name_format.clone()), (" #3f2a".into(), marker_format.clone())]
+        );
+        let built_in = JarLabel::built_in();
+        assert_eq!(built_in.marker_text().as_deref(), Some("built-in"));
+        let italic = egui::TextFormat { italics: true, ..name_format };
+        assert_eq!(parts(&job(&built_in)), [("Default".into(), italic), (" built-in".into(), marker_format)]);
+        assert_eq!(JarLabel::from("Default").marker_text(), None);
+    }
+
+    /// Tab view's jar dot hover: "Jar: " and the styled label, whether it follows its group, then the chip's warnings
+    /// with the click hint in place of the right-click one.
+    #[test]
+    fn the_tab_view_hover_styles_the_label() {
+        let mut app = App::default();
+        let (_, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+        let t = tab_in(&mut app, None);
+        app.set_tab_jar(&t, Some(w2));
+        let chip = app.jar_chip(&t).unwrap();
+        let font = egui::FontId::proportional(14.0);
+        let weak = egui::Color32::from_gray(120);
+        let job = chip.hover_job(font.clone(), weak);
+        let mut want = egui::text::LayoutJob::default();
+        want.append("Jar: ", 0.0, egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER));
+        chip.name.append_to(&mut want, font.clone(), weak);
+        want.append(
+            "\nThis engine does not use jars yet",
+            0.0,
+            egui::TextFormat::simple(font, egui::Color32::PLACEHOLDER),
+        );
+        assert_eq!(job, want);
+        let mut chip = chip;
+        chip.following = true;
+        chip.tooltip = Some(format!("Switches to Work; {}", super::SWITCH_NOW_HINT));
+        let text = chip.hover_job(egui::FontId::proportional(14.0), weak).text;
+        assert!(text.ends_with(" (follows its group)\nSwitches to Work; click to switch now"), "{text}");
     }
 
     /// Two ids whose 4-character fragments collide get longer ones, just long enough to differ; a third jar with the
