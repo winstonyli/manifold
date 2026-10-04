@@ -75,7 +75,8 @@ wrap_download_handler! {
                 // CEF (unlike WebView2) has no default save location or
                 // uniquifying of its own. The suggested name is
                 // server-controlled; `safe_name` keeps only its last
-                // component so it can't leave the downloads folder.
+                // component (it can't leave the downloads folder) and makes
+                // it a name Windows will create as given.
                 let dir = ipc_protocol::downloads::downloads_dir();
                 let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
                 let name = ipc_protocol::downloads::safe_name(&suggested);

@@ -72,7 +72,8 @@ const MAX_SESSION_NAME: usize = 200;
 /// Whether `name` can be a file stem in `sessions/` on every platform: not
 /// empty, `.`/`..` or over `MAX_SESSION_NAME` chars; no separator, drive
 /// or stream colon, control character or other character Windows refuses
-/// (`<>"|?*`); not a Windows device name (`is_windows_device_name`).
+/// (`<>"|?*`); not a Windows device name (`is_windows_device_name`, shared
+/// with download names in `ipc_protocol::downloads`).
 /// "Save As" names are already filtered by `sanitize_session_name`, which
 /// lets a device name through; this guards every way in (`OPENSESSION`).
 pub(crate) fn session_name_is_safe(name: &str) -> bool {
@@ -81,23 +82,7 @@ pub(crate) fn session_name_is_safe(name: &str) -> bool {
         && name != ".."
         && name.chars().count() <= MAX_SESSION_NAME
         && !name.chars().any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
-        && !is_windows_device_name(name)
-}
-
-/// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, or `COM`/`LPT` with a
-/// digit or superscript digit, in any case, judged on the part before the
-/// first dot with trailing spaces dropped (`nul.txt` and `CON ` open the
-/// device too).
-fn is_windows_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
-        return true;
-    }
-    let mut chars = stem.chars();
-    let prefix: String = chars.by_ref().take(3).collect();
-    let rest: Vec<char> = chars.collect();
-    matches!(prefix.as_str(), "COM" | "LPT")
-        && matches!(rest.as_slice(), [c] if c.is_ascii_digit() || matches!(c, '\u{b9}' | '\u{b2}' | '\u{b3}'))
+        && !ipc_protocol::downloads::is_windows_device_name(name)
 }
 
 /// `None` without a profile, or for a name that isn't `session_name_is_safe`.

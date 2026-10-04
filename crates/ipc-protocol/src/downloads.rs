@@ -13,27 +13,72 @@ pub fn downloads_dir() -> PathBuf {
     home.map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_default()
 }
 
-/// A server-suggested file name reduced to its last component, so `..` or
-/// an absolute name can't leave the downloads folder; "download" if empty.
+/// A server-suggested file name made safe to create in the downloads folder,
+/// on every platform alike (one rule for every engine):
+/// - only its last component, split on `/` and `\` both, so `..` or an
+///   absolute name can't leave the folder;
+/// - control characters and the ones Windows refuses (`<>:"/\|?*`) become
+///   `_`, so a `:` can't name an alternate data stream (`a.txt:x`);
+/// - trailing dots and spaces dropped (Windows drops them itself, and the
+///   file would then not be at the path this returns);
+/// - a Windows device name (`is_windows_device_name`) gets a leading `_`;
+/// - "download" if nothing is left, or only `.`/`..`.
 pub fn safe_name(suggested: &str) -> String {
-    Path::new(suggested)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("download")
-        .to_string()
+    let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String =
+        last.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    let name = cleaned.trim_end_matches(['.', ' ']);
+    if name.is_empty() {
+        "download".to_string()
+    } else if is_windows_device_name(name) {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, or `COM`/`LPT` with a
+/// digit or superscript digit, in any case, judged on the part before the
+/// first dot with trailing spaces dropped (`nul.txt` and `CON ` open the
+/// device too). Shared with manifold's session names (`session_name_is_safe`).
+pub fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let rest: Vec<char> = chars.collect();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(rest.as_slice(), [c] if c.is_ascii_digit() || matches!(c, '\u{b9}' | '\u{b2}' | '\u{b3}'))
+}
+
+/// Extensions of two parts, kept whole when numbering a taken name.
+const DOUBLE_EXTENSIONS: [&str; 4] = [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"];
+
+/// `name` split before its extension: a `DOUBLE_EXTENSIONS` one (any case)
+/// whole, otherwise the last, as `Path::extension` reads it (`.bashrc` has
+/// none). The extension is returned without its leading dot.
+fn split_extension(name: &str) -> (&str, Option<&str>) {
+    let lower = name.to_ascii_lowercase();
+    if let Some(ext) = DOUBLE_EXTENSIONS.iter().find(|ext| lower.len() > ext.len() && lower.ends_with(*ext)) {
+        let at = name.len() - ext.len();
+        return (&name[..at], Some(&name[at + 1..]));
+    }
+    let as_path = Path::new(name);
+    let stem = as_path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    (stem, as_path.extension().and_then(|e| e.to_str()))
 }
 
 /// `dir/name`, or `dir/stem (n).ext` with the first n that isn't `taken`
 /// (an existing file, or one another download in flight has reserved).
+/// `a.tar.gz` numbers as `a (1).tar.gz` (`split_extension`).
 pub fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
     let first = dir.join(name);
     if !taken(&first) {
         return first;
     }
-    let as_path = Path::new(name);
-    let stem = as_path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
-    let ext = as_path.extension().and_then(|e| e.to_str());
+    let (stem, ext) = split_extension(name);
     (1..)
         .map(|n| {
             dir.join(match ext {
@@ -77,6 +122,63 @@ mod tests {
         assert_eq!(safe_name("../../etc/passwd"), "passwd");
         assert_eq!(safe_name(""), "download");
         assert_eq!(safe_name("report #3.pdf"), "report #3.pdf");
+        assert_eq!(safe_name("..\\..\\Windows\\win.ini"), "win.ini", "a backslash splits on every platform");
+        assert_eq!(safe_name("C:\\x\\a.txt"), "a.txt");
+        assert_eq!(safe_name(".."), "download");
+        assert_eq!(safe_name("dir/"), "download");
+    }
+
+    #[test]
+    fn a_suggested_name_loses_what_windows_refuses() {
+        for (raw, want) in [
+            ("a.txt:evil", "a.txt_evil"),
+            ("C:a.txt", "C_a.txt"),
+            ("a<b>c\"d|e?f*g", "a_b_c_d_e_f_g"),
+            ("tab\there\nnl\u{0}nul\u{7f}", "tab_here_nl_nul_"),
+            ("name. . .", "name"),
+            ("trailing ", "trailing"),
+            ("...", "download"),
+            (" ", "download"),
+            ("名前.pdf", "名前.pdf"),
+        ] {
+            assert_eq!(safe_name(raw), want, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_device_name_is_prefixed() {
+        for (raw, want) in [
+            ("CON", "_CON"),
+            ("con.txt", "_con.txt"),
+            ("Nul.tar.gz", "_Nul.tar.gz"),
+            ("aux", "_aux"),
+            ("PRN.", "_PRN"),
+            ("COM1.log", "_COM1.log"),
+            ("lpt9", "_lpt9"),
+            ("COM\u{b9}", "_COM\u{b9}"),
+            ("CON .txt", "_CON .txt"),
+            ("conout$", "_conout$"),
+            ("LPT0", "_LPT0"),
+        ] {
+            assert_eq!(safe_name(raw), want, "{raw:?}");
+        }
+        for ok in ["console.txt", "COM10", "a.con", "CONIN", "nul-ish"] {
+            assert_eq!(safe_name(ok), ok);
+        }
+    }
+
+    #[test]
+    fn a_taken_archive_keeps_its_double_extension() {
+        let dir = Path::new("d");
+        let all = |p: &Path| p.file_name().is_some_and(|n| !n.to_string_lossy().contains("(1)"));
+        assert_eq!(unique_path(dir, "a.tar.gz", all), dir.join("a (1).tar.gz"));
+        assert_eq!(unique_path(dir, "b.TAR.XZ", all), dir.join("b (1).TAR.XZ"));
+        assert_eq!(unique_path(dir, "c.tar.bz2", all), dir.join("c (1).tar.bz2"));
+        assert_eq!(unique_path(dir, "d.tar.zst", all), dir.join("d (1).tar.zst"));
+        assert_eq!(unique_path(dir, "e.v1.zip", all), dir.join("e.v1 (1).zip"), "otherwise only the last");
+        assert_eq!(unique_path(dir, "f.gz", all), dir.join("f (1).gz"));
+        assert_eq!(unique_path(dir, ".tar.gz", all), dir.join(".tar (1).gz"), "no stem: the last only");
+        assert_eq!(unique_path(dir, ".bashrc", all), dir.join(".bashrc (1)"));
     }
 
     #[test]
