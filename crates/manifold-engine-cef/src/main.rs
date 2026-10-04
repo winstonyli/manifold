@@ -219,6 +219,8 @@ fn main() {
     .expect("create CEF browser");
 
     let mut buffer_size = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    // Whether the last recreate failed: a run of failures (one per frame) logs only its first.
+    let mut recreate_failing = false;
     // `None` only while a recreate at a new size fails (retried on the next frame); the first one is fatal.
     let mut frame_buffer = Some(
         ipc_protocol::SharedFrameBuffer::create(&socket_id, DEFAULT_WIDTH, DEFAULT_HEIGHT)
@@ -490,13 +492,19 @@ fn main() {
                     drop(frame_buffer.take());
                     frame_buffer = match ipc_protocol::SharedFrameBuffer::create(&socket_id, frame.width, frame.height)
                     {
-                        Ok(buffer) => Some(buffer),
+                        Ok(buffer) => {
+                            recreate_failing = false;
+                            Some(buffer)
+                        }
                         Err(e) => {
                             // The host still maps the old file (stalled on upload): retried on the next frame.
-                            eprintln!(
-                                "frame buffer: recreate at {}x{} failed, retrying: {e}",
-                                frame.width, frame.height
-                            );
+                            if !recreate_failing {
+                                eprintln!(
+                                    "frame buffer: recreate at {}x{} failed, retrying each frame: {e}",
+                                    frame.width, frame.height
+                                );
+                            }
+                            recreate_failing = true;
                             None
                         }
                     };

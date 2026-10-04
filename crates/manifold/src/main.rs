@@ -1028,6 +1028,11 @@ struct App {
     /// writing when the current state compares equal, so an idle session
     /// never rewrites the file.
     local_written: Option<local_state::LocalState>,
+    /// Set while startup couldn't read `session.mnf.local` (another
+    /// window held the lock, or the read failed): nothing writes it, so
+    /// this profile's saved state isn't replaced by defaults, and
+    /// `poll_store` retries the read.
+    local_unread: Option<session_sync::LocalUnread>,
     /// When `local_written` was last written (or, at startup, `Instant::now`
     /// so the first `EVERY` window starts from launch, not from `UNIX_EPOCH`).
     local_written_at: std::time::Instant,
@@ -1520,6 +1525,7 @@ impl Default for App {
             last_shared: HashMap::new(),
             jar_defs: BTreeMap::new(),
             local_written: None,
+            local_unread: None,
             local_written_at: std::time::Instant::now(),
             closed_changed_at: None,
             pending_local: None,

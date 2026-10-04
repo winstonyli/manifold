@@ -16,6 +16,22 @@ pub(crate) fn page_tab_url_allowed(url: &str) -> bool {
     lower == "about:blank" || ["http://", "https://", "manifold://"].iter().any(|scheme| lower.starts_with(scheme))
 }
 
+/// A refused URL's scheme, for a log line: never the rest, since a
+/// `data:` or `javascript:` URL carries page content. `?` when what
+/// precedes the first `:` isn't a scheme (RFC 3986: a letter, then
+/// letters, digits, `+`, `-`, `.`).
+pub(crate) fn scheme_for_log(url: &str) -> &str {
+    let scheme = url.trim().split_once(':').map_or("", |(scheme, _)| scheme);
+    let valid = scheme.len() <= 32
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    if valid {
+        scheme
+    } else {
+        "?"
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Admit {
     Open,
@@ -66,6 +82,17 @@ mod tests {
             ["file:///C:/x", "javascript:alert(1)", "about:config", "ms-settings:", "data:text/html,x", "", "blank"]
         {
             assert!(!page_tab_url_allowed(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refused_url_is_logged_by_scheme_only() {
+        assert_eq!(scheme_for_log("data:text/html,<p>secret</p>"), "data");
+        assert_eq!(scheme_for_log(" javascript:alert(1)"), "javascript");
+        assert_eq!(scheme_for_log("ms-settings:"), "ms-settings");
+        let long = format!("{}:x", "a".repeat(33));
+        for none in ["", "blank", "<p>a:b", "1x:y", long.as_str()] {
+            assert_eq!(scheme_for_log(none), "?", "{none}");
         }
     }
 

@@ -31,6 +31,15 @@ const SAVE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 /// reports loaded.
 const HOST_LOAD_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Personal state startup couldn't read (`App::local_unread`): when
+/// `poll_store` next tries, and whether startup was a fresh start (no
+/// graph node), when only Recently Closed is taken from what it reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalUnread {
+    pub(crate) retry_at: std::time::Instant,
+    pub(crate) fresh: bool,
+}
+
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 
@@ -47,6 +56,16 @@ pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Jar => &[COLOR, NAME, EPHEMERAL],
         Kind::Unknown(_) => &[],
+    }
+}
+
+/// Personal state from a `read_local`: the defaults for no store, no
+/// state, one that doesn't decode, or a read that failed (which the caller
+/// checks for itself first).
+fn local_from(read: Option<Result<Option<Vec<u8>>, JournalError>>) -> LocalState {
+    match read {
+        Some(Ok(Some(bytes))) => LocalState::from_bytes(&bytes).unwrap_or_default(),
+        _ => LocalState::default(),
     }
 }
 
@@ -1059,13 +1078,15 @@ impl App {
         let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
             doc.live().map(|(id, n)| (id, n.kind, fields_of(n), doc.effective_group(id))).collect();
         self.take_store_recovery();
-        // Contract: `Err` or `None` (no file, another document's, or a
-        // newer format version) is a fresh start, same as a session with no
-        // personal state at all.
-        let local = match self.journal.as_ref().map(|j| j.read_local()) {
-            Some(Ok(Some(bytes))) => LocalState::from_bytes(&bytes).unwrap_or_default(),
-            _ => LocalState::default(),
-        };
+        // Contract: `None` (no file, another document's, or a newer format
+        // version) or a damaged file is a fresh start, same as a session
+        // with no personal state at all, and the next write replaces it. A
+        // read that failed (the lock stayed busy, an I/O error) is not: the
+        // file may hold this profile's state, so it isn't written until
+        // `poll_store` has read it.
+        let read = self.journal.as_ref().map(|j| j.read_local());
+        let unread = matches!(read, Some(Err(ref err)) if !matches!(err, JournalError::Corrupt(_)));
+        let local = local_from(read);
         let toasts = self.save_toast_queue.len();
         // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
         for (id, kind, fields, _) in nodes.iter().filter(|(_, kind, ..)| *kind == Kind::Jar) {
@@ -1074,7 +1095,7 @@ impl App {
         nodes.retain(|(_, kind, ..)| *kind != Kind::Jar);
         if nodes.is_empty() {
             self.restore_closed(local.closed);
-            self.local_written = Some(self.local_state());
+            self.arm_local(unread, true);
             return false;
         }
         nodes.sort_by_key(|(_, kind, ..)| *kind != Kind::Group);
@@ -1096,8 +1117,54 @@ impl App {
         self.camera.frame_restored = true;
         self.apply_local(local);
         self.wake_focused();
-        self.local_written = Some(self.local_state());
+        self.arm_local(unread, false);
         true
+    }
+
+    /// The end of `restore_session`: personal state as read is what the
+    /// file holds, so `maybe_write_local` skips an unchanged write; one
+    /// that couldn't be read is retried instead, and never written over.
+    fn arm_local(&mut self, unread: bool, fresh: bool) {
+        if unread {
+            self.local_written = None;
+            self.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, fresh });
+        } else {
+            self.local_written = Some(self.local_state());
+            self.local_unread = None;
+        }
+    }
+
+    /// Retries reading the personal state startup couldn't
+    /// (`App::local_unread`), at most every `SAVE_RETRY` and without
+    /// waiting on the lock, so a busy peer never stalls a frame; `force`
+    /// (at exit) tries now and waits as a save does. Once read, it's
+    /// applied as startup would have, keeping what was closed since in
+    /// Recently Closed, and the next due write saves the result.
+    fn retry_read_local(&mut self, force: bool) {
+        let Some(unread) = self.local_unread else { return };
+        let Some(journal) = self.journal.as_ref() else { return };
+        let read = if force {
+            journal.read_local()
+        } else if std::time::Instant::now() >= unread.retry_at {
+            journal.read_local_within(std::time::Duration::ZERO)
+        } else {
+            return;
+        };
+        if matches!(read, Err(ref err) if !matches!(err, JournalError::Corrupt(_))) {
+            self.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now() + SAVE_RETRY, ..unread });
+            return;
+        }
+        self.local_unread = None;
+        let mut local = local_from(Some(read));
+        local.closed.extend(self.closed.iter().map(|e| e.doc.clone()));
+        if unread.fresh {
+            self.restore_closed(local.closed);
+        } else {
+            self.apply_local(local);
+            self.wake_focused();
+        }
+        // Unknown: the file holds what was read, not this merge.
+        self.local_written = None;
     }
 
     /// This profile's personal state as the live graph currently shows it
@@ -1283,14 +1350,14 @@ impl App {
 
     /// Writes personal state when it changed (contract "Personal state"):
     /// at most every 30 s, 2.5 s after a Recently Closed change, and at
-    /// exit (`force`).
+    /// exit (`force`). Never while the file is unread (`App::local_unread`).
     pub(crate) fn maybe_write_local(&mut self, force: bool) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(30);
         const AFTER_CLOSED: std::time::Duration = std::time::Duration::from_millis(2500);
         let due = force
             || self.closed_changed_at.is_some_and(|t| t.elapsed() >= AFTER_CLOSED)
             || self.local_written_at.elapsed() >= EVERY;
-        if !due || self.journal.is_none() {
+        if !due || self.journal.is_none() || self.local_unread.is_some() {
             return;
         }
         let state = self.local_state();
@@ -1321,6 +1388,7 @@ impl App {
         if changed || retry_due {
             self.save_session();
         }
+        self.retry_read_local(false);
         self.maybe_write_local(false);
     }
 
@@ -1328,6 +1396,7 @@ impl App {
     /// something changed).
     pub(crate) fn close_store(&mut self) {
         self.save_session();
+        self.retry_read_local(true);
         self.maybe_write_local(true);
         self.flush_history();
         if let Some(journal) = self.journal.as_mut() {

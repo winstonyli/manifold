@@ -907,6 +907,9 @@ impl App {
     /// Draining first means no tab node stays borrowed while a message is
     /// applied, so any message can touch any node. Frames go last because a
     /// crash or swap in the same drain replaces the tab they came from.
+    /// The order is load-bearing: ipc may remove tabs before the idle
+    /// sweep looks at them, the sweep and the fetches can remove tabs
+    /// too, and frame uploads run last so none lands on a removed tab.
     pub(crate) fn drain_tab_events(&mut self) {
         let frame_updates = self.drain_engine_ipc();
         self.idle_sweep();
@@ -1296,7 +1299,7 @@ impl App {
             // gesture, and only a few per source tab (`popup_gate.rs`).
             EngineToHost::OpenTabRequested { url, user_gesture } => {
                 if !crate::popup_gate::page_tab_url_allowed(&url) {
-                    eprintln!("popup to a disallowed scheme dropped: {url}");
+                    eprintln!("popup to a disallowed scheme dropped: {}:", crate::popup_gate::scheme_for_log(&url));
                 } else {
                     match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
                         crate::popup_gate::Admit::Open => {

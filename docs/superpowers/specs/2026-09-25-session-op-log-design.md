@@ -190,6 +190,14 @@ When it is written (Plan B):
   alone can't be recomputed;
 - at exit.
 
+Never while it is unread: when startup's read fails (another instance
+held the lock past its 5 s wait, or an I/O error), the file is not
+written, even at exit, and the read is retried about every second
+without waiting on the lock. Once read, it is applied as at startup,
+with anything closed since kept after its Recently Closed entries. No
+file, another document's, a newer format's, or a damaged one is a fresh
+start, and the next write replaces it: nothing in it can be read.
+
 Settled positions count as changed only past 1 px, so physics jitter
 never causes a write.
 

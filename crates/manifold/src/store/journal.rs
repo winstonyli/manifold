@@ -244,9 +244,9 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
     Ok(Header { version, generation, prev_generation, damaged, len: at + 20 })
 }
 
-/// The most a header can take: magic (4), a varint version (at most 10),
-/// two u64 generations and a CRC (4).
-const HEADER_MAX: u64 = 4 + 10 + 16 + 4;
+/// The most a header can take: magic (4), a varint version (at most 9,
+/// `varint`'s longest), two u64 generations and a CRC (4).
+const HEADER_MAX: u64 = 4 + 9 + 16 + 4;
 
 /// The header, the file's length and its bytes from `from` on: what an
 /// incremental catch-up needs, without reading the snapshot before `from`.
@@ -847,7 +847,14 @@ impl Journal {
     /// This profile's personal state for this document (spec "Personal
     /// state"). `None` when there is none, or it is another document's.
     pub fn read_local(&self) -> Result<Option<Vec<u8>>, JournalError> {
-        let _lock = self.lock()?;
+        self.read_local_within(LOCK_WAIT)
+    }
+
+    /// `read_local`, giving up with `WouldBlock` once the lock has been
+    /// busy for `wait` (`Duration::ZERO`: a single try, for a retry that
+    /// mustn't stall a frame).
+    pub fn read_local_within(&self, wait: Duration) -> Result<Option<Vec<u8>>, JournalError> {
+        let _lock = lock_file_within(&self.path, wait)?;
         local::read(&self.path, self.doc.id)
     }
 

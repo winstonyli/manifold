@@ -77,7 +77,8 @@ wrap_download_handler! {
                 // server-controlled; `safe_name` keeps only its last
                 // component so it can't leave the downloads folder.
                 let dir = ipc_protocol::downloads::downloads_dir();
-                let name = ipc_protocol::downloads::safe_name(&suggested_name.map(|s| s.to_string()).unwrap_or_default());
+                let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
+                let name = ipc_protocol::downloads::safe_name(&suggested);
                 let mut results = self.handler.result.borrow_mut();
                 let path = ipc_protocol::downloads::unique_path(&dir, &name, |p| {
                     p.exists() || results.assigned.values().any(|taken| taken == p)
@@ -114,8 +115,11 @@ wrap_download_handler! {
                 if complete || item.is_canceled() != 0 || item.is_interrupted() != 0 {
                     results.assigned.remove(&id);
                     results.started.remove(&id);
-                    let event =
-                        if complete { EngineToHost::DownloadCompleted { path } } else { EngineToHost::DownloadFailed { path } };
+                    let event = if complete {
+                        EngineToHost::DownloadCompleted { path }
+                    } else {
+                        EngineToHost::DownloadFailed { path }
+                    };
                     results.queue.push(event);
                 } else {
                     let received = item.received_bytes();

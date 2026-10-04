@@ -1399,6 +1399,89 @@ fn an_empty_session_keeps_recently_closed_across_a_launch() {
     assert_eq!(LocalState::from_bytes(&bytes).unwrap().closed, vec![entry]);
 }
 
+/// Final-review fix: personal state startup couldn't read (another window
+/// held the lock past `LOCK_WAIT`) is never written over with defaults,
+/// even at exit; once a retry reads it, it is applied, and what was
+/// closed since stays in Recently Closed. Takes `LOCK_WAIT` (5 s) once.
+#[test]
+fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
+    let path = temp_dir("local-unread").join("session.mnf");
+    let note = {
+        let mut app = app_on(&path, 1);
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+        app.close_store();
+        note
+    };
+    let old = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+    let entry = LocalNode { pos: [7.0, 8.0], ..LocalNode::default() };
+    let side = crate::store::local::path_for(&path);
+    {
+        let journal = Journal::open(&path, ActorId(2)).unwrap();
+        let state = LocalState {
+            nodes: BTreeMap::from([(note.clone(), entry.clone())]),
+            closed: vec![old.clone()],
+            ..LocalState::default()
+        };
+        journal.write_local(&state.to_bytes()).unwrap();
+    }
+    let saved = std::fs::read(&side).unwrap();
+
+    // A peer takes the session's lock once it's open, and holds it
+    // through the personal-state read.
+    let mut app = app_on(&path, 3);
+    let lock_path = path.with_extension("mnf.lock");
+    let peer = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).unwrap();
+    peer.try_lock().unwrap();
+    assert!(app.restore_session());
+    assert!(app.local_unread.is_some(), "the read failed");
+    assert!(app.closed.is_empty());
+    let since = JsonDoc { nodes: vec![json_node("y", "note", serde_json::json!({ "text": "since" }))], local: None };
+    app.closed.push(ClosedEntry { doc: since.clone() });
+    // Due writes, a retry while the lock is still busy, and even exit's
+    // forced write leave the file alone.
+    app.maybe_write_local(true);
+    app.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.poll_store();
+    assert!(app.local_unread.is_some(), "still busy: retried later");
+    assert_eq!(std::fs::read(&side).unwrap(), saved, "not overwritten while unread");
+
+    // The lock is free: the next retry reads and applies it.
+    drop(peer);
+    app.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
+    app.poll_store();
+    assert!(app.local_unread.is_none());
+    assert_eq!(app.nodes[&note].pos, egui::vec2(7.0, 8.0));
+    let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
+    assert_eq!(closed, [&old, &since], "read entries first, then what closed since");
+    app.close_store();
+    let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
+    let written = LocalState::from_bytes(&bytes).unwrap();
+    assert_eq!(written.closed, vec![old, since]);
+    assert_eq!(written.nodes[&note].pos, [7.0, 8.0]);
+}
+
+/// A damaged `.local` is still a fresh start that the next write replaces
+/// (`a_damaged_or_newer_sidecar_is_not_read_and_is_replaced`): nothing in
+/// it is readable, and retrying can't change that.
+#[test]
+fn a_damaged_personal_state_file_is_not_retried() {
+    let path = temp_dir("local-damaged-restore").join("session.mnf");
+    {
+        let mut app = app_on(&path, 1);
+        add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+        app.close_store();
+    }
+    std::fs::write(crate::store::local::path_for(&path), b"MNFL damaged").unwrap();
+    let mut app = app_on(&path, 2);
+    assert!(app.restore_session());
+    assert!(app.local_unread.is_none());
+    // An unchanged state isn't written (`local_written` is armed); a change is.
+    add(&mut app, NodePayload::Note(NotePayload { text: "m".into(), editing: false, url: None }));
+    app.maybe_write_local(true);
+    let bytes = app.journal.as_ref().unwrap().read_local().unwrap();
+    assert!(bytes.is_some(), "replaced with this profile's state");
+}
+
 /// Quitting while an imported session's tabs are still spawning keeps
 /// them: each is saved as it was started, and the replaced session's
 /// nodes are gone.

@@ -78,7 +78,9 @@ const TITLE_STRIP_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(160);
 /// Over a card the Graph toolbar filter doesn't match (`dim_if_filtered_out`).
 const FILTER_DIM_SCRIM: egui::Color32 = egui::Color32::from_black_alpha(190);
 
-/// An audio card control's waveform while the tab plays.
+/// An audio card control's waveform while the tab plays. A warm sage rather than a minty green:
+/// still unambiguously "active/live" (the universal recording-light color family), just shifted to
+/// sit with the rest of this app's warm palette instead of against it.
 const WAVEFORM_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 190, 90);
 
 /// A note's text on its pale paper.
@@ -610,7 +612,8 @@ pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
 /// Returns its response: the frame turns a click into
 /// `control.action(kind)` and counts its hover as the card's. Icons are
 /// painted on the overlay layer (see `DeferredOverlays`), like card text.
-#[allow(clippy::too_many_arguments)] // Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
+// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_card_control(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,
@@ -701,11 +704,6 @@ pub(crate) fn paint_card_control(
                 // the end of every frame (see `RedrawRequested`'s
                 // own handling), so nothing further is needed
                 // to keep it animating on its own.
-                // A warm sage rather than a minty green -- still
-                // unambiguously "active/live" (the universal
-                // recording-light color family), just shifted to
-                // sit with the rest of this app's warm palette
-                // instead of against it.
                 // An idle window draws at a lower rate than the bars need.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
                 let t = std::time::SystemTime::now()
@@ -759,7 +757,8 @@ pub(crate) fn paint_card_control(
 
 /// The ✕ and eject buttons' look: a small square in the card's close
 /// colors (`card_style`), filled `hover_fill` while hovered.
-#[allow(clippy::too_many_arguments)] // Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
+// Free function: callers hold no CardPass, and a struct for one call site would only rename the arguments.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_control_square(
     ui: &egui::Ui,
     deferred_overlays: &mut DeferredOverlays,

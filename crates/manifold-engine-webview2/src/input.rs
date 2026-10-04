@@ -41,7 +41,8 @@
 //! by Chromium's own input pipeline, so (unlike a hand-dispatched DOM
 //! `KeyboardEvent`) it *does* trigger default actions: Enter submits a form,
 //! Backspace deletes a character, arrow keys scroll/move a text cursor.
-//! `Char`'s own `execCommand('insertText', ...)` path is untouched --
+//! `Char`'s own `execCommand('insertText', ...)` path (since replaced by
+//! `Input.insertText`, below) is untouched --
 //! `KeyDown`/`KeyUp` only need to cover the physical-key side now, the same
 //! division of labor `ipc_protocol::InputEvent`'s own doc comment already
 //! describes.

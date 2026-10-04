@@ -3,6 +3,8 @@ use std::io::{self, Read, Write};
 use serde::{de::DeserializeOwned, Serialize};
 
 /// The largest message either side accepts; a longer length prefix is an error, not an allocation.
+/// Room for a 4096x4096 RGBA frame (64 MiB) twice over; the length is refused before anything is
+/// allocated, so a corrupt or hostile prefix can't make the reader reserve gigabytes.
 pub const MAX_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
 /// Length-prefixed postcard framing over any duplex byte stream. One
