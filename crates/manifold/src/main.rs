@@ -836,6 +836,8 @@ struct App {
     naming_jar: Option<(String, String)>,
     /// A jar's "Clear Cookies" or "Delete" from Settings, waiting for its confirm dialog (`build_jar_confirm_popup`).
     pending_jar_confirm: Option<jar_defs::JarConfirm>,
+    /// A named session's delete from Settings, waiting for its confirm dialog (`build_session_delete_popup`).
+    pending_session_delete: Option<String>,
     /// `(node_id, screen_pos)` while a right-click context menu is showing
     /// for that node's card -- one field for every kind, so at most one
     /// menu is ever open by construction. Right-click is otherwise the
@@ -1420,6 +1422,7 @@ impl Default for App {
             renaming_group: None,
             naming_jar: None,
             pending_jar_confirm: None,
+            pending_session_delete: None,
             node_menu: None,
             node_menu_cache: None,
             quick_switcher: None,
@@ -1881,7 +1884,11 @@ impl App {
     fn load_named_session(&mut self, name: &str) {
         let shown = crate::names::to_plain(&crate::names::display_name(name, crate::names::UNTITLED));
         let Some(path) = session::named_session_path(name) else {
-            self.queue_toast("No session file".into());
+            self.queue_toast(if session::session_name_is_safe(name) {
+                "No session file".into()
+            } else {
+                format!("Not a session name: {shown}")
+            });
             return;
         };
         let bytes = match std::fs::read(&path) {
@@ -2008,15 +2015,25 @@ impl App {
         }
     }
 
-    /// Opens `session.mnf` under a fresh actor. A failure is toasted and
-    /// leaves the app running without a store.
+    /// Opens `session.mnf` under a fresh actor. A file that isn't a session
+    /// file at all is set aside (`Journal::open_or_set_aside`) and a new one
+    /// started, toasting where the old one went. Any other failure is toasted
+    /// and leaves the app running without a store.
     fn open_store(&mut self) {
         let Some(path) = session::store_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match store::journal::Journal::open(&path, store::model::ActorId::random()) {
-            Ok(journal) => self.journal = Some(journal),
+        match store::journal::Journal::open_or_set_aside(&path, store::model::ActorId::random()) {
+            Ok((journal, aside)) => {
+                self.journal = Some(journal);
+                if let Some(aside) = aside {
+                    self.queue_toast(format!(
+                        "The session file wasn't readable; it was kept as {} and a new one started",
+                        aside.display()
+                    ));
+                }
+            }
             Err(err) => self.queue_toast(format!("Couldn't open the session file {}: {err}", path.display())),
         }
     }
@@ -2626,6 +2643,7 @@ impl App {
         self.build_import_confirm_popup(ui);
         self.build_engine_confirm_popup(ui);
         self.build_jar_confirm_popup(ui);
+        self.build_session_delete_popup(ui);
     }
 
     /// The "Keyboard Shortcuts (F1)" half of `render_universal_chip`.

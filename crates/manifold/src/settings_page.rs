@@ -600,7 +600,7 @@ impl App {
             self.close_settings_page();
         }
         if let Some(name) = &req.delete_session_name {
-            session::delete_named(name);
+            self.offer_session_delete(name.clone());
         }
         if req.export_requested {
             if let Some((path, toast)) = save_dialog_with_toast("session.json", "Session") {

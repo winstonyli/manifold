@@ -781,6 +781,39 @@ impl Journal {
         Ok(journal)
     }
 
+    /// `open`, but a file that isn't a journal at all is renamed to
+    /// `<path>.unreadable-<secs>` and a fresh journal is created in its place.
+    /// Refusing used to leave the app without a store, so nothing more
+    /// was saved that run. Returns where the old file went.
+    pub fn open_or_set_aside(path: &Path, actor: ActorId) -> Result<(Journal, Option<PathBuf>), JournalError> {
+        match Journal::open(path, actor) {
+            Err(JournalError::NotAJournal) => {
+                let aside = {
+                    let _lock = lock_file(path)?;
+                    // Another process starting at the same time may already
+                    // have set it aside and started a journal: keep that one.
+                    match std::fs::read(path) {
+                        Ok(bytes) if matches!(read_header(&bytes), Err(JournalError::NotAJournal)) => {
+                            let secs =
+                                SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                            let mut aside = with_suffix(path, &format!(".unreadable-{secs}"));
+                            let mut n = 1;
+                            while aside.try_exists()? {
+                                aside = with_suffix(path, &format!(".unreadable-{secs}-{n}"));
+                                n += 1;
+                            }
+                            std::fs::rename(path, &aside)?;
+                            Some(aside)
+                        }
+                        _ => None,
+                    }
+                };
+                Ok((Journal::open(path, actor)?, aside))
+            }
+            other => other.map(|journal| (journal, None)),
+        }
+    }
+
     /// Reads a session file's document, as `open` would, without a lock or
     /// an actor. For `--dump` and tests.
     pub fn read(bytes: &[u8]) -> Result<Doc, JournalError> {
@@ -1898,6 +1931,20 @@ mod tests {
         std::fs::write(&path, b"{\"tabs\": []}").unwrap();
         assert!(matches!(Journal::open(&path, ActorId(1)), Err(JournalError::NotAJournal)));
         assert_eq!(std::fs::read(&path).unwrap(), b"{\"tabs\": []}");
+    }
+
+    #[test]
+    fn a_file_that_isnt_a_journal_is_set_aside_and_replaced() {
+        let dir = temp_dir("not-a-journal");
+        let path = dir.join("session.mnf");
+        std::fs::write(&path, b"this is not a session").unwrap();
+        assert!(matches!(Journal::open(&path, ActorId(1)), Err(JournalError::NotAJournal)));
+        let (journal, aside) = Journal::open_or_set_aside(&path, ActorId(1)).unwrap();
+        let aside = aside.expect("moved aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"this is not a session");
+        assert!(aside.file_name().unwrap().to_string_lossy().starts_with("session.mnf.unreadable-"));
+        drop(journal);
+        assert!(Journal::open(&path, ActorId(2)).is_ok(), "a real journal now");
     }
 
     #[test]

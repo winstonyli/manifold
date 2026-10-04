@@ -369,19 +369,50 @@ impl App {
         }
     }
 
-    /// Whether an engine or jar confirm dialog is up (`offer_confirm`).
+    /// Whether an engine, jar or session-delete confirm dialog is up (`offer_confirm`).
     pub(crate) fn confirm_open(&self) -> bool {
-        self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some()
+        self.pending_engine_confirm.is_some()
+            || self.pending_jar_confirm.is_some()
+            || self.pending_session_delete.is_some()
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
-        offer_confirm(&mut self.pending_engine_confirm, self.pending_jar_confirm.is_some(), confirm)
+        let other = self.pending_jar_confirm.is_some() || self.pending_session_delete.is_some();
+        offer_confirm(&mut self.pending_engine_confirm, other, confirm)
     }
 
     /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
     pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
-        offer_confirm(&mut self.pending_jar_confirm, self.pending_engine_confirm.is_some(), confirm)
+        let other = self.pending_engine_confirm.is_some() || self.pending_session_delete.is_some();
+        offer_confirm(&mut self.pending_jar_confirm, other, confirm)
+    }
+
+    /// Asks before deleting a named session (`offer_confirm`).
+    pub(crate) fn offer_session_delete(&mut self, name: String) -> bool {
+        let other = self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some();
+        offer_confirm(&mut self.pending_session_delete, other, name)
+    }
+
+    /// "Delete session <name>?" for the Settings session list's X.
+    pub(crate) fn build_session_delete_popup(&mut self, ui: &mut egui::Ui) {
+        let Some(name) = self.pending_session_delete.clone() else { return };
+        let shown = crate::names::to_plain(&crate::names::display_name(&name, crate::names::UNTITLED));
+        let title = format!("Delete session {shown}?");
+        match confirm_dialog(
+            ui,
+            "session_delete_popup",
+            title,
+            "Deletes the saved session and its copies from disk.",
+            "Delete",
+        ) {
+            Some(true) => {
+                self.pending_session_delete = None;
+                session::delete_named(&name);
+            }
+            Some(false) => self.pending_session_delete = None,
+            None => {}
+        }
     }
 
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
@@ -1630,6 +1661,18 @@ mod tests {
         assert!(offer_confirm(&mut slot, false, 1));
         assert!(!offer_confirm(&mut slot, false, 2), "its own kind is up");
         assert_eq!(slot, Some(1));
+    }
+
+    #[test]
+    fn a_session_delete_waits_for_a_free_confirm_slot() {
+        let mut app = App {
+            pending_jar_confirm: Some(crate::jar_defs::JarConfirm::Clear(crate::jar::JarKey::Default)),
+            ..App::default()
+        };
+        assert!(!app.offer_session_delete("work".into()));
+        app.pending_jar_confirm = None;
+        assert!(app.offer_session_delete("work".into()));
+        assert!(app.confirm_open());
     }
 
     #[test]
