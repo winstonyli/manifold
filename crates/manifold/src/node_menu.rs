@@ -57,10 +57,11 @@ pub(crate) enum NodeAction {
     SetJar(Option<NodeId>),
     /// "New Jar...": swaps the tab menu's items for a name field (`App::naming_jar`); the menu stays open.
     StartNewJar,
-    /// The name field lost focus by any means but Escape: creates the jar and picks it for the tab. The mapped
-    /// `CommitRename` (see `build_node_menu`).
+    /// Enter in the name field: creates the jar and picks it for the tab. The mapped `CommitRename` (see
+    /// `build_node_menu`).
     NewJar(String),
-    /// Escape in the name field.
+    /// Escape in the name field, or the field losing focus without Enter (a click away; user decision, unlike a
+    /// group rename): nothing is created.
     CancelNewJar,
     FollowGroupJar,
     SwitchJarNow,
@@ -146,9 +147,9 @@ pub(crate) struct NodeMenuConfig {
 /// frame, plus whether the click landed outside the menu. A free function,
 /// like `build_list_popup_frame`, so the caller keeps `&mut self` free to
 /// apply the action. `pos` stands in for a zero-size anchor rect, so the
-/// menu opens right at the pointer. `rename` is the group-name draft (and
-/// whether to focus it this frame) while a group is being renamed: the
-/// menu then shows just that field. `color` rings the node's current
+/// menu opens right at the pointer. `rename` is the name draft (with
+/// whether to focus it this frame, and the field's hint text) while a group
+/// is being renamed or a jar named: the menu then shows just that field. `color` rings the node's current
 /// swatch.
 pub(crate) fn build_node_context_menu(
     ui: &mut egui::Ui,
@@ -157,7 +158,7 @@ pub(crate) fn build_node_context_menu(
     interactable: bool,
     config: &NodeMenuConfig,
     color: Option<egui::Color32>,
-    rename: Option<(&mut String, bool)>,
+    rename: Option<(&mut String, bool, Option<&str>)>,
 ) -> (Option<NodeAction>, bool) {
     let mut action = None;
     // The first item takes focus when the menu opens, so it can be driven from the keyboard.
@@ -175,8 +176,12 @@ pub(crate) fn build_node_context_menu(
         fade,
         interactable,
         |ui| {
-            if let Some((draft, focus)) = rename {
-                let response = ui.add(egui::TextEdit::singleline(draft).desired_width(140.0));
+            if let Some((draft, focus, hint)) = rename {
+                let mut edit = egui::TextEdit::singleline(draft).desired_width(140.0);
+                if let Some(hint) = hint {
+                    edit = edit.hint_text(hint);
+                }
+                let response = ui.add(edit);
                 if focus {
                     response.request_focus();
                 }
@@ -550,7 +555,8 @@ impl App {
     /// frozen `NodeMenuView` and is click-through, so a second click (say,
     /// the rest of a double-click) can't act again. While a group is being
     /// renamed, a click outside commits the name (the field loses focus)
-    /// rather than just closing the menu.
+    /// rather than just closing the menu; while a jar is being named, only
+    /// Enter creates it, and a click outside cancels it, as Escape does.
     pub(crate) fn build_node_menu(&mut self, ui: &mut egui::Ui) {
         if self.node_menu.as_ref().is_some_and(|(id, _)| !self.nodes.contains_key(id)) {
             self.node_menu = None;
@@ -564,22 +570,24 @@ impl App {
         };
         let live = current.is_some();
         let config = node_menu_config(&view, self.headless);
+        let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
         let mut frozen_draft = view.renaming.clone();
         let rename = match (&mut self.renaming_group, &mut self.naming_jar) {
             (Some((gid, draft)), _) if live && *gid == id => {
-                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename)))
+                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename), None))
             }
             (_, Some((tid, draft))) if live && *tid == id => {
-                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::JarName)))
+                Some((draft, take_focus(&mut self.pending_focus, FocusTarget::JarName), Some("Jar name")))
             }
-            _ => frozen_draft.as_mut().map(|draft| (draft, false)),
+            _ => frozen_draft.as_mut().map(|draft| (draft, false, naming.then_some("Jar name"))),
         };
         let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
-        // The name field reports the generic rename actions; while naming a jar they mean the jar's.
-        let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
+        // The name field reports the generic rename actions; while naming a jar they mean the jar's. Only Enter
+        // creates it: losing focus any other way (a click away) cancels, unlike a group rename (user decision).
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let action = action.map(|a| match (a, naming) {
-            (NodeAction::CommitRename(name), true) => NodeAction::NewJar(name),
-            (NodeAction::CancelRename, true) => NodeAction::CancelNewJar,
+            (NodeAction::CommitRename(name), true) if enter => NodeAction::NewJar(name),
+            (NodeAction::CommitRename(_) | NodeAction::CancelRename, true) => NodeAction::CancelNewJar,
             (a, _) => a,
         });
         let close = match action {
@@ -600,9 +608,10 @@ impl App {
         }
     }
 
-    /// "New Jar..."'s name field belongs to its tab's open menu: once that menu is closed (Escape, a click on empty
-    /// graph) or another node's menu opens, the draft is dropped, so it can't reappear the next time the tab's menu
-    /// opens.
+    /// "New Jar..."'s name field belongs to its tab's open menu: the draft is dropped once `node_menu` is no longer
+    /// that tab's, so it can't reappear the next time the tab's menu opens. That covers the menu closing without the
+    /// field reporting it (a right-click on empty graph, a change of group level, the tab gone) and another node's menu
+    /// opening. Enter, Escape and a click away are the field's own (`NewJar`, `CancelNewJar`).
     fn drop_stray_jar_name(&mut self) {
         if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.node_menu.as_ref().map(|(id, _)| id) != Some(tid)) {
             self.naming_jar = None;
@@ -1025,6 +1034,102 @@ mod tests {
         app.jar_defs.remove(&work); // deleted on another device; the tab's field still names it
         let rows = app.node_menu_view(&t).unwrap().jars.unwrap().rows;
         assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.ticked)).collect::<Vec<_>>(), [("Default", true)]);
+    }
+
+    fn menu_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        ctx
+    }
+
+    /// One frame of `build_node_menu` in an 800x600 window.
+    fn menu_frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+    }
+
+    /// A left press, then its release a frame later, at (700, 500): outside a menu opened at (100, 100).
+    fn click_away() -> Vec<Vec<egui::Event>> {
+        let press = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(700.0, 500.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![vec![egui::Event::PointerMoved(egui::pos2(700.0, 500.0)), press(true)], vec![press(false)]]
+    }
+
+    /// Fix batch A3 (user decision): "New Jar..."'s name field creates the jar only on Enter. A click away (the field
+    /// losing focus without Enter) cancels, as Escape does: no jar, and no draft left in `naming_jar`. Driven through
+    /// `build_node_menu` with real egui input.
+    #[test]
+    fn the_new_jar_field_creates_only_on_enter() {
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for (how, ending, creates) in [
+            ("Enter", vec![vec![key(egui::Key::Enter)]], true),
+            ("a click away", click_away(), false),
+            ("Escape", vec![vec![key(egui::Key::Escape)]], false),
+        ] {
+            let ctx = menu_ctx();
+            let mut app = App::default();
+            let t =
+                crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+            app.node_menu = Some((t.clone(), egui::pos2(100.0, 100.0)));
+            let frame = |app: &mut App, events| menu_frame(&ctx, app, events);
+            app.apply_node_action(&ctx, &t, NodeAction::StartNewJar);
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![egui::Event::Text("Work".into())]);
+            assert_eq!(app.naming_jar, Some((t.clone(), "Work".to_string())), "{how}: typed into the field");
+            for events in ending {
+                frame(&mut app, events);
+            }
+            frame(&mut app, vec![]);
+            assert_eq!(app.naming_jar, None, "{how}: no draft left");
+            let made = app.jar_named("Work");
+            assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs);
+            let expected = crate::jar::JarChoice { jar: made, set: creates };
+            assert_eq!(app.tab_jar(&t).unwrap(), expected, "{how}: the tab's jar");
+        }
+    }
+
+    /// Fix batch A3: a group rename still commits on a click away (only "New Jar..." cancels).
+    #[test]
+    fn a_group_rename_still_commits_on_a_click_away() {
+        let ctx = menu_ctx();
+        let mut app = App::default();
+        let g = app.alloc_node_id();
+        app.insert_group_at(g.clone(), None);
+        app.node_menu = Some((g.clone(), egui::pos2(100.0, 100.0)));
+        app.apply_node_action(&ctx, &g, NodeAction::Rename);
+        menu_frame(&ctx, &mut app, vec![]);
+        menu_frame(&ctx, &mut app, vec![]);
+        let select_all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        menu_frame(&ctx, &mut app, vec![select_all, egui::Event::Text("Errands".into())]);
+        for events in click_away() {
+            menu_frame(&ctx, &mut app, events);
+        }
+        menu_frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.renaming_group, None);
+        assert_eq!(app.nodes[&g].as_group().unwrap().name, "Errands");
     }
 
     /// "New Jar..."'s draft goes with its menu: closed, or another node's menu open, drops it.
