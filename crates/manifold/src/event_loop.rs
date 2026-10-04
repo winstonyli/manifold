@@ -347,11 +347,17 @@ impl ApplicationHandler<UserEvent> for App {
                             let (x, y) = (x, y - chrome_height);
                             let event = match state {
                                 ElementState::Pressed => {
-                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers }
+                                    let click_count =
+                                        self.click_counter.press(button, (x, y), std::time::Instant::now());
+                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
                                 }
-                                ElementState::Released => {
-                                    InputEvent::MouseUp { x, y, button, modifiers: self.key_modifiers }
-                                }
+                                ElementState::Released => InputEvent::MouseUp {
+                                    x,
+                                    y,
+                                    button,
+                                    modifiers: self.key_modifiers,
+                                    click_count: self.click_counter.current(),
+                                },
                             };
                             node.tab.send(&HostToEngine::Input(event));
                             if state == ElementState::Pressed && matches!(button, MouseButton::Left) {

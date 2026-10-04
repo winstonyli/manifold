@@ -17,7 +17,8 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// other. Bump it on any change to `HostToEngine`, `EngineToHost` or a type
 /// they carry.
 /// 2: `EngineToHost::OpenTabRequested` carries `user_gesture`.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: `InputEvent::MouseDown`/`MouseUp` carry `click_count`; `TabState` drops `zoom`.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Starts the `EngineToHost::Crashed` reason for a version mismatch, so the
 /// host shows a failed card instead of respawning the same stale binary.

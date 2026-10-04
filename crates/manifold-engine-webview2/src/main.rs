@@ -320,7 +320,7 @@ fn main() {
                 }
                 HostToEngine::GetState => {
                     let url = nav_state.borrow().url.clone();
-                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url, zoom: 1.0 }));
+                    let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState { url }));
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
                 HostToEngine::SetCookies(json) => seed_cookies(&webview, in_private, &json),

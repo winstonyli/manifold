@@ -1,6 +1,6 @@
 //! Input dispatch for WebView2: **mouse via native
 //! `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text via
-//! `ICoreWebView2`'s CDP/`ExecuteScript`** (WebView2 has no native
+//! `ICoreWebView2`'s CDP** (WebView2 has no native
 //! keyboard-injection API on any hosting mode). The rest of this comment is
 //! the history of how that split was arrived at over several rounds -- it
 //! matters, because three of those rounds concluded the native path was
@@ -19,8 +19,8 @@
 //! interaction via JavaScript run directly in the page. This sidesteps the
 //! entire OS/Composition input pipeline (and its apparent focus/
 //! message-injection requirements) completely. (Superseded for mouse
-//! events by the Task 4 migration described at the bottom of this comment;
-//! still how text entry works.)
+//! events by the Task 4 migration described at the bottom of this comment,
+//! and for text entry by CDP `Input.insertText`; see the end of this comment.)
 //!
 //! **Verified live**: a dispatched `MouseUp` visibly changed real Wikipedia
 //! page content (a fundraising banner expanded) -- unambiguous proof the
@@ -59,18 +59,30 @@
 //! directly, so mouse handling now sends those instead of running JS.
 //! Keyboard is unaffected: WebView2 has no `SendKeyInput` equivalent on any
 //! hosting mode, so `KeyDown`/`KeyUp`/`Char` stay exactly as described above.
+//!
+//! **Text, later again: CDP `Input.insertText`, not `execCommand`.** The
+//! `execCommand('insertText', ...)` script ran in the top document, so a
+//! field focused inside an iframe got nothing, and it went through
+//! `ExecuteScript` while keys went through CDP, so a character and a
+//! following Backspace could arrive out of order. `Input.insertText` types
+//! into whichever frame has focus and shares the key events' channel.
 
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL,
+    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK,
     COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
-    COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOUBLE_CLICK, COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
+    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOUBLE_CLICK, COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP, COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
-    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
-    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT,
 };
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
 use windows::core::HSTRING;
@@ -84,17 +96,49 @@ pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
 /// Is the left button currently down? Tracked across `MouseDown`/
 /// `MouseMove`/`MouseUp` because `ipc_protocol::InputEvent::MouseMove`
-/// carries no button state of its own (see its doc comment: that field
-/// exists only for a native-injection engine forwarding modifier keys), so
+/// carries no button state of its own (only the held modifier keys), so
 /// this project's own engine-host has to remember it, to know whether to
 /// include the left-button virtual key on a `SendMouseInput` move (so
 /// Chromium's own drag/selection handling sees the button as held).
 pub type DragState = Rc<Cell<bool>>;
 
-fn exec(webview: &ICoreWebView2, script: String) {
-    let handler = ExecuteScriptCompletedHandler::create(Box::new(|_error, _result| Ok(())));
+fn call_cdp(webview: &ICoreWebView2, method: &str, params: serde_json::Value) {
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_error, _result| Ok(())));
     unsafe {
-        let _ = webview.ExecuteScript(&HSTRING::from(script), &handler);
+        let _ =
+            webview.CallDevToolsProtocolMethod(&HSTRING::from(method), &HSTRING::from(params.to_string()), &handler);
+    }
+}
+
+/// The VIRTUAL_KEYS for a mouse event: the held modifiers, plus `held`'s button flag.
+fn mouse_keys(held: Option<MouseButton>, mods: u8) -> COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS {
+    let mut bits = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE.0;
+    if mods & modifiers::CONTROL != 0 {
+        bits |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL.0;
+    }
+    if mods & modifiers::SHIFT != 0 {
+        bits |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT.0;
+    }
+    bits |= match held {
+        Some(MouseButton::Left) => COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON.0,
+        Some(MouseButton::Right) => COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON.0,
+        Some(MouseButton::Middle) => COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON.0,
+        None => 0,
+    };
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS(bits)
+}
+
+/// The press kind: Windows sends the second press of a double click as
+/// `*_DOUBLE_CLICK` instead of `*_DOWN`, which is what makes the page see a
+/// `dblclick` and select a word.
+fn down_kind(button: MouseButton, click_count: u8) -> COREWEBVIEW2_MOUSE_EVENT_KIND {
+    match (button, click_count >= 2) {
+        (MouseButton::Left, false) => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
+        (MouseButton::Left, true) => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK,
+        (MouseButton::Right, false) => COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
+        (MouseButton::Right, true) => COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOUBLE_CLICK,
+        (MouseButton::Middle, false) => COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN,
+        (MouseButton::Middle, true) => COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOUBLE_CLICK,
     }
 }
 
@@ -113,7 +157,7 @@ fn parse_json_string_or_null(json: &str) -> Option<String> {
 
 /// Translates and dispatches one `ipc_protocol::InputEvent` -- mouse events
 /// via `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text
-/// events via CDP/`ExecuteScript` on `webview` (see this module's doc
+/// events via CDP on `webview` (see this module's doc
 /// comment for why each picked its own mechanism).
 pub fn send_input(
     webview: &ICoreWebView2,
@@ -123,30 +167,21 @@ pub fn send_input(
     drag_state: &DragState,
 ) {
     match event {
-        InputEvent::MouseDown { x, y, button, .. } => {
-            let (kind, keys) = match button {
-                MouseButton::Left => {
-                    (COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON)
-                }
-                MouseButton::Right => (
-                    COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON,
-                ),
-                MouseButton::Middle => return,
-            };
-            if matches!(button, MouseButton::Left) {
+        InputEvent::MouseDown { x, y, button, modifiers: mods, click_count } => {
+            if button == MouseButton::Left {
                 drag_state.set(true);
             }
             unsafe {
-                let _ = comp_controller.SendMouseInput(kind, keys, 0, POINT { x: x as i32, y: y as i32 });
+                let _ = comp_controller.SendMouseInput(
+                    down_kind(button, click_count),
+                    mouse_keys(Some(button), mods),
+                    0,
+                    POINT { x: x as i32, y: y as i32 },
+                );
             }
         }
-        InputEvent::MouseMove { x, y, .. } => {
-            let keys = if drag_state.get() {
-                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON
-            } else {
-                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE
-            };
+        InputEvent::MouseMove { x, y, modifiers: mods } => {
+            let keys = mouse_keys(drag_state.get().then_some(MouseButton::Left), mods);
             unsafe {
                 let _ = comp_controller.SendMouseInput(
                     COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
@@ -158,12 +193,12 @@ pub fn send_input(
         }
         // Right-click's href-detection JS is kept (it doesn't depend on how
         // the click was delivered) but a real button-up is sent first.
-        InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } => {
+        InputEvent::MouseUp { x, y, button: MouseButton::Right, modifiers: mods, .. } => {
             drag_state.set(false);
             unsafe {
                 let _ = comp_controller.SendMouseInput(
                     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
+                    mouse_keys(None, mods),
                     0,
                     POINT { x: x as i32, y: y as i32 },
                 );
@@ -190,38 +225,29 @@ pub fn send_input(
                 let _ = webview.ExecuteScript(&HSTRING::from(script), &handler);
             }
         }
-        InputEvent::MouseUp { x, y, button, .. } => {
+        InputEvent::MouseUp { x, y, button, modifiers: mods, .. } => {
             drag_state.set(false);
             let kind = match button {
                 MouseButton::Left => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
-                MouseButton::Middle => return,
+                MouseButton::Middle => COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP,
                 MouseButton::Right => unreachable!("handled above"),
             };
             unsafe {
-                let _ = comp_controller.SendMouseInput(
-                    kind,
-                    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
-                    0,
-                    POINT { x: x as i32, y: y as i32 },
-                );
+                let _ =
+                    comp_controller.SendMouseInput(kind, mouse_keys(None, mods), 0, POINT { x: x as i32, y: y as i32 });
             }
         }
         // One wheel event per axis (the composition API takes a single delta). The host's deltas
         // already follow Windows' wheel convention (winit passes `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
         // through), so neither is negated; a zero axis sends nothing.
-        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => unsafe {
+        InputEvent::Scroll { x, y, delta_x, delta_y, modifiers: mods } => unsafe {
             let at = POINT { x: x as i32, y: y as i32 };
             for (kind, delta) in [
                 (COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, delta_y),
                 (COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, delta_x),
             ] {
                 if delta as i32 != 0 {
-                    let _ = comp_controller.SendMouseInput(
-                        kind,
-                        COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,
-                        delta as i32 as u32,
-                        at,
-                    );
+                    let _ = comp_controller.SendMouseInput(kind, mouse_keys(None, mods), delta as i32 as u32, at);
                 }
             }
         },
@@ -230,18 +256,13 @@ pub fn send_input(
         // triggers a key's default action.
         InputEvent::KeyDown { key, modifiers } => dispatch_key_event(webview, "keyDown", key, modifiers),
         InputEvent::KeyUp { key, modifiers } => dispatch_key_event(webview, "keyUp", key, modifiers),
-        // `execCommand('insertText', ...)` is the one synthetic-input path
-        // Chromium actually treats as "real" text entry into whatever
-        // element currently has focus -- unlike a dispatched `input`/
-        // `keypress` event, this one actually changes the field's value
-        // and fires the same `input` event a real keystroke would, so
-        // framework-bound inputs (React-style controlled inputs included)
-        // see it correctly.
-        // Confirmed live: click-focusing DuckDuckGo's HTML search box then
-        // dispatching `Char` events actually typed the real string into the
-        // field (screenshot showed the text and a real cursor).
+        // CDP `Input.insertText` types into the focused frame (an iframe's
+        // field too, which `execCommand` in the top document never reached)
+        // and shares the key events' channel, so the order is kept.
         InputEvent::Char { codepoint } => {
-            exec(webview, format!("document.execCommand('insertText', false, String.fromCodePoint({codepoint}));"));
+            if let Some(c) = char::from_u32(codepoint) {
+                call_cdp(webview, "Input.insertText", serde_json::json!({ "text": c.to_string() }));
+            }
         }
     }
 }
@@ -278,14 +299,27 @@ fn dispatch_key_event(webview: &ICoreWebView2, cdp_type: &str, key: KeyCode, mod
         "code": code,
         "key": key_name,
         "modifiers": cdp_modifiers(mods),
-    })
-    .to_string();
-    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_error, _result| Ok(())));
-    unsafe {
-        let _ = webview.CallDevToolsProtocolMethod(
-            &HSTRING::from("Input.dispatchKeyEvent"),
-            &HSTRING::from(params),
-            &handler,
-        );
+    });
+    call_cdp(webview, "Input.dispatchKeyEvent", params);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_keys_carry_modifiers_and_the_held_button() {
+        let keys = mouse_keys(Some(MouseButton::Left), modifiers::CONTROL | modifiers::SHIFT);
+        assert!(keys.contains(COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL));
+        assert!(keys.contains(COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT));
+        assert!(keys.contains(COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON));
+        assert_eq!(mouse_keys(None, 0), COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE);
+    }
+
+    #[test]
+    fn a_second_left_press_is_a_double_click() {
+        assert_eq!(down_kind(MouseButton::Left, 1), COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN);
+        assert_eq!(down_kind(MouseButton::Left, 2), COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK);
+        assert_eq!(down_kind(MouseButton::Middle, 1), COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN);
     }
 }

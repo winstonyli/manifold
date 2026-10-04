@@ -11,10 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TabState {
     pub url: String,
-    pub zoom: f64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {
     Left,
     Right,
@@ -184,13 +183,14 @@ pub mod modifiers {
 #[rustfmt::skip]
 pub enum InputEvent {
     /// `modifiers` (see the `modifiers` module) are the modifier keys held
-    /// *at the time of* this mouse event — added so a native-input-
-    /// injection engine (currently only CEF; the others are script-driven
-    /// and read modifier state some other way) can forward e.g. Ctrl+click/
-    /// Shift+click to the page instead of always injecting a bare click.
+    /// at the time of this mouse event; every engine forwards them, so
+    /// Ctrl+click/Shift+click reach the page instead of a bare click.
     MouseMove { x: f64, y: f64, modifiers: u8 },
-    MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8 },
-    MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8 },
+    /// `click_count` is 1 for a single press, 2 for the second of a double
+    /// click, and so on (`manifold`'s `ClickCounter`); `MouseUp` repeats
+    /// its press's count.
+    MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
+    MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
     Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: u8 },
     KeyDown { key: KeyCode, modifiers: u8 },
     KeyUp { key: KeyCode, modifiers: u8 },

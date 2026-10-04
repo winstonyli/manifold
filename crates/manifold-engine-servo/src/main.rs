@@ -283,11 +283,9 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    // Zoom still deferred (see the SetZoom TODO above) — url
-                    // is the only piece M2's swap sequence actually replays.
+                    // The url is the only piece the swap sequence replays.
                     let _ = control.send(&EngineToHost::StateSnapshot(ipc_protocol::TabState {
                         url: delegate.nav.borrow().url.clone(),
-                        zoom: 1.0,
                     }));
                 }
                 HostToEngine::SetCookies(_) | HostToEngine::GetCookies => {} // This engine has no cookie jar to seed or read; stays silent.

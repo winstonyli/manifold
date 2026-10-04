@@ -304,10 +304,8 @@ fn main() {
                     visible = v;
                 }
                 HostToEngine::GetState => {
-                    let _ = control.send(&EngineToHost::StateSnapshot(TabState {
-                        url: nav_state.borrow().url.clone(),
-                        zoom: 1.0,
-                    }));
+                    let _ =
+                        control.send(&EngineToHost::StateSnapshot(TabState { url: nav_state.borrow().url.clone() }));
                 }
                 HostToEngine::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
                 HostToEngine::GetCookies => pull = Some(jar_cookies::start_pull()),

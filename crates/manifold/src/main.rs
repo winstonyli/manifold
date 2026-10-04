@@ -3,6 +3,7 @@ mod card;
 mod cef_pin;
 mod cef_platform;
 mod cli;
+mod click_count;
 mod closed;
 mod content;
 mod crash_report;
@@ -1031,6 +1032,8 @@ struct App {
     /// carries the modifier state at the time of that key, not just the
     /// currently-pressed key itself.
     key_modifiers: u8,
+    /// Click counts for page presses (`InputEvent::MouseDown::click_count`).
+    click_counter: click_count::ClickCounter,
     /// Physical keys of a shortcut chord pressed in Tab view, whose release (and typed text) must not
     /// reach the page either (`shortcuts::claims_chord`).
     swallowed_keys: std::collections::HashSet<WinitKeyCode>,
@@ -1475,6 +1478,7 @@ impl Default for App {
             cursor_pos: (0.0, 0.0),
             native_drag_tab: None,
             key_modifiers: 0,
+            click_counter: Default::default(),
             swallowed_keys: Default::default(),
             egui_ctx,
             egui_state: None,

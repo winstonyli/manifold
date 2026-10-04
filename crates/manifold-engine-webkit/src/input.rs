@@ -45,9 +45,11 @@ pub fn send_input(
     // feature actually needs: whether the click landed on a link.
     if let InputEvent::MouseUp { x, y, button: MouseButton::Right, .. } = event {
         let pending = pending_context_menu.clone();
+        let zoom = webview.zoom_level().max(0.01);
+        // InputEvent coordinates are surface pixels; elementFromPoint takes CSS pixels, which page zoom scales.
         webview.run_javascript(
             &format!(
-                "(function(){{var e=document.elementFromPoint({x},{y});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
+                "(function(){{var e=document.elementFromPoint({x}/{zoom},{y}/{zoom});var a=e&&e.closest('a[href]');return a?a.href:null;}})();"
             ),
             gtk::gio::Cancellable::NONE,
             move |result| {
@@ -63,7 +65,7 @@ pub fn send_input(
     }
 
     match event {
-        InputEvent::MouseMove { x, y, .. } => {
+        InputEvent::MouseMove { x, y, modifiers } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -71,21 +73,28 @@ pub fn send_input(
                 x,
                 y,
                 0,
-                gdk::ModifierType::empty(),
+                modifiers_to_gdk(modifiers),
             );
         }
-        InputEvent::MouseDown { x, y, button, .. } => {
-            send_button_or_motion_event(
-                &window,
-                pointer_device,
-                gdk::EventType::ButtonPress,
-                x,
-                y,
-                mouse_button_to_gdk(button),
-                gdk::ModifierType::empty(),
-            );
+        InputEvent::MouseDown { x, y, button, modifiers, click_count } => {
+            let (button, state) = (mouse_button_to_gdk(button), modifiers_to_gdk(modifiers));
+            send_button_or_motion_event(&window, pointer_device, gdk::EventType::ButtonPress, x, y, button, state);
+            // GDK3 follows the second press of a double click with a
+            // `2BUTTON_PRESS`, and that is what WebKitGTK counts as a double
+            // click (word selection, `dblclick`).
+            if click_count == 2 {
+                send_button_or_motion_event(
+                    &window,
+                    pointer_device,
+                    gdk::EventType::DoubleButtonPress,
+                    x,
+                    y,
+                    button,
+                    state,
+                );
+            }
         }
-        InputEvent::MouseUp { x, y, button, .. } => {
+        InputEvent::MouseUp { x, y, button, modifiers, .. } => {
             send_button_or_motion_event(
                 &window,
                 pointer_device,
@@ -93,7 +102,7 @@ pub fn send_input(
                 x,
                 y,
                 mouse_button_to_gdk(button),
-                gdk::ModifierType::empty(),
+                modifiers_to_gdk(modifiers),
             );
         }
         InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
@@ -245,7 +254,7 @@ fn send_button_or_motion_event(
                 (*raw).state = state.into_glib();
                 (*raw).is_hint = 0;
             }
-            gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease => {
+            gdk::EventType::ButtonPress | gdk::EventType::DoubleButtonPress | gdk::EventType::ButtonRelease => {
                 let any: *mut gdk::ffi::GdkEvent = ev.to_glib_none_mut().0;
                 let raw = any as *mut gdk::ffi::GdkEventButton;
                 (*raw).window = window.to_glib_full();
