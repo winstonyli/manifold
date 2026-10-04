@@ -93,28 +93,80 @@ fn push_centered_text(
 /// A jar chip's height in screen points.
 const JAR_CHIP_HEIGHT: f32 = 16.0;
 
-/// A jar chip with its top-left at `at` (screen): a dot (outlined when following the group, `warn`-coloured for a
-/// missing jar) and the name on a dark scrim, after the old jar's dot and an arrow while the tab waits to switch.
-/// Its hover text goes through `CardBody::tooltip`.
+/// A jar chip's dot radius, and its padding: before the first dot, after the name (or the last dot, with no name).
+const JAR_CHIP_R: f32 = 4.0;
+const JAR_CHIP_PAD: f32 = 5.0;
+const JAR_CHIP_NAME_END: f32 = 6.0;
+/// The gap between the jar's dot and its name.
+const JAR_CHIP_NAME_GAP: f32 = 4.0;
+/// Narrower than this, a chip's name (about one letter and "…") is left out rather than squeezed.
+const JAR_CHIP_MIN_NAME: f32 = 14.0;
+
+/// What of a jar chip fits `max` screen points (`fit_jar_chip`): whether the old jar's dot and arrow are drawn
+/// (`lead`), and the width the name gets (`None`: no name).
+#[derive(Debug, PartialEq)]
+struct ChipFit {
+    lead: bool,
+    name: Option<f32>,
+}
+
+/// Fits a chip whose lead is `lead` and name `name` points wide into `max`: whole if it fits, else the name
+/// ellipsized, else just the dots, else just the jar's dot (a waiting switch's cue goes last but one), else nothing.
+fn fit_jar_chip(max: f32, lead: f32, name: f32) -> Option<ChipFit> {
+    let dots = |lead: f32| JAR_CHIP_PAD + lead + 2.0 * JAR_CHIP_R;
+    let room = max - dots(lead) - JAR_CHIP_NAME_GAP - JAR_CHIP_NAME_END;
+    if room >= name.min(JAR_CHIP_MIN_NAME) {
+        Some(ChipFit { lead: lead > 0.0, name: Some(name.min(room)) })
+    } else if dots(lead) + JAR_CHIP_PAD <= max {
+        Some(ChipFit { lead: lead > 0.0, name: None })
+    } else if dots(0.0) + JAR_CHIP_PAD <= max {
+        Some(ChipFit { lead: false, name: None })
+    } else {
+        None
+    }
+}
+
+/// A jar chip with its top-left at `at` (screen), at most `max_width` wide (`fit_jar_chip`): a dot (outlined when
+/// following the group, `warn`-coloured for a missing jar) and the name on a dark scrim, after the old jar's dot and an
+/// arrow while the tab waits to switch. Its hover text goes through `CardBody::tooltip`. Returns the scrim drawn.
 pub(crate) fn paint_jar_chip(
     painter: &egui::Painter,
     at: egui::Pos2,
+    max_width: f32,
     chip: &crate::jar_defs::JarChip,
     font: egui::FontId,
     text: egui::Color32,
     warn: egui::Color32,
-) {
-    const R: f32 = 4.0;
+) -> Option<egui::Rect> {
+    const R: f32 = JAR_CHIP_R;
     let cy = at.y + JAR_CHIP_HEIGHT / 2.0;
     let arrow =
         chip.will_switch.then(|| painter.layout_no_wrap(egui_phosphor::light::ARROW_RIGHT.into(), font.clone(), text));
-    let name = painter.layout_no_wrap(chip.name.clone(), font, text);
+    let name = painter.layout_no_wrap(chip.name.clone(), font.clone(), text);
     let lead = arrow.as_ref().map_or(0.0, |a| 2.0 * R + 3.0 + a.size().x + 3.0);
-    let width = 5.0 + lead + 2.0 * R + 4.0 + name.size().x + 6.0;
+    let fit = fit_jar_chip(max_width, lead, name.size().x)?;
+    let name = fit.name.map(|room| {
+        if room >= name.size().x {
+            return name;
+        }
+        let mut job = egui::text::LayoutJob::simple_singleline(chip.name.clone(), font, text);
+        job.wrap = egui::text::TextWrapping {
+            max_width: room,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        painter.layout_job(job)
+    });
+    let lead = if fit.lead { lead } else { 0.0 };
+    let width = match &name {
+        Some(name) => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_NAME_GAP + name.size().x + JAR_CHIP_NAME_END,
+        None => JAR_CHIP_PAD + lead + 2.0 * R + JAR_CHIP_PAD,
+    };
     let scrim = egui::Rect::from_min_size(at, egui::vec2(width, JAR_CHIP_HEIGHT));
     painter.rect_filled(scrim, JAR_CHIP_HEIGHT / 2.0, egui::Color32::from_black_alpha(210)); // legible on a white page
-    let mut x = at.x + 5.0;
-    if let Some(arrow) = arrow {
+    let mut x = at.x + JAR_CHIP_PAD;
+    if let Some(arrow) = arrow.filter(|_| fit.lead) {
         painter.circle_filled(egui::pos2(x + R, cy), R, chip.was_color);
         x += 2.0 * R + 3.0;
         let size = arrow.size();
@@ -127,22 +179,28 @@ pub(crate) fn paint_jar_chip(
     } else {
         painter.circle_filled(egui::pos2(x + R, cy), R, color);
     }
-    x += 2.0 * R + 4.0;
-    let size = name.size();
-    painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
+    x += 2.0 * R + JAR_CHIP_NAME_GAP;
+    if let Some(name) = name {
+        let size = name.size();
+        painter.galley(egui::pos2(x, cy - size.y / 2.0), name, text);
+    }
+    Some(scrim)
 }
 
-/// Queues tab `chip` at world point `world` (the card's corner it hangs from), moved by `offset` screen points.
+/// Queues tab `chip` at world point `world` (the card's corner it hangs from), moved by `offset` screen points, at
+/// most `max_width` screen points wide: the card's width less the chip's inset on both sides.
 fn push_jar_chip(
     deferred_overlays: &mut DeferredOverlays,
     world: egui::Pos2,
     offset: egui::Vec2,
+    max_width: f32,
     chip: crate::jar_defs::JarChip,
     warn: egui::Color32,
 ) {
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
         let font = egui::FontId::proportional(11.0);
-        paint_jar_chip(overlay_painter, project(world) + offset, &chip, font, egui::Color32::from_gray(240), warn);
+        let text = egui::Color32::from_gray(240);
+        paint_jar_chip(overlay_painter, project(world) + offset, max_width, &chip, font, text, warn);
     }));
 }
 
@@ -1148,8 +1206,10 @@ impl App {
         // The jar chip just below the title: under the header, or at the top of a short card (whose title is on
         // the bottom strip).
         if let Some(chip) = chip.filter(|_| rect.width() * zoom_scale >= MIN_LABEL_CARD_SCREEN_WIDTH) {
-            let corner = card_body_rect(rect, tall, inv_zoom).left_top();
-            push_jar_chip(deferred_overlays, corner, egui::vec2(4.0, 4.0), chip, ui.visuals().warn_fg_color);
+            let body_rect = card_body_rect(rect, tall, inv_zoom);
+            let max_width = body_rect.width() * zoom_scale - 8.0;
+            let warn = ui.visuals().warn_fg_color;
+            push_jar_chip(deferred_overlays, body_rect.left_top(), egui::vec2(4.0, 4.0), max_width, chip, warn);
         }
         body
     }
@@ -2023,7 +2083,8 @@ impl App {
                 let strip = if header { 0.0 } else { TAB_STRIP_POINTS * inv_zoom };
                 let corner = thumb_rect.left_bottom() + egui::vec2(0.0, -strip);
                 let offset = egui::vec2(4.0, -4.0 - JAR_CHIP_HEIGHT);
-                push_jar_chip(deferred_overlays, corner, offset, chip, ui.visuals().warn_fg_color);
+                let max_width = thumb_rect.width() * zoom_scale - 8.0;
+                push_jar_chip(deferred_overlays, corner, offset, max_width, chip, ui.visuals().warn_fg_color);
             }
         }
         body
@@ -2033,6 +2094,58 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fix batch B3: a chip on a narrow card gives up, in turn, the end of its name, its name, then the old jar's dot
+    /// and arrow; it never runs past `max`.
+    #[test]
+    fn a_jar_chip_shrinks_to_fit_its_card() {
+        let fit = |max, lead, name| fit_jar_chip(max, lead, name);
+        let whole = JAR_CHIP_PAD + 2.0 * JAR_CHIP_R + JAR_CHIP_NAME_GAP + 30.0 + JAR_CHIP_NAME_END;
+        assert_eq!(fit(whole, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(30.0) }));
+        assert_eq!(fit(whole - 10.0, 0.0, 30.0), Some(ChipFit { lead: false, name: Some(20.0) }));
+        assert_eq!(fit(whole + 20.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(30.0) }));
+        assert_eq!(fit(whole + 5.0, 20.0, 30.0), Some(ChipFit { lead: true, name: Some(15.0) }));
+        assert_eq!(fit(40.0, 20.0, 30.0), Some(ChipFit { lead: true, name: None }));
+        assert_eq!(fit(30.0, 20.0, 30.0), Some(ChipFit { lead: false, name: None }));
+        assert_eq!(fit(10.0, 20.0, 30.0), None);
+        // A name already narrower than the minimum is kept whole when it fits.
+        assert_eq!(fit(whole - 20.0, 0.0, 10.0), Some(ChipFit { lead: false, name: Some(10.0) }));
+    }
+
+    /// The painted scrim honours `fit_jar_chip`, with the long name ellipsized rather than overflowing.
+    #[test]
+    fn a_painted_jar_chip_stays_inside_its_width() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        let chip = crate::jar_defs::JarChip {
+            name: "A rather long jar name".into(),
+            color: egui::Color32::RED,
+            following: false,
+            missing: false,
+            will_switch: true,
+            can_switch_now: true,
+            was_color: egui::Color32::GRAY,
+            engine_ignores: false,
+            tooltip: None,
+        };
+        for max in [200.0, 80.0, 40.0, 20.0, 10.0] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let font = egui::FontId::proportional(11.0);
+                let painted = paint_jar_chip(
+                    ui.painter(),
+                    egui::Pos2::ZERO,
+                    max,
+                    &chip,
+                    font,
+                    egui::Color32::WHITE,
+                    egui::Color32::YELLOW,
+                );
+                assert!(painted.is_none_or(|r| r.width() <= max), "{max}: {painted:?}");
+                assert_eq!(painted.is_none(), max < 20.0, "{max}");
+            });
+            output.textures_delta.clear();
+        }
+    }
 
     /// Header F is on every card kind: each kind's body painter reaches the shared header (or, for
     /// the tab card and the JSON preview, the code that draws the same 40-point one). Source-text
