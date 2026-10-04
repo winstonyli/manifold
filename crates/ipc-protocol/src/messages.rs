@@ -470,11 +470,10 @@ pub enum EngineToHost {
     /// menu" outcome the other three engines reach by different means.
     ContextMenuLink { x: f64, y: f64, href: String },
     /// A download started -- `path` is where the engine will save it (this
-    /// project never prompts for a save location; each engine picks its own
-    /// default: WebView2's own real Downloads-folder default, CEF's
-    /// `%USERPROFILE%\Downloads` plus the server's suggested filename
-    /// chosen by `manifold`'s equivalent, WebKit's own default -- see each
-    /// engine-host's own download-handling code). `total_bytes` is the
+    /// project never prompts for a save location: WebView2 uses Edge's own
+    /// Downloads-folder default and naming; CEF and WebKit use
+    /// `crate::downloads` -- `~/Downloads`, the suggested name's last
+    /// component, numbered `name (n).ext` if taken). `total_bytes` is the
     /// expected final size if the server reported a real `Content-Length`;
     /// `None` for a chunked/unknown-length response, shown as a byte count
     /// with no percentage rather than a guessed bar. `path` is the stable

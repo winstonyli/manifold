@@ -83,45 +83,50 @@ fn main() {
     // WebView2) -- `decide-destination` fires with the server's suggested
     // filename and MUST call `set_destination` or the download silently
     // never starts, same requirement as CEF's `on_before_download`/
-    // `BeforeDownloadCallback::cont`. `$HOME/Downloads` mirrors CEF's
-    // `%USERPROFILE%\Downloads` choice for the same reason: this project
-    // never shows its own save-as dialog.
+    // `BeforeDownloadCallback::cont`. The folder and name come from
+    // `ipc_protocol::downloads`, the rule CEF uses too: `~/Downloads`, the
+    // suggested name's last component, numbered if taken (WebKit doesn't
+    // overwrite, so a second download of one name would otherwise fail).
+    // `reserved` holds names handed out and not yet finished, so concurrent
+    // same-name downloads get distinct names before either file exists. The
+    // destination is set as a properly escaped `file://` URI
+    // (`glib::filename_to_uri`), so a `#` or space in a name works.
     //
-    // Reports live byte progress now, not just the final result:
-    // `decide-destination` is also where `total_bytes` is read (the
-    // response's `Content-Length`, via `WebKitURIResponse::content_length`
-    // -- 0 means unknown, per WebKit's own convention) and where `path` is
-    // computed directly from `dest` rather than round-tripped through
-    // `destination()` the way the other two signals below need to (they
-    // don't have `dest` in their own closure's scope). `connect_received_
-    // data` fires repeatedly as bytes arrive; `received_data_length()` is
-    // WebKit's own running total, no manual accumulation from the signal's
-    // per-chunk delta parameter needed. `connect_finished` (not `estimated_
-    // progress` polling) remains the actual completion signal; `destination
-    // ()` returns back whatever URI was set above, stripped of its `file://`
-    // prefix to match the plain filesystem paths WebView2/CEF report.
+    // `decide-destination` also reads `total_bytes` (the response's
+    // `Content-Length`, via `WebKitURIResponse::content_length` -- 0 means
+    // unknown, per WebKit's own convention) and stores the plain filesystem
+    // path in `dest_for_events`. `received-data`, `failed` and `finished`
+    // report that stored string, never `destination()` (the escaped URI),
+    // so every message about one download carries the exact `path` its
+    // `Started` did -- the host keys downloads by it. `received-data` fires
+    // repeatedly as bytes arrive; `received_data_length()` is WebKit's own
+    // running total. `finished` (not `estimated-progress` polling) is the
+    // completion signal.
     //
     // A queue, not a single slot -- two downloads progressing within the
     // same ~16ms tick would otherwise silently clobber each other.
     let pending_download: Rc<RefCell<Vec<DownloadEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
     if let Some(context) = &web_context {
         let pending_for_started = pending_download.clone();
         context.connect_download_started(move |_context, download| {
+            let dest_for_events: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
             let pending_for_destination = pending_for_started.clone();
+            let dest_for_destination = dest_for_events.clone();
+            let reserved_for_destination = reserved.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join("Downloads");
+                let dir = ipc_protocol::downloads::downloads_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                // Server-controlled -- only its final path component is
-                // ever used, same `..`/absolute-path guard as CEF's
-                // `on_before_download`.
-                let name = std::path::Path::new(suggested_filename)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("download");
-                let dest = dir.join(name);
-                download.set_destination(&format!("file://{}", dest.display()));
+                let dest = ipc_protocol::downloads::unique_path(
+                    &dir,
+                    &ipc_protocol::downloads::safe_name(suggested_filename),
+                    |p| p.exists() || reserved_for_destination.borrow().contains(p),
+                );
+                let Ok(uri) = gtk::glib::filename_to_uri(&dest, None) else { return false };
+                download.set_destination(&uri);
+                reserved_for_destination.borrow_mut().insert(dest.clone());
                 let path = dest.to_string_lossy().to_string();
+                *dest_for_destination.borrow_mut() = Some(path.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
                 let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
                 pending_for_destination.borrow_mut().push(DownloadEvent::Started { path, total_bytes, url });
@@ -129,9 +134,9 @@ fn main() {
             });
 
             let pending_for_progress = pending_for_started.clone();
+            let dest_for_progress = dest_for_events.clone();
             download.connect_received_data(move |download, _data_length_delta| {
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                if let Some(path) = dest_for_progress.borrow().clone() {
                     let bytes_received = download.received_data_length();
                     pending_for_progress.borrow_mut().push(DownloadEvent::Progress { path, bytes_received });
                 }
@@ -141,21 +146,26 @@ fn main() {
             let failed = Rc::new(std::cell::Cell::new(false));
             let pending_for_failed = pending_for_started.clone();
             let failed_for_handler = failed.clone();
-            download.connect_failed(move |download, _error| {
+            let dest_for_failed = dest_for_events.clone();
+            download.connect_failed(move |_download, _error| {
                 failed_for_handler.set(true);
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                if let Some(path) = dest_for_failed.borrow().clone() {
                     pending_for_failed.borrow_mut().push(DownloadEvent::Failed { path });
                 }
             });
 
             let pending_for_finished = pending_for_started.clone();
-            download.connect_finished(move |download| {
+            let reserved_for_finished = reserved.clone();
+            download.connect_finished(move |_download| {
+                // `finished` follows either outcome, so the name is freed here.
+                let dest = dest_for_events.borrow().clone();
+                if let Some(path) = &dest {
+                    reserved_for_finished.borrow_mut().remove(std::path::Path::new(path));
+                }
                 if failed.get() {
                     return;
                 }
-                if let Some(uri) = download.destination() {
-                    let path = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                if let Some(path) = dest {
                     pending_for_finished.borrow_mut().push(DownloadEvent::Completed { path });
                 }
             });
@@ -495,8 +505,10 @@ fn main() {
             let _ = to_host.send(&EngineToHost::ContextMenuLink { x, y, href });
         }
 
-        for event in pending_download.borrow_mut().drain(..) {
-            let msg = match event {
+        let download_msgs: Vec<EngineToHost> = pending_download
+            .borrow_mut()
+            .drain(..)
+            .map(|event| match event {
                 DownloadEvent::Started { path, total_bytes, url } => {
                     EngineToHost::DownloadStarted { path, total_bytes, url }
                 }
@@ -505,7 +517,9 @@ fn main() {
                 }
                 DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
                 DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-            };
+            })
+            .collect();
+        for msg in ipc_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = to_host.send(&msg);
         }
 

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -7,8 +7,9 @@ use cef::{rc::Rc as CefRc, *};
 
 /// One thing that happened to a download since the last poll -- mirrors
 /// `ipc_protocol::EngineToHost`'s own `Download*` variants; kept as its own
-/// type here (rather than depending on `ipc_protocol` from this leaf
-/// module) so `main.rs` does the actual translation, same separation
+/// type here (rather than building `ipc_protocol` messages in this leaf
+/// module, which uses only its `downloads` naming helpers) so `main.rs`
+/// does the actual translation, same separation
 /// `manifold-engine-webview2`'s own `download::DownloadEvent` uses.
 pub enum DownloadEvent {
     Started { path: String, total_bytes: Option<u64>, url: Option<String> },
@@ -21,27 +22,25 @@ pub enum DownloadEvent {
 /// progressing within the same tick would otherwise silently clobber each
 /// other. `on_download_updated` fires repeatedly for the same item over its
 /// whole lifetime (not just once at completion) -- `started` dedupes it
-/// down to exactly one `Started` per item id, `reported` the same for
-/// `Completed` or `Failed`; every other call in between is a `Progress`.
+/// down to exactly one `Started` per item id, and the item leaving
+/// `assigned` makes `Completed` or `Failed` the last message about it;
+/// every other call in between is a `Progress`.
 pub struct DownloadResults {
     pub queue: Vec<DownloadEvent>,
     started: HashSet<u32>,
-    reported: HashSet<u32>,
+    /// The path `on_before_download` handed out, by item id, until the
+    /// download ends. Every message reports this string, never
+    /// `DownloadItem::full_path`, which is empty for the first few updates
+    /// (they arrive before `on_before_download`). Its values are also the
+    /// reserved names: concurrent same-name downloads get distinct names
+    /// before either file exists.
+    assigned: HashMap<u32, PathBuf>,
 }
 
 pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
 
 pub fn new_shared_download_path() -> SharedDownloadPath {
-    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), started: HashSet::new(), reported: HashSet::new() }))
-}
-
-/// `%USERPROFILE%\Downloads` -- CEF (unlike WebView2) has no built-in
-/// default save location of its own; `on_before_download` must supply one
-/// or the download never starts. Falls back to the current directory in
-/// the (practically never, on a real Windows install) case `USERPROFILE`
-/// isn't set, rather than failing the download outright.
-fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Downloads")).unwrap_or_default()
+    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), started: HashSet::new(), assigned: HashMap::new() }))
 }
 
 #[derive(Clone)]
@@ -61,6 +60,18 @@ wrap_download_handler! {
     }
 
     impl DownloadHandler {
+        // CEF's C++ default allows every download, but cef-rs's generated
+        // default returns `Default::default()` (0, refuse), which cancelled
+        // every download before `on_before_download` ran.
+        fn can_download(
+            &self,
+            _browser: Option<&mut Browser>,
+            _url: Option<&CefString>,
+            _request_method: Option<&CefString>,
+        ) -> ::std::os::raw::c_int {
+            true as _
+        }
+
         // Must call `callback.cont(...)` or the download never actually
         // starts -- CEF has no default location of its own the way
         // WebView2 does. `show_dialog: false` since there's no real
@@ -68,27 +79,23 @@ wrap_download_handler! {
         fn on_before_download(
             &self,
             _browser: Option<&mut Browser>,
-            _download_item: Option<&mut DownloadItem>,
+            download_item: Option<&mut DownloadItem>,
             suggested_name: Option<&CefString>,
             callback: Option<&mut BeforeDownloadCallback>,
         ) -> ::std::os::raw::c_int {
-            if let Some(callback) = callback {
-                // Server-controlled -- only its final path component is
-                // ever used, so a `..`-laden or absolute suggested name
-                // can't escape `downloads_dir()` (`PathBuf::join` doesn't
-                // sanitize either case: `..` segments pass through
-                // untouched and an absolute joinee replaces the base
-                // entirely).
-                let name = suggested_name
-                    .map(|s| s.to_string())
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("download")
-                    .to_string();
-                let path = downloads_dir().join(name);
+            if let (Some(item), Some(callback)) = (download_item, callback) {
+                // CEF (unlike WebView2) has no default save location or
+                // uniquifying of its own. The suggested name is
+                // server-controlled; `safe_name` keeps only its last
+                // component so it can't leave the downloads folder.
+                let dir = ipc_protocol::downloads::downloads_dir();
+                let name = ipc_protocol::downloads::safe_name(&suggested_name.map(|s| s.to_string()).unwrap_or_default());
+                let mut results = self.handler.result.borrow_mut();
+                let path = ipc_protocol::downloads::unique_path(&dir, &name, |p| {
+                    p.exists() || results.assigned.values().any(|taken| taken == p)
+                });
+                results.assigned.insert(item.id(), path.clone());
+                drop(results);
                 callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
             }
             true as _
@@ -103,26 +110,24 @@ wrap_download_handler! {
             if let Some(item) = download_item {
                 let mut results = self.handler.result.borrow_mut();
                 let id = item.id();
-                // Final by contract as soon as the download item exists --
-                // `on_before_download`'s callback already supplied it,
-                // CEF has no default location of its own to override it
-                // with. Same value the `Completed` branch below already
-                // trusted before this progress reporting existed.
-                let path = CefString::from(&item.full_path()).to_string();
+                // Nothing to report before `on_before_download` has named
+                // it (CEF sends a few updates first, with an empty
+                // `full_path`), or after it ended.
+                let Some(path) = results.assigned.get(&id).map(|p| p.to_string_lossy().into_owned()) else {
+                    return;
+                };
                 if results.started.insert(id) {
                     let total = item.total_bytes();
                     let total_bytes = (total > 0).then_some(total as u64);
                     let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
                     results.queue.push(DownloadEvent::Started { path: path.clone(), total_bytes, url });
                 }
-                if item.is_complete() != 0 {
-                    if results.reported.insert(id) {
-                        results.queue.push(DownloadEvent::Completed { path });
-                    }
-                } else if item.is_canceled() != 0 || item.is_interrupted() != 0 {
-                    if results.reported.insert(id) {
-                        results.queue.push(DownloadEvent::Failed { path });
-                    }
+                let complete = item.is_complete() != 0;
+                if complete || item.is_canceled() != 0 || item.is_interrupted() != 0 {
+                    results.assigned.remove(&id);
+                    results.started.remove(&id);
+                    let event = if complete { DownloadEvent::Completed { path } } else { DownloadEvent::Failed { path } };
+                    results.queue.push(event);
                 } else {
                     let received = item.received_bytes();
                     if received >= 0 {

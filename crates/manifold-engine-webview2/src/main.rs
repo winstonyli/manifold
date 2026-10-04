@@ -468,8 +468,10 @@ fn main() {
         }
 
         if let Some(pending) = &pending_download {
-            for event in pending.borrow_mut().drain(..) {
-                let msg = match event {
+            let msgs: Vec<EngineToHost> = pending
+                .borrow_mut()
+                .drain(..)
+                .map(|event| match event {
                     download::DownloadEvent::Started { path, total_bytes, url } => {
                         EngineToHost::DownloadStarted { path, total_bytes, url }
                     }
@@ -478,7 +480,9 @@ fn main() {
                     }
                     download::DownloadEvent::Completed { path } => EngineToHost::DownloadCompleted { path },
                     download::DownloadEvent::Failed { path } => EngineToHost::DownloadFailed { path },
-                };
+                })
+                .collect();
+            for msg in ipc_protocol::downloads::coalesce_progress(msgs) {
                 let _ = control.send(&msg);
             }
         }
