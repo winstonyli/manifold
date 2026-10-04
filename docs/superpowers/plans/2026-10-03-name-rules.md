@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every user-editable name (group, jar, saved session) follows one rule. A name is cleaned when the user commits it (`clean_name`). Wherever a stored name is drawn, it is drawn through `display_name`, which reveals hidden characters as placeholders. Stored names are never rewritten.
+**Goal:** Every user-editable name (group, jar, saved session, bookmark folder) follows one rule. A name is cleaned when the user commits it (`clean_name`). Wherever a stored name is drawn, it is drawn through `display_name`, which reveals hidden characters as placeholders. Emoji sequences keep their joiners, selectors and tags. Stored names are never rewritten. A note's first line, where it stands in as the note's title, is drawn through `display_name` too; the note's text is never cleaned.
 
 **Architecture:**
 - A new module, `crates/manifold/src/names.rs`, holds both rules and their helpers:
@@ -11,13 +11,15 @@
   - `append_name` and `name_job` for rich text.
 - **Input sites** call `clean_name` on commit.
 - **Rich display sites:**
-  - Menus, chips, card headers, the breadcrumb, Settings rows and Recently Closed draw `display_name` segments into a `LayoutJob`.
+  - Menus, chips, card headers, the breadcrumb, Settings rows, the Bookmarks popup's folder names and Recently Closed (group and note rows) draw `display_name` segments into a `LayoutJob`.
   - A hidden character is drawn as `⟦200B⟧`, in the jar-marker style (`JarLabel::marker_format`).
 - **Plain-text sites** use `to_plain` (`<U+200B>`). These are tooltips, confirm texts and the screen-reader name.
 - A source-scan test with an explicit list of allowed files fails when a new `.name` read reaches the UI without a rule.
 
 **Tech Stack:** Rust, egui/epaint 0.36.2.
-- Dependencies: `unicode-general-category` 1.1.0 and `unicode-segmentation` 1.13.3, both already in `Cargo.lock` transitively.
+- Dependencies, both already in `Cargo.lock` transitively:
+  - `icu_properties` 2.3.0, for general categories and `Extended_Pictographic`. `url` → `idna` → `idna_adapter` already builds it with `compiled_data`, its default feature, so it adds no crate and no build. It replaces `unicode-general-category`, which the first version of this plan used: that crate is built too (through epaint) but has no emoji property, and one crate for both lookups keeps them on one Unicode version.
+  - `unicode-segmentation` 1.13.3, for grapheme clusters (Unicode 17, rule GB11). Its own `Extended_Pictographic` table is private.
 - Dev-dependency: `skrifa` 0.44.0, already in `Cargo.lock` through epaint.
 
 **Spec:** `docs/superpowers/specs/2026-10-03-name-rules-design.md`
@@ -43,7 +45,12 @@
 **From the spec (verbatim values):**
 - **Dropped by `clean_name`:**
   - general category `Cc`, `Cf`, `Cs`, `Co`, `Cn`;
-  - variation selectors U+FE00-FE0F and U+E0100-E01EF.
+  - variation selectors U+FE00-FE0F and U+E0100-E01EF;
+  - except inside an emoji sequence (an emoji is an assigned `Extended_Pictographic` character):
+    - U+200D between an emoji (optionally followed by skin-tone modifiers, kept selectors or flag tags; rule GB11) and an emoji directly after it;
+    - U+FE0F/U+FE0E directly after an emoji, or between a keycap base (`0`-`9`, `#`, `*`) and U+20E3;
+    - tags U+E0020-E007F only as 🏴 U+1F3F4, one or more tags U+E0020-E007E, then U+E007F.
+  - Skin-tone modifiers U+1F3FB-1F3FF and U+20E3 are not hidden.
 - **Whitespace:** `Zs`, `Zl` and `Zp` become a plain space. Runs collapse to one space, and both ends are trimmed.
 - **Cap:** 64 grapheme clusters, cut at a cluster boundary. In display, each `Hidden` counts as one.
 - **Fallback:** "Untitled".
@@ -70,6 +77,7 @@ Line numbers are at `af81954`. "Rule" says which rule the site gets.
 | `settings_page.rs:508` jar field commit | input | requests a rename only when `draft != stored` and `clean_name(draft) != stored` (focusing a synced dirty name and leaving does not rewrite it) |
 | `main.rs:127` `sanitize_session_name`; `settings_page.rs:584-588`; `event_loop.rs:1054` `SAVESESSIONAS` | input | `clean_name`, then the file-safe filter, then `clean_name` again; `save_named_session` sanitises itself, closing the headless bypass |
 | `node_menu.rs:793` Export Group default file name | input (file name) | `clean_name`, or "Untitled" when that is empty |
+| `popups.rs:676-684` bookmark folder commit | input | `folder_from_draft`: `clean_name`; an empty result means no folder |
 | `jar_defs.rs:187-193` `JarLabel::append_to`, which feeds the jar rows at `node_menu.rs:224-249`, the Settings Default row and Tab view's dot hover (`jar_defs.rs:42` `hover_job`) | display, rich | `display_name` via `JarLabel::display` |
 | `card.rs:157-169` `paint_jar_chip` name | display, rich | `JarLabel::display` + `append_name` |
 | `card.rs:1825` group card name into `paint_card_header` (`card.rs:1894-1989`) | display, rich | `display_name`; placeholders through a `LayoutJob` when present |
@@ -79,9 +87,13 @@ Line numbers are at `af81954`. "Rule" says which rule the site gets.
 | `settings_page.rs:416` saved-session buttons | display, rich | `name_job`; hover is `with_hint("Open", ..)` |
 | `settings_page.rs:500-505` jar name field | display, hover | a `hidden_hint` hover; the field still edits the stored name |
 | `popups.rs:510` Recently Closed group row (`str_field("name")`, not `.name`, so the guard cannot see it) | display, rich | `name_job` |
+| `popups.rs:513-516` Recently Closed note row (`str_field("text")`'s first line) | display, rich | `name_job` on the first non-blank line, trimmed; the text is never cleaned |
+| `popups.rs:612-614` Bookmarks popup folder header (`.folder`, which the guard cannot see) | display, rich | `folder_job`; hover `hidden_hint` |
+| `popups.rs:647-659` folder label under each bookmark | display, rich | `folder_job` ("No folder" when there is none); hover `with_hint("Click to set folder", ..)` |
 | `jar_defs.rs:191-197` `JarLabel` `Display`, which feeds `jar_confirm_text :276`, the will-switch tooltip `:233`, the label match in `jar_named :328` and `popups.rs:417` | display, plain | `to_plain` |
 | `jar_defs.rs:207` `jar_chip` tooltip | display, plain | adds `hidden_hint` |
-| `node.rs:577` `accessible_name` | display, plain | `to_plain(display_name(..))` |
+| `node.rs:577` `accessible_name`, group | display, plain | `to_plain(display_name(..))` |
+| `node.rs:578-580` `accessible_name`, note (first non-blank line; `.text`, which the guard cannot see) | display, plain | `to_plain(display_name(..))` on the trimmed line; the text is never cleaned |
 | `main.rs:1873,1880` "Couldn't open {name}" toasts | display, plain | `to_plain` (the name is a file stem on disk) |
 | `main.rs:1856` "Couldn't save as {name}" | display, plain | already clean (sanitised) |
 | `jar_defs.rs:96` `name_key` | clash key | `clean_name(..).to_lowercase()` |
@@ -89,13 +101,13 @@ Line numbers are at `af81954`. "Rule" says which rule the site gets.
 | `card.rs:846` `card_filter_text` | filter | raw, marked |
 | `main.rs:2135` `default_group_name` | comparison | raw, marked |
 | `node_menu.rs:762`, `shortcuts.rs:202` rename prefill; `settings_page.rs:500` `jar_name_draft` | edit field | raw (the field edits the stored name), marked |
+| `popups.rs:657-658` bookmark folder field prefill; the folder sort and grouping at `:596-608` | edit field, grouping | raw (the field edits the stored name; folders group by their stored text) |
 | `graph_nav.rs:207` breadcrumb source; `node_menu.rs:659` move targets; `jar_defs.rs:201` `named_jar_label` | carry | raw, drawn later through a rule, marked |
 | `settings_page.rs:416-420` open and delete of a saved session | file identity | raw stem |
 | Debug output | none | no debug command or log prints a group, jar or session name. `EXPORTSTATE` carries none, and jar logs use the id |
 
-Name-like fields that are editable but not in the spec (raised as questions, not built):
-- Bookmark folder names (`popups.rs:630`).
-- A note's first line, which acts as the card title and the screen-reader name (`node.rs:578`).
+Notes on the sites:
+- Bookmark folder names and a note's first line were raised as questions by the first version of this plan; the user included both on 2026-10-03 (rows above). A note card's header reads "Note", not the first line, so the first line is a title only in the screen-reader name and the Recently Closed row.
 - The JSON-level crumb is a file name, out of scope. It still goes through `display_name` along with the other crumbs.
 
 ## Order and interfaces
@@ -106,7 +118,7 @@ The tasks run in the order 1 → 2 → 3 → 4 → 5. Tasks 2 to 5 use only Task
 - Constants:
   - `pub(crate) const NAME_CAP: usize = 64;`
   - `pub(crate) const UNTITLED: &str = "Untitled";`
-  - `pub(crate) const PLACEHOLDER_CHARS: &str = "⟦⟧0123456789ABCDEF";`
+  - `PLACEHOLDER_CHARS` (`"⟦⟧0123456789ABCDEF"`) is private and `#[cfg(test)]`: only the font test reads it, and a non-test build would flag it as dead code.
 - `#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub(crate) enum NameSeg<'a> { Plain(&'a str), Hidden(char) }`
 - The two rules:
   - `pub(crate) fn clean_name(s: &str) -> Cow<'_, str>`
@@ -135,6 +147,10 @@ The tasks run in the order 1 → 2 → 3 → 4 → 5. Tasks 2 to 5 use only Task
 
 **`crate::node_menu` (Task 2):** `fn export_file_name(name: &str) -> String`.
 
+**`crate::popups`:**
+- Task 2: `fn folder_from_draft(draft: &str) -> Option<String>`
+- Task 3: `fn folder_job(ui: &egui::Ui, segs: &[NameSeg], color: egui::Color32) -> egui::text::LayoutJob`; `App::closed_entry_label` returns `egui::WidgetText`.
+
 **`crate::graph_ui` (Task 3):**
 - `const CRUMB_UNITS: usize = 20;`
 - `fn crumb_hover(segs: &[NameSeg], short: &str, long: impl Fn(&str) -> String) -> String`
@@ -154,13 +170,16 @@ The tasks run in the order 1 → 2 → 3 → 4 → 5. Tasks 2 to 5 use only Task
 - Consumes: `crate::jar_defs::JarLabel::marker_format(size: f32, color: egui::Color32) -> egui::TextFormat` and `crate::jar_defs::MARKER_SCALE` (both existing).
 - Produces: everything listed under `crate::names` and `crate::theme` above.
 
+**Verified:** this task's code (Steps 1, 2, 3 and 5 as written) was built in a scratch copy of `69fe04c` on 2026-10-03. `cargo test -p manifold --bins names::` passed 19 of 19, `theme::` passed, and `cargo fmt --all --check` and `cargo clippy -p manifold -p ipc-protocol --all-targets -- -D warnings` were clean. Two bugs in the first version of this task were fixed then: two tests borrowed a temporary `String` past its statement (E0716), and `name_job`'s test read the wrong section (`LayoutJob::append` merges a section into the one before it when their formats match).
+
 - [ ] **Step 1: Add the dependencies.** `Cargo.toml` starts with a UTF-8 BOM and has no trailing newline. Edit it with the Edit tool, not a shell rewrite.
 
 In `[dependencies]`, between `tar = "0.4.46"` and `ureq = "3"`:
 
 ```toml
-# Name rules (names.rs): general categories for the hidden characters, grapheme clusters for the 64 cap.
-unicode-general-category = "1.1.0"
+# Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
+# sequences (already built for url's idna), grapheme clusters for the 64 cap.
+icu_properties = "2.3.0"
 unicode-segmentation = "1.13.3"
 ```
 
@@ -173,9 +192,9 @@ skrifa = "0.44.0"
 
 ```
 
-Run: `cargo tree -p manifold --offline -e normal,dev --depth 1 | grep -E "skrifa|unicode-(general|segm)"`
+Run: `cargo tree -p manifold --offline -e normal,dev --depth 1 | grep -E "skrifa|icu_properties|unicode-segm"`
 
-Expected: three lines, `skrifa v0.44.0`, `unicode-general-category v1.1.0` and `unicode-segmentation v1.13.3`. `git diff Cargo.lock` must add exactly those three names to manifold's `dependencies` list and no new `[[package]]`. This was verified offline at `af81954`.
+Expected: three lines, `icu_properties v2.3.0`, `unicode-segmentation v1.13.3` and `skrifa v0.44.0`. `git diff Cargo.lock` must add exactly `"icu_properties 2.3.0"`, `"skrifa 0.44.0"` and `"unicode-segmentation"` to manifold's `dependencies` list and no new `[[package]]` (`icu_properties` carries its version because 1.5.1 is locked too).
 
 - [ ] **Step 2: Split `theme::apply_fonts`.** Rename the body to a function that returns the definitions, and keep `apply_fonts` as a one-line caller. In `theme.rs`, change the signature line and the last line of the current body:
 
@@ -194,7 +213,7 @@ pub(crate) fn apply_fonts(ctx: &egui::Context) {
 
 The doc comment above the old `apply_fonts` stays on `font_definitions`. The line `ctx.set_fonts(fonts);` at `theme.rs:507` becomes `fonts`.
 
-- [ ] **Step 3: Write the failing tests.** Create `crates/manifold/src/names.rs` containing only the module doc and this test module, and add `mod names;` to `main.rs` before `mod nav_history;`.
+- [ ] **Step 3: Write the failing tests.** Create `crates/manifold/src/names.rs` containing only a one-line module doc and this test module, and add `mod names;` to `main.rs` before `mod nav_history;`.
 
 ```rust
 //! Name rules (spec `docs/superpowers/specs/2026-10-03-name-rules-design.md`).
@@ -203,6 +222,10 @@ The doc comment above the old `apply_fonts` stays on `font_definitions`. The lin
 mod tests {
     use super::*;
     use std::borrow::Cow;
+
+    /// 👩‍💻, 🏴󠁧󠁢󠁥󠁮󠁧󠁿 and other sequences written out, so the hidden characters in them are visible in the source.
+    const CODER: &str = "👩\u{200D}💻";
+    const ENGLAND: &str = "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
 
     #[test]
     fn clean_name_drops_hidden_characters() {
@@ -242,16 +265,74 @@ mod tests {
 
     #[test]
     fn clean_name_borrows_a_clean_name_and_leaves_it_alone() {
-        for name in ["Work", "Café", "東京", "Работа", "👍🏽 Team", "🇯🇵", "Work · #3f2a", "A-b_c (2)!", "", "x"] {
+        for name in ["Work", "Café", "東京", "Работа", "👍🏽 Team", "🇯🇵", "Work · #3f2a", "A-b_c (2)!", "", "x"]
+        {
             assert!(matches!(clean_name(name), Cow::Borrowed(n) if n == name), "{name:?}");
+        }
+    }
+
+    /// An emoji sequence keeps its joiners, selectors and tags: the name is already clean.
+    #[test]
+    fn clean_name_keeps_emoji_sequences_whole() {
+        for name in [
+            CODER,
+            "👩🏽\u{200D}💻",
+            "❤\u{FE0F}\u{200D}🔥",
+            "🏳\u{FE0F}\u{200D}🌈",
+            "☺\u{FE0F}",
+            "✈\u{FE0E}",
+            "1\u{FE0F}\u{20E3}",
+            "#\u{FE0F}\u{20E3}",
+            "1\u{20E3}",
+            ENGLAND,
+            "Team 👩\u{200D}💻 2",
+        ] {
+            assert!(matches!(clean_name(name), Cow::Borrowed(n) if n == name), "{name:?}");
+        }
+    }
+
+    /// The same characters outside an emoji sequence are dropped.
+    #[test]
+    fn clean_name_drops_emoji_formatting_outside_a_sequence() {
+        for (raw, want) in [
+            ("a\u{200D}b", "ab"),
+            ("\u{200D}", ""),
+            ("👩\u{200D}", "👩"),
+            ("\u{200D}💻", "💻"),
+            ("👩 \u{200D}💻", "👩 💻"),
+            ("👩\u{200B}\u{200D}💻", "👩💻"),
+            ("👩\u{200D}\u{200D}💻", "👩💻"),
+            ("a\u{FE0F}", "a"),
+            ("\u{FE0F}", ""),
+            ("👍🏽\u{FE0F}", "👍🏽"),
+            ("1\u{FE0F}", "1"),
+            ("🏴\u{E0067}\u{E0062}", "🏴"),
+            ("🏴\u{E007F}", "🏴"),
+            ("x\u{E0067}\u{E007F}", "x"),
+            ("👍\u{E0067}\u{E007F}", "👍"),
+            ("🏴\u{E0067}\u{E007F}\u{E0067}", "🏴\u{E0067}\u{E007F}"),
+        ] {
+            assert_eq!(clean_name(raw), want, "{raw:?}");
         }
     }
 
     #[test]
     fn clean_name_is_idempotent() {
         let long = "x".repeat(63) + " y";
-        let inputs =
-            ["Re\u{200B}ading", "  a \u{2009}\u{2009} b  ", "e\u{200B}\u{0301}", "\u{202E}..\\", "a\tb", long.as_str()];
+        let coders = CODER.repeat(70);
+        let inputs = [
+            "Re\u{200B}ading",
+            "  a \u{2009}\u{2009} b  ",
+            "e\u{200B}\u{0301}",
+            "\u{202E}..\\",
+            "a\tb",
+            long.as_str(),
+            "a\u{200D}b",
+            "👩\u{200B}\u{200D}💻",
+            "👩\u{FE0E}\u{FE0F}\u{200D}💻",
+            "🏴\u{E0067}\u{E007F}\u{E0067}",
+            coders.as_str(),
+        ];
         for raw in inputs {
             let once = clean_name(raw).into_owned();
             assert!(matches!(clean_name(&once), Cow::Borrowed(_)), "{raw:?} -> {once:?}");
@@ -263,23 +344,19 @@ mod tests {
         assert_eq!(clean_name(&"é".repeat(65)), "é".repeat(64));
         assert_eq!(clean_name(&"👍🏽".repeat(65)), "👍🏽".repeat(64), "a skin-tone emoji is never cut from its modifier");
         assert_eq!(clean_name(&"🇯🇵".repeat(65)), "🇯🇵".repeat(64), "a flag is never split");
+        assert_eq!(clean_name(&CODER.repeat(65)), CODER.repeat(64), "a ZWJ sequence is one cluster");
+        assert_eq!(clean_name(&ENGLAND.repeat(65)), ENGLAND.repeat(64), "a tag sequence is one cluster");
         assert_eq!(clean_name(&"e\u{0301}".repeat(65)), "e\u{0301}".repeat(64), "a combining mark stays");
         assert_eq!(clean_name(&("x".repeat(63) + " y")), "x".repeat(63), "the space left at the cut is trimmed");
         assert_eq!(clean_name(&"x".repeat(64)), "x".repeat(64));
     }
 
-    /// The spec drops every `Cf`, the zero-width joiner included, so a ZWJ emoji sequence loses its joiners (raised
-    /// with the user as an open question; this pins today's literal reading).
-    #[test]
-    fn clean_name_drops_a_zero_width_joiner() {
-        assert_eq!(clean_name("👩\u{200D}💻"), "👩💻");
-    }
-
     #[test]
     fn display_name_borrows_a_clean_name_whole() {
-        let name = "Work Home";
-        let segs = display_name(name, UNTITLED);
-        assert!(matches!(segs[..], [NameSeg::Plain(p)] if std::ptr::eq(p, name)), "{segs:?}");
+        for name in ["Work Home", CODER, ENGLAND] {
+            let segs = display_name(name, UNTITLED);
+            assert!(matches!(segs[..], [NameSeg::Plain(p)] if std::ptr::eq(p, name)), "{segs:?}");
+        }
     }
 
     #[test]
@@ -289,6 +366,19 @@ mod tests {
         assert_eq!(to_plain(&segs), "Re<U+200B>ading");
         assert!(has_hidden(&segs));
         assert_eq!(display_name("\u{200B}", UNTITLED), [NameSeg::Hidden('\u{200B}')], "revealed, not the fallback");
+    }
+
+    /// Emoji formatting outside a sequence is revealed like any hidden character; a sequence counts as one unit.
+    #[test]
+    fn display_name_reveals_emoji_formatting_outside_a_sequence() {
+        let joined = display_name("a\u{200D}b", UNTITLED);
+        assert_eq!(joined, [NameSeg::Plain("a"), NameSeg::Hidden('\u{200D}'), NameSeg::Plain("b")]);
+        assert_eq!(display_name("a\u{FE0F}", UNTITLED), [NameSeg::Plain("a"), NameSeg::Hidden('\u{FE0F}')]);
+        let segs = display_name("👩\u{200B}\u{200D}💻", UNTITLED);
+        assert_eq!(to_plain(&segs), "👩<U+200B><U+200D>💻");
+        let coders = CODER.repeat(70);
+        let segs = display_name(&coders, UNTITLED);
+        assert_eq!((units(&segs), to_plain(&segs)), (64, CODER.repeat(64)));
     }
 
     #[test]
@@ -317,7 +407,8 @@ mod tests {
 
     #[test]
     fn placeholders_count_against_the_cap() {
-        let segs = display_name(&"\u{200B}".repeat(70), UNTITLED);
+        let hidden = "\u{200B}".repeat(70);
+        let segs = display_name(&hidden, UNTITLED);
         assert_eq!((segs.len(), units(&segs)), (64, 64));
         let raw = "a".repeat(10) + &"\u{200B}".repeat(60);
         let segs = display_name(&raw, UNTITLED);
@@ -353,12 +444,12 @@ mod tests {
 
     #[test]
     fn the_hint_names_each_hidden_character_once() {
-        let segs = display_name("a\u{200B}b\u{200B}\u{202E}c\u{E000}", UNTITLED);
+        let segs = display_name("a\u{200B}b\u{200B}\u{202E}c\u{E000}\u{200D}", UNTITLED);
         assert_eq!(
             hidden_hint(&segs).as_deref(),
             Some(
                 "Hidden characters: U+200B zero width space, U+202E right-to-left override, \
-                 U+E000 private-use character"
+                 U+E000 private-use character, U+200D zero width joiner"
             )
         );
         assert_eq!(hidden_hint(&display_name("Work", UNTITLED)), None);
@@ -387,8 +478,10 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let job = name_job(ui, "Move to ", &display_name("Re\u{200B}ading", UNTITLED), " (3)");
             assert_eq!(job.text, "Move to Re⟦200B⟧ading (3)");
-            assert_eq!(job.sections[0].format.color, egui::Color32::PLACEHOLDER);
-            assert_eq!(job.sections[2].format.color, ui.visuals().weak_text_color());
+            // `LayoutJob::append` merges a section into the one before it when their formats match.
+            let colors: Vec<_> = job.sections.iter().map(|s| s.format.color).collect();
+            let plain = egui::Color32::PLACEHOLDER;
+            assert_eq!(colors, [plain, ui.visuals().weak_text_color(), plain]);
             assert_eq!(name_job(ui, "", &display_name("Work", UNTITLED), "").sections.len(), 1);
         });
         output.textures_delta.clear();
@@ -416,16 +509,21 @@ Run: `cargo test -j 8 -p manifold --bins names::`
 
 Expected: FAIL to compile, with errors such as `cannot find function 'clean_name' in this scope` and `cannot find type 'NameSeg'`.
 
-- [ ] **Step 5: Implement.** Put this above the test module in `names.rs`.
+- [ ] **Step 5: Implement.** Replace the one-line module doc with this; the test module stays below it.
+
+`classify` is the one place that decides what is hidden. `is_clean`, `clean_name` and `display_name` all read its classes, so the emoji-sequence exceptions cannot drift between the input rule and the display rule.
 
 ```rust
 //! Name rules (spec `docs/superpowers/specs/2026-10-03-name-rules-design.md`). There is one input rule,
-//! `clean_name`, applied when the user commits a group, jar or session name, and one display rule, `display_name`,
-//! for every stored name that is drawn. Stored names are never rewritten. A name from sync, an import or older data
-//! is shown through the display rule, which reveals a hidden character as a placeholder.
+//! `clean_name`, applied when the user commits a group, jar, session or bookmark folder name, and one display rule,
+//! `display_name`, for every stored name that is drawn. Stored names are never rewritten. A name from sync, an import
+//! or older data is shown through the display rule, which reveals a hidden character as a placeholder.
 
+// The callers arrive in the next commits (name-rules plan, Tasks 2-4); Task 5 removes this.
+#![allow(dead_code)]
+
+use icu_properties::props::{BinaryProperty, EnumeratedProperty, ExtendedPictographic, GeneralCategory};
 use std::borrow::Cow;
-use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The most grapheme clusters a name keeps (input) or shows (display, where a placeholder counts as one).
@@ -433,7 +531,13 @@ pub(crate) const NAME_CAP: usize = 64;
 /// What a name with nothing left to show is drawn as.
 pub(crate) const UNTITLED: &str = "Untitled";
 /// Every character a rich placeholder (`placeholder`) can use. `tests` checks that the monospace font has them all.
-pub(crate) const PLACEHOLDER_CHARS: &str = "⟦⟧0123456789ABCDEF";
+#[cfg(test)]
+const PLACEHOLDER_CHARS: &str = "⟦⟧0123456789ABCDEF";
+
+const ZWJ: char = '\u{200D}';
+const KEYCAP: char = '\u{20E3}';
+const BLACK_FLAG: char = '\u{1F3F4}';
+const CANCEL_TAG: char = '\u{E007F}';
 
 /// A piece of a name as displayed: text drawn as it is, or a hidden character drawn as a placeholder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -442,12 +546,21 @@ pub(crate) enum NameSeg<'a> {
     Hidden(char),
 }
 
-/// A character `clean_name` drops and `display_name` reveals: `Cc`, `Cf`, `Cs`, `Co`, `Cn`, and the variation
-/// selectors.
+/// What the name rules do with one character of a name, in its place (`classify`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    Keep,
+    /// Whitespace, kept as one plain space per run.
+    Space,
+    /// Dropped by `clean_name`, a placeholder in `display_name`.
+    Hidden,
+}
+
+/// A character that is hidden outside an emoji sequence: `Cc`, `Cf`, `Cs`, `Co`, `Cn`, and the variation selectors.
 fn is_hidden(c: char) -> bool {
     matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
         || matches!(
-            get_general_category(c),
+            GeneralCategory::for_char(c),
             GeneralCategory::Control
                 | GeneralCategory::Format
                 | GeneralCategory::Surrogate
@@ -459,9 +572,78 @@ fn is_hidden(c: char) -> bool {
 /// Whitespace that a name keeps as one plain space: `Zs` (which includes the plain space), `Zl` and `Zp`.
 fn is_space(c: char) -> bool {
     matches!(
-        get_general_category(c),
+        GeneralCategory::for_char(c),
         GeneralCategory::SpaceSeparator | GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator
     )
+}
+
+/// An emoji (Extended_Pictographic) that an emoji sequence can start from or join to. The unassigned code points
+/// that Extended_Pictographic reserves are hidden, so they are not emoji here.
+fn is_pict(c: char) -> bool {
+    ExtendedPictographic::for_char(c) && GeneralCategory::for_char(c) != GeneralCategory::Unassigned
+}
+
+/// The byte length of the subdivision-flag tags at the start of `rest`, the text after a 🏴: one or more tag
+/// characters U+E0020-E007E, then the cancel tag U+E007F. 0 when `rest` does not start with such a run.
+fn flag_tags_len(rest: &str) -> usize {
+    let spec: usize = rest.chars().take_while(|c| ('\u{E0020}'..='\u{E007E}').contains(c)).map(char::len_utf8).sum();
+    if spec > 0 && rest[spec..].starts_with(CANCEL_TAG) {
+        spec + CANCEL_TAG.len_utf8()
+    } else {
+        0
+    }
+}
+
+/// Each character of `s` with its byte offset and its class. A hidden character (`is_hidden`) is `Hidden` except
+/// inside an emoji sequence, which is kept whole:
+/// - a zero-width joiner between two emoji, the first of which may carry skin-tone modifiers and selectors
+///   (👩‍💻, 👩🏽‍💻, ❤️‍🔥; UAX #29 rule GB11);
+/// - U+FE0E or U+FE0F directly after an emoji (☺️), or between a keycap base (0-9, `#`, `*`) and U+20E3 (1️⃣);
+/// - the tags of a subdivision flag: 🏴, tags, U+E007F (🏴󠁧󠁢󠁥󠁮󠁧󠁿).
+///
+/// Skin-tone modifiers (U+1F3FB-1F3FF) and U+20E3 are not hidden characters to begin with.
+fn classify(s: &str) -> impl Iterator<Item = (usize, char, Class)> + '_ {
+    // After an emoji and only its modifiers, selectors or tags since: where a joiner may follow.
+    let mut pict = false;
+    let mut prev: Option<char> = None;
+    // Where the tags of the last subdivision flag end (a byte offset).
+    let mut tags_end = 0;
+    s.char_indices().map(move |(i, c)| {
+        let after = i + c.len_utf8();
+        let next = s[after..].chars().next();
+        let kept = |ok: bool| if ok { Class::Keep } else { Class::Hidden };
+        let class = if i < tags_end {
+            Class::Keep
+        } else if c == ZWJ {
+            let ok = pict && next.is_some_and(is_pict);
+            pict = false;
+            kept(ok)
+        } else if matches!(c, '\u{FE0E}' | '\u{FE0F}') {
+            let keycap = matches!(prev, Some('0'..='9' | '#' | '*')) && next == Some(KEYCAP);
+            let ok = prev.is_some_and(is_pict) || keycap;
+            pict &= ok;
+            kept(ok)
+        } else if ('\u{1F3FB}'..='\u{1F3FF}').contains(&c) {
+            Class::Keep
+        } else if is_pict(c) {
+            pict = true;
+            if c == BLACK_FLAG {
+                tags_end = after + flag_tags_len(&s[after..]);
+            }
+            Class::Keep
+        } else {
+            pict = false;
+            if is_hidden(c) {
+                Class::Hidden
+            } else if is_space(c) {
+                Class::Space
+            } else {
+                Class::Keep
+            }
+        };
+        prev = Some(c);
+        (i, c, class)
+    })
 }
 
 /// Whether `clean_name` would return `s` unchanged.
@@ -469,41 +651,45 @@ fn is_clean(s: &str) -> bool {
     !s.starts_with(' ')
         && !s.ends_with(' ')
         && !s.contains("  ")
-        && s.chars().all(|c| c == ' ' || !(is_hidden(c) || is_space(c)))
+        && classify(s).all(|(_, c, class)| class == Class::Keep || c == ' ')
         && (s.len() <= NAME_CAP || s.graphemes(true).nth(NAME_CAP).is_none())
 }
 
-/// The input rule: `s` without hidden characters, with each whitespace run as one plain space, trimmed, and cut to
-/// `NAME_CAP` grapheme clusters. It borrows `s` when `s` is already clean, and is idempotent.
+/// What a cut at a cluster boundary must not leave at the end: a space, or a joiner (should the segmenter's emoji
+/// data be older than `is_pict`'s, it could end a cluster at a joiner that `classify` keeps).
+const CUT_TRIM: [char; 2] = [' ', ZWJ];
+
+/// The input rule: `s` without hidden characters (`classify`: emoji sequences keep theirs), with each whitespace run
+/// as one plain space, trimmed, and cut to `NAME_CAP` grapheme clusters. It borrows `s` when `s` is already clean,
+/// and is idempotent.
 pub(crate) fn clean_name(s: &str) -> Cow<'_, str> {
     if is_clean(s) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     let mut space = false;
-    for c in s.chars() {
-        if is_hidden(c) {
-            continue;
+    for (_, c, class) in classify(s) {
+        match class {
+            Class::Hidden => {}
+            Class::Space => space = !out.is_empty(),
+            Class::Keep => {
+                if std::mem::take(&mut space) {
+                    out.push(' ');
+                }
+                out.push(c);
+            }
         }
-        if is_space(c) {
-            space = !out.is_empty();
-            continue;
-        }
-        if std::mem::take(&mut space) {
-            out.push(' ');
-        }
-        out.push(c);
     }
     if let Some((cut, _)) = out.grapheme_indices(true).nth(NAME_CAP) {
         out.truncate(cut);
-        out.truncate(out.trim_end_matches(' ').len());
+        out.truncate(out.trim_end_matches(CUT_TRIM).len());
     }
     Cow::Owned(out)
 }
 
-/// The display rule: `s` as segments, with each hidden character a `Hidden`, each whitespace run one plain space,
-/// trimmed, and at most `NAME_CAP` units (`units`). It gives `fallback` when nothing is left. A clean name is one
-/// segment borrowing all of `s`.
+/// The display rule: `s` as segments, with each hidden character (`classify`) a `Hidden`, each whitespace run one
+/// plain space, trimmed, and at most `NAME_CAP` units (`units`). It gives `fallback` when nothing is left. A clean
+/// name is one segment borrowing all of `s`: the `Vec` is the only allocation, and the name is not copied.
 pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>> {
     if is_clean(s) {
         return vec![NameSeg::Plain(if s.is_empty() { fallback } else { s })];
@@ -511,13 +697,12 @@ pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>
     let mut segs = Vec::new();
     let mut run: Option<usize> = None;
     let mut space = false;
-    for (i, c) in s.char_indices() {
-        let hidden = is_hidden(c);
-        if hidden || is_space(c) {
+    for (i, c, class) in classify(s) {
+        if class != Class::Keep {
             if let Some(start) = run.take() {
                 segs.push(NameSeg::Plain(&s[start..i]));
             }
-            if !hidden {
+            if class == Class::Space {
                 space = !segs.is_empty();
                 continue;
             }
@@ -525,7 +710,7 @@ pub(crate) fn display_name<'a>(s: &'a str, fallback: &'a str) -> Vec<NameSeg<'a>
         if std::mem::take(&mut space) {
             segs.push(NameSeg::Plain(" "));
         }
-        if hidden {
+        if class == Class::Hidden {
             segs.push(NameSeg::Hidden(c));
         } else if run.is_none() {
             run = Some(i);
@@ -579,7 +764,7 @@ pub(crate) fn take_units<'a>(segs: &[NameSeg<'a>], max: usize) -> Vec<NameSeg<'a
     }
     if let Some(NameSeg::Plain(p)) = out.last_mut() {
         let text = *p;
-        *p = text.trim_end_matches(' ');
+        *p = text.trim_end_matches(CUT_TRIM);
     }
     out.retain(|s| *s != NameSeg::Plain(""));
     out
@@ -664,7 +849,8 @@ fn char_name(c: char) -> &'static str {
         '\u{FEFF}' => "zero width no-break space",
         '\u{FE0F}' => "emoji variation selector",
         '\u{FE00}'..='\u{FE0E}' | '\u{E0100}'..='\u{E01EF}' => "variation selector",
-        _ => match get_general_category(c) {
+        '\u{E0020}'..='\u{E007F}' => "tag character",
+        _ => match GeneralCategory::for_char(c) {
             GeneralCategory::Control => "control character",
             GeneralCategory::Format => "format character",
             GeneralCategory::PrivateUse => "private-use character",
@@ -712,15 +898,15 @@ pub(crate) fn name_job(ui: &egui::Ui, prefix: &str, segs: &[NameSeg], suffix: &s
 }
 ```
 
-`is_hidden` is private. Task 2 does not need it; the guard in Task 5 is the only cross-module check.
+The module-level `#![allow(dead_code)]` is there because nothing outside `names.rs` calls it until Task 2, and clippy's `-D warnings` (and the pre-commit hook) would otherwise refuse this commit. Task 5 removes it, and clippy then confirms every item has a caller.
 
 - [ ] **Step 6: Run the tests and expect them to pass.**
 
 Run: `cargo test -j 8 -p manifold --bins names::`
 
-Expected: `test result: ok. 17 passed`.
+Expected: `test result: ok. 19 passed`.
 
-Then run: `cargo test -j 8 -p manifold --bins theme:: node_menu:: settings_page::`
+Then run: `cargo test -j 8 -p manifold --bins -- theme:: node_menu:: settings_page::` (several filters go after `--`).
 
 Expected: ok. Only the refactor touched these files.
 
@@ -742,11 +928,12 @@ git commit -m "Names: clean_name and display_name, with the placeholder font che
 - Modify: `crates/manifold/src/jar_defs.rs:310` (`create_jar`), `:334-343` (`set_focused_tab_jar_named`), `:345-350` (`rename_jar`)
 - Modify: `crates/manifold/src/settings_page.rs:508` (jar field commit), `:584-588` (Save As)
 - Modify: `crates/manifold/src/main.rs:120-129` (`sanitize_session_name`), `:1844-1857` (`save_named_session`)
-- Test: `node_menu.rs` tests, `jar_defs.rs` tests, `settings_page.rs` tests, `main.rs` tests
+- Modify: `crates/manifold/src/popups.rs:676-684` (bookmark folder commit), `:77` (`folder_from_draft` before `list_row`)
+- Test: `node_menu.rs` tests, `jar_defs.rs` tests, `settings_page.rs` tests, `main.rs` tests, `popups.rs` tests
 
 **Interfaces:**
 - Consumes: `crate::names::{clean_name, UNTITLED}`.
-- Produces: `node_menu::export_file_name(name: &str) -> String` (private), and `App::save_named_session(&mut self, raw: &str)`, which now sanitises its argument.
+- Produces: `node_menu::export_file_name(name: &str) -> String` (private), `popups::folder_from_draft(draft: &str) -> Option<String>` (private), and `App::save_named_session(&mut self, raw: &str)`, which now sanitises its argument.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -872,12 +1059,24 @@ In `main.rs` `mod tests`:
     }
 ```
 
+In `popups.rs` `mod tests` (the module at line 1451, which has `use super::*`):
+
+```rust
+    /// Name rules: a bookmark folder is committed under its clean name; nothing left of it means no folder.
+    #[test]
+    fn a_bookmark_folder_commits_its_clean_name() {
+        assert_eq!(folder_from_draft("  Re\u{200B}ading\u{00A0}\u{00A0}list\n").as_deref(), Some("Reading list"));
+        assert_eq!(folder_from_draft(" \u{200B}\u{202E} "), None);
+        assert_eq!(folder_from_draft(""), None);
+    }
+```
+
 - [ ] **Step 2: Run the tests and expect failure.**
 
 Run: `cargo test -j 8 -p manifold --bins`
 
 Expected:
-- FAIL to compile on `export_file_name` (not defined).
+- FAIL to compile on `export_file_name` and `folder_from_draft` (not defined).
 - With that test commented out, the others fail on the old trimming: "Re\u{200B}ading list" ≠ "Reading list", a jar is made from "\u{200B} ", a rename is requested, and `"a  b"` ≠ `"a b"`.
 
 - [ ] **Step 3: Implement.**
@@ -1012,6 +1211,30 @@ fn sanitize_session_name(raw: &str) -> String {
 
 The rest of the function is unchanged. `event_loop.rs:1054` stays `self.save_named_session(&name)`.
 
+`popups.rs`, a free function before `list_row`:
+
+```rust
+/// A bookmark folder as committed from the folder field: the draft's clean form (name rules), or no folder when
+/// nothing is left of it.
+fn folder_from_draft(draft: &str) -> Option<String> {
+    let clean = crate::names::clean_name(draft);
+    (!clean.is_empty()).then(|| clean.into_owned())
+}
+```
+
+`popups.rs:676-684`, the folder commit in `build_bookmarks_popup`. The `let trimmed = draft.trim();` line goes, and the assignment becomes:
+
+```rust
+        if let Some(draft) = folder_rename_commit {
+            if let Some((url, _)) = self.renaming_bookmark_folder.take() {
+                if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
+                    bookmark.folder = folder_from_draft(&draft);
+                    bookmarks::save(&self.bookmarks);
+                }
+            }
+        }
+```
+
 - [ ] **Step 4: Run the tests and expect them to pass.**
 
 Run: `cargo test -j 8 -p manifold --bins`
@@ -1023,8 +1246,8 @@ Expected: `test result: ok`. The existing rename, New Jar, SETJAR and Settings t
 ```bash
 cargo fmt --all
 cargo clippy -j 8 -p manifold -p ipc-protocol --all-targets -- -D warnings
-git add crates/manifold/src/node_menu.rs crates/manifold/src/jar_defs.rs crates/manifold/src/settings_page.rs crates/manifold/src/main.rs
-git commit -m "Names: group, jar and session names are cleaned when committed" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git add crates/manifold/src/node_menu.rs crates/manifold/src/jar_defs.rs crates/manifold/src/settings_page.rs crates/manifold/src/main.rs crates/manifold/src/popups.rs
+git commit -m "Names: group, jar, session and bookmark folder names are cleaned when committed" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1037,7 +1260,7 @@ git commit -m "Names: group, jar and session names are cleaned when committed" -
 - Modify: `crates/manifold/src/node_menu.rs:210-216` (MoveTo rows)
 - Modify: `crates/manifold/src/graph_ui.rs:878-950` (breadcrumb)
 - Modify: `crates/manifold/src/settings_page.rs:413-421` (session rows), `:503` (jar field hover)
-- Modify: `crates/manifold/src/popups.rs:497-534` (`closed_entry_label`)
+- Modify: `crates/manifold/src/popups.rs:497-534` (`closed_entry_label`: group and note rows), `:612-614` and `:647-659` (bookmark folder names), and a new `folder_job` after `folder_from_draft`
 - Test: `jar_defs.rs`, `card.rs`, `node_menu.rs`, `graph_ui.rs`, `popups.rs` tests
 
 **Interfaces:**
@@ -1045,7 +1268,8 @@ git commit -m "Names: group, jar and session names are cleaned when committed" -
 - Produces:
   - `JarLabel::display(&self) -> Vec<NameSeg<'_>>`, `JarLabel::hidden_hint(&self) -> Option<String>`;
   - `CardHeader.user_name: bool`;
-  - `const CRUMB_UNITS: usize = 20` and `fn crumb_hover(..)` in `graph_ui.rs`.
+  - `const CRUMB_UNITS: usize = 20` and `fn crumb_hover(..)` in `graph_ui.rs`;
+  - `fn folder_job(ui: &egui::Ui, segs: &[NameSeg], color: egui::Color32) -> egui::text::LayoutJob` in `popups.rs` (private).
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -1272,13 +1496,43 @@ In `popups.rs` `mod tests` (the module at line 1451):
         });
         output.textures_delta.clear();
     }
+
+    /// Name rules: a Recently Closed note row shows the note's first non-blank line by the display rule.
+    #[test]
+    fn a_closed_note_row_shows_its_first_line_by_the_display_rule() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody".into());
+        let node = store::json::JsonNode { id: "n".into(), kind: "note".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(App::closed_entry_label(ui, &node, None, 0).text(), "Re⟦200B⟧ading list");
+        });
+        output.textures_delta.clear();
+    }
+
+    /// Name rules: a bookmark folder's name is drawn in the popup's small font, a hidden character as a placeholder.
+    #[test]
+    fn a_bookmark_folder_shows_a_hidden_character_as_a_placeholder() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let segs = crate::names::display_name("Re\u{200B}ading", crate::names::UNTITLED);
+            let job = folder_job(ui, &segs, TEXT_PRIMARY);
+            assert_eq!(job.text, "Re⟦200B⟧ading");
+            assert_eq!(job.sections[0].format.font_id, egui::TextStyle::Small.resolve(ui.style()));
+            assert_eq!(job.sections[0].format.color, TEXT_PRIMARY);
+            assert_eq!(job.sections[1].format.font_id.family, egui::FontFamily::Monospace);
+        });
+        output.textures_delta.clear();
+    }
 ```
+
+The three `popups.rs` tests (with Task 2's `a_bookmark_folder_commits_its_clean_name`) and `closed_entry_label`'s and the folder code below were built and passed in the same scratch copy as Task 1, fmt and clippy clean.
 
 - [ ] **Step 2: Run the tests and expect failure.**
 
 Run: `cargo test -j 8 -p manifold --bins placeholder`, then `cargo test -j 8 -p manifold --bins display_rule`, then `cargo test -j 8 -p manifold --bins hidden_character`.
 
-Expected: FAIL to compile on `JarLabel::hidden_hint`, `CardHeader.user_name` and `crumb_hover` (not defined). With those stubbed, the galley texts show the raw "Wo\u{200B}rk" and "Re\u{200B}ading".
+Expected: FAIL to compile on `JarLabel::hidden_hint`, `CardHeader.user_name`, `crumb_hover` and `folder_job` (not defined). With those stubbed, the galley texts show the raw "Wo\u{200B}rk" and "Re\u{200B}ading".
 
 - [ ] **Step 3: Implement.**
 
@@ -1522,7 +1776,7 @@ On the JSON label, `crumb_hover(&segs, "", ..)` with a short crumb and a hidden 
 
 `popups.rs` `closed_entry_label`:
 - The return type becomes `egui::WidgetText`.
-- Before the `match`, add an early return for groups:
+- Before the `match`, add early returns for groups and notes:
 
 ```rust
         if node.kind == "group" {
@@ -1531,12 +1785,63 @@ On the JSON label, `crumb_hover(&segs, "", ..)` with a short crumb and a hidden 
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             return crate::names::name_job(ui, "", &segs, &format!(" ({member_count})")).into();
         }
+        if node.kind == "note" {
+            ui.label(egui_phosphor::light::NOTE_PENCIL);
+            // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+            let text = str_field("text");
+            let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+            let segs = crate::names::display_name(first, crate::names::UNTITLED);
+            return crate::names::name_job(ui, "", &segs, "").into();
+        }
 ```
 
-- Delete the `"group"` arm.
+- Delete the `"group"` and `"note"` arms.
 - Bind the remaining `match` to `let text: String = match ... ;` and end the function with `text.into()`.
-- Update the doc comment to say a group's row is a styled job (name rules).
+- Update the doc comment: a group's row and a note's row are styled jobs by the display rule (name rules); a note shows its first non-blank line (before, its first line even when blank), and "Untitled" when it has none.
 - `list_row` already takes `impl Into<WidgetText>`.
+
+`popups.rs`, after `folder_from_draft` (Task 2):
+
+```rust
+/// A bookmark folder's name in the popup's small font and `color`, its hidden characters as placeholders (name
+/// rules).
+fn folder_job(ui: &egui::Ui, segs: &[crate::names::NameSeg], color: egui::Color32) -> egui::text::LayoutJob {
+    let format = egui::TextFormat::simple(egui::TextStyle::Small.resolve(ui.style()), color);
+    let mut job = egui::text::LayoutJob::default();
+    crate::names::append_name(&mut job, segs, &format, ui.visuals().weak_text_color());
+    job
+}
+```
+
+`popups.rs:612-614`, the folder header. `RichText::small().strong().color(TEXT_PRIMARY)` drew the small font in `TEXT_PRIMARY` (an explicit colour wins over `strong`), and `folder_job` draws the same:
+
+```rust
+                        if let Some(name) = folder {
+                            let segs = crate::names::display_name(name, crate::names::UNTITLED);
+                            let header = ui.label(folder_job(ui, &segs, TEXT_PRIMARY));
+                            if let Some(hint) = crate::names::hidden_hint(&segs) {
+                                header.on_hover_text(hint);
+                            }
+                        }
+```
+
+`popups.rs:647-653`, the folder label under a bookmark (`RichText::small().weak()` was the small font in `weak_text_color`):
+
+```rust
+                                let segs = match &bookmark.folder {
+                                    Some(name) => crate::names::display_name(name, crate::names::UNTITLED),
+                                    None => vec![crate::names::NameSeg::Plain("No folder")],
+                                };
+                                let job = folder_job(ui, &segs, ui.visuals().weak_text_color());
+                                if ui
+                                    .add(egui::Label::new(job).sense(egui::Sense::click()))
+                                    .on_hover_text(crate::names::with_hint("Click to set folder", &segs))
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+```
+
+The block's body (`folder_rename_start = ...`, which prefills the field with the stored folder) is unchanged.
 
 - [ ] **Step 4: Run the tests and expect them to pass.**
 
@@ -1550,7 +1855,7 @@ Expected: `test result: ok`. The existing chip, menu-style, Settings fit and bre
 cargo fmt --all
 cargo clippy -j 8 -p manifold -p ipc-protocol --all-targets -- -D warnings
 git add crates/manifold/src/jar_defs.rs crates/manifold/src/card.rs crates/manifold/src/node_menu.rs crates/manifold/src/graph_ui.rs crates/manifold/src/settings_page.rs crates/manifold/src/popups.rs
-git commit -m "Names: stored names are drawn with placeholders for hidden characters" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Names: stored names and note titles are drawn with placeholders for hidden characters" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1559,7 +1864,7 @@ git commit -m "Names: stored names are drawn with placeholders for hidden charac
 
 **Files:**
 - Modify: `crates/manifold/src/jar_defs.rs:95-98` (`name_key`), `:191-199` (`Display`)
-- Modify: `crates/manifold/src/node.rs:577` (`accessible_name`)
+- Modify: `crates/manifold/src/node.rs:577-580` (`accessible_name`: the group and note arms)
 - Modify: `crates/manifold/src/main.rs:1865-1882` (`load_named_session` toasts)
 - Test: `jar_defs.rs` tests (update `a_label_is_the_name_unless_another_jar_shares_it`, add one); `node.rs` `accessible_name_is_kind_then_title`
 
@@ -1596,13 +1901,17 @@ In `a_label_is_the_name_unless_another_jar_shares_it`, the stored " work " is no
         for (n, (label, name)) in labels.iter().zip(["Work", "work", "WORK"]).enumerate() {
 ```
 
-In `node.rs` `accessible_name_is_kind_then_title`, append:
+In `node.rs` `accessible_name_is_kind_then_title`, append (the note's raw text must come back unchanged: only its title is shown by the rule):
 
 ```rust
         app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "Re\u{200B}ading".into();
         assert_eq!(name(&app, &g), "Group: Re<U+200B>ading");
         app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = " ".into();
         assert_eq!(name(&app, &g), "Group: Untitled");
+        let raw = "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody";
+        app.nodes.get_mut(&n).unwrap().payload.as_note_mut().unwrap().text = raw.into();
+        assert_eq!(name(&app, &n), "Note: Re<U+200B>ading list");
+        assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
 ```
 
 - [ ] **Step 2: Run the tests and expect failure.**
@@ -1611,7 +1920,7 @@ Run: `cargo test -j 8 -p manifold --bins a_hidden_character_does_not`, then `car
 
 Expected:
 - FAIL: `2 clashes` (`name_key` keeps the ZWSP);
-- `"Group: Re\u{200B}ading"` ≠ `"Group: Re<U+200B>ading"`;
+- `"Group: Re\u{200B}ading"` ≠ `"Group: Re<U+200B>ading"` (and, once the group arm is done, `"Note: Re\u{200B}ading\u{a0}\u{a0}list"` ≠ `"Note: Re<U+200B>ading list"`);
 - the label `" work  · #…"` does not start with `"work · #"`.
 
 - [ ] **Step 3: Implement.**
@@ -1641,13 +1950,20 @@ impl std::fmt::Display for JarLabel {
 }
 ```
 
-`node.rs:577`:
+`node.rs:577-580`, the group and note arms (a note's first non-blank line, trimmed as before, then by the display rule):
 
 ```rust
             NodePayload::Group(g) => {
                 ("Group", Some(crate::names::to_plain(&crate::names::display_name(&g.name, crate::names::UNTITLED))))
             }
+            NodePayload::Note(n) => {
+                // The note's text is never cleaned; its first non-blank line is shown by the display rule.
+                let first = n.text.lines().map(str::trim).find(|l| !l.is_empty());
+                ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
+            }
 ```
+
+This arm and its test were built and passed in the Task 1 scratch copy, fmt and clippy clean.
 
 `main.rs` `load_named_session`. A name from disk is shown by the display rule:
 
@@ -1678,7 +1994,7 @@ git commit -m "Names: plain-text names and jar clashes follow the name rules" -m
 ### Task 5: the guard, docs and the live check
 
 **Files:**
-- Modify: `crates/manifold/src/names.rs` (tests: the guard)
+- Modify: `crates/manifold/src/names.rs` (tests: the guard; drop the Task 1 `#![allow(dead_code)]` and its comment)
 - Modify (`// name rule:` comments only): `card.rs` (`fit.name.map`, `card_filter_text`), `graph_nav.rs:207`, `jar_defs.rs` (`named_jar_label`, `jar_named`), `main.rs` (`default_group_name`), `node_menu.rs` (move targets, Rename prefill), `session_sync.rs:342,389`, `settings_page.rs` (`jar_name_draft` call), `shortcuts.rs:202`
 - Modify: `docs/superpowers/specs/2026-10-03-name-rules-design.md` (status), `docs/superpowers/specs/2026-10-03-per-tab-jars-design.md:195`, `README.md:325`, this plan (Outcome)
 - Test: `names.rs` `mod tests`
@@ -1817,6 +2133,8 @@ Any other line is a site Tasks 2-4 missed. Fix it with its rule; do not mark it.
 
 If `cargo fmt` moves a trailing comment onto its own line, the line loses its mark. Bind the read to a local on its own line instead, for example `let stored = &def.name; // name rule: ...`.
 
+Then delete the two lines Task 1 put under `names.rs`'s module doc: the `// The callers arrive in the next commits ...` comment and `#![allow(dead_code)]`. Every item now has a caller; the clippy run in Step 6 proves it, and an item it reports unused is a site Tasks 2-4 missed or a helper to delete.
+
 - [ ] **Step 4: Run the tests and expect them to pass.**
 
 Run: `cargo test -j 8 -p manifold --bins`
@@ -1825,8 +2143,8 @@ Expected: `test result: ok`, including `profile::tests` and both guard tests.
 
 - [ ] **Step 5: Update the docs.**
 - **Name-rules spec, status line:** "Status: built 2026-10-03 (plan `docs/superpowers/plans/2026-10-03-name-rules.md`; deviations in its Outcome)."
-- **Per-tab jars spec, line 195:** "Name rules for every user-editable name (jars, groups, the saved-session name) are built (`2026-10-03-name-rules-design.md`): names are cleaned when committed, and a stored name's hidden characters are shown as placeholders."
-- **README "Per-tab jars":** after "A typed name that copies a marker is drawn as plain name text.", add: "Every group, jar and saved-session name is cleaned when it is committed: control, zero-width and bidi characters are dropped, odd spaces collapse to one, and the name is at most 64 characters. A stored name that still holds such a character (from sync or older data) shows it as a dim `⟦200B⟧` placeholder (`<U+200B>` in plain text), with a hover naming it."
+- **Per-tab jars spec, line 195:** "Name rules for every user-editable name (jars, groups, the saved-session name, bookmark folders) are built (`2026-10-03-name-rules-design.md`): names are cleaned when committed, and a stored name's hidden characters are shown as placeholders."
+- **README "Per-tab jars":** after "A typed name that copies a marker is drawn as plain name text.", add: "Every group, jar, saved-session and bookmark folder name is cleaned when it is committed: control, zero-width and bidi characters are dropped (emoji sequences such as 👩‍💻 keep theirs), odd spaces collapse to one, and the name is at most 64 characters. A stored name that still holds such a character (from sync or older data) shows it as a dim `⟦200B⟧` placeholder (`<U+200B>` in plain text), with a hover naming it. A note's first line, where it serves as the note's title, is shown the same way; the note itself is never changed."
 - **This plan:** add an `## Outcome (date)` section, as the jar-label plans have.
 
 - [ ] **Step 6: Commit.**
@@ -1840,19 +2158,21 @@ git commit -m "Names: guard against unruled name reads; docs" -m "Co-Authored-By
 
 - [ ] **Step 7: Live check (no commit).**
 1. Run `df -h /c`, then `cargo build -j 8 -p manifold`.
-2. Make `target/shots/names/seed/session.json` (in `​`, JSON's escape puts the real character in the stored name):
+2. Make `target/shots/names/seed/session.json` (`\u200b` and `\u200d` are JSON escapes, so the stored names hold a real U+200B and U+200D):
 
 ```json
 {"nodes": [
  {"id": "j1", "kind": "jar", "name": "Work · #3f2a"},
  {"id": "j2", "kind": "jar", "name": "Home"},
  {"id": "j3", "kind": "jar", "name": "Home"},
- {"id": "j4", "kind": "jar", "name": "Wo​rk"},
- {"id": "g", "kind": "group", "name": "Re​ading", "pos": [0.0, 300.0]},
+ {"id": "j4", "kind": "jar", "name": "Wo\u200brk"},
+ {"id": "j5", "kind": "jar", "name": "👩\u200d💻 Dev"},
+ {"id": "g", "kind": "group", "name": "Re\u200bading", "pos": [0.0, 300.0]},
  {"id": "g2", "kind": "group", "name": "Inner", "group": "g"},
  {"id": "t1", "kind": "tab", "url": "about:blank", "title": "Typed look-alike", "engine": "webview2", "pos": [-320.0, 0.0], "jar": "j1", "jar_set": true},
  {"id": "t2", "kind": "tab", "url": "about:blank", "title": "Home A", "engine": "webview2", "pos": [0.0, 0.0], "jar": "j2", "jar_set": true},
- {"id": "t3", "kind": "tab", "url": "about:blank", "title": "Hidden in a jar", "engine": "webview2", "pos": [320.0, 0.0], "jar": "j4", "jar_set": true}
+ {"id": "t3", "kind": "tab", "url": "about:blank", "title": "Hidden in a jar", "engine": "webview2", "pos": [320.0, 0.0], "jar": "j4", "jar_set": true},
+ {"id": "t4", "kind": "tab", "url": "about:blank", "title": "Emoji jar", "engine": "webview2", "pos": [640.0, 0.0], "jar": "j5", "jar_set": true}
 ]}
 ```
 
@@ -1909,48 +2229,56 @@ QUIT
 ```
 
 6. Expected:
-   - **`1-graph.png`:** the group card's title reads `Re⟦200B⟧ading` with the placeholder dim and monospace. `t3`'s chip reads `Wo⟦200B⟧rk`, and `t1`'s chip reads `Work · #3f2a` as plain name text.
+   - **`1-graph.png`:** the group card's title reads `Re⟦200B⟧ading` with the placeholder dim and monospace. `t3`'s chip reads `Wo⟦200B⟧rk`, and `t1`'s chip reads `Work · #3f2a` as plain name text. `t4`'s chip has no placeholder, since the joiner in 👩‍💻 is kept; egui, which has no text shaping, should draw 👩 and 💻 side by side (it draws U+200D as nothing). Record what it draws in the Outcome: the spec's open question on emoji drawing waits on it.
    - **`2-tabmenu.png`:**
      - the jar rows show `Work · #3f2a` in the name's font;
      - the two `Home` rows have a smaller, dim, monospace `#xxxx` marker;
      - the `Wo⟦200B⟧rk` row is distinguishable from all of them.
    - **`3-breadcrumb.png`:** the crumb reads `Re⟦200B⟧ading`.
    - **`4-renamed.png`:** the crumb reads `Pasted`.
-   - **`4-session.json`:** group `g` is named exactly `"Pasted"`, with no `​`.
-   - **`5-settings.png`:** the Jars section draws the `Home` markers, and the `Wo​rk` field shows the stored text. Its hover is not captured by a screenshot.
+   - **`4-session.json`:** group `g` is named exactly `"Pasted"`, with no U+200B.
+   - **`5-settings.png`:** the Jars section draws the `Home` markers, and the `Wo` U+200B `rk` field shows the stored text, a real U+200B included. Its hover is not captured by a screenshot.
 7. Record the results in the Outcome. If RENAMEGROUP's prefill is selected, so that BACKSPACE deletes it all at once, the extra presses do nothing.
 
 ---
 
 ## Self-review
 
+Re-run on 2026-10-03 after the spec revision (emoji sequences, bookmark folders, note titles, `display_name`'s allocation).
+
 **Spec coverage:**
 - **`clean_name` rules** (classes, whitespace, trim, cap, idempotence, Borrowed): Task 1.
-- **`display_name`** (Hidden, single spaces, trim, cap with Hidden = 1, fallback, `to_plain` `<U+200B>`, rich `⟦200B⟧` in the marker style with a hover): Tasks 1 and 3. The hover is `hidden_hint` on the chip, MoveTo, breadcrumb, Settings, the jar field and the group card tooltip.
+- **Emoji sequences** (joiner between emoji per GB11, selectors after an emoji or in a keycap, subdivision-flag tags; dropped elsewhere; idempotence; a sequence is one cluster under the cap): Task 1, `classify` and the tests `clean_name_keeps_emoji_sequences_whole`, `clean_name_drops_emoji_formatting_outside_a_sequence`, `clean_name_is_idempotent`, `clean_name_caps_at_64_clusters_on_a_cluster_boundary`, `display_name_reveals_emoji_formatting_outside_a_sequence`. The spec's required cases are all there: 👩‍💻 kept, a joiner between two letters dropped, a bare VS16 after a letter dropped, 🏴󠁧󠁢󠁥󠁮󠁧󠁿 kept, a lone joiner dropped.
+- **Data** (`icu_properties` for categories and `Extended_Pictographic`, `unicode-segmentation` for clusters, no new crate): Task 1 Step 1.
+- **`display_name`** (Hidden, single spaces, trim, cap with Hidden = 1, fallback, `to_plain` `<U+200B>`, rich `⟦200B⟧` in the marker style with a hover; one `Vec` allocation and no copy for a clean name, `display_name_borrows_a_clean_name_whole`): Tasks 1 and 3. The hover is `hidden_hint` on the chip, MoveTo, breadcrumb, Settings, the jar field, the group card tooltip and the bookmark folder header and label.
 - **The font test:** Task 1, by the font file's character map.
 - **Input sites:**
-  - `CommitRename`, `create_jar`, `rename_jar` and the session name: Task 2.
-  - An empty result keeps the old name or is ignored: Task 2.
-  - `NewJar`, `SETJAR` and Export Group are added as input sites the spec's table implies.
-- **Display sites:** "everywhere": Tasks 3 and 4, per the Sites table.
+  - `CommitRename`, `create_jar`, `rename_jar`, the session name and the bookmark folder: Task 2.
+  - An empty result keeps the old name, is ignored, or (a folder) means no folder: Task 2.
+  - `NewJar`, `SETJAR` and Export Group are added as input sites the spec's table implies. Export Group's file name is `clean_name` or "Untitled", as the spec's table now says.
+- **Display sites:** "everywhere": Tasks 3 and 4, per the Sites table, bookmark folders (Task 3) included.
+- **A note's first line:** display only. Task 3 (Recently Closed row) and Task 4 (`accessible_name`), each with a test; Task 4's test asserts that the note's text is unchanged. No input site touches a note.
 - **Never rewritten:** the sync and materialize lines are only marked in Task 5. The Settings guard `draft != def.name` keeps a focused dirty name from being rewritten (Task 2 test).
 - **`jar_label` clash on the clean form:** Task 4.
-- **The Settings field edits the stored name:** unchanged (`jar_name_draft`).
-- **The guard with an explicit list:** Task 5.
-- **The live check:** Task 5, step 7.
+- **The Settings field and the folder field edit the stored name:** unchanged (`jar_name_draft`, the folder prefill).
+- **The guard with an explicit list:** Task 5. Folder, note and Recently Closed sites are invisible to it, as the spec says, and covered by their tests.
+- **The live check:** Task 5, steps 1-7, now with a 👩‍💻 jar to see how egui draws a kept sequence (the spec's open question).
 - **Migration:** none needed.
 
 **Deviations from the spec, to record in the Outcome:**
-- `display_name` returns a one-element `Vec` for a clean name, so it allocates once. The spec says "allocates nothing"; the segment borrows the whole name, and nothing else is allocated.
-- The spec drops `Cf`, which includes ZWJ, and VS16 (U+FE0F). Those drops break ZWJ emoji sequences and emoji presentation, against "leaves emoji alone". The plan follows the drop list literally and pins it (`clean_name_drops_a_zero_width_joiner`). The spec's cap example ("a ZWJ emoji sequence is not cut mid-way") becomes skin-tone and flag sequences. This is raised with the user.
-- The Recently Closed group row and the session toasts are sites the guard cannot see: the name comes through `str_field("name")` or a local, not `.name`. They are listed in the Sites table instead.
+- The Recently Closed rows and the session toasts are sites the guard cannot see: the name comes through `str_field(..)` or a local, not `.name`. They are listed in the Sites table instead.
+- A Recently Closed note row shows the first non-blank line (as `accessible_name` already did) instead of the first line, and "Untitled" for a note with no text.
+- (Settled by the revision, no longer deviations: `display_name`'s one allocation is now what the spec says, and the spec keeps emoji sequences, so `clean_name_drops_a_zero_width_joiner` is gone.)
 
-**Placeholder scan:** every code step has its code.
+**Placeholder scan:** every code step has its code. "... the current body, unchanged ..." (Task 1, step 2, in `theme.rs`), "... (existing text) ..." in two doc comments and "the renaming branch unchanged" in the breadcrumb are pointers to code that stays as it is, not code left to write.
 
 **Type consistency:**
-- `NameSeg<'a>` is used everywhere.
-- `append_name` takes `&TextFormat`: Task 1 defines it that way, and Task 3 calls it with `&format`, `&self.name_format(font)` and `&name_format`.
-- `name_job(ui, prefix, segs, suffix)` is used in Task 3 (MoveTo, breadcrumb, sessions, popups) and tested in Task 1.
+- `NameSeg<'a>` is used everywhere; `Class` and `classify` are private to `names.rs`.
+- `append_name` takes `&TextFormat`: Task 1 defines it that way, and Task 3 calls it with `&format`, `&self.name_format(font)`, `&name_format` and (in `folder_job`) `&format`.
+- `name_job(ui, prefix, segs, suffix)` is used in Task 3 (MoveTo, breadcrumb, sessions, popups' group and note rows) and tested in Task 1.
+- `folder_from_draft(&str) -> Option<String>` (Task 2) matches `Bookmark::folder: Option<String>`; `folder_job(ui, &segs, color)` is called with `TEXT_PRIMARY` and `ui.visuals().weak_text_color()`.
+- `closed_entry_label` returns `egui::WidgetText` in every branch (two early `name_job(..).into()` returns, then `text.into()`).
 - `CardHeader.user_name` is set in all seven constructors.
 - `crumb_hover(segs, short, long)` has the same argument order in its definition and its three calls.
 - `save_named_session(&mut self, raw: &str)` is called from Settings with the draft and from `event_loop.rs:1054` unchanged.
+- `PLACEHOLDER_CHARS` is `#[cfg(test)]` and read only by the font test; the interface list says so.
