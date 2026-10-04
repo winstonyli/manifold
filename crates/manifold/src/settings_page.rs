@@ -291,13 +291,13 @@ impl App {
             ui.horizontal(|ui| {
                 match &state {
                     EngineState::NotInstalled { .. } if ui.button("Download").clicked() => {
-                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                        self.offer_engine_confirm(EngineConfirm::Download(kind));
                     }
                     EngineState::UpdateNeeded { .. } if ui.button("Update").clicked() => {
-                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                        self.offer_engine_confirm(EngineConfirm::Download(kind));
                     }
                     EngineState::Failed(_) if ui.button("Retry").clicked() => {
-                        self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                        self.offer_engine_confirm(EngineConfirm::Download(kind));
                     }
                     EngineState::Installing { .. } if ui.button("Cancel").clicked() => self.cancel_engine_install(kind),
                     _ => {}
@@ -308,7 +308,7 @@ impl App {
                     ("Clear leftovers", "Delete the partial download and install leftovers")
                 };
                 if removable && ui.button(label).on_hover_text(hint).clicked() {
-                    self.pending_engine_confirm = Some(EngineConfirm::Remove(kind));
+                    self.offer_engine_confirm(EngineConfirm::Remove(kind));
                 }
             });
         }
@@ -554,13 +554,16 @@ impl App {
         if let Some((id, name)) = &req.rename_jar {
             self.rename_jar(*id, name);
         }
-        if let Some((id, on)) = req.jar_ephemeral {
+        // A jar action clicked while a confirm dialog is up (they are non-modal) is ignored, so it neither replaces
+        // the question being asked nor acts behind it (`offer_confirm`).
+        let jar_ephemeral = req.jar_ephemeral.filter(|_| !self.confirm_open());
+        if let Some((id, on)) = jar_ephemeral {
             self.request_jar_ephemeral(id, on); // may ask first instead (`JarConfirm::Ephemeral`)
         }
-        if req.jar_confirm.is_some() {
-            self.pending_jar_confirm = req.jar_confirm;
+        if let Some(confirm) = req.jar_confirm {
+            self.offer_jar_confirm(confirm);
         }
-        if req.rename_jar.is_some() || req.jar_ephemeral.is_some() {
+        if req.rename_jar.is_some() || jar_ephemeral.is_some() {
             self.save_session();
         }
         if req.save_as_requested {
@@ -834,6 +837,41 @@ mod tests {
             output.textures_delta.clear();
         }
         assert!(width <= CONTENT + 0.5, "the Jars section is {width} wide in {CONTENT}");
+    }
+
+    /// Fix batch B5: while a confirm dialog is up (they are non-modal), a second jar action from Settings neither
+    /// replaces it nor acts, and a jar confirm and an engine confirm never show together.
+    #[test]
+    fn a_pending_confirm_ignores_further_jar_actions() {
+        use crate::engine_info::EngineConfirm;
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        let clear = JarConfirm::Clear(JarKey::Default);
+        app.pending_jar_confirm = Some(clear);
+        let req = SettingsRequests {
+            jar_confirm: Some(JarConfirm::Delete(work)),
+            jar_ephemeral: Some((work, true)),
+            ..Default::default()
+        };
+        app.apply_settings_requests(&req);
+        assert_eq!(app.pending_jar_confirm, Some(clear), "the first confirm stays");
+        assert!(!app.jar_defs[&work].ephemeral, "the click was ignored, not acted on");
+        let download = EngineConfirm::Download(crate::process_manager::EngineKind::Cef);
+        assert!(!app.offer_engine_confirm(download));
+        assert_eq!(app.pending_engine_confirm, None, "no engine confirm over a jar confirm");
+
+        app.pending_jar_confirm = None;
+        assert!(app.offer_engine_confirm(download));
+        app.apply_settings_requests(&req);
+        assert_eq!(app.pending_jar_confirm, None, "no jar confirm over an engine confirm");
+        assert!(!app.jar_defs[&work].ephemeral);
+
+        app.pending_engine_confirm = None;
+        app.apply_settings_requests(&SettingsRequests {
+            jar_confirm: Some(JarConfirm::Delete(work)),
+            ..Default::default()
+        });
+        assert_eq!(app.pending_jar_confirm, Some(JarConfirm::Delete(work)), "with none up, it opens");
     }
 
     #[test]

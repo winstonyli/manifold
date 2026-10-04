@@ -178,7 +178,9 @@ impl App {
             // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
             // install the engine instead (the card's Download).
             match pick_outcome(kind, &self.engine_state(kind)) {
-                PickOutcome::AskInstall(kind) => self.pending_engine_confirm = Some(EngineConfirm::Download(kind)),
+                PickOutcome::AskInstall(kind) => {
+                    self.offer_engine_confirm(EngineConfirm::Download(kind));
+                }
                 PickOutcome::AlreadyInstalling(kind) => {
                     self.queue_toast(format!("{} is already installing", engine_label(kind)))
                 }

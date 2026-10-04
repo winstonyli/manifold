@@ -235,7 +235,7 @@ impl App {
     /// that file, its saved logins, is deleted. Anything else acts at once.
     pub(crate) fn request_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         if on && self.has_saved_file(JarKey::Named(id)) {
-            self.pending_jar_confirm = Some(JarConfirm::Ephemeral(id));
+            self.offer_jar_confirm(JarConfirm::Ephemeral(id));
         } else {
             self.set_jar_ephemeral(id, on);
         }

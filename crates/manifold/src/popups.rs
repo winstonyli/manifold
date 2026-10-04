@@ -252,6 +252,17 @@ fn confirm_dialog(ui: &mut egui::Ui, area_id: &str, title: String, detail: &str,
     }
 }
 
+/// Opens `confirm` in `slot` only while no confirm dialog is up, `slot`'s own or the other kind's (`other_open`):
+/// `confirm_dialog` is non-modal and centred, so a second would replace the first unanswered or draw over it. A click
+/// that would open one meanwhile is ignored. Returns whether it opened.
+pub(crate) fn offer_confirm<T>(slot: &mut Option<T>, other_open: bool, confirm: T) -> bool {
+    let free = slot.is_none() && !other_open;
+    if free {
+        *slot = Some(confirm);
+    }
+    free
+}
+
 /// The download dialog's detail text, with a warning line when system libraries the host needs are missing.
 fn download_detail(missing: &[&str]) -> String {
     let mut detail = "Downloaded once, checked against a pinned hash, then kept in your profile.".to_string();
@@ -323,7 +334,7 @@ impl App {
         match outcome? {
             PickOutcome::Switch(kind) => Some(kind),
             PickOutcome::AskInstall(kind) => {
-                self.pending_engine_confirm = Some(EngineConfirm::Download(kind));
+                self.offer_engine_confirm(EngineConfirm::Download(kind));
                 None
             }
             PickOutcome::AlreadyInstalling(kind) => {
@@ -335,6 +346,21 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Whether an engine or jar confirm dialog is up (`offer_confirm`).
+    pub(crate) fn confirm_open(&self) -> bool {
+        self.pending_engine_confirm.is_some() || self.pending_jar_confirm.is_some()
+    }
+
+    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
+    pub(crate) fn offer_engine_confirm(&mut self, confirm: EngineConfirm) -> bool {
+        offer_confirm(&mut self.pending_engine_confirm, self.pending_jar_confirm.is_some(), confirm)
+    }
+
+    /// Asks `confirm` unless a confirm is already up (`offer_confirm`).
+    pub(crate) fn offer_jar_confirm(&mut self, confirm: crate::jar_defs::JarConfirm) -> bool {
+        offer_confirm(&mut self.pending_jar_confirm, self.pending_engine_confirm.is_some(), confirm)
     }
 
     /// The confirm before a large or destructive engine action: "Download CEF, 172 MB?" (always
@@ -1431,6 +1457,17 @@ mod tests {
     }
 
     use super::*;
+
+    /// Fix batch B5: a confirm opens only into an empty slot with the other kind's closed; it never replaces one.
+    #[test]
+    fn a_confirm_opens_only_while_none_is_up() {
+        let mut slot = None;
+        assert!(!offer_confirm(&mut slot, true, 1), "the other kind is up");
+        assert_eq!(slot, None);
+        assert!(offer_confirm(&mut slot, false, 1));
+        assert!(!offer_confirm(&mut slot, false, 2), "its own kind is up");
+        assert_eq!(slot, Some(1));
+    }
 
     #[test]
     fn opening_a_popup_replaces_the_open_one() {
