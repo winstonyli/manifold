@@ -90,6 +90,19 @@ pub fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> Pat
         .expect("an unbounded range finds a free name")
 }
 
+/// Whether two download paths name the same file, for `unique_path`'s
+/// `taken` check against downloads in flight: ignoring case on Windows, whose
+/// file systems do (so `A.pdf` in flight takes `a.pdf`, as `exists()` would
+/// once it's written), exactly elsewhere. Unicode lowercase, which can differ
+/// from NTFS's own case table in rare letters.
+pub fn same_download_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        Path::new(&a.to_string_lossy().to_lowercase()) == Path::new(&b.to_string_lossy().to_lowercase())
+    } else {
+        a == b
+    }
+}
+
 /// One tick's engine messages with each download's progress reduced to the
 /// latest, kept at its last position; every other message keeps its order.
 /// Fast downloads report per network chunk, hundreds of times a tick.
@@ -188,6 +201,19 @@ mod tests {
         assert_eq!(unique_path(dir, "a.pdf", taken), dir.join("a (2).pdf"));
         assert_eq!(unique_path(dir, "b.pdf", taken), dir.join("b.pdf"));
         assert_eq!(unique_path(dir, "a", |p: &Path| p == dir.join("a")), dir.join("a (1)"));
+    }
+
+    #[test]
+    fn an_in_flight_name_takes_its_other_cases_on_windows_only() {
+        let dir = Path::new("d");
+        assert!(same_download_path(&dir.join("a.pdf"), &dir.join("a.pdf")));
+        assert_eq!(same_download_path(&dir.join("Report.PDF"), &dir.join("report.pdf")), cfg!(windows));
+        assert_eq!(same_download_path(&dir.join("Ärger.txt"), &dir.join("ärger.txt")), cfg!(windows));
+        assert!(!same_download_path(&dir.join("a.pdf"), &dir.join("b.pdf")));
+        let in_flight = [dir.join("A.pdf")];
+        let taken = |p: &Path| in_flight.iter().any(|t| same_download_path(t, p));
+        let want = if cfg!(windows) { "a (1).pdf" } else { "a.pdf" };
+        assert_eq!(unique_path(dir, "a.pdf", taken), dir.join(want));
     }
 
     #[test]

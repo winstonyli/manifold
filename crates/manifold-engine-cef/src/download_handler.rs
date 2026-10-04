@@ -82,7 +82,8 @@ wrap_download_handler! {
                 let name = ipc_protocol::downloads::safe_name(&suggested);
                 let mut results = self.handler.result.borrow_mut();
                 let path = ipc_protocol::downloads::unique_path(&dir, &name, |p| {
-                    p.exists() || results.assigned.values().any(|taken| taken == p)
+                    p.exists()
+                        || results.assigned.values().any(|taken| ipc_protocol::downloads::same_download_path(taken, p))
                 });
                 results.assigned.insert(item.id(), path.clone());
                 drop(results);
