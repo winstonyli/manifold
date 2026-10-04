@@ -25,7 +25,7 @@ pub(crate) struct LocalState {
     pub groups_collapsed: bool,
     /// The camera rect `[min x, min y, max x, max y]` and the level it was
     /// saved at (plan ruling 5).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_camera")]
     pub camera: Option<([f32; 4], Option<String>)>,
     /// Per node, by live id.
     #[serde(default)]
@@ -48,6 +48,7 @@ pub(crate) struct LocalState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LocalNode {
     /// The settled position, so the graph reopens as it was left.
+    #[serde(deserialize_with = "lenient_pos")]
     pub pos: [f32; 2],
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
@@ -74,6 +75,19 @@ pub(crate) struct LiveUrl {
 
 fn is_false(b: &bool) -> bool {
     !b
+}
+
+/// A `null` coordinate (an older build wrote NaN that way) reads as 0.
+fn lenient_pos<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 2], D::Error> {
+    let [x, y] = <[Option<f32>; 2]>::deserialize(d)?;
+    Ok([x.unwrap_or(0.0), y.unwrap_or(0.0)])
+}
+
+/// A camera rect with a `null` in it reads as no saved camera.
+#[allow(clippy::type_complexity)] // mirrors the field's own type
+fn lenient_camera<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<([f32; 4], Option<String>)>, D::Error> {
+    let raw = Option::<([Option<f32>; 4], Option<String>)>::deserialize(d)?;
+    Ok(raw.and_then(|(r, level)| Some(([r[0]?, r[1]?, r[2]?, r[3]?], level))))
 }
 
 /// Whether `a` and `b` differ enough to write: settled positions within
@@ -113,8 +127,26 @@ impl LocalState {
         }
     }
 
+    fn all_finite(&self) -> bool {
+        self.nodes.values().all(|n| n.pos.iter().all(|v| v.is_finite()))
+            && self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
+            && self.json_outline_width.is_none_or(f32::is_finite)
+    }
+
+    /// serde_json writes NaN and infinity as `null`, which a plain `f32`
+    /// can't read back: one bad value used to make the whole file unreadable,
+    /// Recently Closed included. Each non-finite value is dropped alone.
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("personal state serializes")
+        if self.all_finite() {
+            return serde_json::to_vec(self).expect("personal state serializes");
+        }
+        let mut clean = self.clone();
+        clean.nodes.retain(|_, n| n.pos.iter().all(|v| v.is_finite()));
+        if clean.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
+            clean.camera = None;
+        }
+        clean.json_outline_width = clean.json_outline_width.filter(|w| w.is_finite());
+        serde_json::to_vec(&clean).expect("personal state serializes")
     }
 
     /// `None` for bytes that aren't this shape: treated as a fresh start.
@@ -156,6 +188,30 @@ mod tests {
         let state = with_pos(3.0);
         assert_eq!(LocalState::from_bytes(&state.to_bytes()), Some(state));
         assert_eq!(LocalState::from_bytes(b"\x00not json"), None);
+    }
+
+    #[test]
+    fn a_non_finite_value_costs_only_itself() {
+        let mut state = with_pos(f32::NAN);
+        state.nodes.insert("b".into(), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
+        state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
+        state.json_outline_width = Some(f32::NAN);
+        state.closed = vec![JsonDoc::default()];
+        let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
+        assert_eq!(back.closed.len(), 1, "Recently Closed survives");
+        assert!(!back.nodes.contains_key("a"), "the bad position is dropped");
+        assert_eq!(back.nodes["b"].title, "kept");
+        assert_eq!((back.camera, back.json_outline_width), (None, None));
+    }
+
+    /// Files written before the fix hold `null` where the value was NaN.
+    #[test]
+    fn nulls_written_by_older_builds_read_back() {
+        let bytes = br#"{"camera":[[0.0,null,1.0,1.0],null],"nodes":{"a":{"pos":[null,2.0]}},"closed":[{"nodes":[]}]}"#;
+        let state = LocalState::from_bytes(bytes).expect("lenient");
+        assert_eq!(state.nodes["a"].pos, [0.0, 2.0]);
+        assert_eq!(state.camera, None);
+        assert_eq!(state.closed.len(), 1);
     }
 
     #[test]
