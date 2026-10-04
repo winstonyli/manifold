@@ -96,11 +96,20 @@ impl Cookie {
     /// Equal, with expiries within `EXPIRES_TOLERANCE`: an engine's float conversion of the same expiry is not a
     /// change.
     fn same_as(&self, other: &Cookie) -> bool {
-        let expires_same = match (self.expires, other.expires) {
+        // Destructured, so a new field is a compile error here rather than a silent miss.
+        let Cookie { name, value, domain, path, expires, secure, http_only, same_site } = self;
+        let expires_same = match (*expires, other.expires) {
             (Some(a), Some(b)) => (a - b).abs() < EXPIRES_TOLERANCE,
             (a, b) => a == b,
         };
-        expires_same && Cookie { expires: other.expires, ..self.clone() } == *other
+        expires_same
+            && *name == other.name
+            && *value == other.value
+            && *domain == other.domain
+            && *path == other.path
+            && *secure == other.secure
+            && *http_only == other.http_only
+            && *same_site == other.same_site
     }
 }
 
@@ -322,7 +331,7 @@ impl Jar {
     }
 
     /// Removes every file holding key `key`'s cookies (a deleted or newly ephemeral jar): its file, its
-    /// `.unreadable-*` copies and the `.<pid>.tmp` files of crashed saves, each a full copy of its credentials. A live
+    /// `.unreadable-*` copies and the `.<pid>-<n>.tmp` files of crashed saves, each a full copy of its credentials. A live
     /// process's temp file is its save in progress and stays (`remove_dead_tmps`). A file already gone is fine; the
     /// first other failure is returned after trying the rest.
     pub fn delete_files(dir: &Path, key: JarKey) -> std::io::Result<()> {
@@ -343,7 +352,7 @@ impl Jar {
     /// user or machine, tampered, truncated, not JSON) is renamed to `<file>.unreadable-<unix seconds>` (never over
     /// an earlier one; only the `KEEP_ASIDES` newest are kept). If it cannot be read at all, or cannot be moved
     /// aside, the jar is `locked`: usable in memory, but `save` writes nothing, so the file is never overwritten.
-    /// Only reasons are logged, never contents. A `<file>.<pid>.tmp` is deleted only when process `pid` is gone:
+    /// Only reasons are logged, never contents. A `<file>.<pid>-<n>.tmp` is deleted only when process `pid` is gone:
     /// a live one may be another running instance's save in progress. Each jar's helpers touch only its own files.
     pub fn load(dir: &Path, key: JarKey) -> Jar {
         let file = key.file_name();
@@ -408,32 +417,69 @@ impl Jar {
     /// - a pulled cookie that differs or is new is a change: it replaces the jar's (an already-expired one deletes it);
     /// - a key the tab reported before (`reported`) and is now missing is a deletion. A seeded key the tab never
     ///   reported is not: the seed may have failed, which is not a logout.
+    ///
+    /// The jar is indexed by key once per merge, so a pull costs O(jar + pull), not O(jar * pull). The jar's order is
+    /// kept: a replacement stays in place, a new cookie goes at the end.
     pub fn merge(&mut self, pulled: Vec<Cookie>, tab: &mut TabCookies) -> bool {
-        let before = self.cookies.clone();
         let t = now();
         let pulled_keys: HashSet<Key> = pulled.iter().map(Cookie::key).collect();
+        // Each key's first slot (built back to front, so the first one wins).
+        let mut index: HashMap<Key, usize> = self.cookies.iter().enumerate().rev().map(|(i, c)| (c.key(), i)).collect();
+        // No code path stores a key twice, but a hand-edited or old file could.
+        let repeats = index.len() < self.cookies.len();
+        // One slot per jar cookie; `None` is a deletion, compacted at the end.
+        let mut slots: Vec<Option<Cookie>> = std::mem::take(&mut self.cookies).into_iter().map(Some).collect();
+        let mut changed = false;
         for gone in tab.reported.difference(&pulled_keys) {
-            self.cookies.retain(|c| c.key() != *gone);
+            changed |= remove_key(&mut slots, &mut index, gone, repeats);
         }
         for p in &pulled {
             let k = p.key();
             if tab.baseline.get(&k).is_some_and(|b| b.same_as(p)) {
                 continue;
             }
-            match self.cookies.iter_mut().position(|c| c.key() == k) {
-                _ if p.expired(t) => self.cookies.retain(|c| c.key() != k),
-                Some(i) if self.cookies[i].same_as(p) => {}
-                Some(i) => self.cookies[i] = p.clone(),
-                None => self.cookies.push(p.clone()),
+            match index.get(&k).copied() {
+                _ if p.expired(t) => changed |= remove_key(&mut slots, &mut index, &k, repeats),
+                Some(i) if slots[i].as_ref().is_some_and(|c| c.same_as(p)) => {}
+                Some(i) => {
+                    slots[i] = Some(p.clone());
+                    changed = true;
+                }
+                None => {
+                    index.insert(k, slots.len());
+                    slots.push(Some(p.clone()));
+                    changed = true;
+                }
             }
         }
-        self.cookies.retain(|c| !c.expired(t));
+        self.cookies = slots
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                let keep = !c.expired(t);
+                changed |= !keep;
+                keep
+            })
+            .collect();
         // Seeded keys the tab has not reported yet stay in the baseline; reported keys now missing leave it.
         let reported = std::mem::replace(&mut tab.reported, pulled_keys);
         tab.baseline.retain(|k, _| !reported.contains(k));
         tab.baseline.extend(pulled.into_iter().map(|p| (p.key(), p)));
-        self.cookies != before
+        changed
     }
+}
+
+/// `merge`'s deletion of key `k`: every copy, as a `retain` by key would. With no `repeats` in the jar, only the indexed
+/// slot holds it. Whether anything was removed.
+fn remove_key(slots: &mut [Option<Cookie>], index: &mut HashMap<Key, usize>, k: &Key, repeats: bool) -> bool {
+    let Some(i) = index.remove(k) else { return false };
+    slots[i] = None;
+    if repeats {
+        for slot in slots.iter_mut().filter(|s| s.as_ref().is_some_and(|c| c.key() == *k)) {
+            *slot = None;
+        }
+    }
+    true
 }
 
 /// The copy of the loaded jars spawn threads seed new hosts from (`App::jar_snapshots`), with how many times each jar
@@ -513,6 +559,67 @@ mod tests {
 
     fn key(name: &str) -> Key {
         (name.into(), "example.com".into(), "/".into())
+    }
+
+    /// `merge` as it was before the index (4b833af), the reference the indexed one must match.
+    fn merge_reference(jar: &mut Vec<Cookie>, pulled: Vec<Cookie>, tab: &mut TabCookies) -> bool {
+        let before = jar.clone();
+        let t = now();
+        let pulled_keys: HashSet<Key> = pulled.iter().map(Cookie::key).collect();
+        for gone in tab.reported.difference(&pulled_keys) {
+            jar.retain(|c| c.key() != *gone);
+        }
+        for p in &pulled {
+            let k = p.key();
+            if tab.baseline.get(&k).is_some_and(|b| b.same_as(p)) {
+                continue;
+            }
+            match jar.iter_mut().position(|c| c.key() == k) {
+                _ if p.expired(t) => jar.retain(|c| c.key() != k),
+                Some(i) if jar[i].same_as(p) => {}
+                Some(i) => jar[i] = p.clone(),
+                None => jar.push(p.clone()),
+            }
+        }
+        jar.retain(|c| !c.expired(t));
+        let reported = std::mem::replace(&mut tab.reported, pulled_keys);
+        tab.baseline.retain(|k, _| !reported.contains(k));
+        tab.baseline.extend(pulled.into_iter().map(|p| (p.key(), p)));
+        *jar != before
+    }
+
+    /// Pulls hold one cookie per key, as an engine's dump does. Every fourth starting jar repeats keys, which no code
+    /// path writes but a hand-edited or legacy file could hold: the index must match the reference there too.
+    #[test]
+    fn the_indexed_merge_matches_the_reference() {
+        let mut rng = crate::store::testutil::XorShift(11);
+        let cookie = |rng: &mut crate::store::testutil::XorShift| {
+            let mut x = c(&format!("n{}", rng.below(12)), &format!("v{}", rng.below(3)));
+            x.expires = match rng.below(4) {
+                0 => Some(1.0),
+                1 => Some(4_000_000_000.0),
+                _ => None,
+            };
+            x
+        };
+        let unique = |v: Vec<Cookie>| {
+            let mut seen = HashSet::new();
+            v.into_iter().filter(|x| seen.insert(x.key())).collect::<Vec<_>>()
+        };
+        for round in 0..500 {
+            let raw: Vec<Cookie> = (0..rng.below(10)).map(|_| cookie(&mut rng)).collect();
+            let start = if round % 4 == 0 { raw } else { unique(raw) };
+            let mut tab = TabCookies::seeded(&start);
+            let (mut jar, mut reference) = (Jar { locked: false, cookies: start.clone() }, start.clone());
+            let mut ref_tab = TabCookies::seeded(&start);
+            for _ in 0..3 {
+                let pulled = unique((0..rng.below(10)).map(|_| cookie(&mut rng)).collect());
+                let got = jar.merge(pulled.clone(), &mut tab);
+                let want = merge_reference(&mut reference, pulled, &mut ref_tab);
+                assert_eq!((got, &jar.cookies), (want, &reference), "round {round}");
+                assert_eq!(tab, ref_tab, "round {round}");
+            }
+        }
     }
 
     #[test]
@@ -724,7 +831,9 @@ mod tests {
         assert_eq!(std::fs::read(&live).unwrap(), b"theirs", "a live instance may be mid-save");
         std::fs::remove_file(&live).unwrap();
         Jar { locked: false, cookies: vec![c("sid", "1")] }.save(&dir, JarKey::Default).unwrap();
-        assert!(!live.exists());
+        let names: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, ["default.json"], "the save's own temp file is gone");
     }
 
     #[test]
