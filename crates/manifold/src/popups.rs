@@ -506,25 +506,29 @@ impl App {
     }
 
     /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
-    /// into `ui` as a side effect, same as the row's other icons) and the
-    /// text -- `name` for a group (with its member count), `title` (its
-    /// recorded title) or else `url` for a tab, the first non-blank line of
-    /// `text` for a note, `path` for every file-backed kind. A group's row
-    /// and a note's row are styled jobs by the display rule (name rules:
-    /// a hidden character as a placeholder, "Untitled" when nothing is
-    /// left, so a note with no text, or only blank lines, shows "Untitled").
+    /// into `ui` as a side effect, same as the row's other icons, and for a
+    /// group its member count after it, so a name cut short by the row's
+    /// width keeps the count), the text, and its hover -- `name` for a
+    /// group, `title` (its recorded title) or else `url` for a tab, the
+    /// first non-blank line of `text` for a note, `path` for every
+    /// file-backed kind. A group's row and a note's row are styled jobs by
+    /// the display rule (name rules: a hidden character as a placeholder,
+    /// "Untitled" when nothing is left, so a note with no text, or only
+    /// blank lines, shows "Untitled"), with the hidden-character hint as
+    /// the hover; other rows have none.
     fn closed_entry_label(
         ui: &mut egui::Ui,
         node: &store::json::JsonNode,
         title: Option<&str>,
         member_count: usize,
-    ) -> egui::WidgetText {
+    ) -> (egui::WidgetText, Option<String>) {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if node.kind == "group" {
             ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+            ui.weak(member_count.to_string());
             let name = str_field("name");
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
-            return crate::names::name_job(ui, "", &segs, &format!(" ({member_count})")).into();
+            return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
         if node.kind == "note" {
             ui.label(egui_phosphor::light::NOTE_PENCIL);
@@ -532,7 +536,7 @@ impl App {
             let text = str_field("text");
             let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
             let segs = crate::names::display_name(first, crate::names::UNTITLED);
-            return crate::names::name_job(ui, "", &segs, "").into();
+            return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
         let text: String = match node.kind.as_str() {
             "tab" => {
@@ -553,7 +557,7 @@ impl App {
                 str_field("path")
             }
         };
-        text.into()
+        (text.into(), None)
     }
 
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
@@ -568,8 +572,12 @@ impl App {
                     ui.horizontal(|ui| {
                         let root = &entry.doc.nodes[0];
                         let title = entry.local("title", &root.id).and_then(|v| v.as_str());
-                        let label = Self::closed_entry_label(ui, root, title, entry.doc.nodes.len() - 1);
-                        if list_row(ui, label).clicked() {
+                        let (label, hint) = Self::closed_entry_label(ui, root, title, entry.doc.nodes.len() - 1);
+                        let mut row = list_row(ui, label);
+                        if let Some(hint) = hint {
+                            row = row.on_hover_text(hint);
+                        }
+                        if row.clicked() {
                             reopen_index = Some(index);
                         }
                     });
@@ -637,7 +645,8 @@ impl App {
                         }
                         if let Some(name) = folder {
                             let segs = crate::names::display_name(name, crate::names::UNTITLED);
-                            let header = ui.label(folder_job(ui, &segs, TEXT_PRIMARY));
+                            // One line, cut with "…" at the popup's width (egui's hover then shows it all).
+                            let header = ui.add(egui::Label::new(folder_job(ui, &segs, TEXT_PRIMARY)).truncate());
                             if let Some(hint) = crate::names::hidden_hint(&segs) {
                                 header.on_hover_text(hint);
                             }
@@ -1496,7 +1505,21 @@ mod tests {
         assert_eq!(folder_from_draft(""), None);
     }
 
-    /// Name rules: a Recently Closed group row draws a hidden character in its name as a placeholder.
+    /// The texts of every galley in `output`, in paint order.
+    fn galley_texts(output: egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|s| match s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Name rules: a Recently Closed group row draws a hidden character in its name as a placeholder, gives the
+    /// hidden-character hint for its hover, and draws its member count apart from the name, so a name cut short by
+    /// the row's width keeps the count.
     #[test]
     fn a_closed_group_row_shows_a_hidden_character_as_a_placeholder() {
         let ctx = egui::Context::default();
@@ -1504,7 +1527,24 @@ mod tests {
         fields.insert("name".into(), "Re\u{200B}ading".into());
         let node = store::json::JsonNode { id: "g".into(), kind: "group".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(App::closed_entry_label(ui, &node, None, 3).text(), "Re⟦200B⟧ading (3)");
+            let (label, hint) = App::closed_entry_label(ui, &node, None, 3);
+            assert_eq!(label.text(), "Re⟦200B⟧ading");
+            assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
+        });
+        output.textures_delta.clear();
+        assert!(galley_texts(output).contains(&"3".to_string()), "the count is drawn on its own");
+    }
+
+    /// A Recently Closed tab row has no name rule, so no hint.
+    #[test]
+    fn a_closed_tab_row_has_no_hint() {
+        let ctx = egui::Context::default();
+        let mut fields = serde_json::Map::new();
+        fields.insert("url".into(), "https://example.org/".into());
+        let node = store::json::JsonNode { id: "t".into(), kind: "tab".into(), fields };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (label, hint) = App::closed_entry_label(ui, &node, None, 0);
+            assert_eq!((label.text(), hint), ("https://example.org/", None));
         });
         output.textures_delta.clear();
     }
@@ -1517,9 +1557,49 @@ mod tests {
         fields.insert("text".into(), "\n\tRe\u{200B}ading\u{00A0}\u{00A0}list \nbody".into());
         let node = store::json::JsonNode { id: "n".into(), kind: "note".into(), fields };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(App::closed_entry_label(ui, &node, None, 0).text(), "Re⟦200B⟧ading list");
+            let (label, hint) = App::closed_entry_label(ui, &node, None, 0);
+            assert_eq!(label.text(), "Re⟦200B⟧ading list");
+            assert_eq!(hint.as_deref(), Some("Hidden characters: U+200B zero width space"));
         });
         output.textures_delta.clear();
+    }
+
+    /// Name rules: a long bookmark folder name is one line cut with "…" at the popup's width, not wrapped.
+    #[test]
+    fn a_long_bookmark_folder_header_is_one_cut_line() {
+        let ctx = egui::Context::default();
+        theme::apply_fonts(&ctx);
+        theme::apply_style(&ctx);
+        let mut app = App::default();
+        let folder = format!("w{}", " Wardrobe".repeat(7));
+        let bookmark = |title: &str| bookmarks::Bookmark {
+            title: title.into(),
+            url: format!("https://example.org/{title}"),
+            folder: Some(folder.clone()),
+        };
+        app.bookmarks = vec![bookmark("a")];
+        app.open_popup = Some(AnchoredPopup::Bookmarks);
+        let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(20.0, 20.0));
+        let mut header = None;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_bookmarks_popup(ui, anchor, 1.0));
+            output.textures_delta.clear();
+            header = output.shapes.into_iter().find_map(|s| match s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.job.text == folder && t.galley.job.sections[0].format.color == TEXT_PRIMARY =>
+                {
+                    Some(t.galley)
+                }
+                _ => None,
+            });
+        }
+        let header = header.expect("the folder header is drawn");
+        assert_eq!(header.rows.len(), 1, "one line: {:?}", header.text());
+        assert!(header.elided, "cut with an ellipsis: {:?}", header.text());
     }
 
     /// Name rules: a bookmark folder's name is drawn in the popup's small font, a hidden character as a placeholder.

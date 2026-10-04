@@ -58,6 +58,8 @@ Applied wherever a stored name is drawn. `NameSeg` is `Plain(&str)` or `Hidden(c
 | `materialize` of remote or imported names, `session_sync` group names, older data | Not rewritten. The stored value stays as received (no sync churn between builds); display handles it |
 | `jar_label` clash detection (`named_jar_label`) | Compares the `clean_name` form of the stored names (trimmed, case-insensitive as today), so a hidden character cannot make two same-looking jars look distinct |
 
+A row whose width is fixed cuts a name with egui's own ellipsis (`Label::truncate`, which hovers the whole row): the Bookmarks popup's folder headers and the Recently Closed rows. A Recently Closed group row draws its member count apart from the name, after the folder icon, so a cut name keeps it; its group and note rows hover the hidden-character hint like every other rich site.
+
 The Settings jar edit field and the bookmark folder field still edit the stored name, never the label, and never the placeholders.
 
 ## Guard against missed sites
