@@ -43,6 +43,9 @@ pub(crate) struct SettingsRequests {
     pub(crate) jar_confirm: Option<JarConfirm>,
 }
 
+/// The Home page field's id, so tests (and focus requests) can name it.
+pub(crate) const HOME_PAGE_FIELD: &str = "settings_home_page";
+
 impl App {
     /// The Settings page (`ViewMode::Settings`): default search engine,
     /// default starting engine, zoom, and home page — see `settings.rs` for
@@ -58,8 +61,11 @@ impl App {
     /// scroll in instead of a hand-picked popup height.
     pub(crate) fn build_settings_page(&mut self, ui: &mut egui::Ui) {
         let mut req = SettingsRequests::default();
+        let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
 
+        // Escape in a field is that field's: it reverts the edit (CEF dir, jar name, Home page).
         if ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && !typing
             && !self.popup_open()
             && self.pending_engine_confirm.is_none()
             && self.pending_jar_confirm.is_none()
@@ -160,8 +166,22 @@ impl App {
 
         ui.add_space(8.0);
         ui.label("Home page (new tabs)");
-        if ui.add(egui::TextEdit::singleline(&mut self.settings.home_page).desired_width(f32::INFINITY)).lost_focus() {
-            self.save_settings();
+        let saved = self.settings.home_page.clone();
+        let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
+        let response =
+            ui.add(egui::TextEdit::singleline(draft).id(egui::Id::new(HOME_PAGE_FIELD)).desired_width(f32::INFINITY));
+        if response.lost_focus() {
+            // Escape gives up the edit, as the CEF folder row does. Unchanged text isn't saved: `lost_focus` stays
+            // true for a second frame.
+            let draft = self.home_page_draft.take();
+            if let Some(text) = draft.filter(|text| *text != saved && !ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+                self.settings.home_page = text;
+                self.save_settings();
+            }
+        } else if !ui.memory(|m| m.has_focus(response.id)) {
+            // Track outside edits (a settings reload). Not `response.has_focus()`: that is also false while the OS
+            // window is unfocused, yet the field still takes typed text, so the draft would be dropped each frame.
+            self.home_page_draft = None;
         }
 
         ui.add_space(8.0);
@@ -793,6 +813,55 @@ fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review C-B5: Escape in a Settings field reverts that field and keeps the page open.
+    #[test]
+    fn escape_in_a_settings_field_reverts_it_and_stays_on_the_page() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        app.settings.home_page = "https://old".into();
+        app.open_settings_page();
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 3000.0))),
+            events,
+            ..Default::default()
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let frame = |app: &mut App, events| {
+            ctx.run_ui(input(events), |ui| app.build_settings_page(ui)).textures_delta.clear();
+        };
+        ctx.memory_mut(|m| m.request_focus(HOME_PAGE_FIELD.into()));
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("x".into())]);
+        assert_eq!(app.settings.home_page, "https://old", "typing edits the draft only");
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert_eq!(app.view_mode, ViewMode::Settings, "still on Settings");
+        assert_eq!(app.settings.home_page, "https://old", "Escape reverted the field");
+        frame(&mut app, vec![]);
+        assert_eq!(app.settings.home_page, "https://old", "and stays reverted");
+
+        // Enter still commits, and with no field focused Escape leaves the page.
+        ctx.memory_mut(|m| m.request_focus(HOME_PAGE_FIELD.into()));
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("y".into())]);
+        frame(&mut app, vec![key(egui::Key::Enter)]);
+        assert!(app.settings.home_page.contains('y'), "Enter committed: {}", app.settings.home_page);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert_ne!(app.view_mode, ViewMode::Settings, "Escape outside a field closes Settings");
+    }
 
     fn jars_frame(app: &mut App, ctx: &egui::Context) -> SettingsRequests {
         jars_frame_with(app, ctx, egui::RawInput::default())

@@ -103,7 +103,8 @@ pub struct SuggestionFetcher {
     generation: u64,
     pending_query: Option<String>,
     pending_since: Option<Instant>,
-    last_fetched: Option<String>,
+    /// The last fetch started: its query and generation (`due_fetch`).
+    last_fetched: Option<(String, u64)>,
 }
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -166,16 +167,26 @@ impl SuggestionFetcher {
         self.last_fetched = None;
     }
 
+    /// The fetch to start now, if one is due: the debounced query, once per
+    /// generation. Keyed on the generation too, so returning to a query whose
+    /// reply was superseded ("rust", "rusty", "rust") fetches it again.
+    fn due_fetch(&mut self, now: Instant) -> Option<(String, u64)> {
+        let (query, since) = (self.pending_query.as_ref()?, self.pending_since?);
+        let job = (query.clone(), self.generation);
+        if now.duration_since(since) < DEBOUNCE || self.last_fetched.as_ref() == Some(&job) {
+            return None;
+        }
+        self.last_fetched = Some(job.clone());
+        Some(job)
+    }
+
     /// Call once per frame. Fires the debounced HTTP fetch if it's due,
     /// and returns freshly-arrived, still-relevant suggestions if any
     /// landed this tick (an empty `Vec` clears previous ones — e.g. the
     /// query stopped looking like a search or the request failed).
     pub fn tick(&mut self) -> Option<Vec<String>> {
-        if let (Some(query), Some(since)) = (&self.pending_query, self.pending_since) {
-            if since.elapsed() >= DEBOUNCE && self.last_fetched.as_deref() != Some(query.as_str()) {
-                self.last_fetched = Some(query.clone());
-                spawn_fetch(query.clone(), self.generation, self.tx.clone());
-            }
+        if let Some((query, generation)) = self.due_fetch(Instant::now()) {
+            spawn_fetch(query, generation, self.tx.clone());
         }
 
         let mut latest = None;
@@ -243,5 +254,21 @@ mod tests {
         fetcher.tx.send((in_flight, vec!["rust language".into()])).unwrap();
         assert_eq!(fetcher.tick(), None);
         assert_eq!(fetcher.pending_query, None);
+    }
+
+    /// Review C-B7: returning to a query whose fetch was superseded fetches it again.
+    #[test]
+    fn a_query_typed_again_after_a_detour_is_fetched_again() {
+        let mut fetcher = SuggestionFetcher::new();
+        let later = |f: &SuggestionFetcher| f.pending_since.unwrap() + DEBOUNCE;
+        fetcher.note_text_changed("rust");
+        assert!(fetcher.due_fetch(fetcher.pending_since.unwrap()).is_none(), "debounced");
+        let first = fetcher.due_fetch(later(&fetcher)).expect("first fetch");
+        assert_eq!(first.0, "rust");
+        assert!(fetcher.due_fetch(later(&fetcher)).is_none(), "not twice for one generation");
+        fetcher.note_text_changed("rusty");
+        fetcher.note_text_changed("rust");
+        let again = fetcher.due_fetch(later(&fetcher)).expect("fetched again");
+        assert_eq!(again, ("rust".to_string(), fetcher.generation));
     }
 }

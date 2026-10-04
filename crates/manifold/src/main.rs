@@ -1274,6 +1274,8 @@ struct App {
     cef_dir_check: std::cell::RefCell<Option<engine_install::DirCheck>>,
     /// Settings' text field for that directory while it is being edited; committed on Enter or focus loss.
     cef_dir_draft: Option<String>,
+    /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
+    home_page_draft: Option<String>,
 
     /// Set when `spawn_root_tab`/`spawn_new_tab` fails (e.g. a stale
     /// engine-host from a previous crashed run still holding the tab's
@@ -1526,6 +1528,7 @@ impl Default for App {
             engine_state_cache: Default::default(),
             cef_dir_check: Default::default(),
             cef_dir_draft: None,
+            home_page_draft: None,
             tab_spawn_error: None,
             settings,
             settings_return_view: ViewMode::Item,

@@ -1217,6 +1217,12 @@ impl App {
             .collect()
     }
 
+    /// Opens the quick switcher, empty, with its field focused (Ctrl+K and `QUICKSWITCHOPEN`).
+    pub(crate) fn open_quick_switcher(&mut self) {
+        self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
+        self.pending_focus = Some(FocusTarget::QuickSwitcher);
+    }
+
     /// Moves the quick-switcher's selection by `delta` (+1/-1), clamped to
     /// the current match list — shared by the real ArrowUp/ArrowDown
     /// handling in `build_quick_switcher` and the headless `QUICKSWITCHUP`/
@@ -1243,7 +1249,8 @@ impl App {
     pub(crate) fn quick_switcher_confirm(&mut self) {
         let Some(switcher) = &self.quick_switcher else { return };
         let matches = self.quick_switcher_matches(&switcher.query);
-        if let Some(id) = matches.get(switcher.selected).cloned() {
+        // Clamped: a query narrowed after moving down can leave `selected` past the end.
+        if let Some(id) = matches.get(switcher.selected.min(matches.len().saturating_sub(1))).cloned() {
             self.show_level_of(&id);
             self.focus_tab(&id);
         }
@@ -1295,8 +1302,9 @@ impl App {
         }
 
         let query = switcher.query.clone();
-        let selected_index = switcher.selected;
         let matches = self.quick_switcher_matches(&query);
+        // The row Enter would pick (`quick_switcher_confirm` clamps the same way).
+        let selected_index = switcher.selected.min(matches.len().saturating_sub(1));
         let mut jump_to: Option<String> = None;
 
         egui::Area::new(egui::Id::new("quick_switcher"))
@@ -1318,6 +1326,9 @@ impl App {
                                     .lock_focus(true)
                                     .hint_text("Search open tabs..."),
                             );
+                            if response.changed() {
+                                switcher.selected = 0; // a new query starts at its first match
+                            }
                             if take_focus(&mut self.pending_focus, FocusTarget::QuickSwitcher) {
                                 response.request_focus();
                             }
@@ -1725,6 +1736,30 @@ mod tests {
         let untitled = add(&mut app, sleeping_tab("https://b/", ""));
         assert_eq!(app.quick_switcher_row_label(&titled).as_deref(), Some("Alpha"));
         assert_eq!(app.quick_switcher_row_label(&untitled).as_deref(), Some("https://b/"));
+    }
+
+    /// Review C-B2: a query narrowed after moving down confirms its first match, not nothing.
+    #[test]
+    fn a_narrowed_query_confirms_its_first_match() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let mut app = app_on(&crate::store::testutil::temp_dir("qs-narrowed").join("session.mnf"), 1);
+        let ids: Vec<String> =
+            (0..6).map(|i| add(&mut app, sleeping_tab(&format!("https://{i}/"), &format!("Tab {i}")))).collect();
+        app.open_quick_switcher();
+        for _ in 0..5 {
+            app.quick_switcher_move(1);
+        }
+        assert_eq!(app.quick_switcher.as_ref().unwrap().selected, 5);
+        app.quick_switcher.as_mut().unwrap().query = "tab 2".into();
+        app.quick_switcher_confirm();
+        assert!(app.quick_switcher.is_none());
+        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "jumped to the one match");
+
+        app.open_quick_switcher();
+        app.quick_switcher.as_mut().unwrap().query = "no such tab".into();
+        app.quick_switcher_confirm(); // nothing matches: closes, no panic
+        assert!(app.quick_switcher.is_none());
+        assert_eq!(app.focused.as_deref(), Some(ids[2].as_str()), "focus unchanged");
     }
 }
 

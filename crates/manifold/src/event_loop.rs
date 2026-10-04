@@ -1064,10 +1064,7 @@ impl App {
                     let _ = window.request_inner_size(PhysicalSize::new(width, height));
                 }
             }
-            DebugCommand::QuickSwitchOpen => {
-                self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-                self.pending_focus = Some(FocusTarget::QuickSwitcher);
-            }
+            DebugCommand::QuickSwitchOpen => self.open_quick_switcher(),
             DebugCommand::QuickSwitchText(text) => {
                 if let Some(switcher) = &mut self.quick_switcher {
                     switcher.query = text;

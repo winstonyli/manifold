@@ -31,6 +31,34 @@ pub(crate) fn claims_chord(code: WinitKeyCode, modifiers: u8) -> bool {
     }
 }
 
+/// Whether a text field had keyboard focus as this pass's input arrived (`text_field_has_keys`).
+#[derive(Default)]
+struct TextFieldFocus {
+    at_input: bool,
+}
+
+impl egui::Plugin for TextFieldFocus {
+    fn debug_name(&self) -> &'static str {
+        "text_field_focus"
+    }
+
+    /// Runs before `Memory::begin_pass`, which is where an Escape press drops focus.
+    fn input_hook(&mut self, ctx: &egui::Context, _input: &mut egui::RawInput) {
+        self.at_input = ctx.text_edit_focused();
+    }
+}
+
+/// Whether this pass's keys belong to a text field, so a page-wide handler (graph navigation, Settings' Escape)
+/// must leave them alone. True if a `TextEdit` had focus when the input arrived, or has it now. The first half is
+/// needed for Escape: egui drops focus on Escape before any widget runs (`Memory::begin_pass`), so
+/// `Context::text_edit_focused` already reads false on that frame. Reading it later in the frame doesn't work for
+/// Enter either: a singleline `TextEdit` gives up focus while handling it. The first call on a context registers
+/// the plugin that does the tracking, so it starts answering from the next pass.
+pub(crate) fn text_field_has_keys(ctx: &egui::Context) -> bool {
+    let at_input = ctx.plugin_or_default::<TextFieldFocus>().lock().at_input;
+    at_input || ctx.text_edit_focused()
+}
+
 impl App {
     /// Browser-chrome keyboard shortcuts — checked via egui's own input
     /// polling (same mechanism `build_tab_view_ui`'s own `Escape` check uses),
@@ -137,8 +165,7 @@ impl App {
             self.cycle_focused_tab(next_tab);
         }
         if quick_switch {
-            self.quick_switcher = Some(QuickSwitcher { query: String::new(), selected: 0 });
-            self.pending_focus = Some(FocusTarget::QuickSwitcher);
+            self.open_quick_switcher();
         }
         if new_group {
             self.new_group_shortcut();

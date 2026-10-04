@@ -411,6 +411,9 @@ impl App {
     }
 
     pub(crate) fn build_graph_ui(&mut self, ui: &mut egui::Ui) {
+        // Read before any widget runs: a singleline TextEdit gives up focus
+        // while handling Enter, so later this frame it would read false.
+        let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
         self.sync_json_level();
         // Computed once per frame and reused everywhere below that only
         // needs "every node of kind X at this level" unconditionally --
@@ -483,7 +486,7 @@ impl App {
         // where it is for the whole gesture.
         self.settle_level_if_changed(items.len());
 
-        self.handle_graph_keys(ui);
+        self.handle_graph_keys(ui, typing);
 
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
         // cursor) via egui's built-in `Scene` container — everything drawn
@@ -1133,12 +1136,14 @@ impl App {
     /// job there instead of hijacking focus underneath an open widget --
     /// the Settings page itself needs no such check here, since it's now
     /// a separate `ViewMode` `build_graph_ui` never runs under at all.
-    pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui) {
+    /// `typing`: a text field had focus at frame start; its keys are its own
+    /// (`shortcuts::text_field_has_keys`).
+    pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui, typing: bool) {
         if self.json_level.is_some() {
             self.handle_json_keys(ui);
             return;
         }
-        if self.renaming_group.is_none() && self.quick_switcher.is_none() {
+        if !typing && self.renaming_group.is_none() && self.quick_switcher.is_none() {
             let dir = ui.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
                     Some(egui::vec2(1.0, 0.0))
@@ -2019,6 +2024,45 @@ mod tests {
     }
 
     use super::*;
+
+    /// Review C-B1: Escape (or Enter, or an arrow) typed into a text field is the field's, not the graph's.
+    #[test]
+    fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
+        let mut app = App::default();
+        app.selected_tabs.insert("t".into());
+        let ctx = egui::Context::default();
+        let field = egui::Id::new("test_field");
+        let mut text = String::new();
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                // Read first, as `build_graph_ui` does.
+                let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
+                ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                app.handle_graph_keys(ui, typing);
+            });
+            output.textures_delta.clear();
+        };
+        ctx.memory_mut(|m| m.request_focus(field));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.selected_tabs.contains("t"), "Escape ended the edit only");
+        assert!(!ctx.memory(|m| m.has_focus(field)), "the field let go");
+        frame(&mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.selected_tabs.is_empty(), "with no field focused, Escape is the graph's");
+    }
 
     #[test]
     fn easing_the_camera_stops_a_glide() {
