@@ -1351,7 +1351,8 @@ impl App {
     /// `save_session`, same as `replace_running_session`/`reopen_closed`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         self.leave_json_level();
-        let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
+        let next_id = || self.alloc_node_id().parse().expect("a store id");
+        let imported = match crate::store::json::import(json, next_id, crate::store::json::Trust::Foreign) {
             Ok(imported) => imported,
             Err(err) => {
                 self.queue_toast(format!("Couldn't import the group: {err}"));
@@ -1388,7 +1389,9 @@ impl App {
     /// - A jar in the file is always a new jar under its fresh id, never
     ///   matched to an existing one by name (jar name labels, retiring
     ///   per-tab jars deviation 4): `import` already rewrote the file's
-    ///   tabs' `jar` and groups' `default_jar` to that id. Same-named jars
+    ///   tabs' `jar` and groups' `default_jar` to that id (and, for a
+    ///   `Trust::Foreign` file, dropped any naming a jar outside it).
+    ///   Same-named jars
     ///   are told apart by their labels (`jar_defs::named_jar_label`).
     ///
     /// Tabs arrive asleep (`materialize`). Toasts from missing files are
@@ -1453,9 +1456,15 @@ impl App {
     /// every node that was live from the store. Returns the label map
     /// (file id → new id) for remapping personal state (Task 7). A file
     /// with no tabs changes nothing, so a bad import can't wipe a working
-    /// session.
-    pub(crate) fn replace_running_session(&mut self, json: &JsonDoc) -> HashMap<String, String> {
-        let imported = match crate::store::json::import(json, || self.alloc_node_id().parse().expect("a store id")) {
+    /// session. `trust` is `Own` for a named session this profile saved,
+    /// `Foreign` for an imported file (see `store::json::Trust`).
+    pub(crate) fn replace_running_session(
+        &mut self,
+        json: &JsonDoc,
+        trust: crate::store::json::Trust,
+    ) -> HashMap<String, String> {
+        let next_id = || self.alloc_node_id().parse().expect("a store id");
+        let imported = match crate::store::json::import(json, next_id, trust) {
             Ok(imported) => imported,
             Err(err) => {
                 self.queue_toast(format!("Couldn't import the session: {err}"));
@@ -2851,7 +2860,7 @@ pub(crate) mod tests {
         let mut app = App::default();
         let work = app.create_jar("Work");
         let before = app.jar_defs[&work].clone();
-        app.replace_running_session(&file_with_a_work_jar());
+        app.replace_running_session(&file_with_a_work_jar(), crate::store::json::Trust::Foreign);
         assert_eq!(app.jar_defs.len(), 2, "a second Work");
         assert_eq!(app.jar_defs[&work], before, "the existing jar is untouched");
         let new = *app.jar_defs.keys().find(|&&j| j != work).unwrap();
@@ -2972,7 +2981,7 @@ pub(crate) mod tests {
         assert!(app.save_session());
         let json =
             JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
-        app.replace_running_session(&json);
+        app.replace_running_session(&json, crate::store::json::Trust::Foreign);
         assert_eq!(app.test_spawns.len(), 1, "the tab is still spawning");
         app.save_session();
         app.close_store();
@@ -2997,7 +3006,7 @@ pub(crate) mod tests {
             ],
             local: None,
         };
-        app.replace_running_session(&json);
+        app.replace_running_session(&json, crate::store::json::Trust::Own);
         assert_eq!(app.test_spawns.len(), 1, "only the focused (first) tab wakes");
         assert!(matches!(app.test_spawns[0].0.purpose, SpawnPurpose::Wake));
         let focused = app.focused.clone().unwrap();

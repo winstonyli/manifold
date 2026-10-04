@@ -1922,7 +1922,7 @@ impl App {
             .and_then(|bytes| local_state::LocalState::from_bytes(&bytes));
         let mut json = store::json::doc_to_json(&doc);
         json.local = local.map(|l| serde_json::to_value(l).expect("personal state serializes"));
-        self.replace_running_session(&json);
+        self.replace_running_session(&json, store::json::Trust::Own);
     }
 
     /// Whether the first-launch demo can render here: its `manifold://` pages need WebView2.
@@ -2140,27 +2140,39 @@ impl App {
     /// download's path may be a WSL-side POSIX path (WebKit downloads), so
     /// it goes through `windows_path_for_download`; an image/PDF/JSON path
     /// always came from a real Windows file picker, so it's used as-is.
-    /// `None` for kinds with no backing file (Tab, Group, Note).
+    /// `None` for kinds with no backing file (Tab, Group, Note), and for an
+    /// empty path: "no file" (a Download from a `Trust::Foreign` import has
+    /// its machine-local path dropped).
     fn node_file_path(&self, id: &str) -> Option<String> {
-        match &self.nodes.get(id)?.payload {
+        let path = match &self.nodes.get(id)?.payload {
             NodePayload::Download(_) => self.windows_path_for_download(id),
             NodePayload::Image(image) => Some(image.path.clone()),
             NodePayload::Pdf(pdf) => Some(pdf.path.clone()),
             NodePayload::Json(json) => Some(json.path.clone()),
             NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Group(_) | NodePayload::Note(_) => None,
-        }
+        };
+        path.filter(|p| !p.is_empty())
     }
 
     /// Opens a node's file's containing folder with the file pre-selected
     /// (a plain click on a download card does this too -- same "just show
     /// the obvious thing, no custom UI" posture as the download itself, see
     /// `EngineToHost::DownloadCompleted`'s doc comment). No-op for kinds
-    /// with no file.
+    /// with no file; a file node with no path (`node_file_path`) is toasted.
     fn reveal_node(&mut self, id: &str) {
-        if let Some(path) = self.node_file_path(id) {
-            if let Err(e) = Self::reveal_in_explorer(&path) {
-                self.queue_toast(e);
+        let Some(node) = self.nodes.get(id) else { return };
+        let has_file = matches!(
+            node.payload,
+            NodePayload::Download(_) | NodePayload::Image(_) | NodePayload::Pdf(_) | NodePayload::Json(_)
+        );
+        match self.node_file_path(id) {
+            Some(path) => {
+                if let Err(e) = Self::reveal_in_explorer(&path) {
+                    self.queue_toast(e);
+                }
             }
+            None if has_file => self.queue_toast("This file's path isn't known on this machine".to_string()),
+            None => {}
         }
     }
 

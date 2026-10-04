@@ -1165,7 +1165,7 @@ impl App {
             },
             DebugCommand::ConfirmImport => {
                 if let Some(json) = self.pending_import.take() {
-                    self.replace_running_session(&json);
+                    self.replace_running_session(&json, crate::store::json::Trust::Foreign);
                 }
             }
             DebugCommand::CancelImport => {

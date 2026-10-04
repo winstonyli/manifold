@@ -1873,7 +1873,7 @@ mod tests {
                 counter += 1;
                 NodeId { actor: ActorId(9), counter }
             };
-            crate::store::json::import(&json, fresh).expect("an export imports");
+            crate::store::json::import(&json, fresh, crate::store::json::Trust::Own).expect("an export imports");
         }
         if open {
             std::fs::write(path, bytes).unwrap();

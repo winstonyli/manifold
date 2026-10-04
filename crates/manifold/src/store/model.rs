@@ -91,8 +91,13 @@ impl Clock {
         } else {
             match self.last.logical.checked_add(1) {
                 Some(logical) => Hlc { ms, logical },
-                // 2^32 events in one millisecond: borrow the next one.
-                None => Hlc { ms: ms + 1, logical: 0 },
+                // 2^32 events in one millisecond: borrow the next one. At the
+                // very top of the range, stay there: wrapping to 0 would put
+                // every later local write behind every stamp seen.
+                None => match ms.checked_add(1) {
+                    Some(ms) => Hlc { ms, logical: 0 },
+                    None => Hlc { ms, logical: u32::MAX },
+                },
             }
         };
         self.last
@@ -508,6 +513,14 @@ impl Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_clock_saturates_instead_of_wrapping() {
+        let mut clock = Clock::default();
+        let top = Hlc { ms: u64::MAX, logical: u32::MAX };
+        clock.observe(top);
+        assert!(clock.tick(0) >= top, "never behind a time seen");
+    }
 
     #[test]
     fn node_ids_print_and_parse() {

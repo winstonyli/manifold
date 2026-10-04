@@ -1520,7 +1520,7 @@ impl App {
             });
         if confirm {
             if let Some(json) = self.pending_import.take() {
-                self.replace_running_session(&json);
+                self.replace_running_session(&json, crate::store::json::Trust::Foreign);
             }
         }
         if cancel {

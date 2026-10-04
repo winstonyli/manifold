@@ -483,6 +483,12 @@ The same model through serde, with no history:
 - **Export Session / Import Session** (file dialogs) and
   **Export Group / Import Group**. A group export lists the group first,
   then its subtree. Import creates fresh nodes (see Semantics).
+- **Trust** (`store::json::Trust`, 2026-10-04). Files this app wrote for
+  this profile (Recently Closed, a named session) are `Own`: every field
+  is kept. Import Session, Import Group and `--import-json` are
+  `Foreign`: a Download's machine-local `path` is dropped, and a tab's
+  `jar` or a group's `default_jar` is kept only when it names a jar in
+  the same file.
 - **`EXPORTSESSION`** keeps writing this JSON, so probes keep reading it.
 - **CLI**: `manifold --dump <file.mnf>` prints frames and the
   materialized document as JSON; `manifold --check <file.mnf>` reports

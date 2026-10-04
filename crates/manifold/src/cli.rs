@@ -75,7 +75,7 @@ fn import_json(input: &Path, out: &Path) -> Result<i32, String> {
     let json: JsonDoc = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", input.display()))?;
     let mut journal = Journal::open(out, ActorId::random()).map_err(|e| e.to_string())?;
     let mut txn = journal.begin().map_err(|e| e.to_string())?;
-    let imported = json::import(&json, || txn.next_id())?;
+    let imported = json::import(&json, || txn.next_id(), json::Trust::Foreign)?;
     txn.commit(json::creates(&imported)).map_err(|e| e.to_string())?;
     if let Some(local) = json.local.as_ref().and_then(|v| serde_json::from_value::<LocalState>(v.clone()).ok()) {
         let map = json.nodes.iter().zip(&imported).map(|(n, i)| (n.id.clone(), i.id.to_string())).collect();
