@@ -14,8 +14,6 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 /// The CEF build the app downloads: where it lives and how to check it.
-// Later install tasks read every field.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Pin {
     pub(crate) version: &'static str,
@@ -26,8 +24,6 @@ pub(crate) struct Pin {
 }
 
 /// How an engine is available, as every engine list shows it.
-// Later tasks (lookup, UI) construct and match these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EngineState {
     Installed,
@@ -52,8 +48,6 @@ pub(crate) enum EngineState {
 pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// What the install directory holds, judged by its marker alone.
-// Later tasks use it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeOnDisk {
     Missing,
@@ -62,13 +56,9 @@ pub(crate) enum RuntimeOnDisk {
 }
 
 /// The file written last by an install; holds the pinned version it installed.
-// Later tasks use it.
-#[allow(dead_code)]
 pub(crate) const MARKER: &str = "ready";
 
 /// Ready when the marker names the pin's version, Stale when it names another, Missing without one.
-// Later tasks use it.
-#[allow(dead_code)]
 pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     match std::fs::read_to_string(dir.join(MARKER)) {
         Ok(v) if v.trim() == pin.version => RuntimeOnDisk::Ready,
@@ -76,6 +66,12 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
         Err(_) => RuntimeOnDisk::Missing,
     }
 }
+
+/// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
+pub(crate) type DirCheck = (String, std::time::Instant, Result<(), String>);
+
+/// How long a bring-your-own CEF directory's verdict is trusted before the disk is read again.
+const CEF_DIR_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The CEF version a bring-your-own directory names. Two sources, on every platform:
 /// - `archive.json` (a runtime exported by the `cef` crate's tool): its `name` is the archive the build
@@ -85,12 +81,6 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
 ///
 /// `archive.json` wins when present (an invalid one is an error, not a fall-through); with neither, it
 /// is refused.
-/// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
-pub(crate) type DirCheck = (String, std::time::Instant, Result<(), String>);
-
-/// How long a bring-your-own CEF directory's verdict is trusted before the disk is read again.
-const CEF_DIR_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-
 fn custom_version(dir: &Path) -> Result<String, String> {
     match std::fs::read_to_string(dir.join("archive.json")) {
         Ok(text) => {
@@ -128,8 +118,6 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
 }
 
 /// Why an install step failed.
-// Later tasks construct `Unpack` and show these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum InstallError {
     Network(String),
@@ -167,8 +155,6 @@ const CHUNK: usize = 64 * 1024;
 /// within about 100 ms even while a read is blocked. (ureq's body timeout is a total, not an idle
 /// time, so it only bounds the leaked helper thread: see `body_budget`.) The helper thread ends when the socket does, or at the latest when `body_budget` runs out.
 /// Run it on a worker thread.
-// Later install tasks call it.
-#[allow(dead_code)]
 pub(crate) fn download(
     url: &str,
     part: &Path,
@@ -320,8 +306,6 @@ fn fetch(
 }
 
 /// Stream `path` through SHA-256 and SHA-1 and require both to match the pin (hex, any case).
-// Later install tasks call it.
-#[allow(dead_code)]
 pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let mut file = std::fs::File::open(path).map_err(io)?;
@@ -354,8 +338,6 @@ fn hex(bytes: &[u8]) -> String {
 /// is a separator on Windows, so no component holds one there; on Linux it is an ordinary character, so
 /// `Release/..\evil` is one odd name rather than an escape, refused anyway so an archive unpacks the same
 /// (or fails the same) on every platform. CEF's archives use neither character.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
     let mut names = Vec::new();
     for c in path.components() {
@@ -387,10 +369,18 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
 /// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
 /// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
 /// discards it.
-// Task 6 calls `install`.
-#[allow(dead_code)]
+#[cfg(test)] // production goes through `install`, which calls `unpack_with` directly
 pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
     unpack_with(archive, into, pin, cancel, &mut || {})
+}
+
+/// The permission bits an unpacked file gets: the archive's own, minus
+/// setuid/setgid/sticky and group/other write. `chrome-sandbox` needs setuid
+/// root only for the setuid sandbox, which manifold doesn't use (the CEF host
+/// passes `--no-sandbox`, see `manifold-engine-cef/src/app.rs`).
+#[cfg_attr(not(unix), allow(dead_code))] // only applied on Unix; tested everywhere
+fn unpacked_mode(header_mode: u32) -> u32 {
+    header_mode & 0o755
 }
 
 /// `unpack` that calls `on_entry` for each entry, after the cancel check (tests flip `cancel` from it at an
@@ -441,6 +431,13 @@ fn unpack_with(
         }
         let mut out = std::fs::File::create(&dest).map_err(io)?;
         std::io::copy(&mut entry, &mut out).map_err(bad)?;
+        // Without this every file lands 0644 and the CEF host can't exec its helpers.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = entry.header().mode().map_err(corrupt)?;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(unpacked_mode(mode))).map_err(io)?;
+        }
         files += 1;
     }
     if files == 0 {
@@ -449,8 +446,6 @@ fn unpack_with(
     std::fs::write(into.join(MARKER), pin.version).map_err(io)
 }
 
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn remove_dir(dir: &Path) -> Result<(), InstallError> {
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
@@ -459,8 +454,6 @@ fn remove_dir(dir: &Path) -> Result<(), InstallError> {
     }
 }
 
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn remove_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
@@ -471,8 +464,6 @@ fn remove_file(path: &Path) {
 /// network failure, a cancel (checked while downloading, between archive entries and before the swap) or
 /// a file error (disk full) keeps it. Every failure removes the `.tmp` and leaves the previous install
 /// alone. Blocking: run it on a worker thread.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 pub(crate) fn install(
     pin: &Pin,
     data_dir: &Path,
@@ -528,8 +519,6 @@ fn install_with(
 
 /// Put `new` at `live`, keeping the previous `live` aside as `live.old` until the new one is in place.
 /// If the second rename fails, the previous install is moved back, so `live` is never half-deleted.
-// Task 6 calls `install`.
-#[allow(dead_code)]
 fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
     let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let old = live.with_extension("old");
@@ -803,6 +792,14 @@ impl crate::App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unpacked_files_keep_exec_bits_but_never_setuid_or_group_write() {
+        assert_eq!(unpacked_mode(0o100755), 0o755);
+        assert_eq!(unpacked_mode(0o644), 0o644);
+        assert_eq!(unpacked_mode(0o4755), 0o755, "setuid dropped: CEF runs with --no-sandbox");
+        assert_eq!(unpacked_mode(0o777), 0o755);
+    }
+
     use super::*;
 
     #[test]
