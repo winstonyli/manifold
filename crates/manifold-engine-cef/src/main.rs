@@ -66,28 +66,29 @@ fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation:
 }
 
 /// Whether libcef answered `api_hash` with a hash. A runtime that doesn't support the requested API
-/// version (one older than the CEF this host was built against) logs "Request for unsupported CEF API
-/// version N" and returns null; the next CEF call would then die on a libcef assertion (exit 0x80000003).
+/// version (an older CEF, e.g. 151.3.24 for 15200: verified 2026-10-04) logs "Request for unsupported CEF API
+/// version N" and returns null; without this check the next CEF call died on an assertion (exit 0x80000003).
 fn api_hash_found(hash: *const std::ffi::c_char) -> bool {
     // SAFETY: a non-null result is a NUL-terminated string owned by libcef (cef_api_hash.h).
     !hash.is_null() && !unsafe { std::ffi::CStr::from_ptr(hash) }.to_bytes().is_empty()
 }
 
-/// The reason a runtime without our API version gets: CEF API version `NNNXX` arrived in CEF `NNN`.
-fn too_old_message(api_version: i32) -> String {
+/// The reason a runtime without our API version gets. Usually that's an older CEF, but a future one may
+/// drop this version from its supported range, so it doesn't say "too old". API version `NNNXX` is CEF `NNN`'s.
+fn unsupported_api_message(api_version: i32) -> String {
     format!(
-        "CEF runtime too old: it doesn't support CEF API version {api_version} (needs CEF >= {})",
+        "CEF runtime doesn't support CEF API version {api_version} (the host was built for CEF {})",
         api_version / 100
     )
 }
 
 fn main() {
     // Matches cefsimple's shared::load_cef(): initializes the CEF API
-    // version before any other CEF call. A runtime too old to serve it
+    // version before any other CEF call. A runtime that can't serve it
     // fails cleanly here, with one `HOST_FATAL` line that manifold shows
     // as the reason, instead of on the next CEF call's assertion.
     if !api_hash_found(api_hash(sys::CEF_API_VERSION_LAST, 0)) {
-        eprintln!("{}{}", ipc_protocol::HOST_FATAL, too_old_message(sys::CEF_API_VERSION_LAST));
+        eprintln!("{}{}", ipc_protocol::HOST_FATAL, unsupported_api_message(sys::CEF_API_VERSION_LAST));
         std::process::exit(1);
     }
 
@@ -605,13 +606,13 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_our_api_version_is_named_too_old() {
+    fn a_runtime_without_our_api_version_is_named() {
         assert!(!api_hash_found(std::ptr::null()));
         assert!(!api_hash_found(c"".as_ptr()));
         assert!(api_hash_found(c"0123abcd".as_ptr()));
         assert_eq!(
-            too_old_message(15200),
-            "CEF runtime too old: it doesn't support CEF API version 15200 (needs CEF >= 152)"
+            unsupported_api_message(15200),
+            "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)"
         );
     }
 }

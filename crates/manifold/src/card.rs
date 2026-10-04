@@ -857,6 +857,15 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
     }
 }
 
+/// How a failed card whose engine can't run names why: (tooltip phrase, card-body phrase), after the
+/// engine's label. A runtime that is there but out of date needs an update; anything else is not installed.
+fn missing_engine_phrases(state: &crate::engine_install::EngineState) -> (&'static str, &'static str) {
+    match state {
+        crate::engine_install::EngineState::UpdateNeeded { .. } => ("needs an update", "needs an update"),
+        _ => ("is not installed", "not installed"),
+    }
+}
+
 impl App {
     /// Ends every note edit, saving if one was on. A note's TextEdit that
     /// stops being laid out (its level left, the view changed) loses focus
@@ -1204,9 +1213,10 @@ impl App {
                     (crate::engine_install::EngineState::Unavailable(reason), _) => {
                         PickOutcome::unavailable_toast(kind, &reason)
                     }
-                    (_, Some(pin)) => format!(
-                        "{} is not installed\nClick to download it ({}).",
+                    (state, Some(pin)) => format!(
+                        "{} {}\nClick to download it ({}).",
                         engine_label(kind),
+                        missing_engine_phrases(&state).0,
                         crate::engine_info::megabytes(pin.size)
                     ),
                     (_, None) => PickOutcome::unavailable_toast(kind, crate::engine_install::NO_PIN_REASON),
@@ -1259,7 +1269,8 @@ impl App {
                     24.0,
                     DANGER_COLOR,
                 );
-                let text = format!("{} not installed (click to download)", engine_label(kind));
+                let phrase = missing_engine_phrases(&self.engine_state(kind)).1;
+                let text = format!("{} {phrase} (click to download)", engine_label(kind));
                 push_centered_text(deferred_overlays, middle + up * 2.5, text, 11.0, DANGER_COLOR);
             }
             UnloadedState::Failed(_) => {
@@ -2876,6 +2887,21 @@ mod tests {
             })),
             ["", "https://example.org/"]
         );
+    }
+
+    /// A CEF runtime with an older marker (Update needed) is named as needing an update, not as missing.
+    #[test]
+    fn a_failed_card_names_an_outdated_engine_as_needing_an_update() {
+        use crate::engine_install::EngineState;
+        assert_eq!(
+            missing_engine_phrases(&EngineState::UpdateNeeded { size: 1 }),
+            ("needs an update", "needs an update")
+        );
+        assert_eq!(
+            missing_engine_phrases(&EngineState::NotInstalled { size: 1 }),
+            ("is not installed", "not installed")
+        );
+        assert_eq!(missing_engine_phrases(&EngineState::Failed("x".into())), ("is not installed", "not installed"));
     }
 
     #[test]

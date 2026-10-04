@@ -756,8 +756,10 @@ fn availability_with(
 /// Why `spawn_tab` failed.
 #[derive(Debug)]
 pub enum SpawnError {
-    /// The engine's runtime isn't on disk (or is out of date); nothing was launched.
+    /// The engine's runtime isn't on disk; nothing was launched.
     EngineMissing(EngineKind),
+    /// The engine's runtime is out of date (Update needed); nothing was launched.
+    EngineOutdated(EngineKind),
     /// The engine's state is Unavailable (the reason is the state's), so nothing was launched.
     EngineUnavailable(EngineKind, String),
     Io(std::io::Error),
@@ -768,6 +770,9 @@ impl std::fmt::Display for SpawnError {
         match self {
             SpawnError::EngineMissing(kind) => {
                 write!(f, "{} is not installed", crate::engine_info::engine_label(*kind))
+            }
+            SpawnError::EngineOutdated(kind) => {
+                write!(f, "{} needs an update", crate::engine_info::engine_label(*kind))
             }
             SpawnError::EngineUnavailable(kind, reason) => {
                 f.write_str(&crate::engine_info::PickOutcome::unavailable_toast(*kind, reason))
@@ -862,11 +867,12 @@ fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Opti
 }
 
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom: by its reason when
-/// Unavailable (Servo without its host exe), else as not installed.
+/// Unavailable (Servo without its host exe), as needing an update when Update needed, else as not installed.
 fn check_spawnable(kind: EngineKind, on_disk: RuntimeOnDisk, custom: Option<&Path>) -> Result<(), SpawnError> {
     match engine_availability(kind, on_disk, None, None, custom) {
         EngineState::Installed | EngineState::Custom(_) => Ok(()),
         EngineState::Unavailable(reason) => Err(SpawnError::EngineUnavailable(kind, reason)),
+        EngineState::UpdateNeeded { .. } => Err(SpawnError::EngineOutdated(kind)),
         _ => Err(SpawnError::EngineMissing(kind)),
     }
 }
@@ -985,7 +991,7 @@ fn per_tab_log_files(tab_id: &str) -> std::io::Result<(std::fs::File, std::fs::F
     // Appended, not truncated: a second manifold, or a respawn racing the old
     // host's last writes, used to wipe the log that explains a crash.
     use std::io::Write as _;
-    let _ = writeln!(stdout_file, "---- manifold pid {} spawning a host for {tab_id} ----", std::process::id());
+    let _ = writeln!(stdout_file, "{}", spawn_header(tab_id));
     let stderr_file = stdout_file.try_clone()?;
     Ok((stdout_file, stderr_file))
 }
@@ -997,9 +1003,9 @@ fn per_tab_log_path(tab_id: &str) -> PathBuf {
 /// Waits for a just-spawned same-machine host to connect, giving up early if
 /// it exits. On failure the child is killed and reaped, and the error says
 /// which way it failed: "exited with code N before connecting: <the last
-/// lines of its log>", or "still running but did not connect within ...".
+/// lines of its log since this spawn's header>", or "still running but did not connect within ...".
 /// A host that exited after writing an `ipc_protocol::HOST_FATAL` line (among
-/// those last lines) gets that line's reason alone, e.g. "CEF runtime too old: ...".
+/// those last lines) gets that line's reason alone, e.g. "CEF runtime doesn't support CEF API version ...".
 /// The log is the per-tab file the child writes its stdout and stderr to.
 fn connect_host(
     listeners: &transport::LocalListenerPair,
@@ -1025,7 +1031,11 @@ fn connect_host(
     let _ = child.wait();
     let message = match exited {
         Some(status) => {
-            let lines = log_tail_lines(log_path, 5);
+            let mut lines = log_tail_lines(log_path, 5);
+            // This spawn's lines only (from its header on): the log is appended to across spawns.
+            if let Some(header) = lines.iter().rposition(|l| is_spawn_header(l)) {
+                lines.drain(..header);
+            }
             // The host said why in a line of its own (`HOST_FATAL`): that line alone is the reason.
             if let Some(reason) = host_fatal(&lines) {
                 return Err(std::io::Error::new(err.kind(), reason));
@@ -1064,9 +1074,28 @@ fn log_tail_lines(path: &Path, lines: usize) -> Vec<String> {
     tail
 }
 
-/// The reason in the last `ipc_protocol::HOST_FATAL` line among `lines`, without the prefix.
+/// The reason in the last `ipc_protocol::HOST_FATAL` line among `lines`, without the prefix. Only lines
+/// after the last spawn header (`spawn_header`) count: the log is appended to, so a line above it is an
+/// earlier host's.
 fn host_fatal(lines: &[String]) -> Option<String> {
-    lines.iter().rev().find_map(|l| l.strip_prefix(ipc_protocol::HOST_FATAL)).map(|r| r.trim().to_string())
+    lines
+        .iter()
+        .rev()
+        .take_while(|l| !is_spawn_header(l))
+        .find_map(|l| l.strip_prefix(ipc_protocol::HOST_FATAL))
+        .map(|r| r.trim().to_string())
+}
+
+/// Starts the line `per_tab_log_files` writes before each spawn.
+const SPAWN_HEADER_START: &str = "---- manifold pid ";
+
+/// The line `per_tab_log_files` writes to a tab's log before each spawn.
+fn spawn_header(tab_id: &str) -> String {
+    format!("{SPAWN_HEADER_START}{} spawning a host for {tab_id} ----", std::process::id())
+}
+
+fn is_spawn_header(line: &str) -> bool {
+    line.starts_with(SPAWN_HEADER_START) && line.contains(" spawning a host for ")
 }
 
 /// Synthesizes `EngineToHost::Crashed` when the connection to an
@@ -1415,7 +1444,11 @@ mod tests {
     /// A shell command as a child whose stdout and stderr go to `log`, the
     /// way `spawn_tab` starts a host.
     fn fake_host(script_windows: &str, script_unix: &str, log: &Path) -> Child {
-        let out = std::fs::File::create(log).unwrap();
+        fake_host_to(script_windows, script_unix, std::fs::File::create(log).unwrap())
+    }
+
+    /// `fake_host` writing to `out`, e.g. a log opened for appending as `per_tab_log_files` does.
+    fn fake_host_to(script_windows: &str, script_unix: &str, out: std::fs::File) -> Child {
         let err = out.try_clone().unwrap();
         #[cfg(windows)]
         let mut command = {
@@ -1487,14 +1520,38 @@ mod tests {
     #[test]
     fn a_host_fatal_line_is_the_whole_reason() {
         let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let reason = "CEF runtime too old: it doesn't support CEF API version 15200 (needs CEF >= 152)";
+        let reason = "CEF runtime doesn't support CEF API version 15200 (the host was built for CEF 152)";
+        let fatal = format!("{}{reason}", ipc_protocol::HOST_FATAL);
         let log = lines(&[
-            "---- manifold pid 1 spawning a host for t ----",
+            &spawn_header("t"),
             "[...:ERROR:cef\\libcef_dll\\libcef_dll2.cc:105] Request for unsupported CEF API version 15200",
-            &format!("{}{reason}", ipc_protocol::HOST_FATAL),
+            &fatal,
         ]);
         assert_eq!(host_fatal(&log).as_deref(), Some(reason));
         assert_eq!(host_fatal(&lines(&["starting", "libfake.so: cannot open shared object file"])), None);
+        // An earlier spawn's fatal line, above the latest header, is not this host's.
+        let stale = lines(&[&spawn_header("t"), &fatal, "---- manifold pid 9 spawning a host for t ----", "noise"]);
+        assert_eq!(host_fatal(&stale), None);
+    }
+
+    /// Two spawns in one appended log: the first host left a fatal line, the second died silently. The
+    /// second is reported by its exit code and log, not by the first's reason.
+    #[test]
+    fn an_earlier_spawns_fatal_line_is_not_the_reason_for_the_next() {
+        let dir = crate::store::testutil::temp_dir("host_fatal_stale");
+        let log = dir.join("host.log");
+        let old =
+            format!("{}\n{}CEF runtime too old\n{}\n", spawn_header("t"), ipc_protocol::HOST_FATAL, spawn_header("t"));
+        std::fs::write(&log, old).unwrap();
+        let listeners = transport::listen_local_pair(&format!("test-stale-{}", std::process::id())).unwrap();
+        let out = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let mut child = fake_host_to("exit /b 4", "exit 4", out);
+        let err = connect_host(&listeners, &mut child, &log, Duration::from_secs(20)).err().expect("no host connected");
+        let message = err.to_string();
+        assert!(message.starts_with("engine-host exited with code 4 before connecting: "), "{message}");
+        assert!(!message.contains("too old"), "only this spawn's lines: {message}");
+        assert_eq!(message.matches("spawning a host for").count(), 1, "{message}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1668,8 +1725,9 @@ mod tests {
         assert_eq!(state, EngineState::UpdateNeeded { size: pin.size });
         assert!(matches!(
             check_spawnable(EngineKind::Cef, RuntimeOnDisk::Stale, None),
-            Err(SpawnError::EngineMissing(EngineKind::Cef))
+            Err(SpawnError::EngineOutdated(EngineKind::Cef))
         ));
+        assert_eq!(SpawnError::EngineOutdated(EngineKind::Cef).to_string(), "Blink (CEF) needs an update");
         assert!(matches!(
             check_spawnable(EngineKind::Cef, RuntimeOnDisk::Missing, None),
             Err(SpawnError::EngineMissing(EngineKind::Cef))

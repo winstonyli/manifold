@@ -98,6 +98,8 @@ pub(crate) fn runtime_compat(pin_version: &str, runtime_version: &str) -> Compat
 /// Ready when the marker names the pin's version or a later CEF major (`Compat::Newer`: an install by a
 /// newer app, which this host still runs on), Stale when it names any other (an older major, or another
 /// build of the pin's major, so a re-pin within a major still offers its update), Missing without one.
+/// Deliberately, a later build of the pin's major is Stale too: its "Update needed" downloads the pin,
+/// an older build of that major; it is the pin the app was tested with.
 pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
     match std::fs::read_to_string(dir.join(MARKER)) {
         Ok(v) if v.trim() == pin.version || runtime_compat(pin.version, &v) == Compat::Newer => RuntimeOnDisk::Ready,
@@ -141,8 +143,8 @@ fn custom_version(dir: &Path) -> Result<String, String> {
 /// Whether `dir` is a CEF runtime this host runs on: it holds the platform's runtime library
 /// (`CefPlatform::runtime_lib`; nothing else is required, e.g. CEF 154's archive has no `libEGL.dll`)
 /// and its version (`custom_version`: `archive.json` or our `MARKER`) is the pin's CEF major or a later one
-/// (`runtime_compat`); a version with no readable major must be `pin.version` exactly. An `Err` says
-/// what is wrong, naming both versions on a mismatch.
+/// (`runtime_compat`, while that major keeps our API version in its supported range); a version with no
+/// readable major is not usable. An `Err` says what is wrong, naming both versions on a mismatch.
 pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
@@ -152,12 +154,7 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
         return Err(format!("no {lib} in that directory"));
     }
     let found = custom_version(dir)?;
-    let usable = match runtime_compat(pin.version, &found) {
-        Compat::Current | Compat::Newer => true,
-        Compat::Older => false,
-        Compat::Unknown => found == pin.version,
-    };
-    if !usable {
+    if !matches!(runtime_compat(pin.version, &found), Compat::Current | Compat::Newer) {
         return Err(format!("found CEF {found}, expected {} or a later CEF version", pin.version));
     }
     Ok(())
