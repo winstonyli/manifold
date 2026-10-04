@@ -225,7 +225,7 @@ fn main() {
         pending_json_body.clone(),
         pending_redirect_content_type.clone(),
     );
-    let pending_popup = popup::register(&webview);
+    let pending_popup = popup::register(&webview, nav_state.clone());
     // Best-effort -- an `ICoreWebView2_28`/`ICoreWebView2Environment15`-less
     // WebView2 Runtime just means this tab's find bar never reports results.
     let find_state = find::register(&environment, &webview).ok();
@@ -447,8 +447,8 @@ fn main() {
             let _ = control.send(&EngineToHost::RedirectableContent { content_type });
         }
 
-        for url in pending_popup.borrow_mut().drain(..) {
-            let _ = control.send(&EngineToHost::OpenTabRequested { url });
+        for (url, user_gesture) in pending_popup.borrow_mut().drain(..) {
+            let _ = control.send(&EngineToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some(find) = &find_state {

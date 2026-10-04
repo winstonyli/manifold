@@ -17,20 +17,29 @@ use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{take_pwstr, NewWindowRequestedEventHandler};
-use windows::core::PWSTR;
+use windows::core::{BOOL, PWSTR};
+
+use crate::nav_state::SharedNavState;
 
 /// A queue, not a single slot -- a page opening several popups
 /// synchronously (e.g. back-to-back `window.open()` calls) fires this
 /// handler more than once before `main.rs`'s tick loop next drains it, and
-/// a single `Option` would silently lose all but the last one.
-pub type PendingPopup = Rc<RefCell<Vec<String>>>;
+/// a single `Option` would silently lose all but the last one. Each entry is
+/// `(url, user_gesture)`; the host drops popups without a gesture.
+pub type PendingPopup = Rc<RefCell<Vec<(String, bool)>>>;
 
 /// Registers the `NewWindowRequested` handler on `webview`. Every request is
 /// marked `Handled` (via `SetHandled`) and `SetNewWindow` is never called,
 /// so WebView2 never creates a real window of its own for it -- the target
 /// URL lands in the returned queue instead, drained by `main.rs`'s tick loop
 /// the same way `favicon::register`'s result is.
-pub fn register(webview: &ICoreWebView2) -> PendingPopup {
+///
+/// A request counts as the user's only when WebView2's `IsUserInitiated`
+/// says so *and* the page got a click or key press within the gesture
+/// window (`NavState::had_recent_input`): `IsUserInitiated` on navigations
+/// was true even for a `setTimeout` navigation in a tab that never got
+/// input (see `NavState::last_input`), so it isn't trusted alone.
+pub fn register(webview: &ICoreWebView2, nav_state: SharedNavState) -> PendingPopup {
     let pending: PendingPopup = Rc::new(RefCell::new(Vec::new()));
     let mut token = Default::default();
 
@@ -38,8 +47,13 @@ pub fn register(webview: &ICoreWebView2) -> PendingPopup {
     let handler = NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             let mut uri = PWSTR::null();
+            let mut user = BOOL::default();
+            let user_initiated = unsafe { args.IsUserInitiated(&mut user) }.is_ok() && user.as_bool();
+            // `try_borrow`: a WebView2 call made while `nav_state` is borrowed
+            // can dispatch this event re-entrantly; treat that as no gesture.
+            let user_gesture = user_initiated && nav_state.try_borrow().is_ok_and(|s| s.had_recent_input());
             if unsafe { args.Uri(&mut uri) }.is_ok() {
-                pending_for_handler.borrow_mut().push(take_pwstr(uri));
+                pending_for_handler.borrow_mut().push((take_pwstr(uri), user_gesture));
             }
             unsafe {
                 let _ = args.SetHandled(true);

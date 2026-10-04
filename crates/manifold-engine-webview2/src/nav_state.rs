@@ -66,6 +66,12 @@ const HOST_START_WINDOW: Duration = Duration::from_secs(2);
 const GESTURE_WINDOW: Duration = Duration::from_secs(5);
 
 impl NavState {
+    /// The page got a click or key press within `GESTURE_WINDOW`; unlike
+    /// `label_new`, doesn't use it up (`popup.rs`).
+    pub fn had_recent_input(&self) -> bool {
+        self.last_input.is_some_and(|at| at.elapsed() < GESTURE_WINDOW)
+    }
+
     /// A navigation is started and not yet finished.
     fn under_way(&self) -> bool {
         self.user_started.is_some() && !self.finished

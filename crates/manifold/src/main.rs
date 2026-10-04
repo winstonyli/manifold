@@ -34,6 +34,7 @@ mod node;
 mod node_menu;
 mod pdf;
 mod pdf_fetch;
+mod popup_gate;
 mod popups;
 mod process_manager;
 mod profile;
@@ -1223,6 +1224,9 @@ struct App {
     /// `SAVE_TOAST_DURATION` elapses. Pushed to by `queue_toast` (and
     /// directly by `DownloadCompleted`, for borrow reasons).
     save_toast_queue: std::collections::VecDeque<String>,
+    /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
+    /// per source tab: a user gesture and a rate budget.
+    popup_gate: popup_gate::PopupGate,
 
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
@@ -1501,6 +1505,7 @@ impl Default for App {
             context_menu_cache: None,
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
+            popup_gate: popup_gate::PopupGate::default(),
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),

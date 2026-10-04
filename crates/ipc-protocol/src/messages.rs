@@ -411,7 +411,9 @@ pub enum EngineToHost {
     /// doesn't fit this project's one-process-per-tab architecture, so
     /// Servo tabs don't send this (page-triggered popups fall back to
     /// whatever Servo's own unhandled-request default behavior is).
-    OpenTabRequested { url: String },
+    /// `user_gesture`: the engine saw a user action (click, key) behind the
+    /// request; the host drops requests without one (`popup_gate.rs`).
+    OpenTabRequested { url: String, user_gesture: bool },
     /// A find-in-page result update for the current search term: `count`
     /// matches found, `active_index` the 1-based position of the currently
     /// selected match among them (0 if `count` is 0). WebKitGTK's

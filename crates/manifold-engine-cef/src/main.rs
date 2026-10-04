@@ -436,8 +436,8 @@ fn main() {
             }
         }
 
-        for url in pending_open_tab.borrow_mut().drain(..) {
-            let _ = control.send(&EngineToHost::OpenTabRequested { url });
+        for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
+            let _ = control.send(&EngineToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = find_result.borrow_mut().take() {

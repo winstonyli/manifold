@@ -186,7 +186,10 @@ fn main() {
     // spawns a real child tab for `url` instead, once drained below).
     // A queue, not a single slot -- a page opening several tabs
     // synchronously would otherwise silently lose all but the last one.
-    let pending_open_tab: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    // Each entry is `(url, user_gesture)`; the host drops popups without a
+    // gesture (WebKit already blocks script popups by default, as
+    // `javascript-can-open-windows-automatically` is false).
+    let pending_open_tab: Rc<RefCell<Vec<(String, bool)>>> = Rc::new(RefCell::new(Vec::new()));
     {
         let pending_open_tab = pending_open_tab.clone();
         // Fully-qualified: `connect_create` also exists on gtk::atk's
@@ -195,7 +198,7 @@ fn main() {
         // can't disambiguate which trait's version to use here.
         <WebView as webkit2gtk::WebViewExt>::connect_create(&webview, move |_webview, nav_action| {
             if let Some(uri) = nav_action.request().and_then(|r| r.uri()) {
-                pending_open_tab.borrow_mut().push(uri.to_string());
+                pending_open_tab.borrow_mut().push((uri.to_string(), nav_action.is_user_gesture()));
             }
             None
         });
@@ -464,8 +467,8 @@ fn main() {
             }
         }
 
-        for url in pending_open_tab.borrow_mut().drain(..) {
-            let _ = to_host.send(&EngineToHost::OpenTabRequested { url });
+        for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
+            let _ = to_host.send(&EngineToHost::OpenTabRequested { url, user_gesture });
         }
 
         if let Some((count, active_index)) = pending_find_result.borrow_mut().take() {

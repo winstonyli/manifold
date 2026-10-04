@@ -991,6 +991,7 @@ impl App {
         }
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
+        self.popup_gate.forget(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in

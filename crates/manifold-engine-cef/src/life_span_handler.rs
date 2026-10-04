@@ -9,8 +9,8 @@ use cef::{rc::Rc as CefRc, *};
 /// queue, not a single slot -- a page opening several popups synchronously
 /// (e.g. back-to-back `window.open()` calls) fires `on_before_popup` more
 /// than once before the next drain, and a single `Option` would silently
-/// lose all but the last one.
-pub type SharedPendingOpenTab = Rc<RefCell<Vec<String>>>;
+/// lose all but the last one. Each entry is `(url, user_gesture)`.
+pub type SharedPendingOpenTab = Rc<RefCell<Vec<(String, bool)>>>;
 
 pub fn new_shared_pending_open_tab() -> SharedPendingOpenTab {
     Rc::new(RefCell::new(Vec::new()))
@@ -53,7 +53,7 @@ wrap_life_span_handler! {
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
-            _user_gesture: ::std::os::raw::c_int,
+            user_gesture: ::std::os::raw::c_int,
             _popup_features: Option<&PopupFeatures>,
             _window_info: Option<&mut WindowInfo>,
             _client: Option<&mut Option<Client>>,
@@ -62,7 +62,8 @@ wrap_life_span_handler! {
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             if let Some(url) = target_url {
-                self.handler.pending.borrow_mut().push(url.to_string());
+                // The host drops popups without a gesture (`popup_gate.rs`).
+                self.handler.pending.borrow_mut().push((url.to_string(), user_gesture != 0));
             }
             // Non-zero cancels popup creation - we spawn a real child tab
             // (a separate engine-host process) instead of letting CEF

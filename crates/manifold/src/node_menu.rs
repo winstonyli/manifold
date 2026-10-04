@@ -564,7 +564,10 @@ impl App {
         }
 
         if open_tab {
-            if let Some(opener) = self.focused.clone() {
+            // The link came from the page: no `file:`/`javascript:` new tab (`popup_gate.rs`).
+            if !crate::popup_gate::page_tab_url_allowed(&menu.href) {
+                self.queue_toast(format!("Can't open {} in a new tab", menu.href));
+            } else if let Some(opener) = self.focused.clone() {
                 self.spawn_tab_from(&opener, &menu.href);
             } else {
                 self.spawn_new_tab(None, None, &menu.href);

@@ -1651,12 +1651,26 @@ impl App {
                 self.respawn_tab(spawn);
             }
             // Page-triggered new tab (target=_blank/window.open()/ctrl+click,
-            // intercepted by CEF/WebKit - see EngineToHost::OpenTabRequested's
+            // intercepted by CEF/WebKit/WebView2 - see EngineToHost::OpenTabRequested's
             // doc comment): a child of whichever tab requested it, staying in
             // the current view rather than auto-focusing, same as an explicit
-            // "+ New Tab" click.
-            EngineToHost::OpenTabRequested { url } => {
-                self.spawn_tab_from(tab_id, &url);
+            // "+ New Tab" click. Only web/internal schemes, only with a user
+            // gesture, and only a few per source tab (`popup_gate.rs`).
+            EngineToHost::OpenTabRequested { url, user_gesture } => {
+                if !crate::popup_gate::page_tab_url_allowed(&url) {
+                    eprintln!("popup to a disallowed scheme dropped: {url}");
+                } else {
+                    match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
+                        crate::popup_gate::Admit::Open => {
+                            self.spawn_tab_from(tab_id, &url);
+                        }
+                        crate::popup_gate::Admit::Drop { toast } => {
+                            if toast {
+                                self.queue_toast("Blocked pop-ups from this page".to_string());
+                            }
+                        }
+                    }
+                }
             }
             EngineToHost::FindResult { count, active_index } => {
                 // Ignore a result from a tab that isn't the one the find bar
