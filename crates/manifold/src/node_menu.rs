@@ -209,11 +209,14 @@ pub(crate) fn build_node_context_menu(
                     }
                     NodeMenuItem::MoveTo(targets) => {
                         for (group, name) in targets {
+                            // Cut to `ROW_UNITS`, so a long name cannot widen the menu; the hover has all of it.
                             let segs = crate::names::display_name(name, crate::names::UNTITLED);
-                            let text = crate::names::name_job(ui, "Move to ", &segs, "");
+                            let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
+                            let text = crate::names::name_job(ui, "Move to ", shown.as_deref().unwrap_or(&segs), "");
                             let mut response = menu_button(ui, text, None, &mut first_item);
-                            if let Some(hint) = crate::names::hidden_hint(&segs) {
-                                response = response.on_hover_text(hint);
+                            let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
+                            if !hover.is_empty() {
+                                response = response.on_hover_text(hover);
                             }
                             if response.clicked() {
                                 action = Some(NodeAction::MoveToGroup(group.clone()));
@@ -1123,6 +1126,37 @@ mod tests {
         let row = galleys.iter().find(|g| g.text() == "Move to Re⟦200B⟧ading");
         let row = row.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
         assert!(row.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
+    }
+
+    /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move to" row, so it cannot widen the menu.
+    #[test]
+    fn move_to_rows_shorten_a_long_name() {
+        let ctx = menu_ctx();
+        let mut app = App::default();
+        let (g, note) = (app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        app.nodes.get_mut(&g).unwrap().as_group_mut().unwrap().name = "x".repeat(200);
+        app.node_menu = Some((note, egui::pos2(100.0, 100.0)));
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.build_node_menu(ui));
+            output.textures_delta.clear();
+            texts = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        let want = format!("Move to {}…", "x".repeat(crate::names::ROW_UNITS - 1));
+        assert!(texts.contains(&want), "{texts:?}");
     }
 
     fn menu_ctx() -> egui::Context {

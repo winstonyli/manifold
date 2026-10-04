@@ -412,10 +412,13 @@ impl App {
             ui.add(egui::Label::new(egui::RichText::new("No saved sessions").small().weak()).wrap());
         }
         for name in names {
+            // Cut to `ROW_UNITS`, so a long name cannot widen the page; the hover has all of it.
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
+            let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
+            let hover = crate::names::name_hover(&name, crate::names::ROW_UNITS, "Open", |f| format!("Open ({f})"));
             ui.horizontal(|ui| {
-                let text = crate::names::name_job(ui, "", &segs, "");
-                if ui.button(text).on_hover_text(crate::names::with_hint("Open", &segs)).clicked() {
+                let text = crate::names::name_job(ui, "", shown.as_deref().unwrap_or(&segs), "");
+                if ui.button(text).on_hover_text(hover).clicked() {
                     req.open_session_name = Some(name.clone());
                 }
                 if ui.small_button(egui_phosphor::light::X).on_hover_text("Delete").clicked() {

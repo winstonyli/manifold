@@ -12,6 +12,8 @@ pub(crate) const NAME_CAP: usize = 64;
 /// The most characters a name keeps or shows, as a second budget beside `NAME_CAP`: one grapheme cluster can hold
 /// any number of characters (a combining mark or skin-tone modifier repeated, a long joiner chain).
 pub(crate) const NAME_MAX_CHARS: usize = 256;
+/// The most units (`shorten`) a name shows in a menu or list row: a "Move to" row, a Settings saved-session button.
+pub(crate) const ROW_UNITS: usize = 32;
 /// What a name with nothing left to show is drawn as.
 pub(crate) const UNTITLED: &str = "Untitled";
 /// Every character a rich placeholder (`placeholder`) can use. `tests` checks that the monospace font has them all.
