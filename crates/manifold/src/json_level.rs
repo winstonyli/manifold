@@ -4,6 +4,7 @@
 //! `self.nodes`, so nothing here can reach the store but the node's own
 //! `view` field.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
 use super::*;
@@ -57,6 +58,15 @@ pub(crate) struct Search {
     pub(crate) pending: Option<(String, mpsc::Receiver<SearchResult>)>,
     /// Ctrl+F: focus the search box on the next draw.
     pub(crate) focus: bool,
+    /// Bumped per query; a worker whose number is stale stops (search_with).
+    pub(crate) generation: Arc<AtomicU64>,
+}
+
+impl Drop for Search {
+    /// Leaving the level stops its worker too, not only a newer query.
+    fn drop(&mut self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Something the user did on a JSON level, applied once drawing is done.
@@ -80,12 +90,12 @@ pub(crate) enum CopyWhat {
 }
 
 impl JsonLevel {
-    fn new(node_id: String, value: serde_json::Value, view: &JsonView) -> Self {
+    fn new(node_id: String, value: Arc<serde_json::Value>, view: &JsonView) -> Self {
         let expanded = json_view::default_expanded(&value);
         let mut level = Self {
             node_id,
             nodes: json_view::count_nodes(&value),
-            value: Arc::new(value),
+            value,
             expanded,
             cards: Vec::new(),
             rects: Vec::new(),
@@ -274,18 +284,24 @@ impl App {
         level.search.current = 0;
         level.search.pending = None;
         level.outline.dirty = true;
-        if query.is_empty() {
-            level.search.result = None;
-        } else if level.nodes > json_view::WORKER_SEARCH_NODES {
-            let (tx, rx) = mpsc::channel();
-            let (value, q) = (level.value.clone(), query.clone());
-            std::thread::spawn(move || {
-                // The level may be gone by now; a closed channel is fine.
-                let _ = tx.send(json_view::search(&value, &q));
-            });
-            level.search.pending = Some((query.clone(), rx));
-        } else {
-            level.search.result = Some(json_view::search(&level.value, &query));
+        let generation = level.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        level.search.result = None; // the old query's matches mustn't show or step while this one runs
+        if !query.is_empty() {
+            if level.nodes > json_view::WORKER_SEARCH_NODES {
+                let (tx, rx) = mpsc::channel();
+                let (value, q, current) = (level.value.clone(), query.clone(), level.search.generation.clone());
+                std::thread::spawn(move || {
+                    let stale = || current.load(Ordering::Relaxed) != generation;
+                    // A cancelled worker drops `tx`: `receive_json_search`
+                    // clears `pending` on `Disconnected`.
+                    if let Some(result) = json_view::search_with(&value, &q, &stale) {
+                        let _ = tx.send(result); // the level may be gone; a closed channel is fine
+                    }
+                });
+                level.search.pending = Some((query.clone(), rx));
+            } else {
+                level.search.result = Some(json_view::search(&level.value, &query));
+            }
         }
         level.search.query = query;
         self.poll_json_search();
@@ -707,7 +723,7 @@ mod tests {
         let view = JsonView::from_field(r#"{"/a":{"collapsed":true}}"#);
         let payload = JsonPayload {
             path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
-            value: serde_json::Value::Null,
+            value: Default::default(),
             key: None,
             error: None,
             url: Some("https://x.test/j".into()),
@@ -882,5 +898,70 @@ mod tests {
         }
         let result = app.json_level.as_ref().unwrap().search.result.clone().expect("the worker answers");
         assert_eq!(result.matches, ["/99999"]);
+    }
+
+    /// Review D-B6: while a worker searches, the previous query's result is gone.
+    #[test]
+    fn a_pending_search_hides_the_previous_result() {
+        let items: Vec<String> = (0..json_view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
+        let (mut app, j) = app_with_json("pending", &serde_json::to_string(&items).unwrap());
+        app.switch_group_level(Some(j));
+        app.set_json_search("v1".into());
+        // Let v1's worker answer first, so there is an old result to go stale.
+        for _ in 0..1000 {
+            app.poll_json_search();
+            if app.json_level.as_ref().unwrap().search.result.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.json_level.as_ref().unwrap().search.result.is_some(), "v1's worker answers");
+        app.set_json_search("v2".into());
+        let level = app.json_level.as_ref().unwrap();
+        assert!(
+            level.search.pending.is_none() || level.search.result.is_none(),
+            "no stale result beside a pending search"
+        );
+    }
+
+    /// Escape in a text field (the search box) ends the edit only; egui drops the field's focus before any
+    /// widget runs, so only `shortcuts::text_field_has_keys` still knows the key was the field's.
+    #[test]
+    fn escape_in_a_text_field_keeps_the_json_selection() {
+        let (mut app, j) = app_with_json("escape", r#"{"a": 1}"#);
+        app.switch_group_level(Some(j));
+        app.apply_json_edit(JsonEdit::Select("/a".into()));
+        let ctx = egui::Context::default();
+        let field = egui::Id::new("json_search_field");
+        let mut text = String::new();
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                // Read first, as `build_graph_ui` does.
+                let typing = crate::shortcuts::text_field_has_keys(ui.ctx());
+                ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                app.handle_graph_keys(ui, typing);
+            });
+            output.textures_delta.clear();
+        };
+        ctx.memory_mut(|m| m.request_focus(field));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![escape.clone()]);
+        let selected = |app: &App| app.json_level.as_ref().unwrap().selected.clone();
+        assert_eq!(selected(&app).as_deref(), Some("/a"), "Escape ended the edit only");
+        frame(&mut app, vec![escape]);
+        assert_eq!(selected(&app), None, "with no field focused, Escape clears the selection");
     }
 }

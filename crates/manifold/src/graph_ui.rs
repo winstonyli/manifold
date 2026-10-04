@@ -1123,7 +1123,7 @@ impl App {
     /// (`shortcuts::text_field_has_keys`).
     pub(crate) fn handle_graph_keys(&mut self, ui: &egui::Ui, typing: bool) {
         if self.json_level.is_some() {
-            self.handle_json_keys(ui);
+            self.handle_json_keys(ui, typing);
             return;
         }
         if !typing && self.renaming_group.is_none() && self.quick_switcher.is_none() {

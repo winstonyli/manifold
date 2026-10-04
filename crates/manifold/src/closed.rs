@@ -271,7 +271,7 @@ mod tests {
             &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
-                value: 1.into(),
+                value: std::sync::Arc::new(1.into()),
                 key: Some("k".into()),
                 error: None,
                 url: None,
@@ -308,7 +308,7 @@ mod tests {
             &mut app,
             NodePayload::Json(JsonPayload {
                 path: "d.json".into(),
-                value: 1.into(),
+                value: std::sync::Arc::new(1.into()),
                 key: Some("k".into()),
                 error: None,
                 url: None,

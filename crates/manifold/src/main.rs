@@ -2002,11 +2002,11 @@ impl App {
         // genuine standalone JSON node, not an exploded leaf).
         let json = NodePayload::Json(JsonPayload {
             path: "(demo).json".to_string(),
-            value: serde_json::json!({
+            value: std::sync::Arc::new(serde_json::json!({
                 "project": "Manifold",
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
-            }),
+            })),
             key: None,
             error: None,
             url: None,

@@ -2768,7 +2768,7 @@ mod tests {
         let json = |value: serde_json::Value, key: Option<&str>, error: Option<&str>| {
             NodePayload::Json(JsonPayload {
                 path: "a.json".into(),
-                value,
+                value: value.into(),
                 key: key.map(Into::into),
                 error: error.map(Into::into),
                 url: None,
@@ -2854,7 +2854,7 @@ mod tests {
         assert_eq!(
             card_filter_text(&NodePayload::Json(JsonPayload {
                 path: "C:/data/x.json".into(),
-                value: serde_json::json!(1),
+                value: std::sync::Arc::new(serde_json::json!(1)),
                 key: None,
                 error: None,
                 url: None,

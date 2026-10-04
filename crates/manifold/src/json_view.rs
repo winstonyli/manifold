@@ -421,19 +421,35 @@ pub(crate) struct SearchResult {
     pub(crate) hits: HashSet<String>,
     /// The matches and every ancestor of one.
     pub(crate) keep: HashSet<String>,
+    /// The search stopped at MAX_MATCHES; there are more.
+    pub(crate) truncated: bool,
 }
+
+/// The most matches a search collects; the status line says when it stopped.
+pub(crate) const MAX_MATCHES: usize = 10_000;
 
 /// Case-insensitive substring search over object keys and scalar values
 /// (spec "Search", plan ruling 9), across the whole value.
 pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
+    search_with(root, query, &|| false).expect("never cancelled")
+}
+
+/// `search`, checking `cancelled` every 4096 nodes: `None` once it says so
+/// (a newer query superseded this worker's).
+pub(crate) fn search_with(root: &Value, query: &str, cancelled: &dyn Fn() -> bool) -> Option<SearchResult> {
     let mut result = SearchResult::default();
     let needle = query.to_lowercase();
     if needle.is_empty() {
-        return result;
+        return Some(result);
     }
     // Depth-first, children pushed in reverse so they pop in document order.
     let mut stack: Vec<(String, Option<&str>, &Value)> = vec![(String::new(), None, root)];
+    let mut visited = 0usize;
     while let Some((pointer, key, value)) = stack.pop() {
+        visited += 1;
+        if visited.is_multiple_of(4096) && cancelled() {
+            return None;
+        }
         let key_hit = key.is_some_and(|k| k.to_lowercase().contains(&needle));
         let value_hit = scalar_text(value).is_some_and(|t| t.to_lowercase().contains(&needle));
         if key_hit || value_hit {
@@ -443,6 +459,10 @@ pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
             result.keep.insert(pointer.clone());
             result.hits.insert(pointer.clone());
             result.matches.push(pointer.clone());
+            if result.matches.len() == MAX_MATCHES {
+                result.truncated = true;
+                break;
+            }
         }
         let children: Vec<(String, Option<&str>, &Value)> = match value {
             Value::Object(map) => map.iter().map(|(k, v)| (child_pointer(&pointer, k), Some(k.as_str()), v)).collect(),
@@ -453,7 +473,7 @@ pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
         };
         stack.extend(children.into_iter().rev());
     }
-    result
+    Some(result)
 }
 
 /// Nodes in `value`, itself included: decides whether search runs on a
@@ -758,6 +778,17 @@ mod tests {
         // Array indices don't match (plan ruling 9).
         assert!(search(&json!(["x"]), "0").matches.is_empty());
         assert_eq!(count_nodes(&json!({"a": [1, 2]})), 4);
+    }
+
+    /// Review D-R7: results stop at MAX_MATCHES, and a cancelled search returns nothing.
+    #[test]
+    fn search_is_capped_and_cancellable() {
+        let big = serde_json::Value::Array((0..MAX_MATCHES + 50).map(|i| serde_json::json!(format!("x{i}"))).collect());
+        let result = search(&big, "x");
+        assert_eq!(result.matches.len(), MAX_MATCHES);
+        assert!(result.truncated);
+        assert!(search_with(&big, "x", &|| true).is_none());
+        assert!(!search(&serde_json::json!({"a": "x"}), "x").truncated);
     }
 
     #[test]

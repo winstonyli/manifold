@@ -650,7 +650,7 @@ impl App {
                 if missing_with_url || error.is_some() {
                     let payload = JsonPayload {
                         path,
-                        value: serde_json::Value::Null,
+                        value: Default::default(),
                         key: None,
                         error,
                         url: None,
@@ -665,7 +665,7 @@ impl App {
                 let key = Some(str_of(fields, field::KEY));
                 let payload = JsonPayload {
                     path: str_of(fields, field::PATH),
-                    value,
+                    value: value.into(),
                     key,
                     error: None,
                     url: None,

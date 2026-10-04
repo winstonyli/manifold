@@ -315,7 +315,7 @@ impl App {
                 K::Pdf => NodePayload::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())), url: Some(url) }),
                 K::Json => NodePayload::Json(JsonPayload {
                     path,
-                    value: serde_json::Value::Null,
+                    value: Default::default(),
                     key: None,
                     error: Some(error.clone()),
                     url: Some(url),
@@ -584,7 +584,7 @@ impl App {
         };
         let payload = NodePayload::Json(JsonPayload {
             path,
-            value,
+            value: value.into(),
             key: None,
             error: None,
             url: None,
@@ -840,7 +840,7 @@ mod tests {
             egui::Vec2::ZERO,
             NodePayload::Json(JsonPayload {
                 path: r"Z:\x.json".into(),
-                value: serde_json::Value::Null,
+                value: Default::default(),
                 key: None,
                 error: None,
                 url: None,
@@ -1048,7 +1048,7 @@ mod tests {
             crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[2]".to_vec()).unwrap();
         app.reload_fetched_node("r", second);
         let node = &app.nodes["r"];
-        assert_eq!(node.as_json().unwrap().value, serde_json::json!([2]));
+        assert_eq!(*node.as_json().unwrap().value, serde_json::json!([2]));
         assert_eq!(
             (node.pos, node.color, node.source_url()),
             (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("https://x.test/j"))

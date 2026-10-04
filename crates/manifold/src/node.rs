@@ -326,7 +326,8 @@ pub(crate) struct PdfOutcome {
 /// rather than failing the whole session load.
 pub(crate) struct JsonPayload {
     pub(crate) path: String,
-    pub(crate) value: serde_json::Value,
+    /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
+    pub(crate) value: std::sync::Arc<serde_json::Value>,
     /// The JSON key (or `[index]` for an array element) this value came
     /// from -- `None` for a genuine top-level file-backed JSON node (its
     /// card just shows the value's own shape), `Some(k)` for a leaf that an
@@ -718,7 +719,7 @@ mod tests {
         assert_eq!(
             item_node_kind(&NodePayload::Json(JsonPayload {
                 path: "data.json".into(),
-                value: serde_json::Value::Null,
+                value: Default::default(),
                 key: None,
                 error: None,
                 url: None,
@@ -784,7 +785,7 @@ second"
         assert_eq!(image.accessible_name(), "Image: cat.png");
         let json = node(NodePayload::Json(JsonPayload {
             path: r"D:\data\x.json".into(),
-            value: serde_json::Value::Null,
+            value: Default::default(),
             key: None,
             error: None,
             url: None,
