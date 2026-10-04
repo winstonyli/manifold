@@ -307,7 +307,7 @@ mod tests {
 
     /// Review D-R8: Fit really fits an image over 10x the body, and zooming out from there doesn't jump in.
     #[test]
-    fn fit_fits_a_huge_image_and_zoom_out_keeps_going_down() {
+    fn fit_fits_a_huge_image_and_zoom_out_never_goes_up() {
         let fit = image_fit_scale(egui::vec2(8000.0, 100.0), egui::vec2(700.0, 500.0));
         assert!((fit - 700.0 / 8000.0).abs() < 1e-6, "{fit}");
         assert_eq!(zoom_about(0.05, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, 0.05, "never up on zoom-out");

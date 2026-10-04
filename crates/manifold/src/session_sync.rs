@@ -1646,8 +1646,12 @@ impl App {
     /// Clears the running session's nodes and the state naming them. Each
     /// tab's `EngineTab::Drop` shuts its engine host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
-    /// dropped when they land (`session_generation`).
+    /// dropped when they land (`session_generation`), and a PDF's render
+    /// not yet started is skipped, as `remove_node` does.
     fn teardown_running_session(&mut self) {
+        for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
+            self.pdf_renderer.cancel(id);
+        }
         self.nodes.clear();
         self.node_order.clear();
         self.focused = None;

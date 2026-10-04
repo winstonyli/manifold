@@ -1865,3 +1865,15 @@ fn app_save_costs() {
         println!("  session.mnf.local: {bytes} B");
     }
 }
+
+/// Replacing the running session skips the renders of its PDFs that haven't started, as deleting one does.
+#[test]
+fn teardown_cancels_pending_pdf_renders() {
+    let mut app = App::default();
+    let pdf =
+        add(&mut app, NodePayload::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None, url: None }));
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+    app.teardown_running_session();
+    assert!(app.pdf_renderer.is_cancelled(&pdf));
+    assert!(!app.pdf_renderer.is_cancelled(&note), "only PDFs are marked");
+}

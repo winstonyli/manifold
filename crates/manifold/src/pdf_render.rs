@@ -79,6 +79,12 @@ impl PdfRenderer {
         }
     }
 
+    /// Whether `id`'s render is marked to be skipped.
+    #[cfg(test)]
+    pub(crate) fn is_cancelled(&self, id: &str) -> bool {
+        self.cancelled.lock().is_ok_and(|set| set.contains(id))
+    }
+
     /// Drains every render that's finished since the last call -- same
     /// "tick once a frame" shape `SuggestionFetcher`/`FaviconFetcher`
     /// already have. A result that came back despite a cancel (it was
