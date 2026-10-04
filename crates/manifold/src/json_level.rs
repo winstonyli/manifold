@@ -900,6 +900,27 @@ mod tests {
         assert_eq!(result.matches, ["/99999"]);
     }
 
+    /// Leaving the level marks its worker's search stale (`Drop for Search`), so `search_with` stops at its next
+    /// check rather than walking the rest of a big value.
+    #[test]
+    fn leaving_the_level_stops_its_worker() {
+        let items: Vec<String> = (0..json_view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
+        let (mut app, j) = app_with_json("leave", &serde_json::to_string(&items).unwrap());
+        app.switch_group_level(Some(j));
+        app.set_json_search("v".into());
+        let level = app.json_level.as_ref().unwrap();
+        let (value, generation) = (level.value.clone(), level.search.generation.clone());
+        let started = generation.load(Ordering::Relaxed);
+        app.json_level = None;
+        let checks = std::cell::Cell::new(0);
+        let stale = || {
+            checks.set(checks.get() + 1);
+            generation.load(Ordering::Relaxed) != started
+        };
+        assert!(json_view::search_with(&value, "v", &stale).is_none(), "a worker of the left level stops");
+        assert_eq!(checks.get(), 1, "at its first check");
+    }
+
     /// Review D-B6: while a worker searches, the previous query's result is gone.
     #[test]
     fn a_pending_search_hides_the_previous_result() {

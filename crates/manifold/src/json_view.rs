@@ -453,16 +453,16 @@ pub(crate) fn search_with(root: &Value, query: &str, cancelled: &dyn Fn() -> boo
         let key_hit = key.is_some_and(|k| k.to_lowercase().contains(&needle));
         let value_hit = scalar_text(value).is_some_and(|t| t.to_lowercase().contains(&needle));
         if key_hit || value_hit {
+            if result.matches.len() == MAX_MATCHES {
+                result.truncated = true; // a match past the cap: there are more than it shows
+                break;
+            }
             for (i, _) in pointer.match_indices('/') {
                 result.keep.insert(pointer[..i].to_string());
             }
             result.keep.insert(pointer.clone());
             result.hits.insert(pointer.clone());
             result.matches.push(pointer.clone());
-            if result.matches.len() == MAX_MATCHES {
-                result.truncated = true;
-                break;
-            }
         }
         let children: Vec<(String, Option<&str>, &Value)> = match value {
             Value::Object(map) => map.iter().map(|(k, v)| (child_pointer(&pointer, k), Some(k.as_str()), v)).collect(),
@@ -789,6 +789,10 @@ mod tests {
         assert!(result.truncated);
         assert!(search_with(&big, "x", &|| true).is_none());
         assert!(!search(&serde_json::json!({"a": "x"}), "x").truncated);
+        let exact = serde_json::Value::Array((0..MAX_MATCHES).map(|i| serde_json::json!(format!("x{i}"))).collect());
+        let result = search(&exact, "x");
+        assert_eq!(result.matches.len(), MAX_MATCHES);
+        assert!(!result.truncated, "exactly MAX_MATCHES: nothing was left out");
     }
 
     #[test]
