@@ -39,8 +39,8 @@ const SETTLE_SPEED: f32 = 1.0;
 /// `edges` are `(parent_id, child_id)` pairs. `pinned` holds node ids being
 /// dragged: their position is the caller's and they don't move, but they
 /// still push the others (a dragged card shoulders its neighbours aside).
-/// Ids are processed in sorted order, so the result doesn't depend on the
-/// maps' iteration order.
+/// Ids and edges are processed in sorted order, so the result doesn't depend
+/// on the maps' iteration order or the order of `edges`.
 pub fn step(
     positions: &mut HashMap<String, egui::Vec2>,
     velocities: &mut HashMap<String, egui::Vec2>,
@@ -78,10 +78,15 @@ pub fn step(
         }
     }
 
-    // Spring attraction along parent->child edges toward a rest length.
-    for (parent, child) in edges {
-        // An edge to a since-removed node is ignored.
-        let (Some(&p), Some(&c)) = (index.get(parent.as_str()), index.get(child.as_str())) else { continue };
+    // Spring attraction along parent->child edges toward a rest length. An
+    // edge to a since-removed node is ignored; the rest are applied in sorted
+    // order, so the sums don't depend on the order of `edges` either.
+    let mut springs: Vec<(usize, usize)> = edges
+        .iter()
+        .filter_map(|(parent, child)| Some((*index.get(parent.as_str())?, *index.get(child.as_str())?)))
+        .collect();
+    springs.sort_unstable();
+    for (p, c) in springs {
         let delta = pos[c] - pos[p];
         let dist = delta.length().max(MIN_DISTANCE);
         let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
@@ -200,7 +205,10 @@ mod tests {
     #[test]
     fn the_layout_is_deterministic() {
         let ids: Vec<String> = (0..30).map(|i| format!("n{i}")).collect();
-        let run = |order: &[String]| {
+        // A chain plus a few cross edges, so several springs act on one node.
+        let mut edges: Vec<(String, String)> = (0..29).map(|i| (format!("n{i}"), format!("n{}", i + 1))).collect();
+        edges.extend([("n0", "n7"), ("n3", "n20"), ("n7", "n15"), ("n20", "n15")].map(|(a, b)| (a.into(), b.into())));
+        let run = |order: &[String], edges: &[(String, String)]| {
             let mut positions = HashMap::new();
             let mut velocities = HashMap::new();
             for id in order {
@@ -208,16 +216,17 @@ mod tests {
                 positions.insert(id.clone(), egui::vec2(i * 7.0 % 50.0, i * 13.0 % 40.0));
                 velocities.insert(id.clone(), egui::Vec2::ZERO);
             }
-            let edges = vec![("n0".to_string(), "n1".to_string())];
             for _ in 0..90 {
-                step(&mut positions, &mut velocities, &edges, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
+                step(&mut positions, &mut velocities, edges, &HashSet::new(), egui::Vec2::ZERO, 1.0 / 60.0);
             }
             let mut out: Vec<_> = positions.into_iter().collect();
             out.sort_by(|a, b| a.0.cmp(&b.0));
             out
         };
         let reversed: Vec<String> = ids.iter().rev().cloned().collect();
-        assert_eq!(run(&ids), run(&reversed));
+        let reversed_edges: Vec<(String, String)> = edges.iter().rev().cloned().collect();
+        assert_eq!(run(&ids, &edges), run(&reversed, &reversed_edges), "edge order must not matter");
+        assert_eq!(run(&ids, &edges), run(&reversed, &edges), "map order must not matter");
     }
 
     /// A pinned (dragged) node still pushes its neighbours aside.

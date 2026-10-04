@@ -435,10 +435,10 @@ pub(crate) struct TabPayload {
     /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
-    /// Graph view's pin toggle — a pinned node is excluded from the
-    /// force-directed layout entirely (same `pinned` exclusion
-    /// `graph_layout::step` already gives a node currently being dragged),
-    /// so it stays exactly where the user put it instead of drifting under
+    /// Graph view's pin toggle — a pinned node is never moved by the
+    /// force-directed layout (the same `pinned` handling `graph_layout::step`
+    /// gives a node being dragged; it still pushes its neighbours), so it
+    /// stays exactly where the user put it instead of drifting under
     /// repulsion/centering forces as siblings come and go. Saved as
     /// `field::PINNED`.
     pub(crate) pinned: bool,
