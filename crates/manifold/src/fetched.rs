@@ -105,6 +105,23 @@ impl App {
         }
     }
 
+    /// The in-flight download node an engine's progress, failure or
+    /// completion for `path` is about: one `tab_id` started if there is one,
+    /// else the newest. A finished node with the same path (a restored one,
+    /// or an earlier download of the same file) is never matched.
+    pub(crate) fn in_flight_download_id(&self, tab_id: &str, path: &str) -> Option<String> {
+        let in_flight = |id: &String| {
+            self.nodes
+                .get(id)
+                .and_then(|n| n.as_download())
+                .is_some_and(|d| d.path == path && !d.completed && !d.failed)
+        };
+        let from_tab = |id: &&String| self.nodes.get(*id).is_some_and(|n| n.parent.as_deref() == Some(tab_id));
+        let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(id));
+        let first = newest_first.clone().next();
+        newest_first.find(from_tab).or(first).cloned()
+    }
+
     /// Inserts a node showing `payload` at `pos`, top level and uncolored:
     /// `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see

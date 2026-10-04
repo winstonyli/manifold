@@ -1229,6 +1229,9 @@ struct App {
     /// Admits or drops page-opened tabs (`EngineToHost::OpenTabRequested`)
     /// per source tab: a user gesture and a rate budget.
     popup_gate: popup_gate::PopupGate,
+    /// Recent engine crash times per tab id (`tabs::crashes_too_often`): a
+    /// tab crashing too often is left as a failed card, not respawned.
+    tab_crashes: HashMap<String, Vec<std::time::Instant>>,
 
     /// When `save_session` last committed to the store -- shown in the
     /// settings popup's Sessions section next to a "Save Now" button, so a
@@ -1509,6 +1512,7 @@ impl Default for App {
             save_toast: None,
             save_toast_queue: std::collections::VecDeque::new(),
             popup_gate: popup_gate::PopupGate::default(),
+            tab_crashes: HashMap::new(),
             last_session_save: None,
             save_retry_at: None,
             store_notices: std::collections::BTreeSet::new(),

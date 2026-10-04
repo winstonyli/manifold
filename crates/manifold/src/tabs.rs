@@ -49,6 +49,33 @@ const QUIT_PULL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A `GetCookies` unanswered this long is given up on, so the next pull may ask again.
 const JAR_PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A tab whose engine crashes this many times within `CRASH_WINDOW` is left
+/// as a failed card instead of respawning again.
+pub(crate) const CRASH_LIMIT: usize = 3;
+pub(crate) const CRASH_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Records a crash at `now` in `times` (one tab's) and says whether that tab
+/// has now crashed `CRASH_LIMIT` times within `CRASH_WINDOW`.
+pub(crate) fn crashes_too_often(times: &mut Vec<std::time::Instant>, now: std::time::Instant) -> bool {
+    times.retain(|&t| now.duration_since(t) < CRASH_WINDOW);
+    times.push(now);
+    times.len() >= CRASH_LIMIT
+}
+
+/// `tab` as an unloaded card in `state`, keeping what a reopen needs.
+fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
+    UnloadedTabPayload {
+        url: tab.url.clone(),
+        title: tab.title.clone(),
+        kind: tab.tab.kind,
+        pinned: tab.pinned,
+        muted: tab.muted,
+        zoom_factor: tab.zoom_factor,
+        state,
+        jar: tab.jar,
+    }
+}
 use ipc_protocol::PageState;
 use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
@@ -767,16 +794,7 @@ impl App {
         }
         let Some(node) = self.nodes.get_mut(id) else { return false };
         let NodePayload::Tab(tab) = &node.payload else { return false };
-        let asleep = UnloadedTabPayload {
-            url: tab.url.clone(),
-            title: tab.title.clone(),
-            kind: tab.tab.kind,
-            pinned: tab.pinned,
-            muted: tab.muted,
-            zoom_factor: tab.zoom_factor,
-            state: UnloadedState::Sleeping,
-            jar: tab.jar,
-        };
+        let asleep = unloaded_from(tab, UnloadedState::Sleeping);
         // Replacing the payload drops the `EngineTab`, whose `Drop` shuts
         // the engine host down (see `teardown_running_session`).
         node.payload = NodePayload::Unloaded(asleep);
@@ -793,6 +811,33 @@ impl App {
         }
         self.save_session();
         true
+    }
+
+    /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
+    /// another protocol version, becomes a failed card: the reason is its
+    /// tooltip, and opening it tries again. Respawning would only loop.
+    pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str) {
+        let Some(node) = self.nodes.get_mut(id) else { return };
+        let NodePayload::Tab(tab) = &node.payload else { return };
+        let url = tab.url.clone();
+        // Replacing the payload drops the `EngineTab`, which reaps the dead host.
+        node.payload = NodePayload::Unloaded(unloaded_from(tab, UnloadedState::Failed(reason.to_string())));
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_tab_thumbnail(id);
+            gpu.free_tab_texture(id);
+        }
+        // Tab view, focused on this card, falls back to Graph by itself
+        // (`build_tab_view_ui`) unless a stale respawn spinner names it; a
+        // split pane showing it has nothing left to show.
+        if self.pending_respawn_focus.as_deref() == Some(id) {
+            self.pending_respawn_focus = None;
+        }
+        if self.split_tab.as_deref() == Some(id) {
+            self.close_split();
+        }
+        self.tab_crashes.remove(id);
+        self.queue_toast(format!("Tab keeps crashing, left closed: {url}"));
+        self.save_session();
     }
 
     /// First phase of every sleep: validates as `sleep_now` does, asks the
@@ -992,6 +1037,7 @@ impl App {
         self.saved_scroll.remove(id);
         self.nav_history.remove(id);
         self.popup_gate.forget(id);
+        self.tab_crashes.remove(id);
         // A rectangle-selected tab closed through any path other than
         // "Close Selected" itself (its own card close button, or its
         // containing group being closed) otherwise leaves a stale id in
@@ -1094,6 +1140,30 @@ impl App {
         };
         let id = tab_ids[next].clone();
         self.focus_tab(&id);
+    }
+}
+
+#[cfg(test)]
+mod crash_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_third_crash_within_the_window_gives_up() {
+        let t0 = Instant::now();
+        let mut times = Vec::new();
+        assert!(!crashes_too_often(&mut times, t0));
+        assert!(!crashes_too_often(&mut times, t0 + Duration::from_secs(1)));
+        assert!(crashes_too_often(&mut times, t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn crashes_spread_past_the_window_keep_respawning() {
+        let t0 = Instant::now();
+        let mut times = Vec::new();
+        for i in 0..10 {
+            assert!(!crashes_too_often(&mut times, t0 + CRASH_WINDOW * i), "crash {i}");
+        }
     }
 }
 

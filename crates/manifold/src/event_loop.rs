@@ -1628,6 +1628,16 @@ impl App {
                 }) else {
                     return false;
                 };
+                // A stale engine binary (protocol mismatch) would fail the same
+                // way again, and a page or install that crashes on every start
+                // would loop forever; either is left as a failed card instead.
+                let mismatch = reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH);
+                let times = self.tab_crashes.entry(tab_id.to_string()).or_default();
+                if mismatch || crate::tabs::crashes_too_often(times, std::time::Instant::now()) {
+                    eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
+                    self.leave_crashed_card(tab_id, &reason);
+                    return false;
+                }
                 let url = &spawn.url;
                 eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
                 // Previously silent from the actual app's own UI -- this only
@@ -1746,22 +1756,30 @@ impl App {
             EngineToHost::DownloadStarted { path, total_bytes, url } => {
                 self.insert_download_node(tab_id.to_string(), path, total_bytes, url);
             }
+            // Each finds its node with `in_flight_download_id`: the in-flight
+            // one this tab started, never a finished one with the same path.
             EngineToHost::DownloadProgress { path, bytes_received } => {
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.bytes_received = bytes_received;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.bytes_received = bytes_received;
+                    }
                 }
             }
             EngineToHost::DownloadFailed { path } => {
                 self.queue_toast(format!("Download failed: {path}"));
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.failed = true;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.failed = true;
+                    }
                 }
             }
             EngineToHost::DownloadCompleted { path } => {
                 self.queue_toast(format!("Saved {path}"));
-                if let Some(dl) = self.nodes.values_mut().find_map(|n| n.as_download_mut().filter(|d| d.path == path)) {
-                    dl.completed = true;
-                    return true;
+                if let Some(id) = self.in_flight_download_id(tab_id, &path) {
+                    if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
+                        dl.completed = true;
+                        return true;
+                    }
                 }
             }
         }
@@ -1785,6 +1803,34 @@ mod idle_tests {
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
         assert!(download.failed && !download.completed);
         assert!(!in_flight(&app));
+    }
+
+    #[test]
+    fn a_redownload_updates_the_new_node_not_the_finished_one() {
+        let mut app = App::default();
+        app.insert_note_at("n".into(), None);
+        app.insert_download_node("n".into(), "f.zip".into(), Some(10), None);
+        app.handle_engine_message("n", EngineToHost::DownloadCompleted { path: "f.zip".into() });
+        app.insert_download_node("n".into(), "f.zip".into(), Some(20), None);
+        app.handle_engine_message("n", EngineToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
+        let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
+        assert_eq!(downloads.len(), 2);
+        assert!(downloads[0].completed && downloads[0].bytes_received == 0, "the old node is untouched");
+        assert_eq!(downloads[1].bytes_received, 7);
+    }
+
+    #[test]
+    fn same_named_downloads_from_two_tabs_stay_apart() {
+        let mut app = App::default();
+        app.insert_note_at("a".into(), None);
+        app.insert_note_at("b".into(), None);
+        app.insert_download_node("a".into(), "f.zip".into(), None, None);
+        app.insert_download_node("b".into(), "f.zip".into(), None, None);
+        app.handle_engine_message("a", EngineToHost::DownloadFailed { path: "f.zip".into() });
+        let by_parent = |p: &str| {
+            app.nodes.values().find(|n| n.parent.as_deref() == Some(p)).and_then(|n| n.as_download()).unwrap().failed
+        };
+        assert!(by_parent("a") && !by_parent("b"));
     }
 
     #[test]
