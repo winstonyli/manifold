@@ -455,16 +455,23 @@ impl App {
         ui.label(heading_text("Jars"));
         // Each jar takes two lines, so a narrow window (480 px) clips nothing: its swatch, name and tab count (counts
         // aligned on the right, the name field taking the rest), then its actions under the name, wrapping if need be.
+        // A jar whose name another jar shares shows its marker (`jar_fragment`, "· #1a2b") between the name field and
+        // the count: read-only text of its own, so it is never part of the name the field edits and saves.
         let count_text = |n: usize| egui::RichText::new(tab_count_label(n)).small().weak();
-        let head = |ui: &mut egui::Ui, color, count: usize, name: &mut dyn FnMut(&mut egui::Ui)| {
-            ui.horizontal(|ui| {
-                jar_swatch(ui, color);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(count_text(count));
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| name(ui));
+        let head =
+            |ui: &mut egui::Ui, color, count: usize, marker: Option<String>, name: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.horizontal(|ui| {
+                    jar_swatch(ui, color);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(count_text(count));
+                        if let Some(frag) = marker {
+                            ui.label(egui::RichText::new(format!("· #{frag}")).weak())
+                                .on_hover_text("Another jar has this name; this marks which one it is");
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| name(ui));
+                    });
                 });
-            });
-        };
+            };
         let actions = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(JAR_SWATCH_WIDTH + ui.spacing().item_spacing.x);
@@ -472,7 +479,7 @@ impl App {
             });
             ui.add_space(4.0);
         };
-        head(ui, egui::Color32::GRAY, self.jar_tab_count(JarKey::Default), &mut |ui| {
+        head(ui, egui::Color32::GRAY, self.jar_tab_count(JarKey::Default), None, &mut |ui| {
             ui.label("Default");
         });
         actions(ui, &mut |ui| {
@@ -481,7 +488,8 @@ impl App {
             }
         });
         for (&id, def) in &self.jar_defs {
-            head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), &mut |ui| {
+            let marker = crate::jar_defs::jar_fragment(id, &self.jar_defs);
+            head(ui, self.jar_color(JarKey::Named(id)), self.jar_tab_count(JarKey::Named(id)), marker, &mut |ui| {
                 let mut draft = jar_name_draft(ui, id, &def.name);
                 let key = egui::Id::new(("jar_name", id));
                 let edit =
@@ -817,7 +825,8 @@ mod tests {
         crate::theme::apply_fonts(&ctx);
         crate::theme::apply_style(&ctx);
         let mut app = App::default();
-        for name in ["Work", "Home", "A much longer jar name than most"] {
+        // Two of a name (and a long one) draw their markers too (jar name labels).
+        for name in ["Work", "Home", "A much longer jar name than most", "A much longer jar name than most", "Work"] {
             app.create_jar(name);
         }
         let input = || egui::RawInput {
@@ -904,6 +913,62 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(app.pending_jar_confirm, Some(JarConfirm::Delete(work)), "with none up, it opens");
+    }
+
+    /// Jar name labels: two same-named jars each show their marker as text of its own beside the name field. The field
+    /// holds and saves the stored name only, so the marker can never end up in a name.
+    #[test]
+    fn a_same_named_jars_marker_sits_beside_a_field_that_edits_only_the_name() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        let (w1, w2) = (app.create_jar("Work"), app.create_jar("Work"));
+        app.create_jar("Home");
+        let texts = |app: &mut App, input: egui::RawInput| {
+            let mut req = SettingsRequests::default();
+            let mut output = ctx.run_ui(input, |ui| app.settings_jars_section(ui, &mut req));
+            output.textures_delta.clear();
+            let texts: Vec<String> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            (texts, req)
+        };
+        texts(&mut app, egui::RawInput::default());
+        let (shown, _) = texts(&mut app, egui::RawInput::default());
+        for w in [w1, w2] {
+            let frag = crate::jar_defs::jar_fragment(w, &app.jar_defs).unwrap();
+            assert!(shown.contains(&format!("· #{frag}")), "{w}'s marker in {shown:?}");
+        }
+        assert_eq!(shown.iter().filter(|t| *t == "Work").count(), 2, "both fields hold the bare name: {shown:?}");
+        assert!(shown.iter().any(|t| t == "Home") && !shown.iter().any(|t| t.starts_with("Home ·")), "{shown:?}");
+
+        // Focused and left unchanged: no rename.
+        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(w2)));
+        jars_frame(&mut app, &ctx);
+        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(w2)));
+        assert_eq!(jars_frame(&mut app, &ctx).rename_jar, None);
+        // Typed into: the request is the stored name as typed, with no marker in it.
+        ctx.memory_mut(|m| m.request_focus(jar_name_edit_id(w2)));
+        jars_frame(&mut app, &ctx);
+        jars_frame_with(
+            &mut app,
+            &ctx,
+            egui::RawInput { events: vec![egui::Event::Text("X".into())], ..Default::default() },
+        );
+        jars_frame(&mut app, &ctx);
+        ctx.memory_mut(|m| m.surrender_focus(jar_name_edit_id(w2)));
+        let (id, name) = jars_frame(&mut app, &ctx).rename_jar.expect("committed");
+        assert_eq!(id, w2);
+        assert!(name.contains('X') && name.contains("Work") && name.len() == 5, "{name:?}");
+        app.apply_settings_requests(&SettingsRequests { rename_jar: Some((id, name.clone())), ..Default::default() });
+        assert_eq!(app.jar_defs[&w2].name, name, "stored as typed");
+        assert_eq!(app.jar_label(JarKey::Named(w1)), "Work", "no twin left");
     }
 
     #[test]
