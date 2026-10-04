@@ -84,7 +84,7 @@ impl App {
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
-                ui.set_max_width(480.0);
+                ui.set_max_width(ui.available_width().min(480.0)); // never wider than the window
                 control_font(ui);
                 ui.add_space(12.0);
 
@@ -837,6 +837,38 @@ mod tests {
             output.textures_delta.clear();
         }
         assert!(width <= CONTENT + 0.5, "the Jars section is {width} wide in {CONTENT}");
+    }
+
+    /// Fix batch B1, live check: the whole page in a 480 px window keeps every text inside it. The page's
+    /// `set_max_width(480)` widened its column past the window when the window was under 480 plus margins, so the
+    /// jar rows' right-aligned tab counts ran off the edge.
+    #[test]
+    fn the_settings_page_keeps_its_text_inside_a_480_px_window() {
+        let ctx = egui::Context::default();
+        crate::theme::apply_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let mut app = App::default();
+        app.create_jar("Personal accounts");
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 3000.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input(), |ui| app.build_settings_page(ui));
+        output.textures_delta.clear();
+        let mut output = ctx.run_ui(input(), |ui| app.build_settings_page(ui));
+        output.textures_delta.clear();
+        let mut texts = 0;
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.text().trim().is_empty() {
+                    continue;
+                }
+                texts += 1;
+                let rect = text.visual_bounding_rect();
+                assert!(rect.right() <= 480.0 - 16.0, "{:?} ends at {}", text.galley.text(), rect.right());
+            }
+        }
+        assert!(texts > 20, "the page drew its text ({texts})");
     }
 
     /// Fix batch B5: while a confirm dialog is up (they are non-modal), a second jar action from Settings neither
