@@ -1086,6 +1086,9 @@ impl App {
         // `poll_store` has read it.
         let read = self.journal.as_ref().map(|j| j.read_local());
         let unread = matches!(read, Some(Err(ref err)) if !matches!(err, JournalError::Corrupt(_)));
+        if let Some(Err(err)) = read.as_ref().filter(|_| unread) {
+            self.log_local_unread(err);
+        }
         let local = local_from(read);
         let toasts = self.save_toast_queue.len();
         // Jars first: they are not graph nodes, so they survive a "fresh start" and the next save keeps them.
@@ -1134,12 +1137,35 @@ impl App {
         }
     }
 
+    /// Logs why startup couldn't read personal state, once (it's marked
+    /// unread only there), unless another instance just held the lock:
+    /// that is routine and the retry sees to it. Anything else (permission
+    /// denied, say) may never clear, and personal state is then never
+    /// written for this session. Names only the file, not its folder.
+    fn log_local_unread(&self, err: &JournalError) {
+        if matches!(err, JournalError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock) {
+            return;
+        }
+        let file = self
+            .journal
+            .as_ref()
+            .map(|j| crate::store::local::path_for(j.path()))
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        eprintln!(
+            "session: couldn't read personal state ({}): {err}; it stays unwritten until a retry reads it",
+            file.as_deref().unwrap_or("?")
+        );
+    }
+
     /// Retries reading the personal state startup couldn't
     /// (`App::local_unread`), at most every `SAVE_RETRY` and without
     /// waiting on the lock, so a busy peer never stalls a frame; `force`
     /// (at exit) tries now and waits as a save does. Once read, it's
     /// applied as startup would have, keeping what was closed since in
-    /// Recently Closed, and the next due write saves the result.
+    /// Recently Closed, and the next due write saves the result. Only a
+    /// state that decodes is applied: none, or a damaged one, leaves the
+    /// live view as the user has had it since startup. At exit nothing is
+    /// woken (the read only feeds the write that follows).
     fn retry_read_local(&mut self, force: bool) {
         let Some(unread) = self.local_unread else { return };
         let Some(journal) = self.journal.as_ref() else { return };
@@ -1155,16 +1181,18 @@ impl App {
             return;
         }
         self.local_unread = None;
-        let mut local = local_from(Some(read));
+        // Unknown: the file holds what was read, not this merge (or nothing).
+        self.local_written = None;
+        let Some(mut local) = read.ok().flatten().and_then(|bytes| LocalState::from_bytes(&bytes)) else { return };
         local.closed.extend(self.closed.iter().map(|e| e.doc.clone()));
         if unread.fresh {
             self.restore_closed(local.closed);
         } else {
             self.apply_local(local);
-            self.wake_focused();
+            if !force {
+                self.wake_focused();
+            }
         }
-        // Unknown: the file holds what was read, not this merge.
-        self.local_written = None;
     }
 
     /// This profile's personal state as the live graph currently shows it
@@ -1603,6 +1631,12 @@ impl App {
             let closed = std::mem::take(&mut self.closed);
             self.apply_local(state.remap(&map));
             self.closed = closed;
+        }
+        // Personal state startup couldn't read is the old session's: a late
+        // read may still bring back its Recently Closed, but not its view
+        // state, which names nodes that are gone.
+        if let Some(unread) = self.local_unread.as_mut() {
+            unread.fresh = true;
         }
         self.wake_focused();
         self.save_session();

@@ -839,6 +839,11 @@ impl Journal {
         &self.doc
     }
 
+    /// The session file this journal reads and writes.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A newer build wrote the file: commits are refused, and this build may not read all of it.
     pub fn read_only(&self) -> bool {
         self.read_only

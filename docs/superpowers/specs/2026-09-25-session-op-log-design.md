@@ -194,7 +194,11 @@ Never while it is unread: when startup's read fails (another instance
 held the lock past its 5 s wait, or an I/O error), the file is not
 written, even at exit, and the read is retried about every second
 without waiting on the lock. Once read, it is applied as at startup,
-with anything closed since kept after its Recently Closed entries. No
+with anything closed since kept after its Recently Closed entries; if
+Open/Import Session replaced the content meanwhile, only its Recently
+Closed is taken. A late read that finds nothing to apply (no file, or a
+damaged one) leaves the live view alone. Exit's read applies without
+waking a tab. A failure other than a busy lock is logged once. No
 file, another document's, a newer format's, or a damaged one is a fresh
 start, and the next write replaces it: nothing in it can be read.
 

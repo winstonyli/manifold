@@ -1482,6 +1482,84 @@ fn a_damaged_personal_state_file_is_not_retried() {
     assert!(bytes.is_some(), "replaced with this profile's state");
 }
 
+/// Personal state as a peer wrote it while this instance's startup read it
+/// unread: `local_unread` set by hand, without waiting out `LOCK_WAIT`.
+fn mark_unread_with(app: &mut App, path: &std::path::Path, state: &LocalState) {
+    Journal::open(path, ActorId(9)).unwrap().write_local(&state.to_bytes()).unwrap();
+    app.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_written = None;
+}
+
+/// Open Session while startup's personal state is unread: that state is the
+/// old session's, so a late read keeps only its Recently Closed and none of
+/// its view (here Item view, which would otherwise replace Graph).
+#[test]
+fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
+    let path = temp_dir("local-unread-open").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    let old = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+    mark_unread_with(
+        &mut app,
+        &path,
+        &LocalState { view_item: true, closed: vec![old.clone()], ..LocalState::default() },
+    );
+    let json =
+        JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
+    app.replace_running_session(&json, crate::store::json::Trust::Own);
+    assert!(app.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
+    app.poll_store();
+    assert!(app.local_unread.is_none(), "read");
+    assert_eq!(app.view_mode, ViewMode::Graph, "the old session's view isn't applied");
+    let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
+    assert_eq!(closed, [&old], "its Recently Closed is");
+}
+
+/// Exit's forced retry applies what it reads so the write that follows
+/// keeps it, but wakes nothing: the app is closing.
+#[test]
+fn the_forced_retry_at_exit_applies_without_waking() {
+    let path = temp_dir("local-unread-exit").join("session.mnf");
+    let (a, b) = {
+        let mut app = app_on(&path, 1);
+        let a = add(&mut app, sleeping_tab("https://a/", "A"));
+        let b = add(&mut app, sleeping_tab("https://b/", "B"));
+        assert!(app.save_session());
+        (a, b)
+    };
+    let mut app = app_on(&path, 2);
+    assert!(app.restore_session());
+    assert_eq!(app.focused.as_deref(), Some(a.as_str()));
+    let woken = app.test_spawns.len();
+    mark_unread_with(&mut app, &path, &LocalState { focused: Some(b.clone()), ..LocalState::default() });
+    app.close_store();
+    assert_eq!(app.test_spawns.len(), woken, "nothing woken at exit");
+    assert_eq!(app.focused.as_deref(), Some(b.as_str()), "applied");
+    let bytes = Journal::open(&path, ActorId(3)).unwrap().read_local().unwrap().unwrap();
+    assert_eq!(LocalState::from_bytes(&bytes).unwrap().focused, Some(b), "and written");
+}
+
+/// A late read that finds no personal state (or a damaged one) applies
+/// nothing: defaults would undo what the user changed since startup.
+#[test]
+fn a_late_read_of_no_personal_state_keeps_the_live_view() {
+    let path = temp_dir("local-unread-none").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    app.local_unread = Some(LocalUnread { retry_at: std::time::Instant::now(), fresh: false });
+    app.local_written = None;
+    app.view_mode = ViewMode::Item;
+    app.groups_collapsed = true;
+    app.poll_store();
+    assert!(app.local_unread.is_none(), "read: there is none");
+    assert_eq!((app.view_mode, app.groups_collapsed), (ViewMode::Item, true), "not reset to defaults");
+    app.maybe_write_local(true);
+    let bytes = app.journal.as_ref().unwrap().read_local().unwrap().unwrap();
+    assert!(LocalState::from_bytes(&bytes).unwrap().groups_collapsed, "the next write saves the live view");
+}
+
 /// Quitting while an imported session's tabs are still spawning keeps
 /// them: each is saved as it was started, and the replaced session's
 /// nodes are gone.
