@@ -527,6 +527,17 @@ mod tests {
         }
     }
 
+    /// The edges of the sequences: a joiner after a flag's tags (GB11 lets the tags sit between the emoji and the
+    /// joiner), and the `*` keycap.
+    #[test]
+    fn clean_name_keeps_a_joiner_after_flag_tags_and_the_star_keycap() {
+        let flag_join = format!("{ENGLAND}\u{200D}💻");
+        for name in [flag_join.as_str(), "*\u{FE0F}\u{20E3}", "*\u{20E3}"] {
+            assert!(matches!(clean_name(name), Cow::Borrowed(n) if n == name), "{name:?}");
+        }
+        assert_eq!(clean_name("*\u{FE0F}"), "*", "a keycap base's selector without U+20E3");
+    }
+
     /// The same characters outside an emoji sequence are dropped.
     #[test]
     fn clean_name_drops_emoji_formatting_outside_a_sequence() {
@@ -661,6 +672,8 @@ mod tests {
         assert_eq!(display_name("a\u{FE0F}", UNTITLED), [NameSeg::Plain("a"), NameSeg::Hidden('\u{FE0F}')]);
         let segs = display_name("👩\u{200B}\u{200D}💻", UNTITLED);
         assert_eq!(to_plain(&segs), "👩<U+200B><U+200D>💻");
+        // A selector after a skin-tone modifier is not directly after the emoji: revealed.
+        assert_eq!(display_name("👍🏽\u{FE0F}", UNTITLED), [NameSeg::Plain("👍🏽"), NameSeg::Hidden('\u{FE0F}')]);
         let coders = CODER.repeat(70);
         let segs = display_name(&coders, UNTITLED);
         assert_eq!((units(&segs), to_plain(&segs)), (64, CODER.repeat(63) + "…"));
@@ -682,6 +695,33 @@ mod tests {
             ]
         );
         assert_eq!(to_plain(&segs), "a b <U+200B> c");
+    }
+
+    /// The two rules agree: `display_name` without its placeholders is `clean_name`, once the spaces a dropped
+    /// placeholder leaves side by side are collapsed (for a name under the cap).
+    #[test]
+    fn display_name_without_placeholders_is_clean_name() {
+        for raw in [
+            "Re\u{200B}ading",
+            "  a\u{00A0}\u{00A0}b \u{200B} c ",
+            "\u{200B} a",
+            "a \u{202E} b\t",
+            "👩\u{200B}\u{200D}💻 x",
+            "a\u{200D}b \u{FE0F}",
+            "🏴\u{E0067}\u{E007F}\u{E0067} z",
+            "Work · #3f2a",
+            "x\u{200B}",
+        ] {
+            let plain: String = display_name(raw, "")
+                .iter()
+                .filter_map(|s| match s {
+                    NameSeg::Plain(p) => Some(*p),
+                    NameSeg::Hidden(_) => None,
+                })
+                .collect();
+            let collapsed = plain.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+            assert_eq!(collapsed, clean_name(raw), "{raw:?}");
+        }
     }
 
     #[test]
@@ -931,7 +971,8 @@ mod tests {
         assert_eq!(
             offenders,
             Vec::<String>::new(),
-            "draw a stored name through names::display_name, or mark a raw use `// name rule: <why>`"
+            "draw a stored name through names::display_name, or mark a raw use `// name rule: <why>`, and add the file \
+             to ALLOWED"
         );
     }
 }
