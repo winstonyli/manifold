@@ -221,6 +221,7 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(focused) => self.on_window_focus(focused),
             // Fires when the window moves to a monitor with a different
             // scale factor (also on a live resolution/scaling change).
             // Confirmed live this was a real gap, not just theoretical:
@@ -743,31 +744,53 @@ impl App {
         egui::pos2(self.cursor_pos.0 as f32 / ppp, self.cursor_pos.1 as f32 / ppp)
     }
 
+    /// Window focus changed. A chord's key-up can be lost while the window is
+    /// in the background (Alt-Tab mid-chord); a key left in `swallowed_keys`
+    /// would then swallow that key's next real release in the page.
+    pub(crate) fn on_window_focus(&mut self, focused: bool) {
+        if !focused {
+            self.swallowed_keys.clear();
+        }
+    }
+
     /// A screenshot `render_frame` just took: toasts where it went, or
-    /// turns it into the pending PDF.
+    /// turns it into the pending PDF. Only the capture `start_print_to_pdf`
+    /// asked for (its temp PNG) takes the PDF target; a failed one clears it.
+    /// `screenshot_path` is `None` for a headless `SCREENSHOT`, which isn't toasted.
     pub(crate) fn handle_screenshot_result(
         &mut self,
         screenshot_path: Option<String>,
         result: Option<Result<(), String>>,
     ) {
-        match result {
-            Some(Ok(())) => {
-                if let Some(path) = screenshot_path {
-                    if let Some(pdf_path) = self.pending_print_to_pdf.take() {
-                        match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
-                            Ok(()) => {
-                                self.queue_toast(format!("Saved {pdf_path}"));
-                            }
-                            Err(err) => eprintln!("print to pdf: {err}"),
-                        }
-                        let _ = std::fs::remove_file(&path);
-                    } else {
-                        self.queue_toast(format!("Saved {path}"));
+        let Some(result) = result else { return };
+        let Some(path) = screenshot_path else {
+            if let Err(err) = result {
+                eprintln!("screenshot: {err}");
+            }
+            return;
+        };
+        let pdf = self.pending_print_to_pdf.take_if(|(png, _)| *png == path).map(|(_, pdf)| pdf);
+        match (result, pdf) {
+            (Ok(()), Some(pdf_path)) => {
+                match pdf::write_image_as_pdf(std::path::Path::new(&path), std::path::Path::new(&pdf_path)) {
+                    Ok(()) => self.queue_toast(format!("Saved {pdf_path}")),
+                    Err(err) => {
+                        eprintln!("print to pdf: {err}");
+                        self.queue_toast(format!("Couldn't print to PDF: {err}"));
                     }
                 }
+                let _ = std::fs::remove_file(&path);
             }
-            Some(Err(err)) => eprintln!("screenshot: {err}"),
-            None => {}
+            (Ok(()), None) => self.queue_toast(format!("Saved {path}")),
+            (Err(err), Some(_)) => {
+                eprintln!("print to pdf: capture failed: {err}");
+                self.queue_toast(format!("Couldn't print to PDF: {err}"));
+                let _ = std::fs::remove_file(&path);
+            }
+            (Err(err), None) => {
+                eprintln!("screenshot: {err}");
+                self.queue_toast(format!("Couldn't save the screenshot: {err}"));
+            }
         }
     }
 
@@ -1790,6 +1813,30 @@ impl App {
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn a_failed_print_capture_clears_the_pdf_target() {
+        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        app.handle_screenshot_result(Some("p.png".into()), Some(Err("no surface".into())));
+        assert!(app.pending_print_to_pdf.is_none());
+        assert!(app.save_toast_queue.iter().any(|t| t.contains("Couldn't print")), "{:?}", app.save_toast_queue);
+    }
+
+    #[test]
+    fn an_ordinary_screenshot_never_takes_a_pdf_target() {
+        let mut app = App { pending_print_to_pdf: Some(("p.png".into(), "out.pdf".into())), ..App::default() };
+        app.handle_screenshot_result(Some("shot.png".into()), Some(Ok(())));
+        assert!(app.save_toast_queue.iter().any(|t| t == "Saved shot.png"));
+        assert!(app.pending_print_to_pdf.is_some(), "still waiting for its own capture");
+    }
+
+    #[test]
+    fn losing_focus_forgets_swallowed_keys() {
+        let mut app = App::default();
+        app.swallowed_keys.insert(winit::keyboard::KeyCode::ArrowLeft);
+        app.on_window_focus(false);
+        assert!(app.swallowed_keys.is_empty());
+    }
 
     #[test]
     fn a_failed_download_is_marked_and_no_longer_in_flight() {

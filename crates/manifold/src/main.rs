@@ -1189,13 +1189,14 @@ struct App {
     /// The stdin reader waiting on `pending_screenshot` (see
     /// `DebugCommand::Screenshot`); sent `()` once it's been attempted.
     screenshot_waiter: Option<std::sync::mpsc::Sender<()>>,
-    /// "Print to PDF": the target `.pdf` path, set alongside
-    /// `pending_screenshot` (a temp PNG) so the underlying GPU capture
-    /// mechanism doesn't need to know PDF exists at all -- once that
-    /// screenshot actually completes (see `handle_screenshot_result`), the temp PNG is converted via
+    /// "Print to PDF": (temp PNG, PDF): the capture `start_print_to_pdf`
+    /// asked for, and where its PDF goes. Paired so an unrelated screenshot
+    /// can't take the PDF target. Set alongside `pending_screenshot` so the
+    /// GPU capture needn't know PDF exists; once that capture completes
+    /// (`handle_screenshot_result`), the temp PNG is converted via
     /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
     /// including for an ordinary "Screenshot" button click.
-    pending_print_to_pdf: Option<String>,
+    pending_print_to_pdf: Option<(String, String)>,
 
     /// "Recently Closed", oldest first: one entry per close, capped at
     /// `MAX_CLOSED`. The toolbar dropdown reopens any entry;
@@ -2109,8 +2110,16 @@ impl App {
     /// the mechanism behind `reveal_node`.
     #[cfg(windows)]
     fn reveal_in_explorer(path: &str) -> Result<(), String> {
-        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
-        Ok(())
+        use std::os::windows::process::CommandExt;
+        if path.is_empty() {
+            return Err("This download has no file path".to_string());
+        }
+        // `raw_arg`, not `arg`: `arg` would escape the quotes `explorer_select_arg` adds.
+        std::process::Command::new("explorer.exe")
+            .raw_arg(explorer_select_arg(path))
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("Couldn't open Explorer: {e}"))
     }
     /// Elsewhere there is no portable "select this file", so the containing folder is opened with the desktop's
     /// own handler (`xdg-open` on Linux, `open` on macOS).
@@ -2350,8 +2359,9 @@ impl App {
         let timestamp =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let temp_png = std::env::temp_dir().join(format!("manifold-print-{timestamp}.png"));
-        self.pending_screenshot = Some(temp_png.to_string_lossy().into_owned());
-        self.pending_print_to_pdf = Some(pdf_path);
+        let png = temp_png.to_string_lossy().into_owned();
+        self.pending_screenshot = Some(png.clone());
+        self.pending_print_to_pdf = Some((png, pdf_path));
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -2777,11 +2787,24 @@ fn main() {
     process_manager::finish_cache_removals();
 }
 
+/// Explorer's `/select,` argument for `path`, quoted: Explorer splits an
+/// unquoted argument at commas, so `a,b.pdf` opened the wrong folder.
+#[cfg(windows)]
+fn explorer_select_arg(path: &str) -> String {
+    format!("/select,\"{path}\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_select_quotes_the_path() {
+        assert_eq!(explorer_select_arg(r"C:\d\a,b.pdf"), r#"/select,"C:\d\a,b.pdf""#);
+    }
 
     fn sid_key() -> jar::Key {
         ("sid".into(), "a.com".into(), "/".into())

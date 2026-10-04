@@ -495,6 +495,17 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("HELP", "Print this command list"),
 ];
 
+/// The longest SLEEP/WAITTABS a script may ask for: a day.
+pub(crate) const MAX_WAIT_SECS: f64 = 86_400.0;
+
+/// SLEEP/WAITTABS seconds: finite and within `0..=MAX_WAIT_SECS`.
+/// `Duration::from_secs_f64` panics on infinity or overflow, which killed
+/// the stdin reader and left headless runs hanging.
+pub(crate) fn parse_secs(s: &str) -> Option<std::time::Duration> {
+    let secs: f64 = s.parse().ok()?;
+    (secs.is_finite() && (0.0..=MAX_WAIT_SECS).contains(&secs)).then(|| std::time::Duration::from_secs_f64(secs))
+}
+
 /// Case-insensitive, matching `engine_kind_serde`'s own lowercase
 /// convention (`settings.json` and session exports use the same strings) --
 /// `SPLIT`'s one argument.
@@ -671,14 +682,12 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "NEWNOTE" => Some(DebugCommand::NewNote),
         "ADDFILE" => (!rest.is_empty()).then(|| parse_add_file(rest)).flatten(),
         "ADDDOWNLOAD" => non_empty(DebugCommand::AddDownload),
-        "WAITTABS" => Some(DebugCommand::WaitTabs(std::time::Duration::from_secs_f64(if rest.is_empty() {
-            60.0
+        "WAITTABS" => Some(DebugCommand::WaitTabs(if rest.is_empty() {
+            std::time::Duration::from_secs(60)
         } else {
-            rest.parse().ok().filter(|s: &f64| *s >= 0.0)?
-        }))),
-        "SLEEP" => Some(DebugCommand::Sleep(std::time::Duration::from_secs_f64(
-            rest.parse().ok().filter(|s: &f64| *s >= 0.0)?,
-        ))),
+            parse_secs(rest)?
+        })),
+        "SLEEP" => Some(DebugCommand::Sleep(parse_secs(rest)?)),
         "TOGGLESHORTCUTSHELP" => Some(DebugCommand::ToggleShortcutsHelp),
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
@@ -790,6 +799,138 @@ mod tests {
         for usage in ["EGUITEXT text", "BACKSPACE"] {
             assert!(COMMAND_HELP.iter().any(|(u, _)| *u == usage), "{usage} is in HELP");
         }
+    }
+
+    #[test]
+    fn wait_seconds_must_be_finite_and_bounded() {
+        assert_eq!(parse_secs("1.5"), Some(std::time::Duration::from_millis(1500)));
+        assert_eq!(parse_secs("0"), Some(std::time::Duration::ZERO));
+        for bad in ["inf", "-inf", "NaN", "1e30", "-1", "86401", "x", ""] {
+            assert_eq!(parse_secs(bad), None, "{bad}");
+        }
+        assert!(parse_line("SLEEP inf").is_none());
+        assert!(parse_line("WAITTABS 1e30").is_none());
+        assert!(matches!(parse_line("WAITTABS"), Some(DebugCommand::WaitTabs(d)) if d.as_secs() == 60));
+    }
+
+    /// Every HELP usage parses with sample arguments, and every sampled verb is in HELP.
+    #[test]
+    fn help_and_parser_agree() {
+        // One sample line per parser verb, written from `parse_line`'s match arms
+        // (`?` is `HELP`'s alias, checked separately below).
+        const SAMPLES: &[&str] = &[
+            "MOUSEMOVE 1 2",
+            "MOUSEDOWN 1 2",
+            "MOUSEUP 1 2 right",
+            "CLICK 1 2",
+            "DOUBLECLICK 1 2",
+            "SCROLL 1 2 0 -3",
+            "ADDRESSBAR example.com",
+            "ENTER",
+            "ESCAPE",
+            "BACKSPACE",
+            "EGUITEXT Work",
+            "ARROWRIGHT",
+            "ARROWLEFT",
+            "SPACEKEY",
+            "DIGITKEY 3",
+            "ARROWDOWN",
+            "ARROWUP",
+            "SHIFTF10",
+            "TABKEY shift",
+            "GRAPHLEFT",
+            "GRAPHRIGHT",
+            "GRAPHUP",
+            "GRAPHDOWN",
+            "GRAPHOPEN",
+            "TYPE abc",
+            "KEYPAGE Enter",
+            "REOPENTAB",
+            "INSTALLENGINE cef",
+            "ENGINESTATE cef",
+            "ZOOMIN",
+            "ZOOMOUT",
+            "ZOOMRESET",
+            "OPENDEVTOOLS",
+            "NEWTAB",
+            "CLOSETAB",
+            "FOCUSADDRESS",
+            "NEXTTAB",
+            "PREVTAB",
+            "OPENFINDBAR",
+            "FINDTEXT needle",
+            "FINDMATCHCASE true",
+            "FINDNEXT",
+            "FINDPREVIOUS",
+            "CLOSEFINDBAR",
+            "SETVISIBLE false",
+            r"SCREENSHOT C:\x.png",
+            "RESIZE 800 600",
+            "QUIT",
+            "QUICKSWITCHOPEN",
+            "QUICKSWITCHTEXT abc",
+            "QUICKSWITCHDOWN",
+            "QUICKSWITCHUP",
+            "QUICKSWITCHENTER",
+            "QUICKSWITCHESCAPE",
+            "SESSIONNAMETEXT work",
+            "SAVESESSIONAS work",
+            "OPENSESSION work",
+            "GRAPHFILTERTEXT abc",
+            "HISTORYFILTERTEXT abc",
+            "BOOKMARKSFILTERTEXT abc",
+            "TOGGLEVIEW",
+            "TOGGLESETTINGSPAGE",
+            r"EXPORTSESSION C:\x.json",
+            r"EXPORTSTATE C:\x.json",
+            r"IMPORTSESSION C:\x.json",
+            r"EXPORTBOOKMARKS C:\x.json",
+            r"IMPORTBOOKMARKS C:\x.json",
+            "CLOSEALLLEVEL",
+            "CONFIRMIMPORT",
+            "CANCELIMPORT",
+            "RENAMEGROUP",
+            "BOOKMARKFOLDERTEXT Reading",
+            "DISMISSPEEK",
+            r"EXPORTGROUP C:\x.json",
+            r"IMPORTGROUP C:\x.json",
+            "DUPLICATETAB",
+            r"PRINTTOPDF C:\x.pdf",
+            "TOGGLEPIN",
+            "RELOAD",
+            "GOBACK",
+            "GOFORWARD",
+            "NEWGROUP",
+            "NEWNOTE",
+            r"ADDFILE C:\x.json 10 20",
+            r"ADDDOWNLOAD C:\x.zip",
+            "WAITTABS 5",
+            "SLEEP 0.5",
+            "TOGGLESHORTCUTSHELP",
+            "SPLIT cef",
+            "CLOSESPLIT",
+            "CLOSEGROUP g1",
+            "SLEEPNODE t1",
+            "IDLESWEEP 30",
+            "SETJAR default",
+            "SWITCHJARNOW",
+            "JSONSELECT /a/0",
+            "JSONTOGGLE",
+            "JSONMORE /a",
+            "JSONRELAYOUT",
+            "JSONSEARCH abc",
+            "TRIGGERFIRSTLAUNCHDEMO",
+            "HELP",
+        ];
+        let verb = |line: &str| line.split_whitespace().next().unwrap().to_ascii_uppercase();
+        for sample in SAMPLES {
+            assert!(parse_line(sample).is_some(), "sample {sample:?} parses");
+            assert!(COMMAND_HELP.iter().any(|(usage, _)| verb(usage) == verb(sample)), "{sample:?} has HELP");
+        }
+        for (usage, _) in COMMAND_HELP {
+            assert!(SAMPLES.iter().any(|s| verb(s) == verb(usage)), "HELP verb {usage:?} has a sample");
+        }
+        assert!(matches!(parse_line("?"), Some(DebugCommand::Help)));
     }
 
     #[test]
