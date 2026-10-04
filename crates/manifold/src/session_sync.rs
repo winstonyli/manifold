@@ -1385,6 +1385,12 @@ impl App {
     ///   names some other session's tab, or an unrelated live one. It's
     ///   dropped, unless `keep_live_parents` and that node is live.
     ///
+    /// - A jar in the file is always a new jar under its fresh id, never
+    ///   matched to an existing one by name (jar name labels, retiring
+    ///   per-tab jars deviation 4): `import` already rewrote the file's
+    ///   tabs' `jar` and groups' `default_jar` to that id. Same-named jars
+    ///   are told apart by their labels (`jar_defs::named_jar_label`).
+    ///
     /// Tabs arrive asleep (`materialize`). Toasts from missing files are
     /// collapsed into one.
     pub(crate) fn materialize_imported(
@@ -1394,24 +1400,6 @@ impl App {
         keep_live_parents: bool,
     ) {
         let mut imported = imported;
-        // A jar named like an existing one is that jar (deviation 4): its tabs and groups point at the existing id.
-        let mut alias: BTreeMap<NodeId, NodeId> = BTreeMap::new();
-        imported.retain(|i| {
-            if i.kind != Kind::Jar {
-                return true;
-            }
-            let name = match i.fields.get(&field::NAME) {
-                Some(FieldValue::Str(s)) => s.as_str(),
-                _ => "",
-            };
-            match self.jar_named(name) {
-                Some(existing) => {
-                    alias.insert(i.id, existing);
-                    false
-                }
-                None => true,
-            }
-        });
         let groups: BTreeSet<NodeId> = imported.iter().filter(|i| i.kind == Kind::Group).map(|i| i.id).collect();
         let ids: BTreeSet<NodeId> = imported.iter().map(|i| i.id).collect();
         let root_id = root.as_ref().and(imported.first()).map(|i| i.id);
@@ -1429,13 +1417,6 @@ impl App {
                 _ => dest.clone(),
             };
             let mut fields = imported_fields(node.kind, &node.fields);
-            for no in [field::JAR, field::DEFAULT_JAR] {
-                if let Some(FieldValue::Id(Some(j))) = fields.get_mut(&no) {
-                    if let Some(existing) = alias.get(j) {
-                        *j = *existing;
-                    }
-                }
-            }
             if let Some(FieldValue::Id(parent)) = fields.get_mut(&field::PARENT) {
                 let live = |p: &NodeId| keep_live_parents && self.nodes.contains_key(&p.to_string());
                 *parent = parent.filter(|p| ids.contains(p) || live(p));
@@ -2852,20 +2833,54 @@ pub(crate) mod tests {
         assert_eq!(app.nodes[&grp].as_group().unwrap().default_jar, None);
     }
 
+    /// A file with a jar "Work" (label j), a group defaulting to it and a tab in the group using it.
+    fn file_with_a_work_jar() -> JsonDoc {
+        let json = serde_json::json!({ "nodes": [
+            json_node("g", "group", serde_json::json!({ "name": "G", "default_jar": "j" })),
+            json_node("j", "jar", serde_json::json!({ "name": "Work" })),
+            json_node("t", "tab", serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j", "jar_set": true })),
+        ]});
+        serde_json::from_value(json).unwrap()
+    }
+
+    /// Jar name labels (retiring per-tab jars deviation 4): a jar is its id, never its name, so an imported jar is
+    /// always a new jar, even beside one with the same name, and the imported tab and group name the new one. The
+    /// existing jar is left as it was, and outlives the session swap.
     #[test]
-    fn opening_a_session_reuses_a_jar_with_the_same_name() {
+    fn opening_a_session_gives_each_imported_jar_a_new_jar() {
         let mut app = App::default();
         let work = app.create_jar("Work");
-        // A file exported elsewhere: a jar "Work" (label j) and a tab using it.
-        let json = serde_json::json!({ "nodes": [
-            json_node("j", "jar", serde_json::json!({ "name": "Work" })),
-            json_node("t", "tab", serde_json::json!({ "url": "https://a.com/", "jar": "j", "jar_set": true })),
-        ]});
-        let doc: JsonDoc = serde_json::from_value(json).unwrap();
-        app.replace_running_session(&doc);
-        assert_eq!(app.jar_defs.len(), 1, "no second Work");
+        let before = app.jar_defs[&work].clone();
+        app.replace_running_session(&file_with_a_work_jar());
+        assert_eq!(app.jar_defs.len(), 2, "a second Work");
+        assert_eq!(app.jar_defs[&work], before, "the existing jar is untouched");
+        let new = *app.jar_defs.keys().find(|&&j| j != work).unwrap();
+        assert_eq!(app.jar_defs[&new].name, "Work");
         let tab = app.nodes.values().find_map(|n| n.payload.as_unloaded()).expect("tab imported");
-        assert_eq!(tab.jar.jar, Some(work));
+        assert_eq!(tab.jar, crate::jar::JarChoice { jar: Some(new), set: true });
+        let group = app.nodes.values().find_map(|n| n.as_group()).expect("group imported");
+        assert_eq!(group.default_jar, Some(new));
+        assert_ne!(
+            app.jar_label(crate::jar::JarKey::Named(new)),
+            app.jar_label(crate::jar::JarKey::Named(work)),
+            "told apart by label"
+        );
+    }
+
+    /// Import Group the same, twice over: each import is another new jar.
+    #[test]
+    fn importing_a_group_gives_each_imported_jar_a_new_jar() {
+        let mut app = App::default();
+        let work = app.create_jar("Work");
+        for n in 2..=3 {
+            app.import_group_json(&file_with_a_work_jar());
+            assert_eq!(app.jar_defs.len(), n);
+        }
+        let new: BTreeSet<NodeId> = app.jar_defs.keys().copied().filter(|&j| j != work).collect();
+        let tabs: BTreeSet<NodeId> =
+            app.nodes.values().filter_map(|n| n.payload.as_unloaded()).filter_map(|t| t.jar.jar).collect();
+        let groups: BTreeSet<NodeId> = app.nodes.values().filter_map(|n| n.as_group()?.default_jar).collect();
+        assert_eq!((&tabs, &groups), (&new, &new), "each import's tab and group name its own new jar");
     }
 
     /// A reopened tab comes back asleep, starting no engine, and keeps its
