@@ -89,6 +89,16 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.clone())
 }
 
+/// `fields` (`id`'s, from `shared_nodes`) with a tab's `url` replaced by its live one: Recently Closed reopens the
+/// page that was closed, not the shared url the mirror holds (2b-3 Ruling 1).
+fn live_url_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
+    let mut fields = fields.clone();
+    if let Some((url, _)) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
+        fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
+    }
+    fields
+}
+
 /// The `ClosedEntry` closing `id` should record: `id` and, for a group,
 /// every node under it at any depth (in `app.node_order`, i.e. draw
 /// order), minus what `worth_reopening` skips. `None` when `id` itself
@@ -98,10 +108,11 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     let shared = app.shared_nodes();
     let root_id: store::model::NodeId = id.parse().ok()?;
     let root = shared.get(&root_id)?;
-    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root.fields) {
+    let root_fields = live_url_fields(app, id, &root.fields);
+    if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root_fields) {
         return None;
     }
-    let mut nodes = vec![store::json::node_json(id, root.kind, &root.fields, None)];
+    let mut nodes = vec![store::json::node_json(id, root.kind, &root_fields, None)];
     let (mut zoom, mut title) = (serde_json::Map::new(), serde_json::Map::new());
     let mut record = |label: &str| {
         if let Some(z) = tab_zoom(app, label) {
@@ -122,9 +133,10 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     );
     for member_id in members {
         let Some(member) = shared.get(&member_id) else { continue };
-        if worth_reopening(member.kind, &member.fields) {
-            let label = member_id.to_string();
-            nodes.push(store::json::node_json(&label, member.kind, &member.fields, member.group));
+        let label = member_id.to_string();
+        let fields = live_url_fields(app, &label, &member.fields);
+        if worth_reopening(member.kind, &fields) {
+            nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
             record(&label);
         }
     }
@@ -306,6 +318,37 @@ mod tests {
         assert!(closed_entry(&app, &leaf_outside).is_none(), "a JSON leaf outside a group gives None");
         assert!(closed_entry(&app, &note1).is_none(), "a blank note gives None");
         assert_eq!(closed_entry(&app, &note2).unwrap().doc.nodes.len(), 1);
+    }
+
+    /// A tab whose page moved on without sharing it (a redirect, a script, a restore at its `LiveUrl`) reopens from
+    /// Recently Closed at the page that was closed, not at the shared url.
+    #[test]
+    fn a_closed_tab_reopens_at_its_live_url() {
+        use crate::session_sync::tests::{add, app_on, sleeping_tab};
+        let path = store::testutil::temp_dir("closed-live-url").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let group = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+        let tab = add(&mut app, sleeping_tab("https://shared/", "T"));
+        let member = add(&mut app, sleeping_tab("https://m-shared/", "M"));
+        app.edit_group(&member, Some(group.clone()));
+        assert!(app.save_session());
+        for (id, live) in [(&tab, "https://live/"), (&member, "https://m-live/")] {
+            if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(id).unwrap().payload {
+                t.url = live.into();
+            }
+        }
+        assert_eq!(app.mirror.url(&tab), "https://shared/", "the shared url is unchanged");
+        let url_of = |entry: &ClosedEntry, i: usize| entry.doc.nodes[i].fields.get("url").cloned();
+        let entry = closed_entry(&app, &tab).unwrap();
+        assert_eq!(url_of(&entry, 0), Some(serde_json::json!("https://live/")));
+        let entry = closed_entry(&app, &group).unwrap();
+        assert_eq!(url_of(&entry, 1), Some(serde_json::json!("https://m-live/")), "a group member's too");
+
+        app.close_node(&tab);
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let reopened = app.nodes.values().filter_map(|n| n.as_unloaded()).find(|t| t.title == "T").unwrap();
+        assert_eq!(reopened.url, "https://live/");
     }
 
     #[test]

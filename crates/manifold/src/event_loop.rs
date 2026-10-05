@@ -1005,7 +1005,7 @@ impl App {
             let url_changed = self.handle_engine_message(&tab_id, msg);
             if url_changed && self.shares_url_change(&tab_id, user_started) {
                 // Ruling 3: every reported url change is shared, whichever
-                // tab it came from -- mark it here rather than leaving it
+                // tab it came from -- share it here rather than leaving it
                 // to `navigate_tab` (that only handles this instance's own
                 // address-bar navigations, not the engine's own
                 // confirmation this responds to, nor back/forward) --

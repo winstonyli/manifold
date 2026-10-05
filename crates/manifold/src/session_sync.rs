@@ -385,10 +385,10 @@ impl App {
             let mut fields =
                 Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, self.mirror.get(key, field::COLOR))]);
             let kind = match &node.payload {
-                // A swap in progress already shows its target engine, so a
-                // save meanwhile doesn't write the old one back.
-                // The shared url, not the live one the payload holds (Ruling 1).
+                // A tab's url is the shared one, not the live one its payload holds (Ruling 1).
                 NodePayload::Tab(TabPayload { tab, swap_target, jar, .. }) => {
+                    // A swap in progress already shows its target engine, so a
+                    // save meanwhile doesn't write the old one back.
                     let (engine, pinned) = (swap_target.unwrap_or(tab.kind), self.mirror.pinned(key));
                     let url = self.mirror.get(key, field::URL);
                     tab_fields(&mut fields, url, engine, pinned, link_id(self.mirror.parent(key)), *jar)
@@ -879,7 +879,7 @@ impl App {
     }
 
     /// Tab `id` is loading a url the host gave it (another replica's `url`,
-    /// a restore, or a typed url, which `navigate_tab` marks itself): its
+    /// a restore, or a typed url, which `navigate_tab` shares itself): its
     /// unlabelled url changes stay local until the load settles
     /// (`shares_url_change`).
     pub(crate) fn note_host_load(&mut self, id: &str) {
@@ -913,7 +913,7 @@ impl App {
     /// Whether tab `id`'s reported url change is shared (ruling 3), given
     /// how the engine says its navigation started (`user_started`). One a
     /// person started is; a page script's or the host's own `Navigate` (a
-    /// typed url, which `navigate_tab` marks itself, or another replica's)
+    /// typed url, which `navigate_tab` shares itself, or another replica's)
     /// isn't. Otherwise, not while it follows a load the host started, nor
     /// for `HOST_LOAD_GRACE` after the tab was last seen loading. Either
     /// way a site that redirects to a fresh url on every load (a nonce, a
@@ -1442,7 +1442,7 @@ impl App {
             .map(|(id, node)| {
                 let mut local = LocalNode { pos: [node.pos.x, node.pos.y], ..LocalNode::default() };
                 // Against what the store held at this replica's last save
-                // or load: a url this replica shares is marked and saved.
+                // or load: a url this replica shares is edited (`edit_url`) and saved.
                 let live_url = |url: &str| {
                     let from = str_of(&self.last_shared.get(id)?.fields, field::URL);
                     (from != url).then(|| LiveUrl { url: url.to_string(), from })

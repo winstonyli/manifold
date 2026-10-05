@@ -2925,10 +2925,14 @@ fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://moved/".into()));
+    let url_stamp = |doc: &Doc| doc.nodes[&tab.parse().unwrap()].fields[&field::URL].stamp;
+    let theirs = url_stamp(other.doc());
     assert!(app.save_session());
     assert_eq!(app.mirror.url(&tab), "https://moved/");
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://moved/");
-    assert!(app.pending.is_empty(), "nothing to write back");
+    assert!(app.save_session());
+    let ours = url_stamp(app.journal.as_ref().unwrap().doc());
+    assert_eq!(ours, theirs, "nothing written back: the register is still the remote write");
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://moved/".into()));
 }
 
