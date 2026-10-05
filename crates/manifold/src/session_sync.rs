@@ -1089,9 +1089,19 @@ impl App {
                         }
                     }
                     self.explicit.clear();
+                    // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
+                    // commit wrote; its landing must not replay it over the local edit.
+                    for &(node, no) in self.pending.keys() {
+                        let id = node.to_string();
+                        if let Some(Some((_, fields, _))) = self.remote_in_flight.get_mut(&id) {
+                            fields.insert(no, self.mirror.get(&id, no));
+                        }
+                    }
                     self.pending.clear();
-                    let nodes = &self.nodes;
-                    self.mirror.retain(|id| nodes.contains_key(id));
+                    // A tab still spawning keeps its entry: a respawn has removed it from `nodes` until it
+                    // lands, and `Mirror::init` then leaves an existing entry alone.
+                    let (nodes, spawning) = (&self.nodes, &self.spawning);
+                    self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;

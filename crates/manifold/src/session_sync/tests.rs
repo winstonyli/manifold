@@ -2145,3 +2145,78 @@ fn pin_all_pins_every_tab_and_only_tabs() {
     app.set_all_pinned(false);
     assert!(!app.mirror.pinned(&a) && !app.mirror.pinned(&b));
 }
+
+/// A remote colour parked for a waking tab (`remote_in_flight`) must not land over a local edit committed after it.
+#[test]
+fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
+    let path = temp_dir("edit-parked").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawning.contains_key(&tab), "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::COLOR, blue());
+    app.edit_field(&tab, field::COLOR, red());
+    // The remote round parks blue, the next round commits red.
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    assert_eq!(stored(&app, &tab, field::COLOR), red());
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.color(&tab), Some(egui::Color32::RED));
+    assert_eq!(stored(&app, &tab, field::COLOR), red());
+}
+
+/// A respawn removes the node from `nodes` until it lands; a save meanwhile keeps its mirror entry, so an edit
+/// made then survives the landing (`Mirror::init` writes only an id with no entry).
+#[test]
+fn a_save_during_a_respawn_keeps_the_mirror_entry() {
+    let path = temp_dir("edit-respawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://a/", "A"));
+    app.edit_field(&tab, field::COLOR, red());
+    app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
+    assert!(app.save_session());
+    // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
+    let node = app.nodes.remove(&tab).unwrap();
+    let mut spawn =
+        crate::TabSpawn::new(tab.clone(), "https://a/".into(), EngineKind::Servo, node.pos, SpawnPurpose::Respawn, 1.0);
+    (spawn.carry.color, spawn.carry.pinned) = (app.mirror.color(&tab), app.mirror.pinned(&tab));
+    app.respawn_tab(spawn);
+    assert!(app.save_session());
+    assert!(app.mirror.pinned(&tab) && app.mirror.color(&tab) == Some(egui::Color32::RED), "kept while parked");
+    app.edit_field(&tab, field::COLOR, blue());
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.color(&tab), Some(egui::Color32::BLUE));
+    assert!(app.mirror.pinned(&tab));
+    assert_eq!(stored(&app, &tab, field::COLOR), blue());
+    assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
+}
+
+#[test]
+fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
+    let path = temp_dir("edit-fail").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    app.edit_field(&note, field::COLOR, red());
+    let set_readonly = |readonly: bool| {
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        // As in `a_failed_commit_keeps_the_explicit_marks`: the Windows read-only attribute makes the append fail.
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(readonly);
+        std::fs::set_permissions(&path, perms).unwrap();
+    };
+    set_readonly(true);
+    let saved = app.save_session();
+    set_readonly(false);
+    assert!(!saved);
+    assert!(!app.pending.is_empty(), "kept for the next save");
+    assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
+    app.save_retry_at = Some(std::time::Instant::now());
+    app.poll_store();
+    assert!(app.save_retry_at.is_none());
+    assert!(app.pending.is_empty());
+    assert_eq!(stored(&app, &note, field::COLOR), red());
+}

@@ -416,8 +416,8 @@ pub(crate) struct DownloadPayload {
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
 /// One node in the graph view -- fields every kind shares (position, graph
-/// membership) live here (`color` and `pinned` are not fields: see `Mirror`); `payload` holds whatever's specific to the
-/// node's actual kind. See `NodePayload`'s own doc comment for the
+/// membership) live here (`color` and `pinned` are not fields: see `Mirror`); `payload` holds whatever's specific to
+/// the node's actual kind. See `NodePayload`'s own doc comment for the
 /// migration this is a step of.
 pub(crate) struct GraphNode {
     /// The "opened from" edge for a tab (which tab spawned it, making the
