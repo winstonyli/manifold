@@ -419,7 +419,8 @@ impl App {
 
     /// The user deleted jar `id`: tabs (a respawning one too, `linked_ids`) and groups that named it fall back to the
     /// default jar (deviation 9), then it is forgotten and the live tabs that used it switch. Its document node is
-    /// deleted by the next save (`diff`: live no longer has it).
+    /// deleted by the next save (`diff`: live no longer has it). A new spawn in flight is not reached: it has no
+    /// mirror entry until it lands (`tab_jar`), and its landing clears the jar instead (`seed_landing`).
     pub(crate) fn delete_jar(&mut self, id: NodeId) {
         let tabs: Vec<String> = self
             .linked_ids()

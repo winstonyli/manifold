@@ -964,8 +964,9 @@ impl App {
     }
 
     /// The one writer of a tab's shared url (2b-3 Ruling 4): called with the url at the moment it is shared (a typed
-    /// navigation, or a report `shares_url_change` accepts), so a later redirect or script navigation, which only
-    /// moves the live url, is never what the save writes.
+    /// navigation, or a report `shares_url_change` accepts). A move that is not shared (a report labelled not
+    /// user-started, or a redirect during a load the host started, `note_host_load`) changes only the live url; an
+    /// unlabelled redirect report after a link click is shared.
     pub(crate) fn edit_url(&mut self, id: &str, url: &str) {
         self.edit_field(id, field::URL, FieldValue::Str(url.to_owned()));
     }
@@ -1262,6 +1263,12 @@ impl App {
                             None => Box::new(live.keys()),
                         };
                         for &id in ids {
+                            // A tab whose spawn has a remote change parked (`remote_in_flight`) keeps what this
+                            // replica saw before it: the document already holds that change, and the landing
+                            // compares against this to replay its live effects (`Navigate`, a swap; final review I1).
+                            if matches!(self.remote_in_flight.get(&id.to_string()), Some(Some(_))) {
+                                continue;
+                            }
                             let Some(node) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
                             let seen =
                                 Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };

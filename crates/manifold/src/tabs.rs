@@ -1066,8 +1066,16 @@ impl App {
     /// removed while it was in flight would land in a group nothing can navigate into. It lands where the document
     /// shows it instead, in the mirror only (`follow_remote_group`): the removal was a cascade, not a move of this
     /// tab, and a queued move would override another replica's placement of it (final review I1).
+    ///
+    /// Likewise a jar deleted while a new spawn was in flight (`delete_jar` cannot reach a tab with no entry): the
+    /// tab lands on the default jar, as the delete would have put it, and the document is told so whether its
+    /// `Create` already named the jar or resolved it to none (2b-3 final review Minor 1).
     fn seed_landing(&mut self, id: &str, carried: Carried) {
+        let new = !self.mirror.has(id);
         self.mirror.seed(id, &carried);
+        if new && self.mirror.jar_choice(id).jar.is_some_and(|jar| !self.jar_defs.contains_key(&jar)) {
+            self.edit_jar(id, crate::jar::JarChoice::default());
+        }
         if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
             let group = self.shown_group(id);
             self.follow_remote_group(id, group);

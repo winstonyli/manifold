@@ -1012,7 +1012,8 @@ struct App {
     /// What the store held for each node when this replica last read or
     /// committed it. `materialize` applies a field only where the store
     /// now differs, so a remote change to one field doesn't overwrite
-    /// another field's unsaved local value.
+    /// another field's unsaved local value. A tab with a change parked in `remote_in_flight` keeps its entry from
+    /// before the change until the landing replays it (a commit does not refresh it).
     last_shared: HashMap<String, session_sync::Shared>,
     /// Named jars' synced definitions (spec "Data model"). A jar is a `Kind::Jar` store node but never a graph node:
     /// `session_sync` bridges this map to the document.

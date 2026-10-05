@@ -3441,3 +3441,161 @@ fn an_unknown_engine_code_survives_a_tab_landing_live() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::ENGINE), FieldValue::Engine(99), "not overwritten by a live tab's save");
 }
+
+// ---- 2b-3 final review -------------------------------------------------------
+
+/// Final review Minor 6: another replica's url reaches a live tab as a `Navigate`; a url held back by a pending
+/// local edit sends none (the mirror refused it, 2b-3 Ruling 3).
+#[test]
+fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
+    let path = temp_dir("url-remote-live").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (tab, mut peer) = live_tab(&mut app, EngineKind::Servo, "https://a/");
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://b/".into()));
+    assert!(app.save_session());
+    let navigated = |sent: &[HostToEngine], to: &str| {
+        sent.iter().any(|m| matches!(m, HostToEngine::Navigate { url, .. } if url == to))
+    };
+    assert!(navigated(&sent(&mut peer), "https://b/"), "the live tab is sent there");
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().url, "https://b/");
+    app.edit_url(&tab, "https://local/");
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://c/".into()));
+    assert!(app.save_session());
+    let after = sent(&mut peer);
+    assert!(!after.iter().any(|m| matches!(m, HostToEngine::Navigate { .. })), "held back: no Navigate, got {after:?}");
+    assert_eq!(app.mirror.url(&tab), "https://local/");
+    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://local/".into()));
+}
+
+/// Final review I1, url: another replica's url, parked while the tab wakes (`remote_in_flight`), still navigates
+/// it when it lands, though a commit in between (here an unrelated Delete, which refreshes every live node's
+/// `last_shared`) read that url from the document.
+#[test]
+fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
+    let path = temp_dir("url-parked-wake").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://a/", ""));
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert_eq!(app.test_spawns.len(), 1, "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://r/".into()));
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "parked for the landing");
+    app.nodes.remove(&note);
+    assert!(app.save_session());
+    assert!(!app.journal.as_ref().unwrap().doc().nodes[&note.parse().unwrap()].is_live(), "the Delete committed");
+    let mut peers = land_spawns(&mut app);
+    let to_r =
+        sent(&mut peers[0]).iter().any(|m| matches!(m, HostToEngine::Navigate { url, .. } if url == "https://r/"));
+    assert!(to_r, "the landed tab is sent to the remote url");
+    assert_eq!(app.mirror.url(&tab), "https://r/");
+}
+
+/// Final review I1, engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
+/// the tab when it lands, though a jar cascade (a group default, which reaches a respawning tab, Ruling 9) committed
+/// a Set for the tab in between, refreshing its `last_shared` from the document. The document and the running engine
+/// end up agreeing: the landing starts a swap to it.
+#[test]
+fn a_remote_engine_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
+    let path = temp_dir("engine-parked-swap").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let (tab, _peer) = live_tab(&mut app, EngineKind::Servo, "https://s/");
+    app.edit_group(&tab, Some(g.clone()));
+    assert!(app.save_session());
+    app.start_swap_to(&tab, EngineKind::Cef);
+    assert!(app.save_session());
+    let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
+    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::StateSnapshot(snapshot));
+    assert_eq!(app.test_spawns.len(), 1, "the swap's respawn is in flight");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Webview2));
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "parked for the landing");
+    assert_eq!(app.set_group_default_jar(&g, work), 1, "the cascade reaches the respawning tab");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::JAR), FieldValue::Id(Some(work)), "the cascade committed for the tab");
+    let _peers = land_spawns(&mut app);
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, EngineKind::Cef, "landed on the swap's target");
+    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2);
+    assert_eq!(app.swap_in_flight(&tab), Some(EngineKind::Webview2), "and swaps on to the remote engine");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Webview2));
+}
+
+/// A new tab spawned with `jar`, as `spawn_tab_at` starts one.
+fn spawn_with_jar(app: &mut App, purpose: SpawnPurpose, jar: NodeId) -> String {
+    let t = app.alloc_node_id();
+    let mut spawn =
+        crate::TabSpawn::new(t.clone(), "https://t/".into(), EngineKind::Servo, egui::Vec2::ZERO, purpose, 1.0);
+    spawn.jar = JarChoice { jar: Some(jar), set: true };
+    app.spawn_tab_async(spawn);
+    t
+}
+
+/// Final review Minor 1 (Task 2 Minor 1), variant 1: a jar deleted while a new tab spawned with it is in flight,
+/// before the tab's `Create` commits. The Create writes none; the tab lands showing none too, not the dead jar.
+#[test]
+fn a_new_tab_whose_jar_is_deleted_before_its_create_lands_with_none() {
+    let path = temp_dir("jar-deleted-mid-spawn-1").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    assert!(app.save_session());
+    let t = spawn_with_jar(&mut app, SpawnPurpose::New, work);
+    app.delete_jar(work);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None), "created with none");
+    let _peers = land_spawns(&mut app);
+    assert_eq!(app.mirror.jar_choice(&t).jar, None, "lands with none");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None));
+}
+
+/// Final review Minor 1, variant 2: the tab's `Create` committed with the jar before it was deleted. The delete
+/// could not reach the tab (no mirror entry yet), so the landing clears it, as `delete_jar` would have, and the
+/// document does not keep the dead jar.
+#[test]
+fn a_new_tab_whose_jar_is_deleted_after_its_create_lands_with_none() {
+    let path = temp_dir("jar-deleted-mid-spawn-2").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    assert!(app.save_session());
+    let t = spawn_with_jar(&mut app, SpawnPurpose::Restore, work);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(Some(work)), "created with the jar");
+    app.delete_jar(work);
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.jar_choice(&t).jar, None, "the failed card lands with none");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::JAR), FieldValue::Id(None), "and the document drops the dead jar");
+}
+
+/// Task 2 Minor 4: `delete_jar` writes none to the document for a saved tab, and reaches a tab mid-respawn (its
+/// mirror entry outlives the respawn, Ruling 9), which lands still showing none.
+#[test]
+fn deleting_a_jar_writes_none_for_saved_and_respawning_tabs() {
+    let path = temp_dir("jar-delete-doc").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let work = app.create_jar("Work");
+    let asleep = add(&mut app, sleeping_tab("https://a/", ""));
+    let (live, _peer) = live_tab(&mut app, EngineKind::Servo, "https://l/");
+    app.set_tab_jar(&asleep, Some(work));
+    app.set_tab_jar(&live, Some(work));
+    assert!(app.save_session());
+    app.handle_engine_message(&live, ipc_protocol::EngineToHost::Crashed { reason: "boom".into() });
+    assert!(app.spawning.contains_key(&live) && !app.nodes.contains_key(&live), "mid-respawn");
+    app.delete_jar(work);
+    assert!(app.save_session());
+    for t in [&asleep, &live] {
+        assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(None));
+        assert_eq!(app.mirror.jar_choice(t).jar, None);
+    }
+    let _peers = land_spawns(&mut app);
+    assert_eq!(app.mirror.jar_choice(&live).jar, None, "the respawn lands with none");
+}
