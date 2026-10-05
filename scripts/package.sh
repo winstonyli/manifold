@@ -59,7 +59,7 @@ check() {
     for _ in $(seq 50); do [ -s "$out/port" ] && break; sleep 0.1; done
     port="$(cat "$out/port")"
     echo '{"has_shown_first_launch_demo": true, "default_starting_engine": "webview2"}' >"$profile/manifold/settings.json"
-    echo "{\"nodes\": [{\"id\": \"t1\", \"kind\": \"tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
+    echo "{\"nodes\": [{\"id\": \"t1\", \"type\": \"application/vnd.manifold.tab\", \"url\": \"http://127.0.0.1:$port/tall\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]}]}" >"$profile/seed.json"
     "$pkg/manifold.exe" --import-json "$(cygpath -w "$profile/seed.json")" --out "$(cygpath -w "$profile/manifold/session.mnf")" >/dev/null
     cmd="$profile/cmd"
     : >"$cmd"

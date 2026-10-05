@@ -3,15 +3,16 @@
 compare_sessions.py rather than inline heredoc Python (Global Constraints).
 
 Commands:
-  has_kinds <path> <kind:min_count> [<kind:min_count> ...]
-      Fails if any listed kind has fewer than min_count nodes in <path>.
+  has_kinds <path> <mime:min_count> [<mime:min_count> ...]
+      Fails if any listed node type (a MIME type, e.g. text/markdown) has fewer
+      than min_count nodes in <path>.
   new_id <before_path> <after_path>
       Prints the id of the one node present in <after_path> but not
       <before_path>. Fails unless there's exactly one.
   has_id <path> <id>
       Fails unless <id> is a node id in <path>.
-  count_kind <path> <kind>
-      Prints how many <kind> nodes <path> has.
+  count_kind <path> <mime>
+      Prints how many nodes of type <mime> (a MIME type) <path> has.
 """
 
 import json
