@@ -36,14 +36,19 @@ A node's identity is its MIME type, a common field replacing `kind`. Manifold's 
 | images | real `image/*` |
 | other files | sniffed MIME (existing `content.rs` table), else `application/octet-stream` |
 
-- Common fields: `type`, `name`, `color`, `pinned`, `closed`. Lifecycle is live, closed, deleted: `closed` is a
+- Common data fields, on every node: `type`, `pos`, `color`, `name`, `pinned`, `closed`. (The per-kind carve-outs
+  today, `pinned` only on tabs and `name` only on groups and jars, go away.) Lifecycle is live, closed, deleted: `closed` is a
   reversible boolean (section 5); `deleted` is the store's final tombstone (`store/ops.rs`: fields cleared, later Sets
   and re-Creates ignored). Only `closed` is writable by a verb; history eviction turns closed into deleted. The single
   per-node liveness gate (`Node::is_live`, `store/model.rs`) also checks `!closed`; hiding a closed node's descendants
-  is `effective_group`'s job (section 5). Edge fields (parent, opened-from, jar) are not common fields; they belong to
-  the edge table (section 3).
+  is `effective_group`'s job (section 5). "Not yet created" (a placeholder made by an op that arrives before its Create)
+  means "has no `type`".
+- Edge fields are stored per node but defined by the edge table (section 3): `group` (the `contains` edge), `parent`
+  (the `opened-from` edge; today's `PARENT`), and later `jar`. A node carries one if the edge row's source pattern
+  accepts it.
 - One name precedence rule, the existing `names.rs` rules. A stored `color` layers over the row's default color.
-- Unknown types resolve to the `*/*` row; their fields are kept raw, as unknown kinds are today.
+- Unknown types resolve to the `*/*` row; their fields are kept raw. Unlike today (where `is_live` hides unknown kinds),
+  they are shown as a generic card.
 
 ## 2. Capability table
 
@@ -54,13 +59,15 @@ Rows are plain data registered through `register(row)` (compiled-in now, so plug
   `matches(pattern, type)` matcher serves capability and edge rows.
 - **Layering**: all matching rows apply in rank order; a higher row overrides a lower row per field. List fields (such
   as `views`) append. Equal rank: the later registration wins; registering the same exact pattern and tags twice is an
-  error.
+  error. Edge rows (section 3) are not layered: each is found by its edge-type id and uses `matches` only to check the
+  endpoints.
 - **Tags** (`Tag`, a closed `#[non_exhaustive]` enum in a bitset): backing `inline | file | web`; state
   `failed | loaded | engine-missing`; `file-missing`. Tags are runtime facts, not stored.
 - **`caps(node)`** is read at use time, never cached on the node; a per-(type, tags) merged-row cache backs it.
 - **Flags after dedup**: `renamable`, `pinnable`, `portable` (duplicate and export), `restorable` (close is
   undoable; independent of `portable`), `activate` (default open action), `presentation` (icon, card style, and a `runtime` field naming the
-  runtime payload family). Derived, not flags: containment/groupable and movable (from the `contains` edge row), copy
+  runtime payload family), and `fields` (a list field: the extra stored fields this type carries beyond the common
+  ones, such as `url`, `path`, `text`; section 6). Derived, not flags: containment/groupable and movable (from the `contains` edge row), copy
   forms (from backing). There is no `selectable` flag until a kind needs to refuse selection.
 - The `*/*` row sets `renamable` and `pinnable` true and `portable`, `restorable` false: an unknown node's raw fields
   are not validated, so it can be closed for good but not duplicated or undone.
@@ -80,7 +87,11 @@ Built-in rows:
 | `jar` | tab, group | jar | at-most-one | Clear | added by sub-project C, not A; effective jar = own edge, else nearest ancestor via `contains`; edge presence means explicit (replaces `JAR_SET`, which stays until then) |
 | `link` | any | any | many | Clear | stored as a Link node |
 
-- `Clear` on a many-cardinality edge closes the Link node itself (recorded in the transaction, so undo brings it back).
+- **`Clear` is a read rule, not an op.** An edge whose target is not live (closed, deleted or missing) reads as none,
+  and a Link node whose endpoint is not live is not shown. Nothing is written when the target closes, so undoing the
+  close brings every such edge back for free. (Deleted targets use the same rule, the existing "missing means deleted"
+  contract; eviction also deletes Link nodes that name a node it deletes.) Only the structural variants, `Adopt` and
+  `Cascade`, change the document.
 - A Link node (`application/vnd.manifold.link`) has `from`, `to`, `edge-type`, and the common `name`. Any later
   many-to-many type (such as `references`) uses the same storage with its own `edge-type` id.
 - The connect gesture offers the edge types whose endpoints accept the pair. Cycle checks read `acyclic`.
@@ -99,8 +110,9 @@ Built-in rows:
 - **Pinning** is the common `pinned` boolean on any `pinnable` row. Effect, identical for all kinds: sorts first in its
   container and is skipped by "close others" and bulk close. If pinning today also does something else, that effect
   goes in the row's `pinnable` entry, not in the verb (check during planning).
-- **Verbs**, one implementation each, gated by a flag and written only through store ops: rename (`renamable`), pin
-  (`pinnable`), duplicate (`portable`), close, undo(entry), connect/disconnect (edge table; moving a node is
+- **Verbs**, one implementation each, gated by a flag and (end state, section 6 item 10) written only through store
+  ops: rename (`renamable`), pin (`pinnable`), duplicate (`portable`; copies the subtree with
+  `create_ops(subtree, remap = true)`, the existing import path in `store/json.rs`), close, undo(entry), connect/disconnect (edge table; moving a node is
   `connect(contains)`, so endpoint patterns and the acyclic check apply to drags), activate (open with the row's
   default view; rows with no view keep an explicit action, such as group enter or PDF reveal until D), open with (empty
   until D).
@@ -114,10 +126,12 @@ One history replaces both undo and Recently Closed.
 
 - **Close is reversible by a flag, not by deletion.** The store's Delete is final (fields cleared, later Sets and
   re-Creates ignored, `store/ops.rs`), so a close cannot be undone by re-creating the node. Closing a `restorable`
-  node sets its `closed` field (section 1); the liveness gate then hides the node and its whole subtree, which keep
-  their Ids, fields and parent edge. Incoming edges therefore still resolve after undo, and no serializer is involved.
-- An entry is `{label, inverse: Vec<Op>}`, a transaction. A close records the `closed` Set, the removal-variant ops of
-  section 3 (cleared fields, adopted children, closed Link nodes), and the inverse of each. Undo applies the inverse
+  node sets its `closed` field (section 1); the liveness gate hides the node and `effective_group` hides its subtree,
+  which keep their Ids, fields and parent edge. Edges into the node simply read as none while it is closed (section 3,
+  `Clear`) and resolve again after undo, and no serializer is involved.
+- An entry is `{label, inverse: Vec<Op>}`, a transaction. A close records the `closed` Set, the ops of the structural
+  removal variant (`Adopt`: the children's Moves and the jar fix-up below; `Cascade`: none), and the inverse of each.
+  `Clear` records nothing. Undo applies the inverse
   ops as new ops with fresh timestamps (consistent with LWW); the Recently Closed menu applies any chosen entry through
   the same path. Undoing a node whose old parent is gone (deleted) shows it at the nearest live ancestor, by the
   store's existing effective-group rule; if the parent is still closed, the node is restored but stays hidden with it
@@ -132,10 +146,14 @@ One history replaces both undo and Recently Closed.
 - A kind with `restorable` false is deleted for real on close, with no entry; the close confirmation says so.
 - **Eviction** keeps the history bounded: when an entry falls off (`MAX_CLOSED` in `closed.rs`, currently 20), the
   whole closed subtree is Deleted for real, not just its root (a deleted root would otherwise pass its children up and
-  resurface them). That is the only place closed becomes deleted. Emptying the history does the same.
+  resurface them), except descendants that are themselves closed roots of an entry still in the history; those keep
+  their closed flag and their own entry. That is the only place closed becomes deleted. Emptying the history does the
+  same.
+- **No orphans.** Closed nodes live in the shared document but the history is per replica, so a lost local state would
+  leave closed roots no entry can reach. On load, a closed root with no entry in the history gets one (labelled from
+  its name), so it ages out through eviction like any other.
 - Closing a loaded tab unloads its engine; undo restores it unloaded (today's behavior).
-- `create_ops(subtree, remap)` is not used by history. Duplicate and export use it with `remap = true` (the existing
-  import path in `store/json.rs`).
+- History does not serialize subtrees; `create_ops` (section 4, duplicate and export) is not used by it.
 - Only close records entries now (owner decision). Widening later means recording more transactions (Set and Move
   inverses are the old value), coalescing (one drag, or typing, is one entry), a redo stack and a UI; the data model does
   not change.
@@ -151,11 +169,14 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
 2. **Field lists are row data.** `kind_fields` (`session_sync.rs`) gives nine kinds near-identical lists. The row `fields`
    list appends by layer: `*/*` carries the common fields, file-backed rows add `url` and `path`, `text/markdown` adds
    `text`, and so on. `diff`, `fields_of` and `imported_fields` read the merged list.
-3. **Common fields on every node:** `pos`, `color`, `name`, `pinned`, `closed`, `parent`. The per-kind carve-outs
-   (`pinned` only on tabs, `name` only on groups and jars) go away.
-4. **Edge validity is generic.** `diff` hard-codes `PARENT` (`valid(...)` on the create and set paths); it iterates every
-   Id-typed edge field from the edge table instead, so `jar`, `link` endpoints and later edges get "a target that is
-   neither live nor new is written as none" for free.
+3. **Common fields on every node** (section 1: `type`, `pos`, `color`, `name`, `pinned`, `closed`), so the common part
+   of every `fields` list is written once, on `*/*`.
+4. **Edge validity is one rule.** `diff` hard-codes `PARENT` (`valid(...)` on the create and set paths). The rule it
+   applies, "a target that is neither live nor new reads as none", is the same as section 3's `Clear` read rule, so it
+   is stated once and applied to every Id-typed edge field from the edge table (`jar`, link endpoints, later edges)
+   instead of to `PARENT` alone. Write side versus read side: a closed target keeps the stored edge (reads as none,
+   undo restores it), so `diff`'s `valid(...)` must treat a closed node as a valid target and write `none` only for a
+   deleted or unknown one. Testing `is_live` there would erase every edge into a node the moment it is closed.
 5. **No separate closed-entry format.** `LocalState.closed: Vec<JsonDoc>` (a JSON serialization of each closed subtree)
    and `closed.rs`'s entry type are replaced by the `closed` flag plus a short list of `{label, inverse}` entries.
    Decision for the plan: the list stays in local state as now (history is per replica); closed nodes are in the shared
@@ -168,7 +189,6 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
 7. **One "viewed" id in local state.** `viewed_image` (an image-specific field) becomes `viewed: Option<Id>` for any
    node; with D it names the node a view is open on.
 8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field (18 fields to 16).
-
 9. **`Create` drops its `kind` slot.** `type` is an ordinary field written at create, so `Create{node, fields}` is
    uniform. "Not yet created" (today `Kind::Unknown(0)`, `Node::placeholder`, and its compaction special case at
    `ops.rs:158`) becomes "has no `type`". Behavior change: unknown types are no longer hidden (`is_live` today rejects
@@ -179,7 +199,9 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
     - *Verbs emit ops directly* (spec section 4 already says verbs write only through store ops). `diff`, `explicit`
       and `keep` disappear, and `FieldDef.explicit` goes with them. This is the clean end state and the bigger change.
     - *Keep `diff`, capture around the verb*: snapshot the affected fields before and after, and take the inverse from
-      the pair. Smaller, but it leaves the second sync mechanism in place.
+      the pair. Smaller, but it leaves the second sync mechanism in place, and `diff` needs a "closing" set like `keep`:
+      a restorable node removed from live state must become `Set closed`, not the `Delete` that `diff` emits for any
+      document node missing from `live` (`doc.live()` must keep excluding closed nodes so this holds afterwards).
     Recommended: direct ops, done together with item 6 in plan step 5; until then history uses the capture approach.
 
 Unchanged: the typed `FIELDS` table, `explicit` fields, `ENGINE` and `ENGINES` (until D), and `JsonLeaf`'s
@@ -192,16 +214,18 @@ Each step leaves the app working:
 1. Add the row table, edge table and `caps()` with the old enums still in place.
 2. Switch consumers to `caps()` kind by kind, starting with the menu (`node_menu.rs`; heaviest sites: `node.rs` 58
    `NodePayload` matches, `session_sync.rs` 33, `fetched.rs` 30).
-3. Add generic selection and the verbs.
+3. Add generic selection and the verbs. Until step 5 they mutate live state as today and `diff` syncs it.
 4. Add the `closed` field (`is_live`, the closed-aware `effective_group`, compaction and pruning keep closed nodes),
    then move undo and Recently Closed to transactions.
-5. Remove the five enums, rewrite fixtures (`seed.json`, smoke and drive scripts, README, first-launch demo) and add a
+5. Replace live state with document nodes and sync by ops (section 6 items 6, 9, 10), remove the five enums, rewrite
+   fixtures (`seed.json`, smoke and drive scripts, README, first-launch demo) and add a
    grep-guard test, in the style of the `APPDATA` guard in `profile::tests`, that fails if any source still names the
    old enums.
 
 ## Error handling
 
 - Unknown type: the `*/*` row (closeable, generic card), fields kept raw.
+- A Link node or edge field naming a node that is not live: not shown, nothing written (section 3, `Clear`).
 - Undo that fails to apply: the reason goes in the status line and the history entry stays.
 - A connect the edge table rejects (endpoints, cycle): no op is written and the gesture reports why.
 
@@ -209,9 +233,11 @@ Each step leaves the app working:
 
 Table-driven tests for matcher rank, tag raising and per-field override; edge cardinality, `acyclic` and each removal
 variant; a close/undo round trip for every `restorable` type, including incoming edges, a closed group's subtree hidden and
-restored, Dissolve and Close Contents undone, and eviction deleting the whole closed subtree; duplicate keeping
-outside-pointing edges; the verb gate
-over mixed selections; and the grep guard. Tests never touch the real `%APPDATA%\manifold` (project CLAUDE.md).
+restored, Dissolve and Close Contents undone, and eviction deleting the closed subtree but not a descendant with its own
+entry; an edge into a closed node reading as none and back after undo; a closed root with no history entry gaining one
+on load; type-string journal round trip and `Create` without a kind (unknown type shown as a generic card); duplicate
+keeping outside-pointing edges; `diff` leaving an edge into a closed node unwritten; the verb gate over mixed
+selections; and the grep guard. Tests never touch the real `%APPDATA%\manifold` (project CLAUDE.md).
 
 ## Open checks for the plan
 
