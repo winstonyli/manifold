@@ -13,3 +13,7 @@ Scan reports (git-ignored): `.superpowers/sdd/2026-10-04-review-scan-fixes/gener
 ## Direction (from the scans, not yet specced)
 
 Keep the store as is (kind plus registers keyed by field number; it already holds any kind). Add data tables, not a trait per kind (two specs rejected that): a capability table per kind, and a table of which fields are edges (drives drawing, delete clean-up, load order). Typed any-to-any links via a new `Link` node kind. Fix first: group Del/close/menu contradictions, "Move to sibling group" vs drop-merge, Pdf click action, Unloaded-tab Duplicate, the per-kind "Del close" hint, and persisting a download's "opened from" link.
+
+## Update (2026-10-04)
+
+Sub-project A is designed in `2026-10-04-node-model-design.md`. Decisions made there: no migration or compatibility; vendor MIME types; a closed tag enum; an edge-type table; one transaction-shaped history (delete-only for now).
