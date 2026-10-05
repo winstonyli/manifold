@@ -345,7 +345,7 @@ fn fetch(
                 have += chunk.len() as u64;
                 progress(have);
             }
-            Ok(Err(e)) => return Err(InstallError::Network(e.to_string())),
+            Ok(Err(e)) => return Err(InstallError::Network(crate::net::describe_io(e))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if last_data.elapsed() >= idle => {
                 return Err(InstallError::Network(format!("no data for {} s", idle.as_secs_f32())));
             }

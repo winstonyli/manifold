@@ -68,6 +68,16 @@ pub(crate) fn describe(e: &ureq::Error) -> String {
     }
 }
 
+/// `describe` for an error from a body read through `std::io::Read`: ureq
+/// wraps its own errors in the `io::Error`, and unwrapping them here keeps
+/// a URI-carrying one from reaching the log whole.
+pub(crate) fn describe_io(e: std::io::Error) -> String {
+    match ureq::Error::from(e) {
+        ureq::Error::Io(e) => e.to_string(),
+        e => describe(&e),
+    }
+}
+
 /// The time `bytes` take at `bytes_per_sec`, at least `floor`: a body
 /// budget that lets a large download finish on a slow link but still ends
 /// a dead connection.
@@ -167,6 +177,14 @@ mod tests {
         let text = describe(&e);
         assert!(!text.contains("secret") && !text.contains("token"), "{text}");
         assert_eq!(describe(&ureq::Error::HostNotFound), "host not found");
+    }
+
+    #[test]
+    fn a_body_read_error_never_carries_the_url() {
+        let wrapped = ureq::Error::BadUri("https://user:secret@host/x?token=t".into()).into_io();
+        assert_eq!(describe_io(wrapped), "bad uri");
+        let plain = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        assert_eq!(describe_io(plain), "reset");
     }
 
     #[test]
