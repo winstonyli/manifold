@@ -1612,40 +1612,27 @@ impl App {
                 // counts as `clicked()`, which is what the other kinds act on).
                 let activated = card.response.double_clicked()
                     || (card.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                match kind {
+                // Click (not drag -- egui doesn't report `clicked()` for a drag).
+                let click = card.response.clicked().then(|| click_action(kind)).flatten();
+                match (kind, click) {
                     _ if missing_file => {
                         if card.response.clicked() {
                             pass.actions.push(GraphAction::Node(id.clone(), NodeAction::RetryMissingFile));
                         }
                     }
-                    // Opens the tab into Tab view; for a sleeping/waking
-                    // Unloaded card this wakes its engine (see
-                    // `App::wake_tab`).
-                    ItemNodeKind::Tab | ItemNodeKind::Unloaded if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
-                    }
-                    // Click (not drag -- egui doesn't report
-                    // `clicked()` for a drag) reveals the file.
-                    ItemNodeKind::Download if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Reveal))
-                    }
+                    (_, Some(action)) => pass.actions.push(GraphAction::Node(id.clone(), action)),
                     // Click on the rendered note enters editing in place.
-                    ItemNodeKind::Note if card.response.clicked() && !note_was_editing => {
+                    (ItemNodeKind::Note, _) if card.response.clicked() && !note_was_editing => {
                         if let Some(note) = self.nodes.get_mut(id).and_then(|n| n.as_note_mut()) {
                             note.editing = true;
                         }
                         // The editor appears next frame; focus it so typing can start at once.
                         ui.memory_mut(|m| m.request_focus(egui::Id::new(("note_edit", id))));
                     }
-                    // Maximizes the image into Item view, the same
-                    // gesture a Tab card uses.
-                    ItemNodeKind::Image if card.response.clicked() => {
-                        pass.actions.push(GraphAction::Node(id.clone(), NodeAction::Open))
-                    }
                     // Enters the node's JSON level, unless it's a leaf, its
                     // file failed to load (plan ruling 10) or it's still
                     // being refetched (`JsonPayload::enterable`).
-                    ItemNodeKind::Json
+                    (ItemNodeKind::Json, _)
                         if activated && self.nodes.get(id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                     {
                         // Entered from the keyboard: the level's root card takes focus
@@ -1656,7 +1643,7 @@ impl App {
                         pass.actions.push(GraphAction::EnterGroup(id.clone()))
                     }
                     // Drills into the group's own subgraph.
-                    ItemNodeKind::Group if activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
+                    (ItemNodeKind::Group, _) if activated => pass.actions.push(GraphAction::EnterGroup(id.clone())),
                     _ => {}
                 }
             }

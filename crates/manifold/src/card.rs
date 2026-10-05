@@ -527,6 +527,21 @@ pub(crate) fn del_verb(kind: ItemNodeKind) -> &'static str {
     }
 }
 
+/// What a single click (or Enter) on a `kind` of card does, for the kinds whose click is a `NodeAction`
+/// (`App::draw_graph_cards`; a card whose file is missing retries it instead):
+/// - Tab, Unloaded: opens it into Tab view (an unloaded one wakes, `App::wake_tab`).
+/// - Image: maximizes it into Item view, the gesture a tab uses.
+/// - Download, Pdf: reveals the file. A PDF has no Item view, so it gets the other file card's click.
+///
+/// A Note's click edits it in place and a Group or Json opens on double-click, in the caller.
+pub(crate) fn click_action(kind: ItemNodeKind) -> Option<NodeAction> {
+    match kind {
+        ItemNodeKind::Tab | ItemNodeKind::Unloaded | ItemNodeKind::Image => Some(NodeAction::Open),
+        ItemNodeKind::Download | ItemNodeKind::Pdf => Some(NodeAction::Reveal),
+        ItemNodeKind::Note | ItemNodeKind::Group | ItemNodeKind::Json => None,
+    }
+}
+
 /// The buttons `view`'s card shows, in registration order (see
 /// `CardControl`): the swatch on every card, a tab's (live or unloaded)
 /// pin, and a live tab's audio indicator while playing or muted, eject on
@@ -2721,6 +2736,20 @@ mod tests {
                 Close.rect(card, inv_zoom),
                 egui::Rect::from_center_size(card.right_top(), egui::Vec2::splat(18.0) * inv_zoom)
             );
+        }
+    }
+
+    /// A PDF card's click reveals its file, as a download's does; the other kinds keep theirs.
+    #[test]
+    fn click_action_gives_a_pdf_the_download_click() {
+        use ItemNodeKind as K;
+        assert_eq!(click_action(K::Pdf), Some(NodeAction::Reveal));
+        assert_eq!(click_action(K::Pdf), click_action(K::Download));
+        for kind in [K::Tab, K::Unloaded, K::Image] {
+            assert_eq!(click_action(kind), Some(NodeAction::Open), "{kind:?}");
+        }
+        for kind in [K::Note, K::Group, K::Json] {
+            assert_eq!(click_action(kind), None, "{kind:?}: handled by the caller");
         }
     }
 
