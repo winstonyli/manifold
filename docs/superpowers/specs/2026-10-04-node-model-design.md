@@ -62,10 +62,10 @@ Rows are plain data registered through `register(row)` (compiled-in now, so plug
   error. Edge rows (section 3) are not layered: each is found by its edge-type id and uses `matches` only to check the
   endpoints.
 - **Tags** (`Tag`, a closed `#[non_exhaustive]` enum in a bitset): backing `inline | file | web`; state
-  `failed | loaded | engine-missing`; `file-missing`. Tags are runtime facts, not stored.
+  `failed | loaded | engine-missing`; `file-missing`; content `blank` (a note with no text). Tags are runtime facts, not stored.
 - **`caps(node)`** is read at use time, never cached on the node; a per-(type, tags) merged-row cache backs it.
 - **Flags after dedup**: `renamable`, `pinnable`, `portable` (duplicate and export), `restorable` (close is
-  undoable; independent of `portable`), `activate` (default open action), `presentation` (icon, card style, and a `runtime` field naming the
+  undoable; independent of `portable`), `activate` (default open action), `presentation` (icon, card style, `draw_layer` (replaces `GRAPH_DRAW_ORDER`), and a `runtime` field naming the
   runtime payload family), and `fields` (a list field: the extra stored fields this type carries beyond the common
   ones, such as `url`, `path`, `text`; section 6). Derived, not flags: containment/groupable and movable (from the `contains` edge row), copy
   forms (from backing). There is no `selectable` flag until a kind needs to refuse selection.
@@ -185,7 +185,7 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
    (`tab_fields`, `tab_common`, `str_of`, `url_of`, `bool_of`, `pos_of`, `id_of`, `engine_field` and the 33 kind sites in
    `session_sync.rs`). With a generic node (type, fields) the live model is the fields map plus a runtime side-table
    (the row's `presentation.runtime`: engine handle, texture, load state), and that translation layer disappears. This
-   is the largest cut and the largest refactor; it lands in step 5 of the plan, once consumers read `caps()`.
+   is the largest cut and the largest refactor; it is plan 2 (see "Rename plan and order").
 7. **One "viewed" id in local state.** `viewed_image` (an image-specific field) becomes `viewed: Option<Id>` for any
    node; with D it names the node a view is open on.
 8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field (18 fields to 16).
@@ -202,25 +202,38 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
       the pair. Smaller, but it leaves the second sync mechanism in place, and `diff` needs a "closing" set like `keep`:
       a restorable node removed from live state must become `Set closed`, not the `Delete` that `diff` emits for any
       document node missing from `live` (`doc.live()` must keep excluding closed nodes so this holds afterwards).
-    Recommended: direct ops, done together with item 6 in plan step 5; until then history uses the capture approach.
+    Decided: direct ops, in plan 2 together with item 6. History is built only in plan 3, on top of that, so the
+    capture approach is never built.
 
 Unchanged: the typed `FIELDS` table, `explicit` fields, `ENGINE` and `ENGINES` (until D), and `JsonLeaf`'s
 `key`/`value`/`path` (a JSON-path node type is a separate idea).
 
 ## Rename plan and order
 
-Each step leaves the app working:
+Reordered 2026-10-04 after reading the live model: the app keeps per-kind live state (`NodePayload`; selection is
+`selected_tabs` and covers tabs only; pin is `pinned_mut()` on tab payloads; rename touches groups only; close destroys
+the live node and records a JSON snapshot). Generalizing selection, pin, rename and duplicate in that model would add
+fields to every payload variant only for the live-state rewrite to delete them, and the `closed` flag needs sync by ops
+to avoid a throwaway capture mechanism. So the generic verbs and history come after the live-state rewrite. Each plan
+leaves the app working:
 
-1. Add the row table, edge table and `caps()` with the old enums still in place.
-2. Switch consumers to `caps()` kind by kind, starting with the menu (`node_menu.rs`; heaviest sites: `node.rs` 58
-   `NodePayload` matches, `session_sync.rs` 33, `fetched.rs` 30).
-3. Add generic selection and the verbs. Until step 5 they mutate live state as today and `diff` syncs it.
-4. Add the `closed` field (`is_live`, the closed-aware `effective_group`, compaction and pruning keep closed nodes),
-   then move undo and Recently Closed to transactions.
-5. Replace live state with document nodes and sync by ops (section 6 items 6, 9, 10), remove the five enums, rewrite
-   fixtures (`seed.json`, smoke and drive scripts, README, first-launch demo) and add a
-   grep-guard test, in the style of the `APPDATA` guard in `profile::tests`, that fails if any source still names the
-   old enums.
+1. **Plan 1, tables and behavior-neutral consumers.** The row table, edge table and `caps()` with the old enums still in
+   place. Rows describe today's behavior (for example `pinnable` is true only for tabs); plan 3 widens them. Migrate the
+   decisions that are pure per-kind `match`es (group close is Dissolve, `worth_reopening`, draw order), each guarded by
+   a golden test that behavior is unchanged.
+2. **Plan 2, live state is the node.** Replace live state with document nodes and sync by ops (section 6 items 6, 9,
+   10); `type` string in the journal; remove the five enums; rewrite fixtures (`seed.json`, smoke and drive scripts,
+   README, first-launch demo); add a grep-guard test, in the style of the `APPDATA` guard in `profile::tests`, that
+   fails if any source still names the old enums.
+3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
+   the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
+   nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
+   `closed.rs`'s snapshots and `LocalState.closed`.
+
+Gaps found while planning, ruled here: a `draw_layer` in `presentation` (today's `GRAPH_DRAW_ORDER`); a `blank` tag
+(a note with no text is not restorable today); until plan 3, `Kind::Download` maps to `application/octet-stream` and
+`Kind::JsonLeaf` to `application/vnd.manifold.json-leaf` (the section 1 table lists neither); `Doc::live()` must mean
+"live and not under a closed ancestor" (`Doc::shown`), or `diff` would Delete a closed group's descendants.
 
 ## Error handling
 
