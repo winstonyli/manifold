@@ -52,7 +52,7 @@ pub(crate) enum NodeAction {
     Dissolve,
     ExportGroup,
     /// Delete for a file card, "Remove from List" for a download, Close
-    /// for a tab or group.
+    /// for a tab, "Close Group and Contents" for a group.
     Delete,
     /// A tab's jar row: that jar (`None`: the default jar), picked by hand (`App::set_tab_jar`).
     SetJar(Option<NodeId>),
@@ -72,12 +72,11 @@ pub(crate) enum NodeAction {
 }
 
 impl NodeAction {
-    /// The key that does this to a keyboard-focused card, shown at the row's right edge.
-    pub(crate) fn key_hint(&self) -> Option<&'static str> {
-        match self {
-            NodeAction::Delete => Some("Del"),
-            _ => None,
-        }
+    /// The key that does this to a keyboard-focused card of `kind`, shown at the row's right edge. Del is
+    /// whatever the card's Close does (`CardControl::Close`): Dissolve on a group, so "Close Group and
+    /// Contents" (`Delete`), which closes the members too, is never hinted Del.
+    pub(crate) fn key_hint(&self, kind: ItemNodeKind) -> Option<&'static str> {
+        (*self == CardControl::Close.action(kind)).then_some("Del")
     }
 
     pub(crate) fn hover_text(&self) -> Option<&'static str> {
@@ -140,6 +139,8 @@ pub(crate) enum NodeMenuItem {
 /// maximum, so it grows to fit the swatch row.
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeMenuConfig {
+    /// Whose menu: picks the row hinted Del (`NodeAction::key_hint`).
+    kind: ItemNodeKind,
     area_id: &'static str,
     min_width: f32,
     items: Vec<NodeMenuItem>,
@@ -199,7 +200,7 @@ pub(crate) fn build_node_context_menu(
             for item in &config.items {
                 match item {
                     NodeMenuItem::Button(label, item_action) => {
-                        let mut response = menu_button(ui, *label, item_action.key_hint(), &mut first_item);
+                        let mut response = menu_button(ui, *label, item_action.key_hint(config.kind), &mut first_item);
                         if let Some(text) = item_action.hover_text() {
                             response = response.on_hover_text(text);
                         }
@@ -405,7 +406,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         items.push(Separator);
         items.extend(delete_items);
-        NodeMenuConfig { area_id, min_width, items }
+        NodeMenuConfig { kind: view.kind, area_id, min_width, items }
     };
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
@@ -483,7 +484,9 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
         }
         ItemNodeKind::Group => {
-            let mut delete_items = vec![Button("Dissolve", A::Dissolve), Button("Close Group", A::Delete)];
+            // Dissolve keeps the members (the card's Del, ✕ and middle-click do it); the second closes them all.
+            let mut delete_items =
+                vec![Button("Dissolve Group", A::Dissolve), Button("Close Group and Contents", A::Delete)];
             if !headless {
                 delete_items.push(Button("Export Group...", A::ExportGroup));
             }
@@ -876,24 +879,25 @@ mod tests {
         assert_eq!(app.nodes[&note].group, Some(g2));
     }
 
+    fn view_of(kind: ItemNodeKind) -> NodeMenuView {
+        NodeMenuView {
+            kind,
+            has_group: false,
+            color: None,
+            has_url: false,
+            has_copy_url: false,
+            pinned: false,
+            other_default_engine: false,
+            failed: false,
+            engine_missing: false,
+            move_targets: Vec::new(),
+            renaming: None,
+            jars: None,
+        }
+    }
+
     #[test]
     fn node_menu_config_matches_each_kinds_menu() {
-        fn view_of(kind: ItemNodeKind) -> NodeMenuView {
-            NodeMenuView {
-                kind,
-                has_group: false,
-                color: None,
-                has_url: false,
-                has_copy_url: false,
-                pinned: false,
-                other_default_engine: false,
-                failed: false,
-                engine_missing: false,
-                move_targets: Vec::new(),
-                renaming: None,
-                jars: None,
-            }
-        }
         fn menu_of(view: &NodeMenuView, headless: bool) -> (&'static str, f32, String) {
             let config = node_menu_config(view, headless);
             let items: Vec<&str> = config
@@ -967,7 +971,7 @@ mod tests {
                 (
                     "group_context_menu",
                     150.0,
-                    format!("Rename | Sleep Tabs | <colors>{g} | --- | Dissolve | Close Group | Export Group...")
+                    format!("Rename | Sleep Tabs | <colors>{g} | --- | Dissolve Group | Close Group and Contents | Export Group...")
                 )
             );
             assert_eq!(
@@ -988,7 +992,7 @@ mod tests {
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, true).2,
-            "Rename | Sleep Tabs | <colors> | --- | Dissolve | Close Group"
+            "Rename | Sleep Tabs | <colors> | --- | Dissolve Group | Close Group and Contents"
         );
         // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
         // Tab, ahead of the kind's own items.
@@ -1035,13 +1039,44 @@ mod tests {
             |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
         assert_eq!(
             menu_of(&group(false), false).2,
-            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve | Close Group | Export Group..."
+            "Rename | Sleep Tabs | <jars> | <colors> | --- | Dissolve Group | Close Group and Contents | Export Group..."
         );
         assert_eq!(
             menu_of(&group(true), false).2,
-            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve | Close Group | \
+            "Rename | Sleep Tabs | <jars> | Clear Default Jar | <colors> | --- | Dissolve Group | Close Group and Contents | \
              Export Group..."
         );
+    }
+
+    /// The row hinted Del is the one the card's Del does, for every kind: a group's is Dissolve Group, never
+    /// "Close Group and Contents", which closes the members too.
+    #[test]
+    fn del_hint_names_what_del_does_on_the_card() {
+        for kind in GRAPH_DRAW_ORDER {
+            let config = node_menu_config(&view_of(kind), false);
+            let hinted: Vec<&str> = config
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                    _ => None,
+                })
+                .collect();
+            let del = CardControl::Close.action(kind);
+            let want: Vec<&str> = config
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    NodeMenuItem::Button(label, action) if *action == del => Some(*label),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(hinted, want, "{kind:?}");
+            assert_eq!(hinted.len(), 1, "{kind:?}: one row hinted Del");
+        }
+        assert_eq!(NodeAction::Dissolve.key_hint(ItemNodeKind::Group), Some("Del"));
+        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Group), None, "closing the members isn't Del");
+        assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Tab), Some("Del"));
     }
 
     #[test]
