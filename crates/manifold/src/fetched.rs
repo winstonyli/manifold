@@ -59,7 +59,7 @@ impl App {
         Placement { group: self.current_group.clone(), pos }
     }
 
-    /// Inserts an uncolored node showing `payload` at `at` under `id`
+    /// Inserts a node (colourless: colour is the mirror's, by id) showing `payload` at `at` under `id`
     /// (allocated when `None`) and appends it to `node_order`. Doesn't
     /// save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
@@ -120,7 +120,7 @@ impl App {
         newest_first.find(from_tab).or(first).cloned()
     }
 
-    /// Inserts a node showing `payload` at `pos`, top level and uncolored:
+    /// Inserts a node showing `payload` at `pos`, top level, no colour of its own (colour is the mirror's, by id):
     /// `materialize`'s way in for kinds with no insert helper of their own,
     /// and for an image/JSON card whose file couldn't be loaded (see
     /// `ImagePayload::error`).

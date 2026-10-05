@@ -677,7 +677,7 @@ pub(crate) fn paint_card_control(
             }
         }
         // A `PUSH_PIN` icon, ACCENT when pinned. A pinned node is left out
-        // of the force-directed layout (see `TabPayload::pinned`).
+        // of the force-directed layout (see `Mirror::pinned`).
         CardControl::Pin => {
             let pin_color = if view.pinned { ACCENT } else { ui.visuals().weak_text_color() };
             if !lod_simplified {

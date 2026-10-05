@@ -153,7 +153,7 @@ pub(crate) fn item_node_kind(payload: &NodePayload) -> ItemNodeKind {
 /// model, rather than another migration of a pre-existing type -- proof the
 /// model actually supports "arrange anything" the way it was built to.
 /// Persisted in the session store (`field::TEXT`) since a note is
-/// user-authored content, not a display preference like `TabPayload::pinned`
+/// user-authored content, not a display preference like `Mirror::pinned`
 /// or a group's own membership -- losing it on restart would defeat the
 /// point of writing one down.
 pub(crate) struct NotePayload {
@@ -331,7 +331,7 @@ pub(crate) enum UnloadedState {
 }
 
 /// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
-/// `pos`/`vel`/`color` moved to the now-shared `GraphNode`). See
+/// `pos`/`vel` moved to the now-shared `GraphNode`; `color` and `pinned` live in the `Mirror`). See
 /// `NodePayload`'s own doc comment.
 pub(crate) struct TabPayload {
     pub(crate) tab: EngineTab,
@@ -362,7 +362,7 @@ pub(crate) struct TabPayload {
     /// from `Settings::zoom_factor` at spawn time (a fresh tab still
     /// picks up "whatever the default is right now", unchanged), then
     /// tracked per-tab from there -- carried through a respawn/engine
-    /// swap/crash recovery the same way `pinned`/`color` already are. Not
+    /// swap/crash recovery the same way `Mirror::pinned`/`Mirror::color` are. Not
     /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
@@ -416,7 +416,7 @@ pub(crate) struct DownloadPayload {
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
 /// One node in the graph view -- fields every kind shares (position, graph
-/// membership) live here; `payload` holds whatever's specific to the
+/// membership) live here (`color` and `pinned` are not fields: see `Mirror`); `payload` holds whatever's specific to the
 /// node's actual kind. See `NodePayload`'s own doc comment for the
 /// migration this is a step of.
 pub(crate) struct GraphNode {
@@ -496,7 +496,7 @@ impl GraphNode {
 }
 
 /// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
-/// `pos`/`vel`/`color` moved to `GraphNode`, shared with every kind). A
+/// `pos`/`vel` moved to `GraphNode`, shared with every kind; `color` lives in the `Mirror`). A
 /// group is a container node shown at whichever level of Graph view it
 /// itself belongs to that, double-clicked, drills into its own subgraph of
 /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in

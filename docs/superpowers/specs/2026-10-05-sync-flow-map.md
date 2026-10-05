@@ -28,3 +28,9 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 ## Tests touching the mechanism
 
 79 tests in `session_sync/tests.rs`: 8 pure `diff` tests (4-argument signature) plus `path_is_explicit` and `app_save_costs` call `diff`; four depend on `explicit`/`mark`; the rest cover remote apply, URL sharing, restore/personal state/wake, jars and import, content refetch, downloads and parent links.
+
+## After 2b-1
+
+- Mirrored fields (`color`, `pinned`) are written only by `App::edit_field`, which updates the mirror and queues the op in `App::pending`.
+- `save_session` commits `App::pending` beside `diff`, dropping edits for nodes this commit creates or deletes or the document doesn't show live, and clears it only on a successful commit.
+- `mirror_remote` (called from `materialize`) skips a field with a pending edit, and `Mirror::init` seeds a new tab at spawn landing only if the id has no entry.

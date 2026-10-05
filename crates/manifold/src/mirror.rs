@@ -52,7 +52,7 @@ impl Mirror {
     }
 
     /// Graph view's pin toggle (tabs only): the force-directed layout never moves a pinned tab, as it never moves
-    /// a dragged node (`graph_layout::step`); it still pushes its neighbours.
+    /// a dragged node (`graph_layout::step`); it still pushes its neighbours. Only tabs carry the field.
     pub(crate) fn pinned(&self, id: &str) -> bool {
         matches!(self.get(id, field::PINNED), FieldValue::Bool(true))
     }

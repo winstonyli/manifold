@@ -7,7 +7,7 @@ use super::*;
 /// through (see `next_tag_color`) -- vermillion/orange/yellow/bluish
 /// green/sky blue/reddish purple, chosen for mutual distinguishability
 /// against this app's dark chrome rather than any particular meaning.
-/// Used via the now-shared `GraphNode::color`, for both `Tab` and
+/// Used via `Mirror::color`, for both `Tab` and
 /// `Group`. These are the Okabe-Ito colorblind-safe palette values
 /// (Okabe & Ito, 2008) -- every swatch here is rendered as a plain
 /// filled circle with no secondary encoding (shape, letter, pattern) to

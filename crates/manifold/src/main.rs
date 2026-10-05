@@ -749,9 +749,9 @@ struct TabSpawn {
 /// title or mute of its own yet. A new attribute that must survive a
 /// respawn or wake is one more field here.
 struct TabCarry {
-    /// See `TabPayload::pinned`.
+    /// See `Mirror::pinned`; seeds the mirror when the tab's id has no entry yet.
     pinned: bool,
-    /// See `GraphNode::color`.
+    /// See `Mirror::color`; seeds the mirror when the tab's id has no entry yet.
     color: Option<egui::Color32>,
     /// See `TabPayload::zoom_factor`. A new tab takes
     /// `Settings::zoom_factor`, having no value of its own yet.
