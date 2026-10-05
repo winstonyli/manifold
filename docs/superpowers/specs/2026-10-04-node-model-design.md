@@ -255,7 +255,8 @@ leaves the app working:
      2b-2 done: 5e82da0, dc1d1e6, 4741dab and 566b0c3. `group` and `parent` live in `Mirror` links; `edit_group` queues
      a `Move` (`App::pending_moves`), `edit_parent` a `Set PARENT`; `diff` no longer compares either for an existing
      non-jar node.
-     2b-3 done: aa95040 and b51f345 (url), 02810e6 (jar, jar_set), f1626b8 and 637d7c0 (engine). url (the shared url; the payload
+     2b-3 done: aa95040 and b51f345 (url), 02810e6 (jar, jar_set), f1626b8 and 637d7c0 (engine), 58835f1 (final
+     review: parked remote changes replay at landing, a mid-spawn jar delete reaches the tab). url (the shared url; the payload
      keeps the live url, which Recently Closed records), engine, jar and jar_set live in the mirror; `explicit` keeps only POS.
      Next: 2b-4 (name, text, view, pos: the document `pos` goes in the
      mirror, the layout `pos`/`vel` become a runtime side-table); 2b-5 (content kinds, then delete `diff`, `explicit`,
