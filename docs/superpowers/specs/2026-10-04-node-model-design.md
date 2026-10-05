@@ -254,7 +254,10 @@ leaves the app working:
      across a save.
      2b-2 done: 5e82da0, dc1d1e6, 4741dab and 566b0c3. `group` and `parent` live in `Mirror` links; `edit_group` queues
      a `Move` (`App::pending_moves`), `edit_parent` a `Set PARENT`; `diff` no longer compares either for an existing
-     non-jar node. Next: 2b-3 (url, engine, jar, jar_set); 2b-4 (name, text, view, pos: the document `pos` goes in the
+     non-jar node.
+     2b-3 done: aa95040 and b51f345 (url), 02810e6 (jar, jar_set), f1626b8 and 637d7c0 (engine). url (the shared url; the payload
+     keeps the live url, which Recently Closed records), engine, jar and jar_set live in the mirror; `explicit` keeps only POS.
+     Next: 2b-4 (name, text, view, pos: the document `pos` goes in the
      mirror, the layout `pos`/`vel` become a runtime side-table); 2b-5 (content kinds, then delete `diff`, `explicit`,
      `keep`, the enums and the caps bridge, rewrite fixtures, add the grep guard).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
