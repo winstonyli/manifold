@@ -47,7 +47,9 @@ pub(crate) enum NodeAction {
     /// A failed tab's card: tries again on the default engine.
     OpenInDefaultEngine,
     RemoveFromGroup,
-    /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`).
+    /// The keyboard route for dragging a card onto a sibling group (`DropEffect::Join`). On a group it differs
+    /// from the drag: "Move into" nests the group inside the other, where dropping it there merges the two
+    /// (`drop_action`).
     MoveToGroup(String),
     Dissolve,
     ExportGroup,
@@ -121,7 +123,7 @@ pub(crate) enum NodeMenuItem {
     /// The "Color" label and tag-color swatch row, ending in a "no color"
     /// ring.
     Colors,
-    /// One "Move to <name>" button per `(group id, name)`: the sibling groups a card can join.
+    /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
     MoveTo(Vec<(String, String)>),
     /// A small heading, then one row per jar with its colour dot and a tick on the current one. `group`: the rows
     /// set the group's default rather than the tab's jar.
@@ -213,7 +215,7 @@ pub(crate) fn build_node_context_menu(
                             // Cut to `ROW_UNITS`, so a long name cannot widen the menu; the hover has all of it.
                             let segs = crate::names::display_name(name, crate::names::UNTITLED);
                             let shown = crate::names::shorten(&segs, crate::names::ROW_UNITS);
-                            let text = crate::names::name_job(ui, "Move to ", shown.as_deref().unwrap_or(&segs), "");
+                            let text = crate::names::name_job(ui, "Move into ", shown.as_deref().unwrap_or(&segs), "");
                             let mut response = menu_button(ui, text, None, &mut first_item);
                             let hover = crate::names::name_hover(name, crate::names::ROW_UNITS, "", str::to_string);
                             if !hover.is_empty() {
@@ -858,7 +860,7 @@ mod tests {
     // One row per kind, pinned to the exact menus each kind showed before
     // the per-kind builders were merged (see the node-menu spec), and
     // before the tab and group menus joined them.
-    /// "Move to <group>" offers only sibling groups, and joins the node to the chosen one.
+    /// "Move into <group>" offers only sibling groups, and joins the node to the chosen one.
     #[test]
     fn move_to_group_offers_sibling_groups_and_joins() {
         let mut app = App::default();
@@ -876,7 +878,15 @@ mod tests {
         assert_eq!(ids(&app, &note), vec![g1.clone(), g2.clone()]);
         assert_eq!(ids(&app, &g1), vec![g2.clone()], "a group isn't offered itself");
         app.apply_node_action(&egui::Context::default(), &note, NodeAction::MoveToGroup(g2.clone()));
-        assert_eq!(app.nodes[&note].group, Some(g2));
+        assert_eq!(app.nodes[&note].group, Some(g2.clone()));
+        // On a group "Move into" nests it, unlike a drop of one group on another (which merges).
+        assert_eq!(
+            drop_action(ItemNodeKind::Group, DropTarget::Card(ItemNodeKind::Group), false),
+            Some(DropEffect::Merge)
+        );
+        app.apply_node_action(&egui::Context::default(), &g1, NodeAction::MoveToGroup(g2.clone()));
+        assert_eq!(app.nodes[&g1].group, Some(g2), "g1 nested in g2, not merged away");
+        assert_eq!(app.nodes[&inner].group, Some(g1), "g1 keeps its own members");
     }
 
     fn view_of(kind: ItemNodeKind) -> NodeMenuView {
@@ -1155,7 +1165,7 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), want);
     }
 
-    /// Name rules: "Move to <group>" draws a hidden character in the group's name as a placeholder.
+    /// Name rules: "Move into <group>" draws a hidden character in the group's name as a placeholder.
     #[test]
     fn move_to_rows_show_a_hidden_character_as_a_placeholder() {
         let ctx = menu_ctx();
@@ -1182,12 +1192,12 @@ mod tests {
                 })
                 .collect();
         }
-        let row = galleys.iter().find(|g| g.text() == "Move to Re⟦200B⟧ading");
+        let row = galleys.iter().find(|g| g.text() == "Move into Re⟦200B⟧ading");
         let row = row.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
         assert!(row.job.sections.iter().any(|s| s.format.font_id.family == egui::FontFamily::Monospace));
     }
 
-    /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move to" row, so it cannot widen the menu.
+    /// Name rules: a long group name is cut to `ROW_UNITS` in a "Move into" row, so it cannot widen the menu.
     #[test]
     fn move_to_rows_shorten_a_long_name() {
         let ctx = menu_ctx();
@@ -1214,7 +1224,7 @@ mod tests {
                 })
                 .collect();
         }
-        let want = format!("Move to {}…", "x".repeat(crate::names::ROW_UNITS - 1));
+        let want = format!("Move into {}…", "x".repeat(crate::names::ROW_UNITS - 1));
         assert!(texts.contains(&want), "{texts:?}");
     }
 

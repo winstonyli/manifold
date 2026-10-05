@@ -573,7 +573,8 @@ pub(crate) enum DropEffect {
     Reparent,
 }
 
-/// Every drag-and-drop rule in Graph view, for every kind.
+/// Every drag-and-drop rule in Graph view, for every kind. A group dropped on a group merges into it; the
+/// node menu's "Move into <group>" (`NodeAction::MoveToGroup`) is always a Join, so it nests one instead.
 pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_group: bool) -> Option<DropEffect> {
     use ItemNodeKind::{Group, Tab, Unloaded};
     match (dragged, target, inside_group) {
