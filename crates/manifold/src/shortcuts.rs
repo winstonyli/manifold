@@ -201,8 +201,14 @@ impl App {
     /// Pin/Unpin entry.
     pub(crate) fn pin_focused_tab_shortcut(&mut self) {
         let Some(id) = self.focused.clone() else { return };
-        if let Some(pinned) = self.nodes.get_mut(&id).and_then(|n| n.payload.pinned_mut()) {
-            *pinned = !*pinned;
+        self.toggle_pin(&id);
+    }
+
+    /// Pins or unpins tab `id` (live or unloaded); any other kind is left alone.
+    pub(crate) fn toggle_pin(&mut self, id: &str) {
+        if self.nodes.get(id).is_some_and(|n| n.payload.saved_tab().is_some()) {
+            let on = !self.mirror.pinned(id);
+            self.edit_field(id, field::PINNED, FieldValue::Bool(on));
         }
     }
 

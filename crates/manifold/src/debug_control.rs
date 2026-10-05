@@ -1057,7 +1057,7 @@ impl App {
                             "group": node.group,
                             "parent": node.parent,
                             "color": self.mirror.color(&item.id).is_some(),
-                            "pinned": node.payload.pinned(),
+                            "pinned": self.mirror.pinned(&item.id),
                             "editing": node.as_note().is_some_and(|n| n.editing),
                             "screen": [screen.center().x, screen.center().y],
                             "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],

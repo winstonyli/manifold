@@ -88,7 +88,7 @@ use node::*;
 use popups::*;
 use process_manager::{EngineKind, EngineTab};
 use settings::{SearchEngine, Settings};
-use store::model::field;
+use store::model::{field, FieldValue};
 use tab_view::*;
 use theme::*;
 use winit::application::ApplicationHandler;
@@ -795,11 +795,12 @@ impl TabSpawn {
     }
 
     /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
-    /// the graph and its `TabCarry` (`color` is the mirror's). `None` if `node` isn't a tab.
+    /// the graph and its `TabCarry` (`color` and `pinned` are the mirror's). `None` if `node` isn't a tab.
     fn respawn(
         id: &str,
         node: &GraphNode,
         color: Option<egui::Color32>,
+        pinned: bool,
         kind: EngineKind,
         url: String,
     ) -> Option<Self> {
@@ -814,7 +815,7 @@ impl TabSpawn {
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
-                pinned: tab.pinned,
+                pinned,
                 color,
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
@@ -2440,7 +2441,7 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let color = self.mirror.color(id);
+        let (color, pinned) = (self.mirror.color(id), self.mirror.pinned(id));
         let Some(node) = self.nodes.get_mut(id) else { return };
         let (parent, group, pos) = (node.parent.clone(), node.group.clone(), node.pos);
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
@@ -2450,7 +2451,7 @@ impl App {
         tab.state = UnloadedState::Waking;
         self.wakes_in_flight.insert(id.to_string());
         let carry = TabCarry {
-            pinned: tab.pinned,
+            pinned,
             color,
             zoom_factor: tab.zoom_factor,
             title: tab.title.clone(),
@@ -2578,8 +2579,10 @@ impl App {
     /// has no natural tab to exclude the way muting excludes the one
     /// they're presumably still listening to.
     fn set_all_pinned(&mut self, pin: bool) {
-        for pinned in self.nodes.values_mut().filter_map(|n| n.payload.pinned_mut()) {
-            *pinned = pin;
+        let tabs: Vec<String> =
+            self.nodes.iter().filter(|(_, n)| n.payload.saved_tab().is_some()).map(|(id, _)| id.clone()).collect();
+        for id in tabs {
+            self.edit_field(&id, field::PINNED, FieldValue::Bool(pin));
         }
     }
 

@@ -97,7 +97,6 @@ fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
         url: tab.url.clone(),
         title: tab.title.clone(),
         kind: tab.tab.kind,
-        pinned: tab.pinned,
         muted: tab.muted,
         zoom_factor: tab.zoom_factor,
         state,
@@ -375,7 +374,7 @@ impl App {
                     card.group.clone(),
                     card.pos,
                     self.mirror.color(&id),
-                    tab.pinned,
+                    self.mirror.pinned(&id),
                     tab.muted,
                     tab.jar,
                 ),
@@ -440,14 +439,16 @@ impl App {
                             loading: false,
                             audio_playing: false,
                             muted,
-                            pinned,
                             zoom_factor,
                             swap_target: None,
                             jar: carry_jar,
                         }),
                     },
                 );
-                self.mirror.init(&id, [(field::COLOR, session_sync::color_value(color))]);
+                self.mirror.init(
+                    &id,
+                    [(field::COLOR, session_sync::color_value(color)), (field::PINNED, FieldValue::Bool(pinned))],
+                );
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -560,11 +561,13 @@ impl App {
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed =
-                        UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar: carry_jar };
+                    let failed = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, payload });
-                    self.mirror.init(&id, [(field::COLOR, session_sync::color_value(color))]);
+                    self.mirror.init(
+                        &id,
+                        [(field::COLOR, session_sync::color_value(color)), (field::PINNED, FieldValue::Bool(pinned))],
+                    );
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -979,7 +982,7 @@ impl App {
                     id,
                     on_screen: on_screen == Some(id.as_str()) || self.split_tab.as_deref() == Some(id),
                     audio_playing: t.audio_playing,
-                    pinned: t.pinned,
+                    pinned: self.mirror.pinned(id),
                     loading: t.loading,
                     downloading: downloading.contains(id.as_str()),
                 })

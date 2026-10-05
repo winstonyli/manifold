@@ -430,7 +430,7 @@ impl App {
         let pinned: HashSet<String> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.group == self.current_group && n.payload.pinned())
+            .filter(|(id, n)| n.group == self.current_group && self.mirror.pinned(id))
             .map(|(id, _)| id.clone())
             .collect();
 

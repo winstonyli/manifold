@@ -1036,9 +1036,13 @@ impl App {
         let mut toggle_pin_all = false;
         // The focused tab's own actions, each with its shortcut shown at the row's edge.
         let mut tab_action: Option<fn(&mut App)> = None;
-        let focused_pinned = self.nodes.get(focused_id).is_some_and(|n| n.payload.pinned());
-        let tab_pin_states: Vec<bool> =
-            self.nodes.values().filter(|n| n.payload.saved_tab().is_some()).map(|n| n.payload.pinned()).collect();
+        let focused_pinned = self.mirror.pinned(focused_id);
+        let tab_pin_states: Vec<bool> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.payload.saved_tab().is_some())
+            .map(|(id, _)| self.mirror.pinned(id))
+            .collect();
         let all_pinned = !tab_pin_states.is_empty() && tab_pin_states.iter().all(|&p| p);
         let area = egui::Area::new(egui::Id::new("tab_actions_popup"))
             .fixed_pos(anchor_rect.left_bottom())

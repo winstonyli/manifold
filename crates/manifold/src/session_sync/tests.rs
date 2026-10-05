@@ -519,17 +519,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     let path = temp_dir("sync-fields").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = add(&mut app, NodePayload::Note(NotePayload { text: "v1".into(), editing: false, url: None }));
-    let failed = UnloadedTabPayload {
-        url: "https://u0/".into(),
-        title: String::new(),
-        kind: EngineKind::Servo,
-        pinned: false,
-        muted: false,
-        zoom_factor: 1.0,
-        state: UnloadedState::Failed("x".into()),
-        jar: Default::default(),
-    };
-    let tab = add(&mut app, NodePayload::Unloaded(failed));
+    let tab = add(&mut app, failed_tab("https://u0/", 1.0));
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
 
@@ -551,7 +541,8 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
     assert!(matches!(&live.payload, NodePayload::Note(n) if n.text == "typing"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("typing".into()));
-    assert!(matches!(&app.nodes[&tab].payload, NodePayload::Unloaded(t) if t.pinned && t.url == "https://u1/"));
+    assert!(app.mirror.pinned(&tab));
+    assert!(matches!(&app.nodes[&tab].payload, NodePayload::Unloaded(t) if t.url == "https://u1/"));
     assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://u0/".into()));
 
     // A later remote edit to the same field does apply.
@@ -714,19 +705,7 @@ fn colors_round_trip() {
 fn item_view_restoring_onto_a_still_spawning_tab_sets_the_respawn_focus_guard() {
     let path = crate::store::testutil::temp_dir("view-item-spawning").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let tab = add(
-        &mut app,
-        NodePayload::Unloaded(UnloadedTabPayload {
-            url: "https://x/".into(),
-            title: String::new(),
-            kind: EngineKind::Servo,
-            pinned: false,
-            muted: false,
-            zoom_factor: 1.0,
-            state: UnloadedState::Failed("x".into()),
-            jar: Default::default(),
-        }),
-    );
+    let tab = add(&mut app, failed_tab("https://x/", 1.0));
     // A node whose id isn't live yet -- `spawning`, not `self.nodes` --
     // is exactly the shape a real tab restore has before its spawn
     // lands (`materialize`'s `Kind::Tab` arm never inserts directly).
@@ -961,7 +940,6 @@ fn failed_tab(url: &str, zoom_factor: f64) -> NodePayload {
         url: url.into(),
         title: String::new(),
         kind: EngineKind::Servo,
-        pinned: false,
         muted: false,
         zoom_factor,
         state: UnloadedState::Failed("x".into()),
@@ -975,7 +953,6 @@ pub(crate) fn sleeping_tab(url: &str, title: &str) -> NodePayload {
         url: url.into(),
         title: title.into(),
         kind: EngineKind::Servo,
-        pinned: false,
         muted: false,
         zoom_factor: 1.0,
         state: UnloadedState::Sleeping,
@@ -1114,7 +1091,7 @@ fn tab_lists_include_sleeping_tabs() {
     assert_eq!(app.test_spawns.len(), 2);
     assert_eq!(app.tabs_at_current_level(), [a.clone(), b.clone()]);
     app.set_all_pinned(true);
-    assert!(app.nodes[&a].payload.pinned() && app.nodes[&b].payload.pinned());
+    assert!(app.mirror.pinned(&a) && app.mirror.pinned(&b));
     app.close_all_at_current_level();
     assert!(app.nodes.is_empty());
 }
@@ -1220,9 +1197,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     let tab = {
         let mut app = app_on(&path, 1);
         let tab = add(&mut app, sleeping_tab("https://s/", ""));
-        if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
-            t.pinned = true;
-        }
+        app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
         assert!(app.save_session());
         app.close_store();
         tab
@@ -2132,4 +2107,41 @@ fn diff_leaves_mirrored_fields_of_existing_nodes_to_pending() {
     apply(&mut doc, ops);
     live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
     assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+}
+
+#[test]
+fn a_tab_pin_is_committed_and_a_remote_pin_reaches_the_mirror() {
+    let path = temp_dir("pin-sync").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, failed_tab("https://u0/", 1.0));
+    assert!(app.save_session());
+    app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
+    assert!(app.mirror.pinned(&tab));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::PINNED), FieldValue::Bool(true));
+
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(false));
+    assert!(app.save_session());
+    assert!(!app.mirror.pinned(&tab));
+}
+
+#[test]
+fn pinning_skips_a_node_that_is_not_a_tab() {
+    let mut app = App::default();
+    let note = a_note(&mut app);
+    app.focused = Some(note.clone());
+    app.pin_focused_tab_shortcut();
+    assert!(!app.mirror.pinned(&note));
+}
+
+#[test]
+fn pin_all_pins_every_tab_and_only_tabs() {
+    let mut app = App::default();
+    let (a, b) = (add(&mut app, failed_tab("https://u0/", 1.0)), add(&mut app, failed_tab("https://u0/", 1.0)));
+    let note = a_note(&mut app);
+    app.set_all_pinned(true);
+    assert!(app.mirror.pinned(&a) && app.mirror.pinned(&b) && !app.mirror.pinned(&note));
+    app.set_all_pinned(false);
+    assert!(!app.mirror.pinned(&a) && !app.mirror.pinned(&b));
 }

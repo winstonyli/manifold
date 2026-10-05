@@ -375,11 +375,12 @@ impl App {
             let kind = match &node.payload {
                 // A swap in progress already shows its target engine, so a
                 // save meanwhile doesn't write the old one back.
-                NodePayload::Tab(TabPayload { tab, url, pinned, swap_target, jar, .. }) => {
-                    tab_fields(&mut fields, url, swap_target.unwrap_or(tab.kind), *pinned, parse_id(&node.parent), *jar)
+                NodePayload::Tab(TabPayload { tab, url, swap_target, jar, .. }) => {
+                    let (engine, pinned) = (swap_target.unwrap_or(tab.kind), self.mirror.pinned(key));
+                    tab_fields(&mut fields, url, engine, pinned, parse_id(&node.parent), *jar)
                 }
-                NodePayload::Unloaded(UnloadedTabPayload { url, kind, pinned, jar, .. }) => {
-                    tab_fields(&mut fields, url, *kind, *pinned, parse_id(&node.parent), *jar)
+                NodePayload::Unloaded(UnloadedTabPayload { url, kind, jar, .. }) => {
+                    tab_fields(&mut fields, url, *kind, self.mirror.pinned(key), parse_id(&node.parent), *jar)
                 }
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
@@ -526,9 +527,6 @@ impl App {
         let mut store_load = false;
         match &mut node.payload {
             NodePayload::Tab(tab) => {
-                if changed(field::PINNED) {
-                    tab.pinned = bool_of(fields, field::PINNED);
-                }
                 let url = str_of(fields, field::URL);
                 if changed(field::URL) && tab.url != url {
                     tab.url = url.clone();
@@ -544,9 +542,6 @@ impl App {
                 }
             }
             NodePayload::Unloaded(tab) => {
-                if changed(field::PINNED) {
-                    tab.pinned = bool_of(fields, field::PINNED);
-                }
                 if changed(field::URL) {
                     tab.url = str_of(fields, field::URL);
                 }
@@ -662,12 +657,12 @@ impl App {
                 let shared = str_of(fields, field::URL);
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
-                let (kind, pinned) = (engine_field(fields), bool_of(fields, field::PINNED));
+                let kind = engine_field(fields);
                 // Title, mute and zoom come from personal state (`apply_local`).
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
                 let jar = jar_choice_of(fields);
-                let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar };
+                let payload = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
             }
             Kind::Group => {

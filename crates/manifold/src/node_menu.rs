@@ -673,7 +673,7 @@ impl App {
             color: self.mirror.color(id),
             has_url: node.source_url().is_some(),
             has_copy_url: node.copyable_url().is_some(),
-            pinned: node.payload.pinned(),
+            pinned: self.mirror.pinned(id),
             other_default_engine: node
                 .payload
                 .as_unloaded()
@@ -771,11 +771,7 @@ impl App {
             }
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),
-            NodeAction::TogglePin => {
-                if let Some(pinned) = self.nodes.get_mut(id).and_then(|n| n.payload.pinned_mut()) {
-                    *pinned = !*pinned;
-                }
-            }
+            NodeAction::TogglePin => self.toggle_pin(id),
             NodeAction::Duplicate => self.duplicate_tab(id),
             NodeAction::Sleep => {
                 self.request_sleep(id, SleepWhy::Manual);

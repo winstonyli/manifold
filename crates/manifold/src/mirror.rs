@@ -11,7 +11,7 @@ use crate::session_sync::{color_of, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes.
-pub(crate) const MIRRORED: &[u32] = &[field::COLOR];
+pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -49,6 +49,12 @@ impl Mirror {
 
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
         color_of(&self.get(id, field::COLOR))
+    }
+
+    /// Graph view's pin toggle (tabs only): the force-directed layout never moves a pinned tab, as it never moves
+    /// a dragged node (`graph_layout::step`); it still pushes its neighbours.
+    pub(crate) fn pinned(&self, id: &str) -> bool {
+        matches!(self.get(id, field::PINNED), FieldValue::Bool(true))
     }
 }
 
@@ -90,5 +96,13 @@ mod tests {
         mirror.retain(|id| id == "a");
         assert_eq!(mirror.color("a"), Some(egui::Color32::RED));
         assert_eq!(mirror.color("b"), None);
+    }
+
+    #[test]
+    fn pinned_reads_a_bool_and_defaults_to_false() {
+        let mut mirror = Mirror::default();
+        assert!(!mirror.pinned("7"));
+        mirror.set("7", field::PINNED, FieldValue::Bool(true));
+        assert!(mirror.pinned("7"));
     }
 }

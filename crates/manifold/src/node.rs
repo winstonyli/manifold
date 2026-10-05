@@ -100,33 +100,6 @@ impl NodePayload {
             | NodePayload::Json(_) => None,
         }
     }
-
-    pub(crate) fn pinned_mut(&mut self) -> Option<&mut bool> {
-        match self {
-            NodePayload::Tab(t) => Some(&mut t.pinned),
-            NodePayload::Unloaded(t) => Some(&mut t.pinned),
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => None,
-        }
-    }
-
-    /// Whether a live or unloaded tab is pinned in place on the graph.
-    pub(crate) fn pinned(&self) -> bool {
-        match self {
-            NodePayload::Tab(t) => t.pinned,
-            NodePayload::Unloaded(t) => t.pinned,
-            NodePayload::Download(_)
-            | NodePayload::Group(_)
-            | NodePayload::Note(_)
-            | NodePayload::Image(_)
-            | NodePayload::Pdf(_)
-            | NodePayload::Json(_) => false,
-        }
-    }
 }
 
 /// A cheap, owned, `Copy` classifier for `&NodePayload` -- computed once
@@ -336,7 +309,6 @@ pub(crate) struct UnloadedTabPayload {
     /// own once it loads.
     pub(crate) title: String,
     pub(crate) kind: EngineKind,
-    pub(crate) pinned: bool,
     /// From personal state, like `title`.
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
@@ -394,13 +366,6 @@ pub(crate) struct TabPayload {
     /// persisted to the session store: a restored tab starts at
     /// `Settings::zoom_factor`.
     pub(crate) zoom_factor: f64,
-    /// Graph view's pin toggle — a pinned node is never moved by the
-    /// force-directed layout (the same `pinned` handling `graph_layout::step`
-    /// gives a node being dragged; it still pushes its neighbours), so it
-    /// stays exactly where the user put it instead of drifting under
-    /// repulsion/centering forces as siblings come and go. Saved as
-    /// `field::PINNED`.
-    pub(crate) pinned: bool,
     /// Set while a swap is in flight for *this* tab: the engine to swap
     /// *to*, once this tab's `GetState` reply (its `StateSnapshot`) comes
     /// back. Per-tab (not a flat `App` field) so a swap on one tab can't
@@ -702,7 +667,6 @@ second"
                 url: "https://example.org/".into(),
                 title: String::new(),
                 kind: EngineKind::Cef,
-                pinned: true,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
