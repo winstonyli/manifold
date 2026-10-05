@@ -55,15 +55,17 @@ A node's identity is its MIME type, a common field replacing `kind`. Manifold's 
 Rows are plain data registered through `register(row)` (compiled-in now, so plugins can register later).
 
 - **Match**: a row is `pattern` plus optional `requires` tags. Patterns, ranked low to high: `*/*`, type wildcard
-  (`image/*`), suffix wildcard (`*/*+json`), subtype prefix, exact. Each `requires` tag raises rank. One shared
+  (`image/*`), suffix wildcard (`*/*+json`), subtype prefix, exact. A row's rank is the pair (pattern rank, number of
+  `requires` tags), compared lexicographically, so tags break ties within a pattern rank and never outrank a more
+  specific pattern. One shared
   `matches(pattern, type)` matcher serves capability and edge rows.
 - **Layering**: all matching rows apply in rank order; a higher row overrides a lower row per field. List fields (such
   as `views`) append. Equal rank: the later registration wins; registering the same exact pattern and tags twice is an
   error. Edge rows (section 3) are not layered: each is found by its edge-type id and uses `matches` only to check the
   endpoints.
-- **Tags** (`Tag`, a closed `#[non_exhaustive]` enum in a bitset): backing `inline | file | web`; state
+- **Tags** (`Tag`, a closed plain enum in a bitset): backing `inline | file | web`; state
   `failed | loaded | engine-missing`; `file-missing`; content `blank` (a note with no text). Tags are runtime facts, not stored.
-- **`caps(node)`** is read at use time, never cached on the node; a per-(type, tags) merged-row cache backs it.
+- **`caps(node)`** is read at use time, never cached on the node. No per-(type, tags) merged-row cache is built until profiling shows a need (about nine rows, so merging per call is cheap); amend this section then.
 - **Flags after dedup**: `renamable`, `pinnable`, `portable` (duplicate and export), `restorable` (close is
   undoable; independent of `portable`), `activate` (default open action), `presentation` (icon, card style, `draw_layer` (replaces `GRAPH_DRAW_ORDER`), and a `runtime` field naming the
   runtime payload family), and `fields` (a list field: the extra stored fields this type carries beyond the common
@@ -199,8 +201,8 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
     - *Verbs emit ops directly* (spec section 4 already says verbs write only through store ops). `diff`, `explicit`
       and `keep` disappear, and `FieldDef.explicit` goes with them. This is the clean end state and the bigger change.
     - *Keep `diff`, capture around the verb*: snapshot the affected fields before and after, and take the inverse from
-      the pair. Smaller, but it leaves the second sync mechanism in place, and `diff` needs a "closing" set like `keep`:
-      a restorable node removed from live state must become `Set closed`, not the `Delete` that `diff` emits for any
+      the pair. Smaller, but it leaves the second sync mechanism in place, and once plan 3 adds `closed`, `diff` would need a
+      "closing" set like `keep`: a restorable node removed from live state must become `Set closed`, not the `Delete` that `diff` emits for any
       document node missing from `live` (`doc.live()` must keep excluding closed nodes so this holds afterwards).
     Decided: direct ops, in plan 2 together with item 6. History is built only in plan 3, on top of that, so the
     capture approach is never built.
@@ -229,6 +231,8 @@ leaves the app working:
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
    `closed.rs`'s snapshots and `LocalState.closed`.
+
+Plan 1 done: 7396c8f (capability table), 0ebad52 (edge table). Plans 2 and 3 are written after it.
 
 Gaps found while planning, ruled here: a `draw_layer` in `presentation` (today's `GRAPH_DRAW_ORDER`); a `blank` tag
 (a note with no text is not restorable today); until plan 3, `Kind::Download` maps to `application/octet-stream` and
