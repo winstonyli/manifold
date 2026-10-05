@@ -2424,7 +2424,7 @@ impl App {
         self.place_node(Some(id), NodePayload::Note(note), at);
     }
 
-    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`.
+    /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_engine`).
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
@@ -2437,10 +2437,12 @@ impl App {
             return;
         }
         tab.state = UnloadedState::Waking;
-        self.wakes_in_flight.insert(id.to_string());
         let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
         let carry = TabCarry { pinned, color, zoom_factor, title, muted };
         let url = tab.url.clone();
+        self.wakes_in_flight.insert(id.to_string());
+        // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
+        self.edit_engine(id, kind);
         let vel = egui::Vec2::ZERO;
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, vel, purpose, carry, fallback_kind });

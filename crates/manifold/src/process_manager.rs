@@ -264,6 +264,28 @@ impl EngineTab {
     pub fn set_visible(&mut self, visible: bool) {
         self.send(&HostToEngine::SetVisible(visible));
     }
+
+    /// A live tab for unit tests: no process, its control channel a loopback TCP connection. The returned peer
+    /// reads what the app sends it (`HostToEngine`), timing out after 200 ms when nothing more comes.
+    #[cfg(test)]
+    pub(crate) fn fake(kind: EngineKind) -> (EngineTab, ipc_protocol::MessageChannel<std::net::TcpStream>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        let host = std::net::TcpStream::connect(listener.local_addr().expect("local addr")).expect("connect");
+        let (peer, _) = listener.accept().expect("accept");
+        peer.set_read_timeout(Some(Duration::from_millis(200))).expect("read timeout");
+        let (_, events_rx) = mpsc::channel();
+        let to_engine = ToEngine::Remote(RemoteTransport::new(host));
+        let tab = EngineTab {
+            kind,
+            socket_id: String::new(),
+            to_engine,
+            events_rx,
+            child: None,
+            cache_dir: None,
+            profile_slot: None,
+        };
+        (tab, ipc_protocol::MessageChannel::new(peer))
+    }
 }
 
 impl Drop for EngineTab {

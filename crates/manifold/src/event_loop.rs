@@ -1262,9 +1262,14 @@ impl App {
                 return url_changed;
             }
             EngineToHost::Crashed { reason } => {
+                // Restarted on the mirror's engine: a swap in flight (`swap_target`, or one waiting for its cookies)
+                // has already saved its target, so the tab restarts on it, the crashed engine its fallback.
+                let want = self.mirror.engine(tab_id);
                 let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
                     let t = n.as_tab()?;
-                    TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), t.tab.kind, t.url.clone())
+                    let fallback_kind = (t.tab.kind != want).then_some(t.tab.kind);
+                    let spawn = TabSpawn::respawn(tab_id, n, self.mirror.carried(tab_id), want, t.url.clone())?;
+                    Some(TabSpawn { fallback_kind, ..spawn })
                 }) else {
                     return false;
                 };

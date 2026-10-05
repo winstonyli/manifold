@@ -11,8 +11,8 @@ use crate::json_view::JsonView;
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
 use crate::mirror::MIRRORED;
 use crate::node::{
-    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, TabPayload,
-    UnloadedState, UnloadedTabPayload,
+    DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, UnloadedState,
+    UnloadedTabPayload,
 };
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
@@ -119,8 +119,8 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 ///   nodes inside it. A live id the document holds as a tombstone is
 ///   never recreated (ids are never reused).
 /// - An existing node's group and parent are left to `App::pending_moves`
-///   and `App::pending` (Ruling 8), as its mirrored fields (`url`, `jar`
-///   and `jar_set` among them) are, except a jar's.
+///   and `App::pending` (Ruling 8), as its mirrored fields (`url`,
+///   `engine`, `jar` and `jar_set` among them) are, except a jar's.
 /// - A diffed field that differs is `Set`. An explicit field (`pos`) is
 ///   `Set` only when `explicit` names it.
 /// - A document node missing from `live` is deleted, unless `keep` names
@@ -303,28 +303,28 @@ fn link_id(id: Option<&str>) -> Option<NodeId> {
 }
 
 /// The tab `spawn` starts, as `Shared`: what `save_session` writes for a
-/// tab whose spawn hasn't landed yet (`App::spawning`). `url` and `jar` are
-/// its shared ones (`App::spawn_tab_async`): the mirror's for a tab that has
-/// an entry, which a respawn's live `spawn.url` may not be.
-pub(crate) fn spawn_shared(spawn: &TabSpawn, url: &str, jar: crate::jar::JarChoice) -> Shared {
+/// tab whose spawn hasn't landed yet (`App::spawning`). `url`, `engine` and
+/// `jar` are its shared ones (`App::spawn_tab_async`): the mirror's for a tab
+/// that has an entry, which a respawn's live `spawn.url` may not be.
+pub(crate) fn spawn_shared(spawn: &TabSpawn, url: &str, engine: FieldValue, jar: crate::jar::JarChoice) -> Shared {
     let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
     let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
-    let kind = tab_fields(&mut fields, FieldValue::Str(url.to_owned()), spawn.kind, pinned, parent, jar);
+    let kind = tab_fields(&mut fields, FieldValue::Str(url.to_owned()), engine, pinned, parent, jar);
     Shared { kind, group: parse_id(&spawn.group), fields }
 }
 
-/// A tab's fields beyond `pos` and `color`, live or failed. `url` and `jar` are the shared ones (`Mirror::url`,
-/// `Mirror::jar_choice`).
+/// A tab's fields beyond `pos` and `color`, live or failed. `url`, `engine` and `jar` are the shared ones
+/// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar_choice`).
 fn tab_fields(
     fields: &mut Fields,
     url: FieldValue,
-    engine: EngineKind,
+    engine: FieldValue,
     pinned: bool,
     parent: Option<NodeId>,
     jar: crate::jar::JarChoice,
 ) -> Kind {
     fields.insert(field::URL, url);
-    fields.insert(field::ENGINE, FieldValue::Engine(engine_code(engine)));
+    fields.insert(field::ENGINE, engine);
     fields.insert(field::PINNED, FieldValue::Bool(pinned));
     fields.insert(field::PARENT, FieldValue::Id(parent));
     fields.insert(field::JAR, FieldValue::Id(jar.jar));
@@ -386,19 +386,13 @@ impl App {
             let mut fields =
                 Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, self.mirror.get(key, field::COLOR))]);
             let kind = match &node.payload {
-                // A tab's url is the shared one, not the live one its payload holds (Ruling 1); its jar is the
-                // mirror's.
-                NodePayload::Tab(TabPayload { tab, swap_target, .. }) => {
-                    // A swap in progress already shows its target engine, so a
-                    // save meanwhile doesn't write the old one back.
-                    let (engine, pinned) = (swap_target.unwrap_or(tab.kind), self.mirror.pinned(key));
-                    let (url, jar) = (self.mirror.get(key, field::URL), self.mirror.jar_choice(key));
+                // A tab's url is the shared one, not the live one its payload holds (Ruling 1); its engine is the
+                // mirror's, which a swap in progress already shows as its target (`start_swap_to`), and so is its
+                // jar.
+                NodePayload::Tab(_) | NodePayload::Unloaded(_) => {
+                    let (url, engine) = (self.mirror.get(key, field::URL), self.mirror.get(key, field::ENGINE));
+                    let (pinned, jar) = (self.mirror.pinned(key), self.mirror.jar_choice(key));
                     tab_fields(&mut fields, url, engine, pinned, link_id(self.mirror.parent(key)), jar)
-                }
-                NodePayload::Unloaded(UnloadedTabPayload { kind, .. }) => {
-                    let (url, pinned) = (self.mirror.get(key, field::URL), self.mirror.pinned(key));
-                    let jar = self.mirror.jar_choice(key);
-                    tab_fields(&mut fields, url, *kind, pinned, link_id(self.mirror.parent(key)), jar)
                 }
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
@@ -476,7 +470,8 @@ impl App {
     /// the group go through `mirror_remote` instead):
     /// - a tab's url change navigates, unless a local url edit is pending
     ///   (it wins);
-    /// - an engine change swaps engines;
+    /// - an engine change is the mirror's; a live tab swaps to it, unless a
+    ///   local engine edit is pending or a swap is in flight (they win);
     /// - a jar change is the mirror's alone: `apply_remote`'s
     ///   `sweep_jar_switches` then switches the live tabs it moved.
     ///
@@ -542,7 +537,7 @@ impl App {
             node.pos = pos;
             node.vel = egui::Vec2::ZERO;
         }
-        let mut swap = None;
+        let (mut swap, mut reassert) = (None, None);
         let mut store_load = false;
         match &mut node.payload {
             NodePayload::Tab(tab) => {
@@ -552,17 +547,22 @@ impl App {
                     tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
                     store_load = true;
                 }
+                // A swap in flight here wins: `mirror_remote` held the remote engine back while the swap's edit is
+                // unsaved; once saved, its target is written again (`reassert`), so the document ends on the engine
+                // this tab lands on.
                 let want = engine_field(fields);
-                if changed(field::ENGINE) && tab.swap_target.unwrap_or(tab.tab.kind) != want {
-                    swap = Some(want);
+                if changed(field::ENGINE) {
+                    match tab.swap_target {
+                        Some(target) if target != want => reassert = Some(target),
+                        Some(_) => {}
+                        None if tab.tab.kind != want => swap = Some(want),
+                        None => {}
+                    }
                 }
             }
             NodePayload::Unloaded(tab) => {
                 if changed(field::URL) {
                     tab.url = str_of(fields, field::URL);
-                }
-                if changed(field::ENGINE) {
-                    tab.kind = engine_field(fields);
                 }
             }
             NodePayload::Group(g) => {
@@ -612,6 +612,9 @@ impl App {
         }
         if let Some(target) = swap {
             self.start_swap_to(id, target);
+        }
+        if let Some(target) = reassert {
+            self.edit_engine(id, target);
         }
         true
     }
@@ -663,11 +666,10 @@ impl App {
                 let shared = str_of(fields, field::URL);
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
-                let kind = engine_field(fields);
-                // Title, mute and zoom come from personal state (`apply_local`).
+                // Title, mute and zoom come from personal state (`apply_local`); the engine is the mirror's.
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
-                let payload = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state };
+                let payload = UnloadedTabPayload { url, title, muted, zoom_factor, state };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
             }
             Kind::Group => {
@@ -890,11 +892,8 @@ impl App {
     /// card that never wakes, leaving the split pane empty forever.
     pub(crate) fn wake_focused(&mut self) {
         let asleep = |id: &str, this: &Self| {
-            this.nodes
-                .get(id)
-                .and_then(|n| n.as_unloaded())
-                .filter(|t| t.state == UnloadedState::Sleeping)
-                .map(|t| t.kind)
+            let card = this.nodes.get(id).and_then(|n| n.as_unloaded());
+            card.is_some_and(|t| t.state == UnloadedState::Sleeping).then(|| this.mirror.engine(id))
         };
         if let Some(id) = self.focused.clone() {
             if let Some(kind) = asleep(&id, self) {
@@ -974,6 +973,15 @@ impl App {
     pub(crate) fn edit_jar(&mut self, id: &str, choice: crate::jar::JarChoice) {
         self.edit_field(id, field::JAR, FieldValue::Id(choice.jar));
         self.edit_field(id, field::JAR_SET, FieldValue::Bool(choice.set));
+    }
+
+    /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into
+    /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
+    /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know (Ruling 6).
+    pub(crate) fn edit_engine(&mut self, id: &str, kind: EngineKind) {
+        if self.mirror.engine(id) != kind {
+            self.edit_field(id, field::ENGINE, FieldValue::Engine(engine_code(kind)));
+        }
     }
 
     /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.

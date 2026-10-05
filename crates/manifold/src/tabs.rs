@@ -91,12 +91,12 @@ pub(crate) fn after_crash<'a>(
     AfterCrash::Restart
 }
 
-/// `tab` as an unloaded card in `state`, keeping what a reopen needs.
+/// `tab` as an unloaded card in `state`, keeping what a reopen needs. Its engine is the mirror's: the one a swap in
+/// flight was switching to, if any (a sleep can answer before the swap's snapshot), which it wakes into.
 fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
     UnloadedTabPayload {
         url: tab.url.clone(),
         title: tab.title.clone(),
-        kind: tab.tab.kind,
         muted: tab.muted,
         zoom_factor: tab.zoom_factor,
         state,
@@ -124,11 +124,16 @@ impl App {
     /// arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         self.tab_spawns_in_flight += 1;
-        // Shared at the url and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a new tab has no
-        // entry yet and shares the ones it starts with.
+        // Shared at the url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a new
+        // tab has no entry yet and shares the ones it starts with.
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
-        let choice = if self.mirror.has(&spawn.id) { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
-        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url), choice);
+        let has = self.mirror.has(&spawn.id);
+        let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
+        let engine = match has {
+            true => self.mirror.get(&spawn.id, crate::store::model::field::ENGINE),
+            false => crate::store::model::FieldValue::Engine(session_sync::engine_code(spawn.kind)),
+        };
+        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url), engine, choice);
         self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
@@ -440,7 +445,11 @@ impl App {
                         }),
                     },
                 );
-                self.seed_landing(&id, Carried { color, pinned, parent, group, url: url.clone(), jar: spawn_jar });
+                let engine = session_sync::engine_code(kind);
+                self.seed_landing(
+                    &id,
+                    Carried { color, pinned, parent, group, url: url.clone(), engine, jar: spawn_jar },
+                );
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -514,6 +523,8 @@ impl App {
             Err(err) => {
                 eprintln!("spawn tab failed for {id}: {err}");
                 if let Some(fallback) = fallback_kind {
+                    // The switch failed: the old engine is written back (2b-3 Ruling 5).
+                    self.edit_engine(&id, fallback);
                     self.queue_toast(format!(
                         "Couldn't switch to {}: {err}. Kept {}.",
                         engine_label(kind),
@@ -554,10 +565,13 @@ impl App {
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed = UnloadedTabPayload { url: url.clone(), title, kind, muted, zoom_factor, state };
+                    let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { pos, vel, payload });
-                    self.seed_landing(&id, Carried { color, pinned, parent, group, url, jar: spawn_jar });
+                    // A tab the mirror holds already shows the engine that failed: a switch's target, written when
+                    // it started (`edit_engine`); a new one lands on it here.
+                    let engine = session_sync::engine_code(kind);
+                    self.seed_landing(&id, Carried { color, pinned, parent, group, url, engine, jar: spawn_jar });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -587,16 +601,16 @@ impl App {
     /// Tab context menu's "Duplicate": a new tab at `id`'s current url and
     /// engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
-    /// own tab strip.
+    /// own tab strip. Its engine is the mirror's (a swap in flight: its target).
     /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
-            n.payload.saved_tab().map(|(url, kind)| {
+            n.payload.saved_tab().map(|url| {
                 (
                     self.mirror.parent(id).map(str::to_owned),
                     self.mirror.group(id).map(str::to_owned),
                     url.to_string(),
-                    kind,
+                    self.mirror.engine(id),
                 )
             })
         }) else {
@@ -713,9 +727,9 @@ impl App {
         self.view_mode = ViewMode::Item;
         // An unloaded tab opens by starting its engine; Tab view shows the
         // respawning placeholder until it lands (`pending_respawn_focus`).
-        if let Some(kind) = self.nodes.get(id).and_then(|n| n.as_unloaded()).map(|t| t.kind) {
+        if self.nodes.get(id).and_then(|n| n.as_unloaded()).is_some() {
             self.pending_respawn_focus = Some(id.to_string());
-            self.wake_tab(id, kind);
+            self.wake_tab(id, self.mirror.engine(id));
         }
         self.send_resize_to(id);
         self.save_session();

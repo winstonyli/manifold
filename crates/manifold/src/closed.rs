@@ -93,7 +93,7 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
 /// page that was closed, not the shared url the mirror holds (2b-3 Ruling 1).
 fn live_url_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
-    if let Some((url, _)) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
+    if let Some(url) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
         fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
     }
     fields

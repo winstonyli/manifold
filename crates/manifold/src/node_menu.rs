@@ -674,14 +674,13 @@ impl App {
             has_url: node.source_url().is_some(),
             has_copy_url: node.copyable_url().is_some(),
             pinned: self.mirror.pinned(id),
-            other_default_engine: node
-                .payload
-                .as_unloaded()
-                .is_some_and(|t| t.kind != self.settings.default_starting_engine),
+            other_default_engine: node.payload.as_unloaded().is_some()
+                && self.mirror.engine(id) != self.settings.default_starting_engine,
             failed: node.payload.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
             engine_missing: node.payload.as_unloaded().is_some_and(|t| {
+                let kind = self.mirror.engine(id);
                 matches!(t.state, UnloadedState::Failed(_))
-                    && !matches!(pick_outcome(t.kind, &self.engine_state(t.kind)), PickOutcome::Switch(_))
+                    && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_))
             }),
             move_targets: self
                 .node_order
@@ -784,7 +783,7 @@ impl App {
                 let node = self.nodes.get(id);
                 if let Some(url) = node.and_then(|n| n.copyable_url().map(str::to_owned)) {
                     ctx.copy_text(url);
-                } else if let Some((url, _)) = node.and_then(|n| n.payload.saved_tab()) {
+                } else if let Some(url) = node.and_then(|n| n.payload.saved_tab()) {
                     ctx.copy_text(url.to_string());
                 }
             }

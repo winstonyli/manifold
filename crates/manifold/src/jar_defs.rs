@@ -227,7 +227,7 @@ impl App {
         let can_switch_now = self.can_switch_jar_now(id);
         let engine = match &self.nodes.get(id)?.payload {
             NodePayload::Tab(t) => t.tab.kind,
-            NodePayload::Unloaded(t) => t.kind,
+            NodePayload::Unloaded(_) => self.mirror.engine(id),
             _ => return None,
         };
         let engine_ignores = !matches!(engine, EngineKind::Webview2 | EngineKind::Cef) && key != JarKey::Default;

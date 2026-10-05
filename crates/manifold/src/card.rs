@@ -1231,7 +1231,7 @@ impl App {
             return body;
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
-        let kind = tab.kind;
+        let kind = self.mirror.engine(id);
         // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
         let missing_engine = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.engine_state(kind)), PickOutcome::Switch(_));
@@ -1251,7 +1251,7 @@ impl App {
                 }
             }
             UnloadedState::Failed(error) => {
-                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(tab.kind))
+                format!("Couldn't start {}: {error}\nClick to try again.", engine_label(kind))
             }
             UnloadedState::Sleeping | UnloadedState::Waking => sleeping_or_waking_tooltip(&state).to_string(),
         });
@@ -2825,7 +2825,6 @@ mod tests {
             node_card_size(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
@@ -2907,7 +2906,6 @@ mod tests {
             card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: "Example".into(),
-                kind: EngineKind::Cef,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
@@ -2918,7 +2916,6 @@ mod tests {
             card_filter_text(&NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),

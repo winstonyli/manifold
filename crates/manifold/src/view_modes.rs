@@ -258,6 +258,9 @@ impl App {
             return; // no-op swap, or one swap at a time for this tab
         }
         node.swap_target = Some(target);
+        // Saved as the swap starts (2b-3 Ruling 5): a save before the snapshot writes the target, and a failure
+        // that falls back writes the old engine back (`handle_tab_spawn_result`).
+        self.edit_engine(tab_id, target);
         // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).
         self.pull_cookies(tab_id);
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {

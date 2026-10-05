@@ -71,12 +71,12 @@ payload_accessors! {
 }
 
 impl NodePayload {
-    /// The url and engine a live or unloaded tab is saved (and exported,
-    /// and copied) with.
-    pub(crate) fn saved_tab(&self) -> Option<(&str, EngineKind)> {
+    /// A live or unloaded tab's live url (what it is copied and reopened
+    /// at); `None` for any other node. Its engine is `Mirror::engine`.
+    pub(crate) fn saved_tab(&self) -> Option<&str> {
         match self {
-            NodePayload::Tab(t) => Some((&t.url, t.tab.kind)),
-            NodePayload::Unloaded(t) => Some((&t.url, t.kind)),
+            NodePayload::Tab(t) => Some(&t.url),
+            NodePayload::Unloaded(t) => Some(&t.url),
             NodePayload::Download(_)
             | NodePayload::Group(_)
             | NodePayload::Note(_)
@@ -308,7 +308,6 @@ pub(crate) struct UnloadedTabPayload {
     /// From personal state (`LocalNode::title`); the live tab reports its
     /// own once it loads.
     pub(crate) title: String,
-    pub(crate) kind: EngineKind,
     /// From personal state, like `title`.
     pub(crate) muted: bool,
     pub(crate) zoom_factor: f64,
@@ -650,13 +649,12 @@ second"
             (NodePayload::Unloaded(UnloadedTabPayload {
                 url: "https://example.org/".into(),
                 title: String::new(),
-                kind: EngineKind::Cef,
                 muted: false,
                 zoom_factor: 1.5,
                 state: UnloadedState::Failed("no binary".into()),
             }))
             .saved_tab(),
-            Some(("https://example.org/", EngineKind::Cef))
+            Some("https://example.org/")
         );
         assert_eq!(NodePayload::Group(GroupPayload::named("g")).saved_tab(), None);
     }

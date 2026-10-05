@@ -9,13 +9,16 @@
 use std::collections::HashMap;
 
 use crate::jar::JarChoice;
-use crate::session_sync::{color_of, color_value, Fields};
+use crate::process_manager::EngineKind;
+use crate::session_sync::{color_of, color_value, engine_of, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is mirrored for every
 /// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
-/// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`.
-pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED, field::URL, field::JAR, field::JAR_SET];
+/// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
+/// engine as its stored code (`engine`), written by `App::edit_engine`.
+pub(crate) const MIRRORED: &[u32] =
+    &[field::COLOR, field::PINNED, field::URL, field::ENGINE, field::JAR, field::JAR_SET];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -108,6 +111,16 @@ impl Mirror {
         JarChoice { jar, set: matches!(self.get(id, field::JAR_SET), FieldValue::Bool(true)) }
     }
 
+    /// A tab's engine: the one it runs or is switching to (`App::edit_engine`), the document's otherwise. The mirror
+    /// holds the stored code as is, so a code from a newer build survives a save; it, and an absent one, read as
+    /// Servo (`engine_of`, 2b-3 Ruling 6). `EngineTab::kind` is the engine actually running.
+    pub(crate) fn engine(&self, id: &str) -> EngineKind {
+        match self.get(id, field::ENGINE) {
+            FieldValue::Engine(code) => engine_of(code),
+            _ => engine_of(0),
+        }
+    }
+
     /// Whether `id` has an entry: every node placed here, and a tab mid-respawn (its entry outlives the respawn). A
     /// new spawn has none until it lands (`App::linked_ids`).
     pub(crate) fn has(&self, id: &str) -> bool {
@@ -121,18 +134,23 @@ impl Mirror {
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
             url: self.url(id),
+            engine: match self.get(id, field::ENGINE) {
+                FieldValue::Engine(code) => code,
+                _ => 0,
+            },
             jar: self.jar_choice(id),
         }
     }
 
-    /// `init` for everything a tab carries. An empty `url` and the default, unset jar (any node but a tab) are the
-    /// fields' absent values, so they are left out.
+    /// `init` for everything a tab carries. An empty `url`, engine code 0 and the default, unset jar (any node but a
+    /// tab) are the fields' absent values, so they are left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
+        let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        self.init(id, fields.into_iter().chain(url).chain(jar).chain(jar_set));
+        self.init(id, fields.into_iter().chain(url).chain(engine).chain(jar).chain(jar_set));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -150,6 +168,9 @@ pub(crate) struct Carried {
     pub group: Option<String>,
     /// The shared url (`Mirror::url`); "" for a node that isn't a tab.
     pub url: String,
+    /// The engine's stored code (`Mirror::engine` decodes it, `session_sync::engine_code` makes one); 0, the absent
+    /// value, for a node that isn't a tab.
+    pub engine: u64,
     /// The jar choice (`Mirror::jar_choice`); the default for a node that isn't a tab.
     pub jar: JarChoice,
 }
@@ -167,6 +188,7 @@ mod tests {
             parent: Some("p".into()),
             group: Some("g".into()),
             url: "https://a/".into(),
+            engine: 99,
             jar: JarChoice {
                 jar: Some(crate::store::model::NodeId { actor: crate::store::model::ActorId(1), counter: 2 }),
                 set: true,
@@ -188,6 +210,20 @@ mod tests {
         assert!(mirror.has("8") && !mirror.has("7"));
         mirror.set("7", field::JAR_SET, FieldValue::Bool(true));
         assert_eq!(mirror.jar_choice("7"), JarChoice { jar: None, set: true });
+    }
+
+    #[test]
+    fn an_engine_reads_back_decoded_and_keeps_an_unknown_code() {
+        let mut mirror = Mirror::default();
+        assert_eq!(mirror.engine("7"), EngineKind::Servo, "absent is Servo");
+        mirror.seed("8", &Carried::default());
+        assert!(!mirror.nodes["8"].contains_key(&field::ENGINE), "code 0 seeds nothing");
+        let cef = crate::session_sync::engine_code(EngineKind::Cef);
+        mirror.set("7", field::ENGINE, FieldValue::Engine(cef));
+        assert_eq!(mirror.engine("7"), EngineKind::Cef);
+        mirror.set("7", field::ENGINE, FieldValue::Engine(99));
+        assert_eq!(mirror.engine("7"), EngineKind::Servo, "a newer build's code reads as Servo");
+        assert_eq!(mirror.carried("7").engine, 99, "and is carried as is");
     }
 
     #[test]
