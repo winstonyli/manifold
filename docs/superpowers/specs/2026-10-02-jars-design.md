@@ -149,15 +149,16 @@ showed a second tab, seeded with an empty jar, sending the first tab's login. So
 reports the tabs do not share.
 
 The name comes from a pool (built 2026-10-03, replacing a name per host pid): manifold hands each new host the lowest
-free slot, `manifold_0` to `manifold_7`, in `ENGINE_WEBVIEW2_PROFILE` (`process_manager::claim_webview2_slot`), and frees
-it when the host is dropped, only after the host process has exited and its profile folder's deletion has been tried. A
+free slot, `manifold_0` to `manifold_7`, in `ENGINE_WEBVIEW2_PROFILE` (`process_manager::claim_webview2_slot`). A slot
+is reusable once its host process has exited: a new host may take it over while the folder's deletion is still being
+retried (2026-10-04; it used to wait out all 5 to 10 s of retries), and the retries stop once it does. A
 lock file per slot (`<user-data folder>\manifold-profile-<n>.lock`, held open without sharing) keeps two manifold
 instances on one user-data folder from taking the same slot. More concurrent WebView2 tabs than the pool get names
 beyond it (`manifold_8`, ...), and the log says so. A slot does not wait for its folder to be deleted: the shared browser
 process keeps a closed profile's folder open for as long as it lives, and waiting made the ten-tab probe climb past the
 pool. Reusing the name is still safe because the cookies are InPrivate, in memory, and go with the host: in the reuse
-run of `scripts/jar-probe.sh`, tab A logs in and closes, tab B then gets the same name in the same live browser and is
-not signed in; in the fresh run a name reused after a browser restart is not signed in either.
+run of `scripts/jar-probe.sh`, tab A logs in and closes, tab B opens 1 s later, gets the same name in the same live
+browser and is not signed in (5 of 5 runs, 2026-10-04); in the fresh run a name reused after a browser restart is not signed in either.
 
 Costs seen on runtime 154.0.4258.53:
 - No extra processes (two tabs: one browser process, one more renderer, as before).

@@ -248,7 +248,7 @@ pub struct EngineTab {
     /// A directory only this host uses, deleted on drop: CEF's `root_cache_path`, or WebView2's named profile
     /// (`webview2_profile_dir`).
     cache_dir: Option<PathBuf>,
-    /// A WebView2 host's profile slot (`claim_webview2_slot`), freed once `cache_dir` is gone.
+    /// A WebView2 host's profile slot (`claim_webview2_slot`), reusable once the host has exited.
     profile_slot: Option<usize>,
 }
 
@@ -286,7 +286,7 @@ impl Drop for EngineTab {
         reap_host(self.kind, child);
         // The host has exited, so its frame file is no longer mapped by it.
         ipc_protocol::remove_frame_file(&self.socket_id);
-        // The profile slot is freed after the folder's deletion is tried.
+        // The profile slot is reusable from here on, while the folder's deletion is tried.
         if let Some(dir) = cache_dir {
             remove_cache_dir(dir, slot);
         }
@@ -345,20 +345,38 @@ static CEF_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// on a background thread. Whatever is left `sweep_cef_cache` removes at
 /// the next startup.
 ///
-/// The same for an exited WebView2 host's profile folder, and then its
-/// `slot` is freed either way: the shared browser process keeps a closed
-/// profile's folder open while it lives, but its InPrivate cookies went with
-/// the host (`take_webview2_slot`).
+/// The same for an exited WebView2 host's profile folder, whose `slot` a new
+/// host may take over meanwhile (`claim_webview2_slot`): the shared browser
+/// process keeps a closed profile's folder open while it lives, which used to
+/// hold the slot for all 5 to 10 s of tries, but its InPrivate cookies went
+/// with the host (`take_webview2_slot`). Each try runs under the slots lock
+/// and stops once the slot is taken over, so it never deletes a new host's
+/// files. The slot is freed after the last try unless it was taken over.
 fn remove_cache_dir(dir: PathBuf, slot: Option<usize>) {
+    if let Some(n) = slot {
+        if let Some(held) = WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&n) {
+            held.exited = true;
+        }
+    }
     let removal = std::thread::spawn(move || {
         for _ in 0..50 {
+            let slots = slot.map(|_| WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner()));
+            if let (Some(n), Some(slots)) = (slot, &slots) {
+                if !slots.get(&n).is_some_and(|held| held.exited) {
+                    return;
+                }
+            }
             if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
                 break;
             }
+            drop(slots);
             std::thread::sleep(Duration::from_millis(100));
         }
         if let Some(n) = slot {
-            free_webview2_slot(n);
+            let mut slots = WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+            if slots.get(&n).is_some_and(|held| held.exited) {
+                slots.remove(&n);
+            }
         }
     });
     CACHE_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).push(removal);
@@ -439,19 +457,39 @@ fn webview2_profile_dir(host_exe: &Path, slot: usize) -> PathBuf {
     webview2_profiles_root(host_exe).join(format!("{WEBVIEW2_PROFILE_PREFIX}{slot}"))
 }
 
-/// The profile slots this manifold's WebView2 hosts hold, each with its lock file (`take_webview2_slot`).
-static WEBVIEW2_SLOTS: std::sync::Mutex<std::collections::BTreeMap<usize, Option<std::fs::File>>> =
+/// A profile slot this manifold holds: its lock file (`take_webview2_slot`), and whether its host has exited, so
+/// that only `remove_cache_dir`'s tries keep it.
+struct HeldSlot {
+    /// Only held open: another manifold instance skips the slot while it is.
+    _lock: Option<std::fs::File>,
+    exited: bool,
+}
+
+/// The profile slots this manifold's WebView2 hosts hold.
+static WEBVIEW2_SLOTS: std::sync::Mutex<std::collections::BTreeMap<usize, HeldSlot>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Records and returns the lowest slot not in `busy` that `take` can claim (`None`: in use outside `busy`). Past every
-/// claimable slot it keeps counting, so it always returns one; a result `>= WEBVIEW2_PROFILE_POOL` is beyond the pool.
-fn claim_slot<G>(busy: &mut std::collections::BTreeMap<usize, G>, mut take: impl FnMut(usize) -> Option<G>) -> usize {
+/// Records and returns the lowest slot that is either not in `busy` and `take` can claim (`None`: in use outside
+/// `busy`), or in `busy` and `take_over` reclaims (its host has exited). Past every claimable slot it keeps counting,
+/// so it always returns one; a result `>= WEBVIEW2_PROFILE_POOL` is beyond the pool.
+fn claim_slot<G>(
+    busy: &mut std::collections::BTreeMap<usize, G>,
+    mut take: impl FnMut(usize) -> Option<G>,
+    mut take_over: impl FnMut(usize, &mut G) -> bool,
+) -> usize {
     let mut n = 0;
     loop {
-        if let std::collections::btree_map::Entry::Vacant(free) = busy.entry(n) {
-            if let Some(guard) = take(n) {
-                free.insert(guard);
-                return n;
+        match busy.entry(n) {
+            std::collections::btree_map::Entry::Vacant(free) => {
+                if let Some(guard) = take(n) {
+                    free.insert(guard);
+                    return n;
+                }
+            }
+            std::collections::btree_map::Entry::Occupied(mut held) => {
+                if take_over(n, held.get_mut()) {
+                    return n;
+                }
             }
         }
         n += 1;
@@ -480,17 +518,29 @@ fn take_webview2_slot(udf: &Path, n: usize) -> Option<Option<std::fs::File>> {
         Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => return None,
         Err(_) => None,
     };
-    let _ = std::fs::remove_dir_all(udf.join("EBWebView").join(format!("{WEBVIEW2_PROFILE_PREFIX}{n}")));
+    remove_profile_leftovers(udf, n);
     Some(lock)
 }
 
-/// The lowest free profile slot for a new WebView2 host run from `host_exe`. Freed by `free_webview2_slot` only once
-/// the host process has exited and its folder's deletion has been tried, so a live host's profile is never handed to
-/// another.
+fn remove_profile_leftovers(udf: &Path, n: usize) {
+    let _ = std::fs::remove_dir_all(udf.join("EBWebView").join(format!("{WEBVIEW2_PROFILE_PREFIX}{n}")));
+}
+
+/// The lowest free profile slot for a new WebView2 host run from `host_exe`. A slot is reusable only once its host
+/// process has exited (`remove_cache_dir`), so a live host's profile is never handed to another; one whose folder is
+/// still being deleted is taken over, with its own try at the deletion, as `take_webview2_slot` does.
 fn claim_webview2_slot(host_exe: &Path) -> usize {
     let udf = webview2_user_data(host_exe);
     let mut slots = WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = claim_slot(&mut slots, |n| take_webview2_slot(&udf, n));
+    let take = |n| take_webview2_slot(&udf, n).map(|lock| HeldSlot { _lock: lock, exited: false });
+    let n = claim_slot(&mut slots, take, |n, held| {
+        let reclaim = held.exited;
+        if reclaim {
+            held.exited = false;
+            remove_profile_leftovers(&udf, n);
+        }
+        reclaim
+    });
     if n >= WEBVIEW2_PROFILE_POOL {
         eprintln!(
             "webview2: all {WEBVIEW2_PROFILE_POOL} pooled profiles are in use; using {} (adds one Local State entry)",
@@ -1886,10 +1936,25 @@ mod tests {
     fn profile_slots_are_the_lowest_free_and_reused_once_freed() {
         let mut busy = std::collections::BTreeMap::new();
         let all = |_| Some(());
-        assert_eq!([0, 1, 2].map(|_| super::claim_slot(&mut busy, all)), [0, 1, 2]);
+        assert_eq!([0, 1, 2].map(|_| super::claim_slot(&mut busy, all, keep)), [0, 1, 2]);
         busy.remove(&1);
-        assert_eq!(super::claim_slot(&mut busy, all), 1, "a freed slot is reused before a new one");
-        assert_eq!(super::claim_slot(&mut busy, all), 3);
+        assert_eq!(super::claim_slot(&mut busy, all, keep), 1, "a freed slot is reused before a new one");
+        assert_eq!(super::claim_slot(&mut busy, all, keep), 3);
+    }
+
+    /// `claim_slot`'s `take_over` for slots whose hosts are all alive.
+    fn keep(_: usize, _: &mut ()) -> bool {
+        false
+    }
+
+    #[test]
+    fn a_slot_whose_host_exited_is_taken_over_while_its_folder_is_deleted() {
+        // Slot 1's host has exited (`true`); `remove_cache_dir` still holds it while it tries the folder.
+        let mut busy = std::collections::BTreeMap::from([(0, false), (1, true)]);
+        let take_over = |_, exited: &mut bool| std::mem::replace(exited, false);
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(false), take_over), 1, "before a new slot");
+        assert!(!busy[&1], "live again");
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(false), take_over), 2, "a live host's slot is never taken");
     }
 
     #[test]
@@ -1897,17 +1962,17 @@ mod tests {
         let mut busy = std::collections::BTreeMap::new();
         // Slots 0 and 2 are held by another manifold instance (their lock files).
         let free_elsewhere = |n| (n != 0 && n != 2).then_some(());
-        assert_eq!(super::claim_slot(&mut busy, free_elsewhere), 1);
-        assert_eq!(super::claim_slot(&mut busy, free_elsewhere), 3);
+        assert_eq!(super::claim_slot(&mut busy, free_elsewhere, keep), 1);
+        assert_eq!(super::claim_slot(&mut busy, free_elsewhere, keep), 3);
     }
 
     #[test]
     fn an_exhausted_pool_hands_out_a_slot_beyond_it() {
         let mut busy: std::collections::BTreeMap<usize, ()> =
             (0..super::WEBVIEW2_PROFILE_POOL).map(|n| (n, ())).collect();
-        assert_eq!(super::claim_slot(&mut busy, |_| Some(())), super::WEBVIEW2_PROFILE_POOL);
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(()), keep), super::WEBVIEW2_PROFILE_POOL);
         busy.remove(&5);
-        assert_eq!(super::claim_slot(&mut busy, |_| Some(())), 5, "back inside the pool once one frees");
+        assert_eq!(super::claim_slot(&mut busy, |_| Some(()), keep), 5, "back inside the pool once one frees");
     }
 
     /// A slot whose lock another holder has open is not taken. A profile folder the shared browser still holds open
