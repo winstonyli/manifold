@@ -1261,7 +1261,7 @@ impl App {
             EngineToHost::Crashed { reason } => {
                 let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
                     let t = n.as_tab()?;
-                    TabSpawn::respawn(tab_id, n, t.tab.kind, t.url.clone())
+                    TabSpawn::respawn(tab_id, n, self.mirror.color(tab_id), t.tab.kind, t.url.clone())
                 }) else {
                     return false;
                 };

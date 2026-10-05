@@ -64,8 +64,7 @@ impl App {
     /// save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
-        let node =
-            GraphNode { parent: None, group: at.group, pos: at.pos, vel: egui::Vec2::ZERO, color: None, payload };
+        let node = GraphNode { parent: None, group: at.group, pos: at.pos, vel: egui::Vec2::ZERO, payload };
         self.nodes.insert(id.clone(), node);
         self.node_order.push(id.clone());
         id
@@ -224,7 +223,7 @@ impl App {
             NodePayload::Json(json) if json.error.is_some() => (json.path.clone(), false),
             _ => return,
         };
-        let (pos, group, parent, color) = (node.pos, node.group.clone(), node.parent.clone(), node.color);
+        let (pos, group, parent) = (node.pos, node.group.clone(), node.parent.clone());
         let in_order = self.node_order.iter().any(|n| n == id);
         let result = if is_image {
             self.insert_image_node_with_id(id.to_string(), path, pos, group)
@@ -240,7 +239,6 @@ impl App {
                 }
                 if let Some(node) = self.nodes.get_mut(id) {
                     node.parent = parent;
-                    node.color = color;
                 }
                 self.save_session();
             }
@@ -284,7 +282,7 @@ impl App {
         }
         let (kind, path) = (*kind, path.clone());
         let new_path = path.clone();
-        let (pos, group, parent, color) = (node.pos, node.group.clone(), node.parent.clone(), node.color);
+        let (pos, group, parent) = (node.pos, node.group.clone(), node.parent.clone());
         let Some(url) = node.source_url().map(str::to_string) else { return };
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = match &node.payload {
@@ -327,7 +325,7 @@ impl App {
             self.insert_placeholder_node(id.to_string(), pos, payload);
         }
         if let Some(node) = self.nodes.get_mut(id) {
-            (node.parent, node.color, node.group) = (parent, color, group);
+            (node.parent, node.group) = (parent, group);
             // The view goes back unpruned onto an error card: pruning
             // against its `Null` would wipe, and sync away, every override
             // a Retry should get back.
@@ -670,6 +668,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_sync::color_value;
 
     #[test]
     fn insert_content_dispatches_local_files_by_content() {
@@ -1066,7 +1065,7 @@ mod tests {
             None,
         )
         .unwrap();
-        app.nodes.get_mut("r").unwrap().color = Some(egui::Color32::RED);
+        app.edit_field("r", field::COLOR, color_value(Some(egui::Color32::RED)));
         let order = app.node_order.clone();
         let second =
             crate::redirect_fetch::save(&dir, "r", crate::content::ContentKind::Json, b"[2]".to_vec()).unwrap();
@@ -1074,7 +1073,7 @@ mod tests {
         let node = &app.nodes["r"];
         assert_eq!(*node.as_json().unwrap().value, serde_json::json!([2]));
         assert_eq!(
-            (node.pos, node.color, node.source_url()),
+            (node.pos, app.mirror.color("r"), node.source_url()),
             (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("https://x.test/j"))
         );
         assert_eq!(app.node_order, order);
@@ -1094,7 +1093,7 @@ mod tests {
             Some("g".into()),
         )
         .unwrap();
-        app.nodes.get_mut("r").unwrap().color = Some(egui::Color32::RED);
+        app.edit_field("r", field::COLOR, color_value(Some(egui::Color32::RED)));
         let order = app.node_order.clone();
         let bad = WebBody::File {
             kind: crate::content::ContentKind::Json,
@@ -1104,7 +1103,7 @@ mod tests {
         let node = &app.nodes["r"];
         assert!(node.as_json().unwrap().error.is_some());
         assert_eq!(
-            (node.pos, node.color, node.group.as_deref(), node.source_url()),
+            (node.pos, app.mirror.color("r"), node.group.as_deref(), node.source_url()),
             (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("g"), Some("https://x.test/j"))
         );
         assert_eq!(app.node_order, order);

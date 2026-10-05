@@ -9,6 +9,7 @@ use ipc_protocol::HostToEngine;
 
 use crate::json_view::JsonView;
 use crate::local_state::{LiveUrl, LocalNode, LocalState};
+use crate::mirror::MIRRORED;
 use crate::node::{
     DownloadPayload, GroupPayload, ImagePayload, JsonPayload, NodePayload, NotePayload, PdfPayload, TabPayload,
     UnloadedState, UnloadedTabPayload,
@@ -177,6 +178,10 @@ pub(crate) fn diff(
         }
         for (&no, value) in &node.fields {
             if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
+                continue;
+            }
+            // A mirrored field is written by `App::pending`, not compared.
+            if MIRRORED.contains(&no) {
                 continue;
             }
             match value {
@@ -364,7 +369,8 @@ impl App {
         let mut out = BTreeMap::new();
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
-            let mut fields = Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, color_value(node.color))]);
+            let mut fields =
+                Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, self.mirror.get(key, field::COLOR))]);
             let kind = match &node.payload {
                 // A swap in progress already shows its target engine, so a
                 // save meanwhile doesn't write the old one back.
@@ -480,11 +486,11 @@ impl App {
             self.remote_in_flight.insert(id, Some((kind, fields.clone(), group)));
             return;
         }
+        self.mirror_remote(&id, fields);
         let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
-        let color = fields.get(&field::COLOR).and_then(color_of);
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
-        if self.update_live_node(&id, fields, group.clone(), pos, color, &seen, &now) {
+        if self.update_live_node(&id, fields, group.clone(), pos, &seen, &now) {
             return;
         }
         self.insert_materialized(id, kind, fields, group, local);
@@ -492,14 +498,12 @@ impl App {
 
     /// Applies `fields` to the live node `id` where they differ from what this replica last saw (`seen`).
     /// False when there is no such node.
-    #[allow(clippy::too_many_arguments)] // the pieces `materialize` already worked out
     fn update_live_node(
         &mut self,
         id: &str,
         fields: &Fields,
         group: Option<String>,
         pos: egui::Vec2,
-        color: Option<egui::Color32>,
         seen: &Option<Shared>,
         now: &Shared,
     ) -> bool {
@@ -509,9 +513,6 @@ impl App {
         let changed = |no: u32| seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
         if seen.as_ref().is_none_or(|s| s.group != now.group) {
             node.group = group;
-        }
-        if changed(field::COLOR) {
-            node.color = color;
         }
         if changed(field::POS) {
             node.pos = pos;
@@ -633,7 +634,6 @@ impl App {
         local: Option<&LocalNode>,
     ) {
         let pos = local.map_or_else(|| pos_of(fields), |l| egui::vec2(l.pos[0], l.pos[1]));
-        let color = fields.get(&field::COLOR).and_then(color_of);
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is
@@ -752,7 +752,6 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;
-            node.color = color;
             node.parent = id_of(fields, field::PARENT);
             if let Some(url) = node.source_url_mut() {
                 *url = url_of(fields);
@@ -947,6 +946,33 @@ impl App {
         }
     }
 
+    /// The one writer of mirrored fields (node model spec, 2b "Read model"): the mirror shows `value` at once, and
+    /// the next save commits it as a `Set`. An id that isn't a store id (a hand-built test node) only updates the
+    /// mirror. A value the mirror already shows queues nothing.
+    pub(crate) fn edit_field(&mut self, id: &str, no: u32, value: FieldValue) {
+        debug_assert!(MIRRORED.contains(&no), "field {no} is not mirrored");
+        if self.mirror.get(id, no) == value {
+            return;
+        }
+        if let Ok(node) = id.parse::<NodeId>() {
+            self.pending.insert((node, no), encode_field(no, &value));
+        }
+        self.mirror.set(id, no, value);
+    }
+
+    /// Shows another replica's values of the mirrored fields in `fields`, except where this replica has an edit
+    /// waiting for a save: it commits next and wins (last writer, per field).
+    fn mirror_remote(&mut self, id: &str, fields: &Fields) {
+        let node = id.parse::<NodeId>().ok();
+        for &no in MIRRORED {
+            let Some(value) = fields.get(&no) else { continue };
+            if node.is_some_and(|node| self.pending.contains_key(&(node, no))) {
+                continue;
+            }
+            self.mirror.set(id, no, value.clone());
+        }
+    }
+
     /// Saves browsing history to disk if `history_dirty` is set, then clears
     /// the flag. Called from `save_session` and `close_store` on every return
     /// path. History doesn't depend on the store, so it's saved regardless of
@@ -1011,7 +1037,23 @@ impl App {
                     live.entry(id).or_insert_with(|| shared.clone());
                 }
             }
-            let ops = diff(txn.doc(), &live, &self.explicit, &keep);
+            let mut ops = diff(txn.doc(), &live, &self.explicit, &keep);
+            // Edits to mirrored fields. A node this commit creates carries its value in the `Create`; one the
+            // document doesn't show live would get a placeholder from a `Set`, so its edit is dropped.
+            let created: BTreeSet<NodeId> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    OpBody::Create { node, .. } => Some(*node),
+                    _ => None,
+                })
+                .collect();
+            let doc = txn.doc();
+            ops.extend(
+                self.pending
+                    .iter()
+                    .filter(|((node, _), _)| !created.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live))
+                    .map(|(&(node, no), enc)| OpBody::Set { node, field: no, enc: enc.clone() }),
+            );
             // The nodes whose stored state this commit changes. A delete can
             // also change other nodes' effective group, so it refreshes all.
             let touched: Option<BTreeSet<NodeId>> = ops
@@ -1050,6 +1092,9 @@ impl App {
                         }
                     }
                     self.explicit.clear();
+                    self.pending.clear();
+                    let nodes = &self.nodes;
+                    self.mirror.retain(|id| nodes.contains_key(id));
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;

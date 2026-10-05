@@ -11,16 +11,13 @@ use crate::session_sync::{color_of, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes.
-#[cfg_attr(not(test), allow(dead_code))] // wired in by `App::edit_field` (plan 2b-1, Task 2); remove then
 pub(crate) const MIRRORED: &[u32] = &[field::COLOR];
 
 #[derive(Default)]
-#[cfg_attr(not(test), allow(dead_code))] // wired in by `App::edit_field` (plan 2b-1, Task 2); remove then
 pub(crate) struct Mirror {
     nodes: HashMap<String, Fields>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // wired in by `App::edit_field` (plan 2b-1, Task 2); remove then
 impl Mirror {
     /// `id`'s value of field `no`; the field's absent value when the mirror has none.
     pub(crate) fn get(&self, id: &str, no: u32) -> FieldValue {

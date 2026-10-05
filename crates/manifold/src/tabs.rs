@@ -370,9 +370,15 @@ impl App {
         // this one function.
         let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
-                Some((card, tab)) => {
-                    (card.parent.clone(), card.group.clone(), card.pos, card.color, tab.pinned, tab.muted, tab.jar)
-                }
+                Some((card, tab)) => (
+                    card.parent.clone(),
+                    card.group.clone(),
+                    card.pos,
+                    self.mirror.color(&id),
+                    tab.pinned,
+                    tab.muted,
+                    tab.jar,
+                ),
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
                 // actually deletes it -- without this, a save taken while
@@ -425,7 +431,6 @@ impl App {
                         group,
                         pos,
                         vel,
-                        color,
                         payload: NodePayload::Tab(TabPayload {
                             tab,
                             url: url.clone(),
@@ -442,6 +447,7 @@ impl App {
                         }),
                     },
                 );
+                self.mirror.init(&id, [(field::COLOR, session_sync::color_value(color))]);
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -557,7 +563,8 @@ impl App {
                     let failed =
                         UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, color, payload });
+                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, payload });
+                    self.mirror.init(&id, [(field::COLOR, session_sync::color_value(color))]);
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }

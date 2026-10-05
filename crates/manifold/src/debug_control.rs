@@ -1056,7 +1056,7 @@ impl App {
                             "kind": format!("{kind:?}"),
                             "group": node.group,
                             "parent": node.parent,
-                            "color": node.color.is_some(),
+                            "color": self.mirror.color(&item.id).is_some(),
                             "pinned": node.payload.pinned(),
                             "editing": node.as_note().is_some_and(|n| n.editing),
                             "screen": [screen.center().x, screen.center().y],

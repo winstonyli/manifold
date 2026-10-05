@@ -469,9 +469,6 @@ pub(crate) struct GraphNode {
     pub(crate) group: Option<String>,
     pub(crate) pos: egui::Vec2,
     pub(crate) vel: egui::Vec2,
-    /// User-chosen tag color -- `None` for any kind that doesn't use one
-    /// (`Download` doesn't; `Tab`/`Group` do).
-    pub(crate) color: Option<egui::Color32>,
     pub(crate) payload: NodePayload,
 }
 
@@ -667,14 +664,8 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode {
-            parent: None,
-            group: None,
-            pos: egui::Vec2::ZERO,
-            vel: egui::Vec2::ZERO,
-            color: None,
-            payload,
-        };
+        let node =
+            |payload| GraphNode { parent: None, group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
         let pdf = |url: Option<&str>| {
             node(NodePayload::Pdf(PdfPayload {
                 path: r"C:\docs\report.pdf".into(),

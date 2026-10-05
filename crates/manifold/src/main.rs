@@ -795,8 +795,14 @@ impl TabSpawn {
     }
 
     /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
-    /// the graph and its `TabCarry`. `None` if `node` isn't a tab.
-    fn respawn(id: &str, node: &GraphNode, kind: EngineKind, url: String) -> Option<Self> {
+    /// the graph and its `TabCarry` (`color` is the mirror's). `None` if `node` isn't a tab.
+    fn respawn(
+        id: &str,
+        node: &GraphNode,
+        color: Option<egui::Color32>,
+        kind: EngineKind,
+        url: String,
+    ) -> Option<Self> {
         let tab = node.as_tab()?;
         Some(TabSpawn {
             id: id.to_string(),
@@ -809,7 +815,7 @@ impl TabSpawn {
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
                 pinned: tab.pinned,
-                color: node.color,
+                color,
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
@@ -1017,6 +1023,11 @@ struct App {
     /// Explicit fields (`pos`, `url`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
+    /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
+    mirror: mirror::Mirror,
+    /// Local edits to mirrored fields that the next save commits as `Set`s, by node and field. Cleared by a
+    /// successful commit.
+    pending: std::collections::BTreeMap<(store::model::NodeId, u32), Vec<u8>>,
     /// What the store held for each node when this replica last read or
     /// committed it. `materialize` applies a field only where the store
     /// now differs, so a remote change to one field doesn't overwrite
@@ -1524,6 +1535,8 @@ impl Default for App {
             host_loads: HashMap::new(),
             navigated_from: HashMap::new(),
             explicit: std::collections::BTreeSet::new(),
+            mirror: mirror::Mirror::default(),
+            pending: std::collections::BTreeMap::new(),
             last_shared: HashMap::new(),
             jar_defs: BTreeMap::new(),
             local_written: None,
@@ -2427,8 +2440,9 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
+        let color = self.mirror.color(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let (parent, group, pos, color) = (node.parent.clone(), node.group.clone(), node.pos, node.color);
+        let (parent, group, pos) = (node.parent.clone(), node.group.clone(), node.pos);
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
         if tab.state == UnloadedState::Waking {
             return;
@@ -3413,7 +3427,6 @@ mod tests {
             group: group.map(String::from),
             pos: egui::Vec2::ZERO,
             vel: egui::Vec2::ZERO,
-            color: None,
             payload,
         };
         let group = |name: &str| NodePayload::Group(GroupPayload::named(name));
@@ -3448,14 +3461,7 @@ mod tests {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
             let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode {
-                parent: None,
-                group: None,
-                pos: egui::Vec2::ZERO,
-                vel: egui::Vec2::ZERO,
-                color: None,
-                payload,
-            };
+            let node = GraphNode { parent: None, group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
             let id = app.alloc_node_id();
             app.nodes.insert(id, node);
         };

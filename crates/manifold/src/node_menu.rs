@@ -670,7 +670,7 @@ impl App {
         Some(NodeMenuView {
             kind: item_node_kind(&node.payload),
             has_group: node.group.is_some(),
-            color: node.color,
+            color: self.mirror.color(id),
             has_url: node.source_url().is_some(),
             has_copy_url: node.copyable_url().is_some(),
             pinned: node.payload.pinned(),
@@ -809,13 +809,14 @@ impl App {
             }
             NodeAction::CancelRename => self.renaming_group = None,
             NodeAction::SetColor(color) => {
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.color = color;
+                if self.nodes.contains_key(id) {
+                    self.edit_field(id, field::COLOR, session_sync::color_value(color));
                 }
             }
             NodeAction::CycleColor => {
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.color = next_tag_color(node.color);
+                if self.nodes.contains_key(id) {
+                    let next = next_tag_color(self.mirror.color(id));
+                    self.edit_field(id, field::COLOR, session_sync::color_value(next));
                 }
             }
             NodeAction::ToggleMute => self.toggle_muted(id),

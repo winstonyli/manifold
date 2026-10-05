@@ -193,10 +193,10 @@ fn random_edits_converge_in_one_diff() {
             }
             2 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
-                live.get_mut(&key)
-                    .unwrap()
-                    .fields
-                    .insert(field::COLOR, FieldValue::Color(Some(rng.below(1 << 24) as u32)));
+                // A diffed field: mirrored ones (`COLOR`) are written by `App::pending`, not `diff`.
+                let node = live.get_mut(&key).unwrap();
+                let no = if node.kind == Kind::Group { field::NAME } else { field::TEXT };
+                node.fields.insert(no, FieldValue::Str(rng.below(1 << 24).to_string()));
             }
             3 if !live.is_empty() => {
                 let key = *live.keys().nth(rng.below(live.len() as u64) as usize).unwrap();
@@ -548,7 +548,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     let live = &app.nodes[&note];
-    assert_eq!(live.color, Some(egui::Color32::RED));
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
     assert!(matches!(&live.payload, NodePayload::Note(n) if n.text == "typing"));
     assert_eq!(stored(&app, &note, field::TEXT), FieldValue::Str("typing".into()));
     assert!(matches!(&app.nodes[&tab].payload, NodePayload::Unloaded(t) if t.pinned && t.url == "https://u1/"));
@@ -558,7 +558,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     remote_set(&mut other, &note, field::TEXT, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
     assert!(matches!(&app.nodes[&note].payload, NodePayload::Note(n) if n.text == "theirs"));
-    assert_eq!(app.nodes[&note].color, Some(egui::Color32::RED));
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
 }
 
 #[test]
@@ -1986,4 +1986,108 @@ fn teardown_cancels_pending_pdf_renders() {
     app.teardown_running_session();
     assert!(app.pdf_renderer.is_cancelled(&pdf));
     assert!(!app.pdf_renderer.is_cancelled(&note), "only PDFs are marked");
+}
+
+fn red() -> FieldValue {
+    color_value(Some(egui::Color32::RED))
+}
+
+fn blue() -> FieldValue {
+    color_value(Some(egui::Color32::BLUE))
+}
+
+fn a_note(app: &mut App) -> String {
+    add(app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }))
+}
+
+#[test]
+fn a_local_color_edit_is_committed_by_the_next_save() {
+    let path = temp_dir("edit-field").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    app.edit_field(&note, field::COLOR, red());
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
+    assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None), "nothing is written before a save");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), red());
+    assert!(app.pending.is_empty(), "a commit clears what it wrote");
+}
+
+#[test]
+fn a_color_set_before_the_first_save_rides_the_create() {
+    let path = temp_dir("edit-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    app.edit_field(&note, field::COLOR, red());
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), red());
+    assert!(app.pending.is_empty());
+}
+
+#[test]
+fn a_remote_color_edit_reaches_the_mirror() {
+    let path = temp_dir("edit-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &note, field::COLOR, red());
+    assert!(app.save_session());
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED));
+}
+
+#[test]
+fn a_pending_local_color_edit_wins_over_a_remote_edit_of_the_same_field() {
+    let path = temp_dir("edit-conflict").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_field(&note, field::COLOR, blue());
+    remote_set(&mut other, &note, field::COLOR, red());
+    // The remote round applies first, the next round commits the local edit over it.
+    assert!(app.save_session());
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::BLUE));
+    assert_eq!(stored(&app, &note, field::COLOR), blue());
+}
+
+#[test]
+fn an_edit_to_a_node_the_store_dropped_is_not_written_back() {
+    let path = temp_dir("edit-dropped").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    app.edit_field(&note, field::COLOR, red());
+    app.remove_node(&note);
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!doc.nodes[&note.parse().unwrap()].is_live(), "the delete stands; no placeholder or recreate");
+}
+
+#[test]
+fn a_non_store_id_edits_the_mirror_and_queues_nothing() {
+    let mut app = App::default();
+    app.edit_field("r", field::COLOR, red());
+    assert_eq!(app.mirror.color("r"), Some(egui::Color32::RED));
+    assert!(app.pending.is_empty());
+}
+
+#[test]
+fn an_unchanged_edit_queues_nothing() {
+    let path = temp_dir("edit-noop").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    app.edit_field(&note, field::COLOR, FieldValue::Color(None));
+    assert!(app.pending.is_empty());
+}
+
+#[test]
+fn diff_leaves_mirrored_fields_of_existing_nodes_to_pending() {
+    let mut doc = Doc::new(DocId([1; 16]));
+    let mut live = BTreeMap::from([(id(0), note("a", None))]);
+    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
+    apply(&mut doc, ops);
+    live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
+    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
 }

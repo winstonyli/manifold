@@ -268,7 +268,10 @@ impl App {
     pub(crate) fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
         let Some(spawn) = self.nodes.get(tab_id).and_then(|n| {
             let old = n.as_tab()?.tab.kind;
-            Some(TabSpawn { fallback_kind: Some(old), ..TabSpawn::respawn(tab_id, n, target, url)? })
+            Some(TabSpawn {
+                fallback_kind: Some(old),
+                ..TabSpawn::respawn(tab_id, n, self.mirror.color(tab_id), target, url)?
+            })
         }) else {
             return;
         };

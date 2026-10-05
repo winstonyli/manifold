@@ -930,7 +930,7 @@ impl App {
         let tab = node.as_tab();
         Some(CardView {
             kind,
-            color: node.color,
+            color: self.mirror.color(id),
             in_group: node.group.is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
