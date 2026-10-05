@@ -240,6 +240,13 @@ leaves the app working:
      7). Split from the separate "sync by ops" plan because the sync map (`2026-10-05-sync-flow-map.md`: about 60
      mutation sites in 20 files) shows that emitting ops while `NodePayload` still exists would rewrite every site
      twice. Staged inside the plan by field group, each stage leaving the app working.
+     **Read model (decided 2026-10-05): an app-side decoded mirror.** The app keeps one `Node { ty, fields:
+     BTreeMap<u32, FieldValue>, runtime }` per id and one writer, `App::apply(ops)`, which commits the ops to the
+     journal and updates the mirror; remote changes update the mirror through the same function. Runtime state sits
+     in a side-table keyed by id. Every read goes through a `Node::get`-style accessor, so a later step (option C)
+     can make `Doc` the app's own state with decoded registers and delete the mirror by changing only where the
+     accessor reads. Rejected: reading the journal's `Doc` per read (register decoding per read, awkward with no
+     journal in tests), and regenerating `NodePayload` from the type table (keeps the translation layer).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
