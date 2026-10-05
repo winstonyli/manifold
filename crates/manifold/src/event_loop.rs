@@ -345,13 +345,16 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         ElementState::Pressed => None,
                     };
+                    if state == ElementState::Pressed && target.is_none() {
+                        self.click_counter.reset();
+                    }
                     if let Some(id) = target {
                         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
                             let (x, y) = (x, y - chrome_height);
                             let event = match state {
                                 ElementState::Pressed => {
                                     let click_count =
-                                        self.click_counter.press(button, (x, y), std::time::Instant::now());
+                                        self.click_counter.press(&id, button, (x, y), std::time::Instant::now());
                                     InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
                                 }
                                 ElementState::Released => InputEvent::MouseUp {
