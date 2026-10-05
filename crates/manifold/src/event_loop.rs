@@ -1273,7 +1273,11 @@ impl App {
                     return false;
                 }
                 let url = &spawn.url;
-                eprintln!("engine-host crashed ({reason}) for {tab_id}, restarting at {url}");
+                // The origin only (`redacted_url`): a path or query can carry a token.
+                eprintln!(
+                    "engine-host crashed ({reason}) for {tab_id}, restarting at {}",
+                    crash_report::redacted_url(url)
+                );
                 // Previously silent from the actual app's own UI -- this only
                 // ever showed up in the console, so a user with no terminal
                 // open had no way to know a tab had crashed and quietly come
@@ -1302,7 +1306,10 @@ impl App {
             // gesture, and only a few per source tab (`popup_gate.rs`).
             EngineToHost::OpenTabRequested { url, user_gesture } => {
                 if !crate::popup_gate::page_tab_url_allowed(&url) {
-                    eprintln!("popup to a disallowed scheme dropped: {}:", crate::popup_gate::scheme_for_log(&url));
+                    match crate::popup_gate::scheme_for_log(&url) {
+                        Some(scheme) => eprintln!("popup to a disallowed scheme dropped: {scheme}:"),
+                        None => eprintln!("popup to a url with no scheme dropped"),
+                    }
                 } else {
                     match self.popup_gate.admit(tab_id, user_gesture, std::time::Instant::now()) {
                         crate::popup_gate::Admit::Open => {

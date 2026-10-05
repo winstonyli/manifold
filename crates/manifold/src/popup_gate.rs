@@ -16,20 +16,16 @@ pub(crate) fn page_tab_url_allowed(url: &str) -> bool {
     lower == "about:blank" || ["http://", "https://", "manifold://"].iter().any(|scheme| lower.starts_with(scheme))
 }
 
-/// A refused URL's scheme, for a log line: never the rest, since a
-/// `data:` or `javascript:` URL carries page content. `?` when what
-/// precedes the first `:` isn't a scheme (RFC 3986: a letter, then
-/// letters, digits, `+`, `-`, `.`).
-pub(crate) fn scheme_for_log(url: &str) -> &str {
-    let scheme = url.trim().split_once(':').map_or("", |(scheme, _)| scheme);
+/// A refused URL's scheme, for a log line or a toast: never the rest,
+/// since a `data:` or `javascript:` URL carries page content. `None` when
+/// what precedes the first `:` isn't a scheme (RFC 3986: a letter, then
+/// letters, digits, `+`, `-`, `.`), so the caller words that case itself.
+pub(crate) fn scheme_for_log(url: &str) -> Option<&str> {
+    let (scheme, _) = url.trim().split_once(':')?;
     let valid = scheme.len() <= 32
         && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
         && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
-    if valid {
-        scheme
-    } else {
-        "?"
-    }
+    valid.then_some(scheme)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -87,12 +83,12 @@ mod tests {
 
     #[test]
     fn a_refused_url_is_logged_by_scheme_only() {
-        assert_eq!(scheme_for_log("data:text/html,<p>secret</p>"), "data");
-        assert_eq!(scheme_for_log(" javascript:alert(1)"), "javascript");
-        assert_eq!(scheme_for_log("ms-settings:"), "ms-settings");
+        assert_eq!(scheme_for_log("data:text/html,<p>secret</p>"), Some("data"));
+        assert_eq!(scheme_for_log(" javascript:alert(1)"), Some("javascript"));
+        assert_eq!(scheme_for_log("ms-settings:"), Some("ms-settings"));
         let long = format!("{}:x", "a".repeat(33));
         for none in ["", "blank", "<p>a:b", "1x:y", long.as_str()] {
-            assert_eq!(scheme_for_log(none), "?", "{none}");
+            assert_eq!(scheme_for_log(none), None, "{none}");
         }
     }
 
