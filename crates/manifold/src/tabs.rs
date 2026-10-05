@@ -129,10 +129,7 @@ impl App {
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
         let has = self.mirror.has(&spawn.id);
         let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
-        let engine = match has {
-            true => self.mirror.get(&spawn.id, crate::store::model::field::ENGINE),
-            false => crate::store::model::FieldValue::Engine(session_sync::engine_code(spawn.kind)),
-        };
+        let engine = if has { self.mirror.engine_code(&spawn.id) } else { session_sync::engine_code(spawn.kind) };
         let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url), engine, choice);
         self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;

@@ -303,13 +303,15 @@ fn link_id(id: Option<&str>) -> Option<NodeId> {
 }
 
 /// The tab `spawn` starts, as `Shared`: what `save_session` writes for a
-/// tab whose spawn hasn't landed yet (`App::spawning`). `url`, `engine` and
-/// `jar` are its shared ones (`App::spawn_tab_async`): the mirror's for a tab
-/// that has an entry, which a respawn's live `spawn.url` may not be.
-pub(crate) fn spawn_shared(spawn: &TabSpawn, url: &str, engine: FieldValue, jar: crate::jar::JarChoice) -> Shared {
+/// tab whose spawn hasn't landed yet (`App::spawning`). `url`, `engine` (a
+/// stored code) and `jar` are its shared ones (`App::spawn_tab_async`): the
+/// mirror's for a tab that has an entry, which a respawn's live `spawn.url`
+/// may not be.
+pub(crate) fn spawn_shared(spawn: &TabSpawn, url: &str, engine: u64, jar: crate::jar::JarChoice) -> Shared {
     let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
     let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
-    let kind = tab_fields(&mut fields, FieldValue::Str(url.to_owned()), engine, pinned, parent, jar);
+    let (url, engine) = (FieldValue::Str(url.to_owned()), FieldValue::Engine(engine));
+    let kind = tab_fields(&mut fields, url, engine, pinned, parent, jar);
     Shared { kind, group: parse_id(&spawn.group), fields }
 }
 
@@ -528,6 +530,7 @@ impl App {
         now: &Shared,
         held: &[u32],
     ) -> bool {
+        let in_flight = self.swap_in_flight(id);
         let Some(node) = self.nodes.get_mut(id) else {
             return false;
         };
@@ -547,12 +550,12 @@ impl App {
                     tab.tab.send(&HostToEngine::Navigate { url, referrer: None });
                     store_load = true;
                 }
-                // A swap in flight here wins: `mirror_remote` held the remote engine back while the swap's edit is
-                // unsaved; once saved, its target is written again (`reassert`), so the document ends on the engine
-                // this tab lands on.
+                // A swap in flight here (`swap_in_flight`, parked for cookies too) wins: `mirror_remote` held the
+                // remote engine back while the swap's edit is unsaved; once saved, its target is written again
+                // (`reassert`), so the document ends on the engine this tab lands on.
                 let want = engine_field(fields);
                 if changed(field::ENGINE) {
-                    match tab.swap_target {
+                    match in_flight {
                         Some(target) if target != want => reassert = Some(target),
                         Some(_) => {}
                         None if tab.tab.kind != want => swap = Some(want),

@@ -3351,3 +3351,93 @@ fn a_crash_mid_swap_restarts_on_the_target_with_the_old_engine_as_fallback() {
     assert!(app.save_session());
     assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Servo));
 }
+
+/// Lands every spawn in flight on a fake host of the kind it asked for. The peers keep the hosts' channels open.
+fn land_spawns(app: &mut App) -> Vec<Peer> {
+    let mut peers = Vec::new();
+    for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
+        let (tab, peer) = crate::process_manager::EngineTab::fake(spawn.kind);
+        app.handle_tab_spawn_result(crate::TabSpawnOutcome {
+            spawn,
+            generation,
+            result: Ok(tab),
+            seeded: Default::default(),
+            jar: Default::default(),
+            seed_clears: None,
+        });
+        peers.push(peer);
+    }
+    peers
+}
+
+/// Review I1: once the old engine's snapshot arrives, `swap_target` is gone but the swap is still in flight, parked
+/// until the host's cookies arrive (`hold_for_cookies`). Neither a local pick nor another replica's engine starts a
+/// second swap then (whose snapshot would never come once the first drops the host), and the tab lands on the engine
+/// the document holds.
+#[test]
+fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
+    let path = temp_dir("engine-swap-cookie-hold").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (tab, mut peer) = live_tab(&mut app, EngineKind::Cef, "https://s/");
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.start_swap_to(&tab, EngineKind::Webview2);
+    assert!(app.save_session());
+    let snapshot = ipc_protocol::TabState { url: "https://s/".into() };
+    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::StateSnapshot(snapshot));
+    assert!(app.cookie_holds.contains_key(&tab), "parked for the cookies");
+    assert_eq!(swap_target(&app, &tab), None);
+    app.start_swap_to(&tab, EngineKind::Servo);
+    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "a local pick is refused");
+    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Servo));
+    assert!(app.save_session());
+    assert_eq!(swap_target(&app, &tab), None, "no second swap");
+    let asked = sent(&mut peer).iter().filter(|m| matches!(m, HostToEngine::GetState)).count();
+    assert_eq!(asked, 1, "the old host was asked once");
+    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "the remote engine is written over");
+    app.handle_engine_message(&tab, ipc_protocol::EngineToHost::Cookies("[]".into()));
+    let spawn = &app.test_spawns.first().expect("the swap goes on").0;
+    assert_eq!((spawn.kind, spawn.fallback_kind), (EngineKind::Webview2, Some(EngineKind::Cef)));
+    let _peers = land_spawns(&mut app);
+    assert_eq!(app.nodes[&tab].as_tab().unwrap().tab.kind, EngineKind::Webview2, "landed on the target");
+    assert_eq!(app.mirror.engine(&tab), EngineKind::Webview2, "the document holds what runs");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::ENGINE), engine(EngineKind::Webview2));
+}
+
+/// Review M8: another replica's engine reaches a sleeping card through the mirror alone (nothing spawns, nothing is
+/// queued), and the card wakes into it.
+#[test]
+fn a_remote_engine_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
+    let path = temp_dir("engine-remote-sleeping").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::ENGINE, engine(EngineKind::Cef));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.engine(&tab), EngineKind::Cef);
+    assert!(app.pending.is_empty() && app.test_spawns.is_empty(), "nothing queued or started");
+    assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping);
+    app.focus_tab(&tab);
+    assert_eq!(app.test_spawns[0].0.kind, EngineKind::Cef, "wakes into it");
+}
+
+/// Review M8, Ruling 6: an unknown engine code survives a wake that lands live too: the live tab's save reads the
+/// mirror's raw value, not the engine it runs.
+#[test]
+fn an_unknown_engine_code_survives_a_tab_landing_live() {
+    let path = temp_dir("engine-unknown-live").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::ENGINE, FieldValue::Engine(99));
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    let _peers = land_spawns(&mut app);
+    assert_eq!(app.nodes[&tab].as_tab().expect("landed live").tab.kind, EngineKind::Servo);
+    app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::ENGINE), FieldValue::Engine(99), "not overwritten by a live tab's save");
+}

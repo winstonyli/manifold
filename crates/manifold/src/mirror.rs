@@ -115,9 +115,14 @@ impl Mirror {
     /// holds the stored code as is, so a code from a newer build survives a save; it, and an absent one, read as
     /// Servo (`engine_of`, 2b-3 Ruling 6). `EngineTab::kind` is the engine actually running.
     pub(crate) fn engine(&self, id: &str) -> EngineKind {
+        engine_of(self.engine_code(id))
+    }
+
+    /// A tab's engine as the stored code, kept as is (0: none).
+    pub(crate) fn engine_code(&self, id: &str) -> u64 {
         match self.get(id, field::ENGINE) {
-            FieldValue::Engine(code) => engine_of(code),
-            _ => engine_of(0),
+            FieldValue::Engine(code) => code,
+            _ => 0,
         }
     }
 
@@ -134,10 +139,7 @@ impl Mirror {
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
             url: self.url(id),
-            engine: match self.get(id, field::ENGINE) {
-                FieldValue::Engine(code) => code,
-                _ => 0,
-            },
+            engine: self.engine_code(id),
             jar: self.jar_choice(id),
         }
     }

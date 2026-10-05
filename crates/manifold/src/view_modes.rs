@@ -251,11 +251,14 @@ impl App {
     /// engine's first `FrameReady` becomes the displayed texture (once
     /// focused) -> old engine-host dropped when its graph node is replaced.
     pub(crate) fn start_swap_to(&mut self, tab_id: &str, target: EngineKind) {
+        if self.swap_in_flight(tab_id).is_some() {
+            return; // one swap at a time for this tab
+        }
         let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) else {
             return;
         };
-        if node.tab.kind == target || node.swap_target.is_some() {
-            return; // no-op swap, or one swap at a time for this tab
+        if node.tab.kind == target {
+            return; // no-op swap
         }
         node.swap_target = Some(target);
         // Saved as the swap starts (2b-3 Ruling 5): a save before the snapshot writes the target, and a failure
@@ -266,6 +269,18 @@ impl App {
         if let Some(node) = self.nodes.get_mut(tab_id).and_then(|n| n.as_tab_mut()) {
             node.tab.send(&HostToEngine::GetState);
         }
+    }
+
+    /// The engine a host swap in flight for tab `id` lands on: its `swap_target` until the old host's snapshot
+    /// arrives, then the snapshot parked for the host's cookies (`hold_for_cookies`; "Switch Jar Now" parks one on
+    /// the running engine). The one lock: `start_swap_to` starts no second swap, whose snapshot would never come once
+    /// the first drops the host, and a remote engine meanwhile is written over (`update_live_node`).
+    pub(crate) fn swap_in_flight(&self, id: &str) -> Option<EngineKind> {
+        let tab = self.nodes.get(id)?.as_tab()?;
+        tab.swap_target.or(match self.cookie_holds.get(id) {
+            Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
+            _ => None,
+        })
     }
 
     pub(crate) fn finish_swap(&mut self, tab_id: &str, target: EngineKind, url: String) {
