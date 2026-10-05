@@ -169,6 +169,19 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
    node; with D it names the node a view is open on.
 8. After C: `JAR_SET` and `DEFAULT_JAR` retire into the single `jar` edge field (18 fields to 16).
 
+9. **`Create` drops its `kind` slot.** `type` is an ordinary field written at create, so `Create{node, fields}` is
+   uniform. "Not yet created" (today `Kind::Unknown(0)`, `Node::placeholder`, and its compaction special case at
+   `ops.rs:158`) becomes "has no `type`". Behavior change: unknown types are no longer hidden (`is_live` today rejects
+   `Kind::Unknown`); they show as the generic `*/*` card and keep their raw fields.
+10. **Sync by ops, not by diff (decision for the plan).** Today the app mutates live state and `diff` (with the
+    `explicit` set and `keep`) derives ops after the fact. That conflicts with history: an undo transaction needs the
+    ops a verb produced, with the verb's label, and a diff has lost both. Two ways to reconcile:
+    - *Verbs emit ops directly* (spec section 4 already says verbs write only through store ops). `diff`, `explicit`
+      and `keep` disappear, and `FieldDef.explicit` goes with them. This is the clean end state and the bigger change.
+    - *Keep `diff`, capture around the verb*: snapshot the affected fields before and after, and take the inverse from
+      the pair. Smaller, but it leaves the second sync mechanism in place.
+    Recommended: direct ops, done together with item 6 in plan step 5; until then history uses the capture approach.
+
 Unchanged: the typed `FIELDS` table, `explicit` fields, `ENGINE` and `ENGINES` (until D), and `JsonLeaf`'s
 `key`/`value`/`path` (a JSON-path node type is a separate idea).
 
