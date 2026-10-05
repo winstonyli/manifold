@@ -1877,9 +1877,9 @@ fn last_shared_matches_the_store_after_every_save() {
     if let NodePayload::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().payload {
         t.url = "https://b/".into();
     }
-    app.mark(&tab, field::URL);
+    app.edit_url(&tab, "https://b/");
     assert!(app.save_session());
-    check(&app, "a marked url");
+    check(&app, "a shared url");
 }
 
 /// What the app's side of a save costs at realistic session sizes: the
@@ -1949,10 +1949,11 @@ fn app_save_costs() {
             "save_session, one url changed",
             timed(N, || {
                 let id = &ids[k % tabs];
+                let url = format!("https://moved.example/{k}");
                 if let NodePayload::Unloaded(f) = &mut app.nodes.get_mut(id).unwrap().payload {
-                    f.url = format!("https://moved.example/{k}");
+                    f.url = url.clone();
                 }
-                app.mark(id, field::URL);
+                app.edit_url(id, &url);
                 k += 1;
                 assert!(app.save_session());
             }),
@@ -2175,6 +2176,8 @@ fn diff_leaves_mirrored_fields_of_existing_nodes_to_pending() {
     let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
     apply(&mut doc, ops);
     live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
+    // `url` too (2b-3), even marked explicit as `all_explicit` does.
+    live.get_mut(&id(0)).unwrap().fields.insert(field::URL, FieldValue::Str("https://elsewhere/".into()));
     assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
 }
 
@@ -2861,4 +2864,119 @@ fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_i
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
     assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
+}
+
+// ---- 2b-3: the shared url in the mirror -------------------------------------
+
+/// The page moves on (an engine report): the live url changes, the shared one doesn't.
+fn set_live_url(app: &mut App, tab: &str, url: &str) {
+    match &mut app.nodes.get_mut(tab).unwrap().payload {
+        NodePayload::Tab(t) => t.url = url.into(),
+        NodePayload::Unloaded(t) => t.url = url.into(),
+        _ => panic!("{tab} is not a tab"),
+    }
+}
+
+/// Ruling 4: a navigation is saved as it started (`navigate_tab` calls `edit_url` with the typed url), so a redirect
+/// the page makes before the save stays the live url only.
+#[test]
+fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
+    let path = temp_dir("url-redirect").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    app.edit_url(&tab, "https://a/");
+    set_live_url(&mut app, &tab, "https://b/");
+    assert_eq!(app.mirror.url(&tab), "https://a/", "shown at once");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://a/".into()));
+    assert_eq!(app.mirror.url(&tab), "https://a/");
+    assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://b/", "the live url is the page's");
+}
+
+/// Ruling 3: an unsaved local url beats another replica's edit to it; their other fields still arrive. The tab is not
+/// moved to their url (a live tab is sent no `Navigate`: `update_live_node` uses the one verdict for both).
+#[test]
+fn a_local_url_edit_wins_over_a_remote_one() {
+    let path = temp_dir("url-local-wins").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_url(&tab, "https://mine/");
+    set_live_url(&mut app, &tab, "https://mine/");
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://theirs/".into()));
+    remote_set(&mut other, &tab, field::PINNED, FieldValue::Bool(true));
+    // The remote round applies, then the next round commits.
+    assert!(app.save_session());
+    assert_eq!(app.mirror.url(&tab), "https://mine/");
+    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://mine/".into()));
+    assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://mine/", "not moved to theirs");
+    assert!(app.mirror.pinned(&tab), "their other field arrives");
+    assert!(app.test_spawns.is_empty());
+}
+
+/// Another replica's url reaches the mirror and moves a sleeping tab, and the next save writes nothing back.
+#[test]
+fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
+    let path = temp_dir("url-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://s/", ""));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::URL, FieldValue::Str("https://moved/".into()));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.url(&tab), "https://moved/");
+    assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://moved/");
+    assert!(app.pending.is_empty(), "nothing to write back");
+    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://moved/".into()));
+}
+
+/// A url the page moved to without sharing it is never saved: not by a save, not after a restore reopens the tab at
+/// it (`LiveUrl`) and its wake lands.
+#[test]
+fn an_unmarked_live_url_is_never_saved() {
+    let path = temp_dir("url-unmarked").join("session.mnf");
+    let tab = {
+        let mut app = app_on(&path, 1);
+        let tab = add(&mut app, sleeping_tab("https://s/", ""));
+        assert!(app.save_session());
+        set_live_url(&mut app, &tab, "https://s/moved");
+        assert!(app.save_session());
+        assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
+        assert_eq!(app.mirror.url(&tab), "https://s/");
+        app.maybe_write_local(true);
+        app.close_store();
+        tab
+    };
+    let mut app = app_on(&path, 2);
+    assert!(app.restore_session());
+    assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://s/moved", "reopened at its live url");
+    assert_eq!(app.mirror.url(&tab), "https://s/", "the mirror shows the shared one");
+    fail_spawns(&mut app);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &tab, field::URL), FieldValue::Str("https://s/".into()));
+}
+
+/// A tab whose spawn hasn't landed is created with the url it starts at, and lands with it in the mirror.
+#[test]
+fn a_spawning_tab_is_created_and_lands_with_its_url() {
+    let path = temp_dir("url-spawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let t = app.alloc_node_id();
+    let spawn = crate::TabSpawn::new(
+        t.clone(),
+        "https://t/".into(),
+        EngineKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Restore,
+        1.0,
+    );
+    app.spawn_tab_async(spawn);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.url(&t), "https://t/", "the failed card lands with it");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &t, field::URL), FieldValue::Str("https://t/".into()));
 }

@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use crate::session_sync::{color_of, color_value, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
-/// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes.
-pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED];
+/// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is mirrored for every
+/// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
+pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED, field::URL];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -86,18 +87,31 @@ impl Mirror {
         matches!(self.get(id, field::PINNED), FieldValue::Bool(true))
     }
 
+    /// A tab's shared url: the document's, or the one a local edit is about to write (Ruling 1). Its live url, which
+    /// every engine report moves, is `TabPayload::url` / `UnloadedTabPayload::url`. "" when the mirror has none.
+    pub(crate) fn url(&self, id: &str) -> String {
+        match self.get(id, field::URL) {
+            FieldValue::Str(url) => url,
+            _ => String::new(),
+        }
+    }
+
     pub(crate) fn carried(&self, id: &str) -> Carried {
         Carried {
             color: self.color(id),
             pinned: self.pinned(id),
             parent: self.parent(id).map(str::to_owned),
             group: self.group(id).map(str::to_owned),
+            url: self.url(id),
         }
     }
 
-    /// `init` for everything a tab carries.
+    /// `init` for everything a tab carries. An empty `url` (any node but a tab) is the field's absent value, so it
+    /// is left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
-        self.init(id, [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))]);
+        let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
+        let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
+        self.init(id, fields.into_iter().chain(url));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -113,6 +127,8 @@ pub(crate) struct Carried {
     pub pinned: bool,
     pub parent: Option<String>,
     pub group: Option<String>,
+    /// The shared url (`Mirror::url`); "" for a node that isn't a tab.
+    pub url: String,
 }
 
 #[cfg(test)]
@@ -127,11 +143,22 @@ mod tests {
             pinned: true,
             parent: Some("p".into()),
             group: Some("g".into()),
+            url: "https://a/".into(),
         };
         mirror.seed("7", &first);
         assert_eq!(mirror.carried("7"), first);
-        mirror.seed("7", &Carried { color: None, pinned: false, parent: None, group: None });
+        mirror.seed("7", &Carried { color: None, pinned: false, parent: None, group: None, url: "https://b/".into() });
         assert_eq!(mirror.carried("7"), first);
+    }
+
+    #[test]
+    fn a_url_reads_back_and_a_node_without_one_has_none() {
+        let mut mirror = Mirror::default();
+        assert_eq!(mirror.url("7"), "");
+        mirror.seed("8", &Carried::default());
+        assert!(!mirror.nodes["8"].contains_key(&field::URL), "an empty url seeds nothing");
+        mirror.set("7", field::URL, FieldValue::Str("https://a/".into()));
+        assert_eq!(mirror.url("7"), "https://a/");
     }
 
     #[test]

@@ -125,7 +125,11 @@ impl App {
     /// arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         self.tab_spawns_in_flight += 1;
-        self.spawning.insert(spawn.id.clone(), session_sync::spawn_shared(&spawn));
+        // Shared at the url the mirror holds for it (a respawn's `spawn.url` is the live one); a new tab has no entry
+        // yet and shares the one it starts at.
+        let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
+        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url));
+        self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
         let (jar, _) = self.resolved_jar(&spawn.carry.jar);
@@ -370,7 +374,7 @@ impl App {
         let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
-                    let Carried { color, pinned, parent, group } = self.mirror.carried(&id);
+                    let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
                     (parent, group, card.pos, color, pinned, tab.muted, tab.jar)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
@@ -437,7 +441,7 @@ impl App {
                         }),
                     },
                 );
-                self.seed_landing(&id, Carried { color, pinned, parent, group });
+                self.seed_landing(&id, Carried { color, pinned, parent, group, url: url.clone() });
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -550,10 +554,11 @@ impl App {
                     };
                     self.queue_toast(toast);
                     let state = UnloadedState::Failed(err.to_string());
-                    let failed = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar: carry_jar };
+                    let failed =
+                        UnloadedTabPayload { url: url.clone(), title, kind, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { pos, vel, payload });
-                    self.seed_landing(&id, Carried { color, pinned, parent, group });
+                    self.seed_landing(&id, Carried { color, pinned, parent, group, url });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }

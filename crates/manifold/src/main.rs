@@ -1003,7 +1003,7 @@ struct App {
     /// Tabs `navigate_tab` just moved on, with the url each left, when, and
     /// whether the engine has reported loading since (`App::reported_url`).
     navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
-    /// Explicit fields (`pos`, `url`) marked at user actions, for the next
+    /// Explicit fields (`pos`) marked at user actions, for the next
     /// save to write (spec "Local edits become ops").
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
@@ -1842,16 +1842,15 @@ impl App {
                 self.navigated_from.insert(tab_id.to_string(), (node.url.clone(), std::time::Instant::now(), false));
             }
             node.url = url.clone();
-            node.tab.send(&HostToEngine::Navigate { url, referrer: None });
+            node.tab.send(&HostToEngine::Navigate { url: url.clone(), referrer: None });
             // Until the engine labels the navigation, a report can still
             // carry the old url (CEF reported loading before the new address,
             // unlabelled): that isn't the user's either.
             self.note_host_load(tab_id);
-            self.mark(tab_id, field::URL);
-            // Now, while `node.url` is still the typed url: a save writes the
-            // live value, and the page's own redirect or script navigation
-            // (never shared) would otherwise be what the mark writes. Only a
-            // save that doesn't commit leaves the mark for a later one.
+            // The typed url, whatever the page then redirects to (2b-3 Ruling 4).
+            self.edit_url(tab_id, &url);
+            // Saved now so other replicas follow at once. Only a save that
+            // doesn't commit leaves the edit for a later one.
             self.save_session();
         }
     }
@@ -2435,7 +2434,7 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let Carried { color, pinned, parent, group } = self.mirror.carried(id);
+        let Carried { color, pinned, parent, group, .. } = self.mirror.carried(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
         let pos = node.pos;
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };

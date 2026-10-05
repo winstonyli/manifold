@@ -65,9 +65,12 @@ impl App {
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
+        // A tab's shared url starts as the one it is shown at (2b-3 Ruling 10). A stored tab's entry already holds
+        // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
+        let url = payload.saved_tab().map(|(url, _)| url.to_owned()).unwrap_or_default();
         let node = GraphNode { pos: at.pos, vel: egui::Vec2::ZERO, payload };
         self.nodes.insert(id.clone(), node);
-        self.mirror.seed(&id, &crate::mirror::Carried { group: at.group, ..Default::default() });
+        self.mirror.seed(&id, &crate::mirror::Carried { group: at.group, url, ..Default::default() });
         self.node_order.push(id.clone());
         id
     }
