@@ -30,6 +30,7 @@ mod json_level_ui;
 mod json_view;
 mod level;
 mod local_state;
+mod mirror;
 mod names;
 mod nav_history;
 mod net;
