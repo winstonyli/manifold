@@ -247,7 +247,7 @@ leaves the app working:
      can make `Doc` the app's own state with decoded registers and delete the mirror by changing only where the
      accessor reads. Rejected: reading the journal's `Doc` per read (register decoding per read, awkward with no
      journal in tests), and regenerating `NodePayload` from the type table (keeps the translation layer).
-     2b-1 done: 25746d9 (Mirror), 0939028 and 3c57942 (writer, commit path, colour), b082af3 (pin). The mirror,
+     2b-1 done: 25746d9 (Mirror), 0939028 and 3c57942 (writer, commit path, colour), b082af3 (pin), 7b630d8 (final-review fixes: parked remote values patched on commit, spawning ids kept by the sweep). The mirror,
      `App::edit_field` and `App::pending` exist; `color` and `pinned` read through `Mirror`; `diff` skips `MIRRORED`
      fields on existing non-jar nodes (jars keep their colour in `jar_defs` until sub-project C). Known leftovers: no
      end-to-end test of `SetColor`/`CycleColor`, and no test that colour/pin survive a crash, swap or wake respawn
