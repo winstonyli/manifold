@@ -224,10 +224,17 @@ leaves the app working:
    place. Rows describe today's behavior (for example `pinnable` is true only for tabs); plan 3 widens them. Migrate the
    decisions that are pure per-kind `match`es (group close is Dissolve, `worth_reopening`, draw order), each guarded by
    a golden test that behavior is unchanged.
-2. **Plan 2, live state is the node.** Replace live state with document nodes and sync by ops (section 6 items 6, 9,
-   10); `type` string in the journal; remove the five enums; rewrite fixtures (`seed.json`, smoke and drive scripts,
-   README, first-launch demo); add a grep-guard test, in the style of the `APPDATA` guard in `profile::tests`, that
-   fails if any source still names the old enums.
+2. **Plan 2, live state is the node.** Split three ways on 2026-10-04 (the scope is about 316 `NodePayload`, 178
+   `ItemNodeKind` and 589 `Kind::` sites), each leaving the app working:
+   - **2a, store and journal:** `type` string in the journal replaces the numeric kind code, `Create` drops its `kind`
+     slot (section 6 items 1, 9), unknown types show as a generic card. The app's live model is unchanged; the sync
+     layer maps enum to type string at its edge.
+   - **2b, sync by ops:** verbs and sync write ops directly; `diff`, `explicit`, `keep` and `FieldDef.explicit` go
+     (item 10). `NodePayload` stays for now.
+   - **2c, live state is the node:** document node plus runtime side-table replaces `NodePayload`, `ItemNodeKind`,
+     `ContentKind` and `LevelItemKind`; the caps bridge is deleted; fixtures (`seed.json`, smoke and drive scripts,
+     README, first-launch demo) are rewritten; a grep-guard test, in the style of the `APPDATA` guard in
+     `profile::tests`, fails if any source still names the old enums (items 2, 3, 6, 7).
 3. **Plan 3, generic verbs and history.** Selection, pin, rename, duplicate and connect over any node (edit the rows);
    the `closed` field (`is_live`, `Doc::shown`, the closed-aware `effective_group`, compaction and pruning keep closed
    nodes, content-file ownership and local per-node state keep closed ids); transaction history replacing
