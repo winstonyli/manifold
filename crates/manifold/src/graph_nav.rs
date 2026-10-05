@@ -122,9 +122,7 @@ impl App {
             }
             Some((DropEffect::Reparent, Some(parent))) => {
                 if !self.would_create_cycle(id, &parent) {
-                    if let Some(node) = self.nodes.get_mut(id) {
-                        node.parent = Some(parent);
-                    }
+                    self.edit_parent(id, Some(parent));
                 }
             }
             Some((DropEffect::Merge, Some(target))) => self.merge_groups(id, &target),
@@ -175,7 +173,7 @@ impl App {
             if cur == node_id {
                 return true;
             }
-            current = self.nodes.get(&cur).and_then(|n| n.parent.clone());
+            current = self.mirror.parent(&cur).map(str::to_owned);
         }
         false
     }
@@ -255,7 +253,7 @@ impl App {
         let mut frontier = vec![root_id.to_string()];
         while let Some(current) = frontier.pop() {
             for (id, node) in &self.nodes {
-                if node.parent.as_deref() == Some(current.as_str()) && node.group == level_group && !result.contains(id)
+                if self.mirror.parent(id) == Some(current.as_str()) && node.group == level_group && !result.contains(id)
                 {
                     result.push(id.clone());
                     frontier.push(id.clone());
@@ -424,7 +422,7 @@ impl App {
             .nodes
             .iter()
             .filter(|(_, n)| n.group == self.current_group)
-            .filter_map(|(id, n)| n.parent.clone().map(|p| (p, id.clone())))
+            .filter_map(|(id, _)| self.mirror.parent(id).map(|p| (p.to_owned(), id.clone())))
             .filter(|(p, c)| positions.contains_key(p) && positions.contains_key(c))
             .collect();
         let pinned: HashSet<String> = self

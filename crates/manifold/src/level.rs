@@ -95,10 +95,10 @@ impl App {
                 .collect();
         }
         self.nodes
-            .values()
-            .filter(|node| node.group == self.current_group)
-            .filter_map(|node| {
-                let parent = self.nodes.get(node.parent.as_ref()?).filter(|p| p.group == self.current_group)?;
+            .iter()
+            .filter(|(_, node)| node.group == self.current_group)
+            .filter_map(|(id, node)| {
+                let parent = self.nodes.get(self.mirror.parent(id)?).filter(|p| p.group == self.current_group)?;
                 Some(LevelEdge {
                     from: parent.pos.to_pos2(),
                     to: node.pos.to_pos2(),
@@ -193,8 +193,8 @@ mod tests {
         app.insert_placeholder_node("p".into(), egui::vec2(0.0, 0.0), download("p.bin"));
         app.insert_placeholder_node("c".into(), egui::vec2(100.0, 50.0), download("c.bin"));
         app.insert_placeholder_node("elsewhere".into(), egui::vec2(9.0, 9.0), download("e.bin"));
-        app.nodes.get_mut("c").unwrap().parent = Some("p".into());
-        app.nodes.get_mut("elsewhere").unwrap().parent = Some("p".into());
+        app.edit_parent("c", Some("p".into()));
+        app.edit_parent("elsewhere", Some("p".into()));
         app.nodes.get_mut("elsewhere").unwrap().group = Some("other".into());
 
         let edges = app.level_edges();

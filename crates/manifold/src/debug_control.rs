@@ -1055,7 +1055,7 @@ impl App {
                             "id": item.id,
                             "kind": format!("{kind:?}"),
                             "group": node.group,
-                            "parent": node.parent,
+                            "parent": self.mirror.parent(&item.id),
                             "color": self.mirror.color(&item.id).is_some(),
                             "pinned": self.mirror.pinned(&item.id),
                             "editing": node.as_note().is_some_and(|n| n.editing),

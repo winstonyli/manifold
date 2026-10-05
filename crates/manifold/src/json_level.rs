@@ -553,7 +553,10 @@ mod tests {
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
         let id = app.place_node(None, note(), at);
         let node = &app.nodes[&id];
-        assert_eq!((node.group.as_deref(), node.pos, node.parent.is_none()), (Some(OUTER), egui::vec2(1.0, 2.0), true));
+        assert_eq!(
+            (node.group.as_deref(), node.pos, app.mirror.parent(&id).is_none()),
+            (Some(OUTER), egui::vec2(1.0, 2.0), true)
+        );
         assert_eq!(app.node_order.last(), Some(&id));
         let at = Placement { group: None, pos: egui::Vec2::ZERO };
         assert_eq!(app.place_node(Some("fixed".into()), note(), at), "fixed", "a given id is kept");

@@ -17,7 +17,9 @@ use crate::node::{
 use crate::process_manager::EngineKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::json::{Imported, JsonDoc};
-use crate::store::model::{encode_field, encode_field_into, field, field_def, Doc, FieldValue, Kind, Node, NodeId};
+use crate::store::model::{
+    decode_field, encode_field, encode_field_into, field, field_def, Doc, FieldValue, Kind, Node, NodeId,
+};
 use crate::store::ops::OpBody;
 use crate::{App, ClosedEntry, TabSpawn, ViewMode, MAX_CLOSED};
 
@@ -180,9 +182,9 @@ pub(crate) fn diff(
             if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
                 continue;
             }
-            // A mirrored field is written by `App::pending`, not compared. Jars still read `def.color` from
+            // A mirrored field (and `parent`) is written by `App::pending`, not compared. Jars still read `def.color` from
             // `jar_defs` (not the mirror) until sub-project C, so theirs is still diffed.
-            if MIRRORED.contains(&no) && node.kind != Kind::Jar {
+            if (MIRRORED.contains(&no) || no == field::PARENT) && node.kind != Kind::Jar {
                 continue;
             }
             match value {
@@ -284,6 +286,14 @@ fn pos_value(pos: egui::Vec2) -> FieldValue {
     }
 }
 
+/// A parent as a store link: `Some(None)` for none, `None` when it names something that isn't a store id.
+fn parent_id(parent: &Option<String>) -> Option<Option<NodeId>> {
+    match parent {
+        None => Some(None),
+        Some(id) => id.parse().ok().map(Some),
+    }
+}
+
 fn parse_id(id: &Option<String>) -> Option<NodeId> {
     id.as_deref().and_then(|id| id.parse().ok())
 }
@@ -377,11 +387,23 @@ impl App {
                 // save meanwhile doesn't write the old one back.
                 NodePayload::Tab(TabPayload { tab, url, swap_target, jar, .. }) => {
                     let (engine, pinned) = (swap_target.unwrap_or(tab.kind), self.mirror.pinned(key));
-                    tab_fields(&mut fields, url, engine, pinned, parse_id(&node.parent), *jar)
+                    tab_fields(
+                        &mut fields,
+                        url,
+                        engine,
+                        pinned,
+                        parse_id(&self.mirror.parent(key).map(str::to_owned)),
+                        *jar,
+                    )
                 }
-                NodePayload::Unloaded(UnloadedTabPayload { url, kind, jar, .. }) => {
-                    tab_fields(&mut fields, url, *kind, self.mirror.pinned(key), parse_id(&node.parent), *jar)
-                }
+                NodePayload::Unloaded(UnloadedTabPayload { url, kind, jar, .. }) => tab_fields(
+                    &mut fields,
+                    url,
+                    *kind,
+                    self.mirror.pinned(key),
+                    parse_id(&self.mirror.parent(key).map(str::to_owned)),
+                    *jar,
+                ),
                 NodePayload::Download(dl) if dl.completed => {
                     fields.insert(field::PATH, str(&dl.path));
                     fields.insert(field::URL, str(dl.url.as_deref().unwrap_or("")));
@@ -426,7 +448,7 @@ impl App {
                 }
             };
             if kind_fields(kind).contains(&field::PARENT) {
-                fields.insert(field::PARENT, FieldValue::Id(parse_id(&node.parent)));
+                fields.insert(field::PARENT, FieldValue::Id(parse_id(&self.mirror.parent(key).map(str::to_owned))));
             }
             debug_assert_eq!(fields.keys().copied().collect::<Vec<_>>(), {
                 let mut want = kind_fields(kind).to_vec();
@@ -519,9 +541,6 @@ impl App {
         if changed(field::POS) {
             node.pos = pos;
             node.vel = egui::Vec2::ZERO;
-        }
-        if changed(field::PARENT) {
-            node.parent = id_of(fields, field::PARENT);
         }
         let mut swap = None;
         let mut store_load = false;
@@ -748,7 +767,6 @@ impl App {
         }
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;
-            node.parent = id_of(fields, field::PARENT);
             if let Some(url) = node.source_url_mut() {
                 *url = url_of(fields);
             }
@@ -826,11 +844,13 @@ impl App {
             return;
         }
         let Some(node) = self.nodes.get(id) else { return };
-        let (parent, up) = (node.parent.clone(), node.group.clone());
+        let up = node.group.clone();
         let is_group = node.as_group().is_some();
         let is_tab = node.payload.saved_tab().is_some();
-        for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
-            node.parent = parent.clone();
+        let parent = self.mirror.parent(id).map(str::to_owned);
+        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        for child in children {
+            self.edit_parent(&child, parent.clone());
         }
         if is_group {
             // A change waiting for a spawn may name this group too.
@@ -956,6 +976,23 @@ impl App {
         self.mirror.set(id, no, value);
     }
 
+    /// The one writer of a node's parent link: the mirror shows it at once and the next save commits a `Set PARENT`.
+    /// A non-store id or target only updates the mirror.
+    pub(crate) fn edit_parent(&mut self, id: &str, parent: Option<String>) {
+        if self.mirror.parent(id) == parent.as_deref() {
+            return;
+        }
+        if let (Ok(node), Some(target)) = (id.parse::<NodeId>(), parent_id(&parent)) {
+            self.pending.insert((node, field::PARENT), encode_field(field::PARENT, &FieldValue::Id(target)));
+        }
+        self.mirror.set_parent(id, parent);
+    }
+
+    /// Every node whose mirror parent is `id`.
+    pub(crate) fn children_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.nodes.keys().map(String::as_str).filter(move |child| self.mirror.parent(child) == Some(id))
+    }
+
     /// Shows another replica's values of the mirrored fields in `fields`, except where this replica has an edit
     /// waiting for a save: it commits next and wins (last writer, per field).
     fn mirror_remote(&mut self, id: &str, fields: &Fields) {
@@ -966,6 +1003,9 @@ impl App {
                 continue;
             }
             self.mirror.set(id, no, value.clone());
+        }
+        if !node.is_some_and(|node| self.pending.contains_key(&(node, field::PARENT))) {
+            self.mirror.set_parent(id, id_of(fields, field::PARENT));
         }
     }
 
@@ -1045,12 +1085,34 @@ impl App {
                 })
                 .collect();
             let doc = txn.doc();
-            ops.extend(
-                self.pending
-                    .iter()
-                    .filter(|((node, _), _)| !skip.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live))
-                    .map(|(&(node, no), enc)| OpBody::Set { node, field: no, enc: enc.clone() }),
-            );
+            let created: BTreeSet<NodeId> = ops
+                .iter()
+                .filter_map(|op| if let OpBody::Create { node, .. } = op { Some(*node) } else { None })
+                .collect();
+            let deleted: BTreeSet<NodeId> =
+                ops.iter().filter_map(|op| if let OpBody::Delete { node } = op { Some(*node) } else { None }).collect();
+            // A link target is kept if it is live in the document and not deleted here, or created here.
+            let resolve = |target: Option<NodeId>| {
+                target.filter(|t| {
+                    (doc.nodes.get(t).is_some_and(Node::is_live) && !deleted.contains(t)) || created.contains(t)
+                })
+            };
+            for (&(node, no), enc) in &self.pending {
+                if skip.contains(&node) || !doc.nodes.get(&node).is_some_and(Node::is_live) {
+                    continue;
+                }
+                let enc = if no == field::PARENT {
+                    let decoded = field_def(no).and_then(|def| decode_field(def, enc).ok());
+                    let target = match decoded {
+                        Some(FieldValue::Id(target)) => resolve(target),
+                        _ => None,
+                    };
+                    encode_field(no, &FieldValue::Id(target))
+                } else {
+                    enc.clone()
+                };
+                ops.push(OpBody::Set { node, field: no, enc });
+            }
             // The nodes whose stored state this commit changes. A delete can
             // also change other nodes' effective group, so it refreshes all.
             let touched: Option<BTreeSet<NodeId>> = ops
@@ -1094,7 +1156,11 @@ impl App {
                     for &(node, no) in self.pending.keys() {
                         let id = node.to_string();
                         if let Some(Some((_, fields, _))) = self.remote_in_flight.get_mut(&id) {
-                            fields.insert(no, self.mirror.get(&id, no));
+                            let value = match no {
+                                field::PARENT => FieldValue::Id(parse_id(&self.mirror.parent(&id).map(str::to_owned))),
+                                _ => self.mirror.get(&id, no),
+                            };
+                            fields.insert(no, value);
                         }
                     }
                     self.pending.clear();

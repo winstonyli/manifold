@@ -64,7 +64,7 @@ impl App {
     /// save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
-        let node = GraphNode { parent: None, group: at.group, pos: at.pos, vel: egui::Vec2::ZERO, payload };
+        let node = GraphNode { group: at.group, pos: at.pos, vel: egui::Vec2::ZERO, payload };
         self.nodes.insert(id.clone(), node);
         self.node_order.push(id.clone());
         id
@@ -98,9 +98,7 @@ impl App {
             failed: false,
         });
         self.place_node(Some(id.clone()), payload, Placement { group: node_group, pos });
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.parent = Some(tab_id); // the edge from the tab it came from
-        }
+        self.edit_parent(&id, Some(tab_id)); // the edge from the tab it came from
     }
 
     /// The in-flight download node an engine's progress, failure or
@@ -114,7 +112,7 @@ impl App {
                 .and_then(|n| n.as_download())
                 .is_some_and(|d| d.path == path && !d.completed && !d.failed)
         };
-        let from_tab = |id: &&String| self.nodes.get(*id).is_some_and(|n| n.parent.as_deref() == Some(tab_id));
+        let from_tab = |id: &&String| self.mirror.parent(id) == Some(tab_id);
         let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(id));
         let first = newest_first.clone().next();
         newest_first.find(from_tab).or(first).cloned()
@@ -223,7 +221,7 @@ impl App {
             NodePayload::Json(json) if json.error.is_some() => (json.path.clone(), false),
             _ => return,
         };
-        let (pos, group, parent) = (node.pos, node.group.clone(), node.parent.clone());
+        let (pos, group, parent) = (node.pos, node.group.clone(), self.mirror.parent(id).map(str::to_owned));
         let in_order = self.node_order.iter().any(|n| n == id);
         let result = if is_image {
             self.insert_image_node_with_id(id.to_string(), path, pos, group)
@@ -237,9 +235,7 @@ impl App {
                 if in_order {
                     self.node_order.pop();
                 }
-                if let Some(node) = self.nodes.get_mut(id) {
-                    node.parent = parent;
-                }
+                self.edit_parent(id, parent);
                 self.save_session();
             }
             Err(error) => match self.nodes.get_mut(id).map(|n| &mut n.payload) {
@@ -282,7 +278,7 @@ impl App {
         }
         let (kind, path) = (*kind, path.clone());
         let new_path = path.clone();
-        let (pos, group, parent) = (node.pos, node.group.clone(), node.parent.clone());
+        let (pos, group, parent) = (node.pos, node.group.clone(), self.mirror.parent(id).map(str::to_owned));
         let Some(url) = node.source_url().map(str::to_string) else { return };
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = match &node.payload {
@@ -324,8 +320,9 @@ impl App {
             };
             self.insert_placeholder_node(id.to_string(), pos, payload);
         }
+        self.edit_parent(id, parent);
         if let Some(node) = self.nodes.get_mut(id) {
-            (node.parent, node.group) = (parent, group);
+            node.group = group;
             // The view goes back unpruned onto an error card: pruning
             // against its `Null` would wipe, and sync away, every override
             // a Retry should get back.
@@ -528,14 +525,12 @@ impl App {
     /// isn't remembered, clearing every reference to it). A failed insert
     /// is toasted and the tab stays.
     pub(crate) fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
-        let Some((group, pos, parent)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos, n.parent.clone()))
-        else {
+        let Some((group, pos)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos)) else {
             return;
         };
+        let parent = self.mirror.parent(tab_id).map(str::to_owned);
         if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                node.parent = parent;
-            }
+            self.edit_parent(&node_id, parent);
             self.remove_tab(tab_id);
             self.save_session();
         }
@@ -1140,11 +1135,11 @@ mod tests {
         let mut app = App::default();
         let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
         let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
-        app.nodes.get_mut(&note).unwrap().parent = Some(opener.clone());
+        app.edit_parent(&note, Some(opener.clone()));
         let tab = add(&mut app, sleeping_tab("https://x.test/from-note", "T"));
-        app.nodes.get_mut(&tab).unwrap().parent = Some(note.clone());
+        app.edit_parent(&tab, Some(note.clone()));
         app.close_node(&note);
-        assert_eq!(app.nodes[&tab].parent.as_deref(), Some(opener.as_str()));
+        assert_eq!(app.mirror.parent(&tab), Some(opener.as_str()));
     }
 
     /// The engine message arms need a live engine, so the entry's
@@ -1188,9 +1183,9 @@ mod tests {
         let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
         app.nodes.get_mut(&tab).unwrap().pos = egui::vec2(5.0, 6.0);
         app.nodes.get_mut(&tab).unwrap().group = Some("g".into());
-        app.nodes.get_mut(&tab).unwrap().parent = Some(opener.clone());
+        app.edit_parent(&tab, Some(opener.clone()));
         let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
-        app.nodes.get_mut(&child).unwrap().parent = Some(tab.clone());
+        app.edit_parent(&child, Some(tab.clone()));
 
         let body = crate::redirect_fetch::save(&dir, "n", crate::content::ContentKind::Json, b"[1]".to_vec()).unwrap();
         app.redirect_tab_to_content(&tab, "n".into(), "https://x.test/a.json".into(), body);
@@ -1199,8 +1194,8 @@ mod tests {
         let node = &app.nodes["n"];
         assert_eq!((node.pos, node.group.as_deref()), (egui::vec2(5.0, 6.0), Some("g")));
         assert_eq!(node.source_url(), Some("https://x.test/a.json"));
-        assert_eq!(node.parent.as_deref(), Some(opener.as_str()), "still opened from where the tab was");
-        assert!(app.nodes.values().all(|n| n.parent.as_deref() != Some(tab.as_str())), "children moved up");
+        assert_eq!(app.mirror.parent("n"), Some(opener.as_str()), "still opened from where the tab was");
+        assert!(app.children_of(&tab).next().is_none(), "children moved up");
     }
 
     /// A converted tab leaves no reference behind: focus, split, selection
@@ -1237,7 +1232,7 @@ mod tests {
         let mut app = App::default();
         let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "A"));
         let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
-        app.nodes.get_mut(&child).unwrap().parent = Some(tab.clone());
+        app.edit_parent(&child, Some(tab.clone()));
         app.focused = Some(tab.clone());
         let path = dir.join("n.png");
         std::fs::write(&path, b"not a picture").unwrap();
@@ -1246,7 +1241,7 @@ mod tests {
         assert!(app.nodes.contains_key(&tab), "the tab stays");
         assert!(!app.nodes.contains_key("n"));
         assert_eq!(app.focused.as_deref(), Some(tab.as_str()));
-        assert_eq!(app.nodes[&child].parent.as_deref(), Some(tab.as_str()));
+        assert_eq!(app.mirror.parent(&child), Some(tab.as_str()));
         assert_eq!(app.save_toast_queue.len() + usize::from(app.save_toast.is_some()), 1, "toasted");
     }
 }

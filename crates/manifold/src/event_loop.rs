@@ -1504,7 +1504,12 @@ mod idle_tests {
         app.insert_download_node("b".into(), "f.zip".into(), None, None);
         app.handle_engine_message("a", EngineToHost::DownloadFailed { path: "f.zip".into() });
         let by_parent = |p: &str| {
-            app.nodes.values().find(|n| n.parent.as_deref() == Some(p)).and_then(|n| n.as_download()).unwrap().failed
+            app.nodes
+                .iter()
+                .find(|(id, _)| app.mirror.parent(id) == Some(p))
+                .and_then(|(_, n)| n.as_download())
+                .unwrap()
+                .failed
         };
         assert!(by_parent("a") && !by_parent("b"));
     }

@@ -416,18 +416,10 @@ pub(crate) struct DownloadPayload {
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
 /// One node in the graph view -- fields every kind shares (position, graph
-/// membership) live here (`color` and `pinned` are not fields: see `Mirror`); `payload` holds whatever's specific to
+/// membership) live here (`color`, `pinned` and `parent`, the "opened from" edge, are not fields: see `Mirror`); `payload` holds whatever's specific to
 /// the node's actual kind. See `NodePayload`'s own doc comment for the
 /// migration this is a step of.
 pub(crate) struct GraphNode {
-    /// The "opened from" edge for a tab (which tab spawned it, making the
-    /// tab collection a forest for Graph view); for a download, the tab
-    /// it was downloaded from; for content a tab became, that tab's own
-    /// parent; for a tab opened with Open as Tab, the node it came from.
-    /// Saved for tabs, downloads and content (`session_sync::kind_fields`).
-    /// `None` for a root node, and always `None` for a group (never
-    /// "opened from").
-    pub(crate) parent: Option<String>,
     /// Which group's subgraph this node is shown in -- `None` at the top
     /// level. Groups nest, so a group node has one too; see
     /// `GroupPayload`'s own doc comment.
@@ -629,8 +621,7 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node =
-            |payload| GraphNode { parent: None, group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+        let node = |payload| GraphNode { group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
         let pdf = |url: Option<&str>| {
             node(NodePayload::Pdf(PdfPayload {
                 path: r"C:\docs\report.pdf".into(),

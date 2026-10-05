@@ -825,7 +825,7 @@ fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     let note = add(&mut app, NodePayload::Note(NotePayload { text: "hi".into(), editing: false, url: None }));
     let tab = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
     for id in [&download, &note, &tab] {
-        app.nodes.get_mut(id).unwrap().parent = Some(opener.clone());
+        app.edit_parent(id, Some(opener.clone()));
     }
     assert!(app.save_session());
     assert_eq!(stored(&app, &download, field::PARENT), FieldValue::Id(Some(opener.parse().unwrap())));
@@ -833,13 +833,13 @@ fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
     for id in [&download, &note, &tab] {
-        assert_eq!(restored.nodes[id].parent.as_deref(), Some(opener.as_str()), "{id}");
+        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{id}");
     }
     // Another replica relinking a download applies here too.
     let mut other = Journal::open(&path, ActorId(3)).unwrap();
     remote_set(&mut other, &download, field::PARENT, FieldValue::Id(Some(tab.parse().unwrap())));
     assert!(restored.save_session());
-    assert_eq!(restored.nodes[&download].parent.as_deref(), Some(tab.as_str()));
+    assert_eq!(restored.mirror.parent(&download), Some(tab.as_str()));
 }
 
 /// Image, PDF and JSON cards keep their "opened from" link across a restart, and so does a tab opened from a
@@ -863,21 +863,21 @@ fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_on
     app.insert_pdf_node_with_id(pdf.clone(), file(&dir.join("a.pdf")), egui::Vec2::ZERO, None);
     app.insert_json_node_with_id(json.clone(), file(&json_path), egui::Vec2::ZERO, None).unwrap();
     for id in [&image, &pdf, &json] {
-        app.nodes.get_mut(id).unwrap().parent = Some(opener.clone());
+        app.edit_parent(id, Some(opener.clone()));
     }
     let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "From image"));
-    app.nodes.get_mut(&tab).unwrap().parent = Some(image.clone());
+    app.edit_parent(&tab, Some(image.clone()));
     assert!(app.save_session());
     app.close_store();
 
     let mut restored = app_on(&path, 2);
     assert!(restored.restore_session());
     for id in [&image, &pdf, &json] {
-        assert_eq!(restored.nodes[id].parent.as_deref(), Some(opener.as_str()), "{id}");
+        assert_eq!(restored.mirror.parent(id), Some(opener.as_str()), "{id}");
     }
     assert!(restored.nodes[&image].as_image().is_some() && restored.nodes[&json].as_json().is_some());
     assert!(restored.nodes[&pdf].as_pdf().is_some());
-    assert_eq!(restored.nodes[&tab].parent.as_deref(), Some(image.as_str()), "a tab opened from an image card");
+    assert_eq!(restored.mirror.parent(&tab), Some(image.as_str()), "a tab opened from an image card");
 }
 
 /// A session saved by a build that wrote no `parent` for a download loads unchanged: no link, nothing lost.
@@ -902,7 +902,7 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
     let mut app = app_on(&path, 1);
     assert!(app.restore_session());
     let restored = &app.nodes[&node.to_string()];
-    assert_eq!(restored.parent, None);
+    assert_eq!(app.mirror.parent(&node.to_string()), None);
     assert_eq!(restored.as_download().and_then(|d| d.url.as_deref()), Some("https://x.test/f.bin"));
     assert_eq!(restored.pos, egui::vec2(1.0, 2.0));
     // No link encodes as the absent register, so a save has nothing to write back.
@@ -989,11 +989,11 @@ fn closing_an_unloaded_tab_reparents_its_children() {
     let root = add(&mut app, sleeping_tab("https://root/", ""));
     let mid = add(&mut app, failed_tab("https://mid/", 1.0));
     let leaf = add(&mut app, sleeping_tab("https://leaf/", ""));
-    app.nodes.get_mut(&mid).unwrap().parent = Some(root.clone());
-    app.nodes.get_mut(&leaf).unwrap().parent = Some(mid.clone());
+    app.edit_parent(&mid, Some(root.clone()));
+    app.edit_parent(&leaf, Some(mid.clone()));
     app.close_node(&mid);
     assert!(!app.nodes.contains_key(&mid));
-    assert_eq!(app.nodes[&leaf].parent.as_deref(), Some(root.as_str()));
+    assert_eq!(app.mirror.parent(&leaf), Some(root.as_str()));
 }
 
 /// A restore starts only the focused tab; every other tab is a
@@ -2268,4 +2268,101 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     assert!(app.save_retry_at.is_none());
     assert!(app.pending.is_empty());
     assert_eq!(stored(&app, &note, field::COLOR), red());
+}
+
+/// A parent edit shows at once and is committed by the next save.
+#[test]
+fn a_parent_edit_reads_back_and_commits() {
+    let path = temp_dir("parent-edit").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    assert!(app.save_session());
+    app.edit_parent(&b, Some(a.clone()));
+    assert_eq!(app.mirror.parent(&b), Some(a.as_str()));
+    assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None), "not written before the save");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// An unsaved local parent beats another replica's edit to the same link; their other fields still arrive.
+#[test]
+fn a_local_parent_edit_wins_over_a_remote_one() {
+    let path = temp_dir("parent-conflict").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b, c) = (
+        add(&mut app, sleeping_tab("https://a/", "")),
+        add(&mut app, sleeping_tab("https://b/", "")),
+        add(&mut app, sleeping_tab("https://c/", "")),
+    );
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    app.edit_parent(&c, Some(a.clone()));
+    remote_set(&mut other, &c, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// A parent that is deleted in the same commit is written as none (spec section 6 item 4).
+#[test]
+fn a_parent_deleted_by_the_same_commit_is_written_as_none() {
+    let path = temp_dir("parent-deleted").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b) = (add(&mut app, sleeping_tab("https://a/", "")), add(&mut app, sleeping_tab("https://b/", "")));
+    assert!(app.save_session());
+    app.edit_parent(&b, Some(a.clone()));
+    app.nodes.remove(&a); // gone from the live graph: `diff` Deletes it
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &b, field::PARENT), FieldValue::Id(None));
+}
+
+/// Hand-built ids only touch the mirror.
+#[test]
+fn a_parent_edit_on_a_non_store_id_queues_nothing() {
+    let mut app = App::default();
+    app.edit_parent("c", Some("p".into()));
+    assert_eq!(app.mirror.parent("c"), Some("p"));
+    assert!(app.pending.is_empty());
+}
+
+/// A remote parent change reaches the mirror; a node removal re-parents children through the writer.
+#[test]
+fn remote_parent_change_and_removal_reparent_through_the_mirror() {
+    let path = temp_dir("parent-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b, c) = (
+        add(&mut app, sleeping_tab("https://a/", "")),
+        add(&mut app, sleeping_tab("https://b/", "")),
+        add(&mut app, sleeping_tab("https://c/", "")),
+    );
+    app.edit_parent(&b, Some(a.clone()));
+    app.edit_parent(&c, Some(b.clone()));
+    assert!(app.save_session());
+    app.remove_node(&b);
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "children pass up to the removed node's parent");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// A remote parent parked for a waking tab (`remote_in_flight`) must not land over a local edit committed after it.
+#[test]
+fn a_committed_parent_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
+    let path = temp_dir("parent-parked").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b, tab) = (
+        add(&mut app, sleeping_tab("https://a/", "")),
+        add(&mut app, sleeping_tab("https://b/", "")),
+        add(&mut app, sleeping_tab("https://t/", "")),
+    );
+    assert!(app.save_session());
+    app.focus_tab(&tab);
+    assert!(app.spawning.contains_key(&tab), "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &tab, field::PARENT, FieldValue::Id(Some(b.parse().unwrap())));
+    app.edit_parent(&tab, Some(a.clone()));
+    assert!(app.save_session());
+    assert!(app.remote_in_flight.contains_key(&tab), "the remote value is parked");
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.parent(&tab), Some(a.as_str()));
+    assert_eq!(stored(&app, &tab, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
 }

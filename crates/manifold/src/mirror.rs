@@ -16,6 +16,14 @@ pub(crate) const MIRRORED: &[u32] = &[field::COLOR, field::PINNED];
 #[derive(Default)]
 pub(crate) struct Mirror {
     nodes: HashMap<String, Fields>,
+    links: HashMap<String, Links>,
+}
+
+/// A node's links to other nodes, as ids: `Option<String>` so hand-built test ids work and per-frame filters
+/// compare without allocating.
+#[derive(Default)]
+struct Links {
+    parent: Option<String>,
 }
 
 impl Mirror {
@@ -42,9 +50,19 @@ impl Mirror {
         }
     }
 
+    /// The node this one was opened from (`None` for a root).
+    pub(crate) fn parent(&self, id: &str) -> Option<&str> {
+        self.links.get(id)?.parent.as_deref()
+    }
+
+    pub(crate) fn set_parent(&mut self, id: &str, parent: Option<String>) {
+        self.links.entry(id.to_owned()).or_default().parent = parent;
+    }
+
     /// Drops the entries `keep` rejects.
     pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
         self.nodes.retain(|id, _| keep(id));
+        self.links.retain(|id, _| keep(id));
     }
 
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
@@ -58,12 +76,15 @@ impl Mirror {
     }
 
     pub(crate) fn carried(&self, id: &str) -> Carried {
-        Carried { color: self.color(id), pinned: self.pinned(id) }
+        Carried { color: self.color(id), pinned: self.pinned(id), parent: self.parent(id).map(str::to_owned) }
     }
 
     /// `init` for everything a tab carries.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
         self.init(id, [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))]);
+        if !self.links.contains_key(id) {
+            self.set_parent(id, carried.parent.clone());
+        }
     }
 }
 
@@ -72,6 +93,7 @@ impl Mirror {
 pub(crate) struct Carried {
     pub color: Option<egui::Color32>,
     pub pinned: bool,
+    pub parent: Option<String>,
 }
 
 #[cfg(test)]
@@ -81,10 +103,11 @@ mod tests {
     #[test]
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
-        mirror.seed("7", &Carried { color: Some(egui::Color32::RED), pinned: true });
-        assert_eq!(mirror.carried("7"), Carried { color: Some(egui::Color32::RED), pinned: true });
-        mirror.seed("7", &Carried { color: None, pinned: false });
-        assert_eq!(mirror.carried("7"), Carried { color: Some(egui::Color32::RED), pinned: true });
+        let first = Carried { color: Some(egui::Color32::RED), pinned: true, parent: Some("p".into()) };
+        mirror.seed("7", &first);
+        assert_eq!(mirror.carried("7"), first);
+        mirror.seed("7", &Carried { color: None, pinned: false, parent: None });
+        assert_eq!(mirror.carried("7"), first);
     }
 
     #[test]

@@ -370,8 +370,8 @@ impl App {
         let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
                 Some((card, tab)) => {
-                    let Carried { color, pinned } = self.mirror.carried(&id);
-                    (card.parent.clone(), card.group.clone(), card.pos, color, pinned, tab.muted, tab.jar)
+                    let Carried { color, pinned, parent } = self.mirror.carried(&id);
+                    (parent, card.group.clone(), card.pos, color, pinned, tab.muted, tab.jar)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -421,7 +421,6 @@ impl App {
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
-                        parent,
                         group,
                         pos,
                         vel,
@@ -440,7 +439,7 @@ impl App {
                         }),
                     },
                 );
-                self.mirror.seed(&id, &Carried { color, pinned });
+                self.mirror.seed(&id, &Carried { color, pinned, parent });
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -555,8 +554,8 @@ impl App {
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, payload });
-                    self.mirror.seed(&id, &Carried { color, pinned });
+                    self.nodes.insert(id.clone(), GraphNode { group, pos, vel, payload });
+                    self.mirror.seed(&id, &Carried { color, pinned, parent });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -590,7 +589,9 @@ impl App {
     /// The copy keeps `id`'s jar choice (deviation 3).
     pub(crate) fn duplicate_tab(&mut self, id: &str) {
         let Some((parent, group, url, kind)) = self.nodes.get(id).and_then(|n| {
-            n.payload.saved_tab().map(|(url, kind)| (n.parent.clone(), n.group.clone(), url.to_string(), kind))
+            n.payload
+                .saved_tab()
+                .map(|(url, kind)| (self.mirror.parent(id).map(str::to_owned), n.group.clone(), url.to_string(), kind))
         }) else {
             return;
         };
@@ -959,9 +960,9 @@ impl App {
         // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
         let downloading: std::collections::HashSet<&str> = self
             .nodes
-            .values()
-            .filter(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed))
-            .filter_map(|n| n.parent.as_deref())
+            .iter()
+            .filter(|(_, n)| n.as_download().is_some_and(|d| !d.completed && !d.failed))
+            .filter_map(|(id, _)| self.mirror.parent(id))
             .collect();
         self.nodes
             .iter()
@@ -1054,14 +1055,13 @@ impl App {
     /// a tab converting into a node (`redirect_tab_to_content`), which
     /// saves once after inserting it.
     pub(crate) fn remove_tab(&mut self, id: &str) {
-        let Some(parent) = self.nodes.get(id).filter(|n| n.payload.saved_tab().is_some()).map(|n| n.parent.clone())
-        else {
+        if !self.nodes.get(id).is_some_and(|n| n.payload.saved_tab().is_some()) {
             return;
-        };
-        for node in self.nodes.values_mut() {
-            if node.parent.as_deref() == Some(id) {
-                node.parent = parent.clone();
-            }
+        }
+        let parent = self.mirror.parent(id).map(str::to_owned);
+        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        for child in children {
+            self.edit_parent(&child, parent.clone());
         }
         self.nodes.remove(id);
         self.node_order.retain(|t| t != id);

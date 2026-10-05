@@ -803,7 +803,7 @@ impl TabSpawn {
             id: id.to_string(),
             url,
             kind,
-            parent: node.parent.clone(),
+            parent: carried.parent.clone(),
             group: node.group.clone(),
             pos: node.pos,
             vel: node.vel,
@@ -2189,11 +2189,12 @@ impl App {
     /// What it opened (a tab from Open as Tab) is then opened from its own
     /// `parent`, as `remove_tab` does for a tab's children.
     fn remove_node(&mut self, id: &str) {
-        let removed = self.nodes.remove(id);
-        let parent = removed.as_ref().and_then(|n| n.parent.clone());
-        for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
-            node.parent = parent.clone();
+        let parent = self.mirror.parent(id).map(str::to_owned);
+        let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
+        for child in children {
+            self.edit_parent(&child, parent.clone());
         }
+        let removed = self.nodes.remove(id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }
@@ -2435,9 +2436,9 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let Carried { color, pinned } = self.mirror.carried(id);
+        let Carried { color, pinned, parent } = self.mirror.carried(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let (parent, group, pos) = (node.parent.clone(), node.group.clone(), node.pos);
+        let (group, pos) = (node.group.clone(), node.pos);
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
         if tab.state == UnloadedState::Waking {
             return;
@@ -3420,7 +3421,6 @@ mod tests {
     #[test]
     fn remove_from_group_moves_up_one_level() {
         let node = |group: Option<&str>, payload| GraphNode {
-            parent: None,
             group: group.map(String::from),
             pos: egui::Vec2::ZERO,
             vel: egui::Vec2::ZERO,
@@ -3458,7 +3458,7 @@ mod tests {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
             let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode { parent: None, group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+            let node = GraphNode { group: None, pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
             let id = app.alloc_node_id();
             app.nodes.insert(id, node);
         };
