@@ -346,6 +346,10 @@ pub enum DebugCommand {
     /// `SWITCHJARNOW` -- the focused tab's "Switch Jar Now". See
     /// `App::switch_jar_now`.
     SwitchJarNow,
+    /// `CLEARJAR <name|default>` -- that jar's "Clear cookies", confirmed
+    /// (`App::clear_jar_cookies`). `name` as for `SETJAR`; an unknown name
+    /// does nothing.
+    ClearJar(String),
     /// Dev-only: re-runs the one-time first-launch demo graph on demand
     /// (see `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// why it otherwise only ever fires once) -- adds a fresh copy of the
@@ -503,6 +507,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     ("SETJAR <name|default>", "The focused tab uses that jar, by label or name (a new named jar if none has it)"),
     ("SWITCHJARNOW", "The focused tab moves to its new jar now, if it is waiting to switch"),
+    ("CLEARJAR <name|default>", "Clear that jar's cookies, as its confirmed \"Clear cookies\" does"),
     ("TRIGGERFIRSTLAUNCHDEMO", "Dev-only: re-spawn the first-launch demo graph on demand"),
     ("HELP", "Print this command list"),
 ];
@@ -708,6 +713,7 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "SETJAR" => non_empty(DebugCommand::SetJar),
         "SWITCHJARNOW" => Some(DebugCommand::SwitchJarNow),
+        "CLEARJAR" => non_empty(DebugCommand::ClearJar),
         "JSONSELECT" => Some(DebugCommand::JsonSelect(rest.to_string())),
         "JSONTOGGLE" => Some(DebugCommand::JsonToggle(rest.to_string())),
         "JSONMORE" => Some(DebugCommand::JsonMore(rest.to_string())),
@@ -1193,6 +1199,17 @@ impl App {
                     self.switch_jar_now(&tab);
                 }
             }
+            DebugCommand::ClearJar(name) => {
+                let key = if name.trim().eq_ignore_ascii_case("default") {
+                    Some(crate::jar::JarKey::Default)
+                } else {
+                    self.jar_named(&name).map(crate::jar::JarKey::Named)
+                };
+                match key {
+                    Some(key) => self.clear_jar_cookies(key),
+                    None => eprintln!("CLEARJAR: no jar named {name:?}"),
+                }
+            }
             DebugCommand::TriggerFirstLaunchDemo => self.spawn_first_launch_demo(),
             DebugCommand::Help => debug_control::print_help(),
             DebugCommand::CloseAllLevel => self.close_all_at_current_level(),
@@ -1351,6 +1368,7 @@ mod tests {
             "IDLESWEEP 30",
             "SETJAR default",
             "SWITCHJARNOW",
+            "CLEARJAR Work",
             "JSONSELECT /a/0",
             "JSONTOGGLE",
             "JSONMORE /a",
@@ -1376,6 +1394,8 @@ mod tests {
         assert!(matches!(parse_line("SETJAR default"), Some(DebugCommand::SetJar(n)) if n == "default"));
         assert!(parse_line("SETJAR").is_none(), "a jar name is required");
         assert!(matches!(parse_line("SWITCHJARNOW"), Some(DebugCommand::SwitchJarNow)));
+        assert!(matches!(parse_line("CLEARJAR Work"), Some(DebugCommand::ClearJar(n)) if n == "Work"));
+        assert!(parse_line("CLEARJAR").is_none(), "a jar name is required");
     }
 
     #[test]

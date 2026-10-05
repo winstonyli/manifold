@@ -16,7 +16,8 @@
 # usernames only, no cookie values. Build first (`cargo build`); this runs the existing target/debug exes, the app at
 # below-normal priority (see `start`).
 # Usage: scripts/jar-probe.sh   (JAR_PROBE_HOST=127.0.0.1 to use an IP host instead; RUNS="perjar jarswitch" runs
-# only the named runs; jarswitch needs perjar's profile, so RUNS=jarswitch alone fails)
+# only the named runs; jarswitch needs perjar's profile, so RUNS=jarswitch alone fails; RUNS=switchnow runs switchnow
+# and then switchclear on its profile)
 set -u
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sp="$repo/scripts"
@@ -299,6 +300,58 @@ PY
 else
   echo "jarswitch: skipped (needs a passing perjar run on this profile)"; wanted perjar || fail=1
 fi
+fi
+# Switch Jar Now and Clear cookies on a live WebView2 tab: the replacing host must not start with the old jar's sign-ins
+# (they live in the shared browser process, by profile name), and no pull may write them into a jar. switchnow: a tab
+# on jar Alice signs in as alice and moves to the empty jar Bob with SWITCHJARNOW; its reload (at once) and its next
+# /whoami must be signed out. It then signs in as bob and stays past a 30 s pull. switchclear restarts on that profile
+# (the tab seeded from Bob's jar, so signed in as bob), clears Bob (CLEARJAR) and switches now: its reload and next
+# /whoami must be signed out, and after another pull and the quit pull Bob's jar must hold no sid, Alice's still hers.
+# A keeper tab on the default jar, first to start (its job holds the browser process), stays open in both runs, so the
+# browser outlives each replaced host as it does with other WebView2 tabs open: without it the browser exits with the
+# host and takes every profile with it, and the runs would prove nothing about reuse in a live browser.
+if wanted switchnow; then
+rm -rf "$profile/manifold/jars"
+seed "{\"nodes\": [
+  {\"id\": \"ja\", \"kind\": \"jar\", \"name\": \"Alice\"},
+  {\"id\": \"jb\", \"kind\": \"jar\", \"name\": \"Bob\"},
+  {\"id\": \"k\", \"kind\": \"tab\", \"url\": \"$base/whoami?keep\", \"engine\": \"webview2\", \"pos\": [0.0, 0.0]},
+  {\"id\": \"a\", \"kind\": \"tab\", \"url\": \"$base/login?u=alice\", \"engine\": \"webview2\", \"jar\": \"ja\", \"jar_set\": true, \"pos\": [400.0, 0.0]}
+]}"
+# sn_req <log> <path> <n>: the user (or "-") on the n-th request for <path>, "no request" if there is none.
+sn_req() { local u; u="$(awk -v p="$2" '$3 == p {print $5}' <<<"$1" | sed -n "$3p")"; echo "${u:-no request}"; }
+touch "$out/req.log"
+n0=$(wc -l <"$out/req.log")
+echo "--- run switchnow (alice's tab moves to the empty jar Bob)"
+start switchnow WAITTABS QUICKSWITCHOPEN "QUICKSWITCHTEXT u=alice" QUICKSWITCHENTER WAITTABS "SLEEP 3" "ADDRESSBAR $base/whoami?sn1" "SLEEP 1" ENTER "SLEEP 3" \
+  "SETJAR Bob" SWITCHJARNOW WAITTABS "SLEEP 4" "ADDRESSBAR $base/whoami?sn2" "SLEEP 1" ENTER "SLEEP 3" \
+  "ADDRESSBAR $base/login?u=bob" "SLEEP 1" ENTER "SLEEP 3" "ADDRESSBAR $base/whoami?sn3" "SLEEP 1" ENTER "SLEEP 33" \
+  "EXPORTSESSION $(cygpath -w "$out/sn.json")"
+log="$(tail -n +"$((n0 + 1))" "$out/req.log")"
+before="$(sn_req "$log" /whoami?sn1 1)" reload="$(sn_req "$log" /whoami?sn1 2)" next="$(sn_req "$log" /whoami?sn2 1)"
+bob="$(sn_req "$log" /whoami?sn3 1)"
+jars="$(python -P "$(cygpath -w "$out/perjar.py")" "$(cygpath -w "$out/sn.json")" "$(cygpath -w "$profile/manifold/jars")" "$(cygpath -w "$out")" </dev/null)"
+echo "switchnow: before $before; reload after the switch $reload; next $next; after bob's login $bob; $jars"
+[ "$before" = "user=alice" ] || { echo "FAIL: not signed in as alice, so the switch proves nothing"; fail=1; }
+[ "$reload" = "user=-" ] && [ "$next" = "user=-" ] ||
+  { echo "FAIL: the tab moved to the empty jar Bob still had alice's sign-in"; fail=1; }
+[ "$bob" = "user=bob" ] || { echo "FAIL: the tab did not sign in as bob"; fail=1; }
+case "$jars" in "perjar: alice jar=alice bob jar=bob default=none"*) ;;
+  *) echo "FAIL: each jar must hold only its own user's login"; fail=1 ;; esac
+n0=$(wc -l <"$out/req.log")
+echo "--- run switchclear (bob's tab, its jar cleared, switches now)"
+start switchclear WAITTABS QUICKSWITCHOPEN "QUICKSWITCHTEXT sn3" QUICKSWITCHENTER WAITTABS "SLEEP 3" \
+  "ADDRESSBAR $base/whoami?sc1" "SLEEP 1" ENTER "SLEEP 3" "CLEARJAR Bob" SWITCHJARNOW WAITTABS "SLEEP 4" \
+  "ADDRESSBAR $base/whoami?sc2" "SLEEP 1" ENTER "SLEEP 33" "EXPORTSESSION $(cygpath -w "$out/sc.json")"
+log="$(tail -n +"$((n0 + 1))" "$out/req.log")"
+before="$(sn_req "$log" /whoami?sc1 1)" reload="$(sn_req "$log" /whoami?sc1 2)" next="$(sn_req "$log" /whoami?sc2 1)"
+jars="$(python -P "$(cygpath -w "$out/perjar.py")" "$(cygpath -w "$out/sc.json")" "$(cygpath -w "$profile/manifold/jars")" "$(cygpath -w "$out")" </dev/null)"
+echo "switchclear: before $before; reload after the clear $reload; next $next; $jars"
+[ "$before" = "user=bob" ] || { echo "FAIL: not signed in as bob, so the clear proves nothing"; fail=1; }
+[ "$reload" = "user=-" ] && [ "$next" = "user=-" ] ||
+  { echo "FAIL: the tab whose jar was cleared kept its sign-in"; fail=1; }
+case "$jars" in "perjar: alice jar=alice bob jar=none"*) ;;
+  *) echo "FAIL: Bob's cleared jar got a sign-in back, or Alice's changed"; fail=1 ;; esac
 fi
 echo "out=$out"
 [ "$fail" = 0 ] && echo "PROBE PASS" || echo "PROBE FAIL"
