@@ -596,7 +596,7 @@ pub(crate) fn drop_action(dragged: ItemNodeKind, target: DropTarget, inside_grou
     match (dragged, target, inside_group) {
         (_, DropTarget::BackButton, true) => Some(DropEffect::Eject),
         (dragged, DropTarget::Card(onto), _) if is_container(dragged) && is_container(onto) => Some(DropEffect::Merge),
-        (dragged, DropTarget::Card(onto), _) if can_contain(onto, dragged) => Some(DropEffect::Join),
+        (dragged, DropTarget::Card(onto), _) if can_contain(dragged, onto) => Some(DropEffect::Join),
         (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), false) => Some(DropEffect::GroupWith),
         (Tab | Unloaded, DropTarget::Card(Tab | Unloaded), true) => Some(DropEffect::Reparent),
         _ => None,

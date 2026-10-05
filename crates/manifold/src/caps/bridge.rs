@@ -55,8 +55,8 @@ pub(crate) fn is_container_store(kind: Kind) -> bool {
     super::edges().target_accepts(CONTAINS, store_node(kind, &Fields::new()).0)
 }
 
-/// Whether a `member` card may be put inside a `group` card.
-pub(crate) fn can_contain(group: ItemNodeKind, member: ItemNodeKind) -> bool {
+/// Whether a `member` card may be put inside a `group` card; argument order is (member, group), source then target.
+pub(crate) fn can_contain(member: ItemNodeKind, group: ItemNodeKind) -> bool {
     super::edges().can_connect(CONTAINS, item_node(member).0, item_node(group).0)
 }
 
@@ -90,7 +90,7 @@ mod tests {
     fn every_card_kind_can_go_in_a_group_and_nothing_goes_in_anything_else() {
         for member in KINDS {
             for onto in KINDS {
-                assert_eq!(can_contain(onto, member), onto == ItemNodeKind::Group, "{member:?} into {onto:?}");
+                assert_eq!(can_contain(member, onto), onto == ItemNodeKind::Group, "{member:?} into {onto:?}");
             }
         }
     }
