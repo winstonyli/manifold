@@ -22,6 +22,16 @@
 #   7. That instance, now alone, types a url whose page navigates by
 #      script, and quits: the next instance reopens the tab where the
 #      script took it (the personal-state live_url), not at the typed url.
+# Scenarios 8-10 run between 2 and 3. Moves use MOVETOGROUP (the node
+# menu's "Move into", which saves); "groups agree" means each node's group
+# is the same in what A shows, what B shows (EXPORTSTATE mirror_groups) and
+# the document.
+#   8. A creates a group and a note and moves the note into the group: the
+#      groups agree.
+#   9. A and B move one note into two different groups back to back: the
+#      groups agree on one of the two, no node is lost, no cycle.
+#  10. A moves group G into H while B moves H into G: the groups agree,
+#      no node is lost, no cycle, nothing hangs.
 #
 # A kill is TerminateProcess (`taskkill //F //PID`), not power loss: the
 # store's on-disk file is never mid-write at that point (each scenario
@@ -172,6 +182,121 @@ wait_agree "scenario 2" "$out/a2.json" "$out/b2.json"
 # level, not as "note" text necessarily, so this is a floor, not exact).
 assert_py has_kinds "$out/a2.json" "text/markdown:201"
 echo "scenario 2: ok"
+
+# Scenarios 8-10 (groups) run here, while both instances are in Graph view
+# with no tabs navigating.
+
+# Runs `$2` on instance `$1` (sa or sb) and prints the id of the one node it
+# added. Nothing else may add a node meanwhile.
+new_node() { # $1=sa|sb $2=command $3=file label
+    local before="$out/$3-before.json" after="$out/$3-after.json"
+    "$1" "EXPORTSESSION $(win "$before")"
+    wait_file "$before"
+    "$1" "$2"
+    "$1" "EXPORTSESSION $(win "$after")"
+    wait_file "$after"
+    assert_py new_id "$before" "$after" | tr -d '\r'
+}
+
+# Polls, up to ~10s, until each listed id's group is the same in what A
+# shows, what B shows (EXPORTSTATE's mirror_groups) and the document (A's
+# EXPORTSESSION, which saves first). Leaves the last exports at
+# $out/<label>-{a,b}-state.json and $out/<label>-doc.json.
+wait_mirror() { # $1=label $2...=ids
+    local label="$1" i log="$out/mirror.log"
+    shift
+    local af="$out/$label-a-state.json" bf="$out/$label-b-state.json" df="$out/$label-doc.json"
+    for i in $(seq 1 50); do
+        rm -f "$af" "$bf" "$df"
+        tick sa
+        tick sb
+        sa "EXPORTSESSION $(win "$df")"
+        wait_file "$df"
+        tick sb
+        sa "EXPORTSTATE $(win "$af")"
+        sb "EXPORTSTATE $(win "$bf")"
+        wait_file "$af"
+        wait_file "$bf"
+        if assert_py mirror_agree "$af" "$bf" "$df" "$@" >"$log" 2>&1; then
+            cat "$log"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "FAIL: $label: A, B and the document never agreed on the groups after ~10s"
+    cat "$log" || true
+    exit 1
+}
+
+# Each instance's own view right after both moved: informational, since
+# whether either had already picked up the other's move depends on frame
+# timing (headless frames come per command and from sporadic WM_PAINTs).
+show_local() { # $1=label $2...=ids
+    local label="$1" af="$out/$1-a-local.json" bf="$out/$1-b-local.json"
+    shift
+    sa "EXPORTSTATE $(win "$af")"
+    sb "EXPORTSTATE $(win "$bf")"
+    wait_file "$af"
+    wait_file "$bf"
+    local id
+    for id in "$@"; do
+        echo "$label: right after the moves, $id: A shows $(json_get "$af" "$id"), B shows $(json_get "$bf" "$id")"
+    done
+}
+json_get() { # $1=EXPORTSTATE file $2=id: that id's mirror group
+    grep -o "\"$2\":\(null\|\"[^\"]*\"\)" "$1" | head -1 | cut -d: -f2- | tr -d '"'
+}
+
+echo "=== scenario 8: a move into a group reaches the other instance ==="
+g8="$(new_node sa NEWGROUP s8g)"
+n8="$(new_node sa NEWNOTE s8n)"
+sa "MOVETOGROUP $n8 $g8"
+wait_agree "scenario 8" "$out/a8.json" "$out/b8.json"
+[ "$(assert_py group_of "$out/a8.json" "$n8" | tr -d '\r')" = "$g8" ] || {
+    echo "FAIL: scenario 8: the document doesn't put $n8 in $g8"
+    exit 1
+}
+wait_mirror s8 "$n8" "$g8"
+echo "scenario 8: ok"
+
+echo "=== scenario 9: both move one node into different groups ==="
+g9a="$(new_node sa NEWGROUP s9ga)"
+g9b="$(new_node sa NEWGROUP s9gb)"
+n9="$(new_node sa NEWNOTE s9n)"
+# B needs all three before it can offer the move.
+wait_mirror s9-setup "$g9a" "$g9b" "$n9"
+cp "$out/s9-setup-doc.json" "$out/a9-before.json"
+# Back to back, so each move is likely made before that instance picks up
+# the other's.
+sa "MOVETOGROUP $n9 $g9a"
+sb "MOVETOGROUP $n9 $g9b"
+show_local s9 "$n9"
+wait_agree "scenario 9" "$out/a9.json" "$out/b9.json"
+wait_mirror s9 "$n9" "$g9a" "$g9b"
+got9="$(assert_py group_of "$out/s9-doc.json" "$n9" | tr -d '\r')"
+[ "$got9" = "$g9a" ] || [ "$got9" = "$g9b" ] || {
+    echo "FAIL: scenario 9: $n9 ended in $got9, neither $g9a (A's) nor $g9b (B's)"
+    exit 1
+}
+assert_py kept_ids "$out/a9-before.json" "$out/s9-doc.json"
+assert_py no_cycle "$out/s9-doc.json"
+echo "scenario 9: ok ($n9 in $([ "$got9" = "$g9a" ] && echo "A's" || echo "B's") group)"
+
+echo "=== scenario 10: A moves G into H while B moves H into G ==="
+g10="$(new_node sa NEWGROUP s10g)"
+h10="$(new_node sa NEWGROUP s10h)"
+wait_mirror s10-setup "$g10" "$h10"
+cp "$out/s10-setup-doc.json" "$out/a10-before.json"
+sa "MOVETOGROUP $g10 $h10"
+sb "MOVETOGROUP $h10 $g10"
+show_local s10 "$g10" "$h10"
+wait_agree "scenario 10" "$out/a10.json" "$out/b10.json"
+wait_mirror s10 "$g10" "$h10"
+assert_py kept_ids "$out/a10-before.json" "$out/s10-doc.json"
+assert_py no_cycle "$out/s10-doc.json"
+gg="$(assert_py group_of "$out/s10-doc.json" "$g10" | tr -d '\r')"
+hg="$(assert_py group_of "$out/s10-doc.json" "$h10" | tr -d '\r')"
+echo "scenario 10: ok (G in $gg, H in $hg)"
 
 echo "=== scenario 3: a url that changes on every load ==="
 python -P "$repo_root/scripts/nonce_server.py" "$out/hits" 240 >"$out/port" 2>"$out/server.err" </dev/null &

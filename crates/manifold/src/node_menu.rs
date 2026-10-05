@@ -530,7 +530,8 @@ pub(crate) struct NodeMenuView {
     /// Unloaded only: it failed because its engine isn't installed, so the menu offers the download.
     engine_missing: bool,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
-    move_targets: Vec<(String, String)>,
+    /// `pub(crate)` for headless `MOVETOGROUP`, which moves only where the menu would offer.
+    pub(crate) move_targets: Vec<(String, String)>,
     /// Group: the rename draft, while this group is being renamed. Tab: the "New Jar..." name draft.
     renaming: Option<String>,
     /// Tab, Unloaded and Group: their jar list (`App::jar_menu`).

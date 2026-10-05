@@ -233,7 +233,9 @@ pub enum DebugCommand {
     /// `parent`, `color` (whether it has a tag color), `pinned`, `screen`
     /// (its center) and `rect` (`[left, top, right, bottom]`), in points,
     /// which are pixels headless. `selected_tabs` is the rectangle
-    /// selection's ids, sorted. `toast` is the bottom-left toast's text
+    /// selection's ids, sorted. `mirror_groups` maps every node id (any
+    /// level) to its group as this replica shows it (the mirror), or null.
+    /// `toast` is the bottom-left toast's text
     /// (the one showing, else the next queued), or null. Suggestions arriving from the network show up
     /// only once a frame has drained them, and every command draws one, so
     /// a test can poll this until `suggestions` fills.
@@ -330,6 +332,10 @@ pub enum DebugCommand {
     /// can't rely on focus. No-ops if `id` isn't actually a group. See
     /// `App::close_group`.
     CloseGroup(String),
+    /// `MOVETOGROUP id group` -- the node menu's "Move into <group>" with explicit ids, for the same reason as
+    /// `CloseGroup`: only when the menu would offer `group` (a sibling group, `NodeMenuView::move_targets`), else
+    /// ignored with a note on stderr. See `NodeAction::MoveToGroup`.
+    MoveToGroup { id: String, group: String },
     /// `SLEEPNODE id` -- a tab's (or a group's tabs') "Sleep" context-menu
     /// action, targeting an explicit id for the same reason as `CloseGroup`.
     /// See `App::request_sleep`.
@@ -495,6 +501,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ("JSONRELAYOUT", "Relayout the current JSON level (clears saved card positions)"),
     ("JSONSEARCH text", "Search the current JSON level's keys and values"),
     ("CLOSEGROUP id", "Close the group `id`, same as its own \"Close\" context-menu action"),
+    ("MOVETOGROUP id group", "Move node `id` into the sibling group `group`, same as its \"Move into\" menu row"),
     (
         "SLEEPNODE id",
         "Ask the tab `id` (or every tab of the group `id`) to sleep, same as its \"Sleep\" \
@@ -709,6 +716,9 @@ pub fn parse_line(line: &str) -> Option<DebugCommand> {
         "SPLIT" => parse_engine_kind(rest).map(DebugCommand::Split),
         "CLOSESPLIT" => Some(DebugCommand::CloseSplit),
         "CLOSEGROUP" => non_empty(DebugCommand::CloseGroup),
+        "MOVETOGROUP" => {
+            Some(DebugCommand::MoveToGroup { id: parts.next()?.to_string(), group: parts.next()?.to_string() })
+        }
         "SLEEPNODE" => non_empty(DebugCommand::SleepNode),
         "IDLESWEEP" => rest.parse().ok().map(DebugCommand::IdleSweep),
         "SETJAR" => non_empty(DebugCommand::SetJar),
@@ -803,6 +813,16 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
 }
 
 impl App {
+    /// `MOVETOGROUP`: what the node menu's "Move into <group>" row does (`NodeAction::MoveToGroup`, a Join drop,
+    /// which saves), only when the menu would offer `group`. `false` when it wouldn't.
+    fn debug_move_to_group(&mut self, id: &str, group: &str) -> bool {
+        let offered = self.node_menu_view(id).is_some_and(|v| v.move_targets.iter().any(|(g, _)| g == group));
+        if offered {
+            self.apply_drop(id, Some((DropEffect::Join, Some(group.to_string()))));
+        }
+        offered
+    }
+
     /// Applies one headless `DebugCommand` (see `debug_control`'s doc
     /// comment for the overall design: mouse commands are real synthetic
     /// `WindowEvent`s, keyboard/text commands call the equivalent effect
@@ -1064,6 +1084,9 @@ impl App {
                         }))
                     })
                     .collect();
+                // Every node's group as this replica shows it, at any level (a two-instance test compares them).
+                let mirror_groups: std::collections::BTreeMap<&str, Option<&str>> =
+                    self.linked_ids().map(|id| (id, self.mirror.group(id))).collect();
                 let mut selected_tabs: Vec<&String> = self.selected_tabs.iter().collect();
                 selected_tabs.sort();
                 let state = serde_json::json!({
@@ -1075,6 +1098,7 @@ impl App {
                     "highlighted": self.address_bar.highlighted,
                     "current_group": self.current_group,
                     "cards": cards,
+                    "mirror_groups": mirror_groups,
                     "json_level": self.json_level_state(),
                     "selected_tabs": selected_tabs,
                     // The toast showing, or else the next queued one.
@@ -1179,6 +1203,11 @@ impl App {
             DebugCommand::CloseGroup(id) => {
                 if self.nodes.get(&id).is_some_and(|n| n.as_group().is_some()) {
                     self.close_node(&id);
+                }
+            }
+            DebugCommand::MoveToGroup { id, group } => {
+                if !self.debug_move_to_group(&id, &group) {
+                    eprintln!("MOVETOGROUP: {group} isn't a sibling group of {id}; ignored");
                 }
             }
             DebugCommand::IdleSweep(secs) => self.sweep_idle_tabs(Some(std::time::Duration::from_secs(secs))),
@@ -1364,6 +1393,7 @@ mod tests {
             "SPLIT cef",
             "CLOSESPLIT",
             "CLOSEGROUP g1",
+            "MOVETOGROUP n1 g1",
             "SLEEPNODE t1",
             "IDLESWEEP 30",
             "SETJAR default",
@@ -1386,6 +1416,29 @@ mod tests {
             assert!(SAMPLES.iter().any(|s| verb(s) == verb(usage)), "HELP verb {usage:?} has a sample");
         }
         assert!(matches!(parse_line("?"), Some(DebugCommand::Help)));
+    }
+
+    /// `MOVETOGROUP` takes two ids and moves only where the node menu's "Move into" would offer.
+    #[test]
+    fn move_to_group_moves_only_into_an_offered_sibling() {
+        assert!(matches!(
+            parse_line("MOVETOGROUP n1 g1"),
+            Some(DebugCommand::MoveToGroup { id, group }) if id == "n1" && group == "g1"
+        ));
+        assert!(parse_line("MOVETOGROUP n1").is_none(), "both ids are required");
+        let mut app = App::default();
+        let (g, h, note) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
+        app.insert_group_at(g.clone(), None);
+        app.insert_group_at(h.clone(), None);
+        app.insert_note_at(note.clone(), None);
+        assert!(!app.debug_move_to_group(&note, &note), "not a group");
+        assert!(!app.debug_move_to_group(&note, "missing"));
+        assert!(app.debug_move_to_group(&note, &g));
+        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert!(!app.debug_move_to_group(&note, &h), "h is no longer a sibling of the note");
+        assert_eq!(app.mirror.group(&note), Some(g.as_str()));
+        assert!(app.debug_move_to_group(&g, &h), "a group nests, as the menu row does");
+        assert_eq!(app.mirror.group(&g), Some(h.as_str()));
     }
 
     #[test]
