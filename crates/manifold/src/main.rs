@@ -1112,11 +1112,14 @@ struct App {
     /// Every node the current drag is moving (a lone card, or the whole
     /// selection when the dragged card is selected — see `take_drag_unit`
     /// and the `dragged()` branch that fills this in). Read and cleared at
-    /// release, where each one's `pos` is marked exactly once (spec "Local
-    /// edits become ops"): marking every frame of the drag instead would
-    /// let an intermediate position reach the store, since a save can fire
-    /// mid-drag from an unrelated event (`poll_store`, or a url change
-    /// batched through `drain_tab_events`), independent of the gesture.
+    /// release (`release_drag`), where each one's `pos` is written exactly
+    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
+    /// instead would let an intermediate position reach the store, since a
+    /// save can fire mid-drag from an unrelated event (`poll_store`, or a
+    /// url change batched through `drain_tab_events`), independent of the
+    /// gesture. Until then a remote pos for any of them doesn't snap its
+    /// layout (`is_being_dragged`). Cleared without a write when the drag
+    /// stops being live (`end_stale_drag`).
     drag_moved: Vec<String>,
     hovered: Option<String>,
     /// Set to `self.hovered` by an Escape press while a hover-peek preview
@@ -2779,6 +2782,9 @@ impl App {
             self.address_bar.dismiss();
             self.address_bar.focused = false;
         }
+        // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
+        // another replica's move): its release would never be seen, and the next one would save a stale pos.
+        self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
         // Every view, so a toast queued in Graph view (a crash/respawn
         // notice, an unreadable session file) is seen where it happened.
         self.build_save_toast(ui);

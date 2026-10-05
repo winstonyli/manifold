@@ -95,10 +95,15 @@ impl App {
     /// Written once, here, not every dragged frame: saves fire independently of the gesture (`poll_store`, a url
     /// change batched through `drain_tab_events`), so writing every frame would commit intermediate positions. A
     /// card removed mid-drag (closed, crashed, swapped) leaves its id in `drag_moved`; it is skipped here rather than
-    /// cleared at every removal site.
+    /// cleared at every removal site. A drag that is no longer live (`live_drag`) saves nothing.
     pub(crate) fn release_drag(&mut self) {
+        let live = self.live_drag().is_some();
         self.dragging = None;
-        for moved_id in std::mem::take(&mut self.drag_moved) {
+        let moved = std::mem::take(&mut self.drag_moved);
+        if !live {
+            return;
+        }
+        for moved_id in moved {
             if self.nodes.contains_key(&moved_id) {
                 self.edit_pos(&moved_id, Some(self.layout_pos(&moved_id)));
             }
@@ -479,8 +484,25 @@ impl App {
     }
 
     /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
-    /// the selection (`drag_moved`).
+    /// the selection (`drag_moved`), while that drag is live (`live_drag`).
     pub(crate) fn is_being_dragged(&self, id: &str) -> bool {
-        self.dragging.as_deref().is_some_and(|dragged| dragged == id || self.drag_moved.iter().any(|m| m == id))
+        self.live_drag().is_some_and(|dragged| dragged == id || self.drag_moved.iter().any(|m| m == id))
+    }
+
+    /// The grabbed card (`dragging`) while its drag is live: the card is still on the level shown. A grabbed card
+    /// that left it (a level switch with the button held, another replica moving it into another group, a removal)
+    /// is no longer drawn, so its card never sees the release; its drag is over, with no drop.
+    fn live_drag(&self) -> Option<&str> {
+        self.dragging.as_deref().filter(|dragged| self.nodes.contains_key(*dragged) && self.in_level(dragged))
+    }
+
+    /// Ends a drag that is no longer live (`live_drag`), or any drag when Graph view isn't shown (`graph_shown`
+    /// false), with no drop: nothing is saved, and the cards it moved take remote positions again. Otherwise the
+    /// card's next release, whenever it is drawn again, would save the stale layout pos over a remote one.
+    pub(crate) fn end_stale_drag(&mut self, graph_shown: bool) {
+        if self.dragging.is_some() && !(graph_shown && self.live_drag().is_some()) {
+            self.dragging = None;
+            self.drag_moved.clear();
+        }
     }
 }

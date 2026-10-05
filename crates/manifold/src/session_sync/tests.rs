@@ -753,6 +753,50 @@ fn a_remote_pos_does_not_snap_a_node_being_dragged() {
     assert_eq!(stored(&app, &b, field::POS), FieldValue::Pos(300.0, 70.0));
 }
 
+/// A drag whose grabbed card stops being drawn ends with no drop: a remote pos then snaps its cards, and a later
+/// release (the card drawn again) saves nothing over it.
+#[test]
+fn a_stale_drag_does_not_overwrite_a_remote_pos() {
+    let path = temp_dir("pos-stale-drag").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let (a, b) = (a_note_at(&mut app, egui::vec2(10.0, 20.0)), a_note_at(&mut app, egui::vec2(300.0, 20.0)));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+
+    // A level switch with the button held.
+    drag(&mut app, &[&a, &b], egui::vec2(0.0, 50.0));
+    app.switch_group_level(Some(g.clone()));
+    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+    remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
+    assert!(app.save_session());
+    assert_eq!(app.layout_pos(&a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
+    app.switch_group_level(None);
+    app.release_drag();
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(5.0, 6.0));
+    assert_eq!(stored(&app, &b, field::POS), FieldValue::Pos(300.0, 20.0), "the ended drag saved nothing");
+
+    // Another replica moves the grabbed card into another group mid-drag, and gives it a new pos.
+    drag(&mut app, &[&a], egui::vec2(0.0, 50.0));
+    let node = a.parse().unwrap();
+    let pos = FieldValue::Pos(7.0, 8.0);
+    let set = OpBody::Set { node, field: field::POS, enc: encode_field(field::POS, &pos) };
+    other.begin().unwrap().commit(vec![OpBody::Move { node, group: Some(g.parse().unwrap()) }, set]).unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.layout_pos(&a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");
+    app.end_stale_drag(true);
+    assert!(app.dragging.is_none() && app.drag_moved.is_empty(), "the frame's check ends the drag");
+    app.release_drag();
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(7.0, 8.0));
+
+    // Leaving Graph view ends a drag too.
+    drag(&mut app, &[&b], egui::vec2(0.0, 50.0));
+    app.end_stale_drag(false);
+    assert!(app.dragging.is_none() && app.drag_moved.is_empty());
+}
+
 /// Ruling 1: the layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no
 /// position for it (this respawn starts at the origin), and a save mid-respawn keeps the entry.
 #[test]

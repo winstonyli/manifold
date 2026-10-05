@@ -396,11 +396,12 @@ impl App {
     /// Shows `group`'s level (`None` for the top), easing the camera to fit
     /// it, and drops everything tied to the old level: the rectangle
     /// selection (the toolbar's "Group Selected"/"Close Selected" would
-    /// otherwise act on tabs no longer visible), the empty-canvas card and
-    /// any open node menu.
+    /// otherwise act on tabs no longer visible), the empty-canvas card,
+    /// any open node menu and a drag whose card is no longer shown.
     pub(crate) fn switch_group_level(&mut self, group: Option<String>) {
         self.end_note_edits();
         self.current_group = group;
+        self.end_stale_drag(true);
         self.sync_json_level();
         self.layout_current_level();
         self.graph_settled_key = Some(self.current_level_settle_key());

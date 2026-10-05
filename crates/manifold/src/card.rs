@@ -1136,7 +1136,7 @@ impl App {
             // every dragged frame rather than only at drag start: cheap,
             // and it's always exactly this frame's moved set, so whatever
             // `drag_moved` holds when the drag ends is the full, correct
-            // set to mark -- see the release branch below.
+            // set to save -- see the release branch below.
             let delta = response.drag_delta();
             let moved: Vec<String> =
                 if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
