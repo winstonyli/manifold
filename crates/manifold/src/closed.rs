@@ -182,8 +182,9 @@ impl App {
 
     /// Rebuilds a closed entry where it was: fresh ids via `store::json::
     /// import`, the old positions/colors/zooms, links inside the entry
-    /// remapped (import resolves labels within the file), and a tab's
-    /// `parent` outside the entry kept only if that node still exists.
+    /// remapped (import resolves labels within the file), and a node's
+    /// `parent` ("opened from", any kind that has one) outside the entry
+    /// kept only if that node still exists.
     /// The root's group becomes `self.current_group` (it's written as
     /// `None` in the doc -- see `closed_entry`); every other node keeps
     /// the group `closed_entry` recorded if it's still part of this entry,

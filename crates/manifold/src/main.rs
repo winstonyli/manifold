@@ -2452,8 +2452,9 @@ impl App {
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
     /// `nodes_at_current_level(Tab)` returns (top level: every ungrouped tab,
     /// leaving groups and their members untouched; inside a group: every
-    /// member, same effect as that group's own "Close Group" context-menu
-    /// entry, just reachable without opening it). Each closes through the
+    /// tab member: the tabs that group's own "Close Group and Contents"
+    /// context-menu entry would close, though that entry also closes the
+    /// group and its other members). Each closes through the
     /// normal `close_node` path, same "just that action run once per tab"
     /// shape `close_all_except` already has.
     fn close_all_at_current_level(&mut self) {
