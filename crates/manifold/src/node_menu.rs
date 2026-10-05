@@ -481,6 +481,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Open in Default Engine", A::OpenInDefaultEngine));
             }
             items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
+            // The same as a live tab's, and Ctrl+D's (`duplicate_tab` takes either).
+            items.push(Button("Duplicate", A::Duplicate));
             items.push(Button("Copy URL", A::CopyUrl));
             items.extend(view.jars.iter().flat_map(|j| jar_items(j, true, false)));
             finish("unloaded_tab_context_menu", 170.0, items, delete("Close"))
@@ -986,7 +988,11 @@ mod tests {
             );
             assert_eq!(
                 menu(ItemNodeKind::Unloaded, false),
-                ("unloaded_tab_context_menu", 170.0, format!("Open | Pin | Copy URL | <colors>{g} | --- | Close"))
+                (
+                    "unloaded_tab_context_menu",
+                    170.0,
+                    format!("Open | Pin | Duplicate | Copy URL | <colors>{g} | --- | Close")
+                )
             );
         }
         // A failed tab offers Retry (and the default engine, when it isn't
@@ -995,10 +1001,10 @@ mod tests {
         let failed = NodeMenuView { other_default_engine: true, failed: true, ..view_of(ItemNodeKind::Unloaded) };
         assert_eq!(
             menu_of(&failed, false).2,
-            "Retry | Open in Default Engine | Pin | Copy URL | <colors> | --- | Close"
+            "Retry | Open in Default Engine | Pin | Duplicate | Copy URL | <colors> | --- | Close"
         );
         let missing = NodeMenuView { failed: true, engine_missing: true, ..view_of(ItemNodeKind::Unloaded) };
-        assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Copy URL | <colors> | --- | Close");
+        assert_eq!(menu_of(&missing, false).2, "Download Engine | Pin | Duplicate | Copy URL | <colors> | --- | Close");
         // Export Group's file dialog can't run headless.
         assert_eq!(
             menu(ItemNodeKind::Group, false, false, true).2,
@@ -1043,7 +1049,7 @@ mod tests {
         let unloaded = NodeMenuView { jars: jars(true, true, false), ..view_of(ItemNodeKind::Unloaded) };
         assert_eq!(
             menu_of(&unloaded, false).2,
-            "Open | Pin | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
+            "Open | Pin | Duplicate | Copy URL | <jars> | New Jar... | Follow Group's Jar | <colors> | --- | Close"
         );
         let group =
             |has_default| NodeMenuView { jars: jars(false, false, has_default), ..view_of(ItemNodeKind::Group) };
@@ -1102,6 +1108,18 @@ mod tests {
             assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
         }
         assert_eq!(del_verb(ItemNodeKind::Group), "dissolve");
+    }
+
+    /// An unloaded tab's menu Duplicate opens a copy at its url and engine, as Ctrl+D does.
+    #[test]
+    fn duplicate_from_an_unloaded_tabs_menu_spawns_a_copy() {
+        let mut app = App::default();
+        let t = crate::session_sync::tests::add(&mut app, crate::session_sync::tests::sleeping_tab("https://a/", "A"));
+        app.apply_node_action(&egui::Context::default(), &t, NodeAction::Duplicate);
+        assert_eq!(app.test_spawns.len(), 1);
+        let spawn = &app.test_spawns[0].0;
+        assert_ne!(spawn.id, t);
+        assert_eq!((spawn.url.as_str(), spawn.kind), ("https://a/", EngineKind::Servo));
     }
 
     #[test]
