@@ -1,8 +1,8 @@
 //! The edge-type table: which node types an edge may join (spec section 3). Endpoints only for now; cardinality,
 //! `acyclic`, removal variants and drawing arrive with the code that reads them.
 
-use super::bridge::{GROUP, JSON_LEAF, TAB, TEXT_MARKDOWN};
 use super::pattern::Pattern;
+use crate::store::model::{TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
 
 /// The containment edge: a node is shown inside a group.
 pub(crate) const CONTAINS: &str = "contains";
@@ -57,16 +57,16 @@ pub(crate) fn builtin_edges() -> EdgeTable {
     EdgeTable::new(vec![EdgeRow::new(
         CONTAINS,
         &[
-            TAB,
-            GROUP,
-            TEXT_MARKDOWN,
+            TYPE_TAB,
+            TYPE_GROUP,
+            TYPE_NOTE,
             "image/*",
             "application/pdf",
             "application/json",
-            JSON_LEAF,
+            TYPE_JSON_LEAF,
             "application/octet-stream",
         ],
-        &[GROUP],
+        &[TYPE_GROUP],
     )])
 }
 
@@ -106,20 +106,20 @@ mod tests {
 
     #[test]
     fn builtin_contains_takes_every_card_into_a_group_only() {
-        use crate::caps::bridge::{GROUP, TAB};
+        use crate::store::model::{TYPE_GROUP, TYPE_TAB};
         let t = edges();
         for source in [
-            TAB,
-            GROUP,
+            TYPE_TAB,
+            TYPE_GROUP,
             "text/markdown",
             "image/png",
             "application/pdf",
             "application/json",
             "application/octet-stream",
         ] {
-            assert!(t.can_connect(CONTAINS, source, GROUP), "{source}");
-            assert!(!t.can_connect(CONTAINS, source, TAB), "{source}");
+            assert!(t.can_connect(CONTAINS, source, TYPE_GROUP), "{source}");
+            assert!(!t.can_connect(CONTAINS, source, TYPE_TAB), "{source}");
         }
-        assert!(!t.can_connect(CONTAINS, "application/vnd.manifold.jar", GROUP));
+        assert!(!t.can_connect(CONTAINS, "application/vnd.manifold.jar", TYPE_GROUP));
     }
 }

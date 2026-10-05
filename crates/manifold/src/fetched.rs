@@ -871,11 +871,13 @@ mod tests {
             doc: store::json::JsonDoc {
                 nodes: vec![store::json::JsonNode {
                     id: "99".into(),
-                    kind: "pdf".into(),
-                    fields: serde_json::Map::from_iter([(
-                        "path".to_string(),
-                        serde_json::Value::String(dir.join("c.pdf").to_string_lossy().into_owned()),
-                    )]),
+                    fields: serde_json::Map::from_iter([
+                        ("type".to_string(), serde_json::Value::String(store::model::TYPE_PDF.into())),
+                        (
+                            "path".to_string(),
+                            serde_json::Value::String(dir.join("c.pdf").to_string_lossy().into_owned()),
+                        ),
+                    ]),
                 }],
                 local: None,
             },
@@ -1020,8 +1022,10 @@ mod tests {
         write_aged(&picked, OLD);
         let node = |path: &std::path::Path| store::json::JsonNode {
             id: "7-1".into(),
-            kind: "image".into(),
-            fields: serde_json::Map::from_iter([("path".into(), path.to_string_lossy().into_owned().into())]),
+            fields: serde_json::Map::from_iter([
+                ("type".into(), store::model::TYPE_IMAGE.into()),
+                ("path".into(), path.to_string_lossy().into_owned().into()),
+            ]),
         };
         let entry = ClosedEntry { doc: store::json::JsonDoc { nodes: vec![node(&own), node(&picked)], local: None } };
         touch_owned_content(&dir, &entry);

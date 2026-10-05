@@ -4,7 +4,9 @@
 
 use std::collections::BTreeSet;
 
-use super::model::{decode_field, field, field_def, Doc, FieldValue, Hlc, Kind, Node, NodeId, Reg, Stamp};
+use super::model::{
+    decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Kind, Node, NodeId, Reg, Stamp,
+};
 use super::tlv::Reader;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,12 +21,21 @@ pub struct Op {
 #[derive(Debug, Clone, PartialEq)]
 #[rustfmt::skip]
 pub enum OpBody {
-    /// `fields` is a node message (`Node::message`), `group` included.
-    Create { node: NodeId, kind: Kind, fields: Vec<u8> },
+    /// `fields` is a node message (`Node::message`), `group` and `type` included.
+    Create { node: NodeId, fields: Vec<u8> },
     /// `enc` is `encode_field(field, value)`; empty resets the field.
     Set { node: NodeId, field: u32, enc: Vec<u8> },
     Move { node: NodeId, group: Option<NodeId> },
     Delete { node: NodeId },
+}
+
+impl OpBody {
+    /// A `Create` whose node message carries `kind`'s type string after `fields`.
+    pub fn create(node: NodeId, kind: Kind, mut fields: Vec<u8>) -> OpBody {
+        let ty = kind.type_str().expect("a created node has a known kind");
+        fields.extend(encode_field(field::TYPE, &FieldValue::Str(ty.to_owned())));
+        OpBody::Create { node, fields }
+    }
 }
 
 impl Op {
@@ -55,9 +66,8 @@ impl Doc {
         *next = (*next).max(op.id.counter + 1);
         self.clock = self.clock.max(op.hlc);
         match &op.body {
-            OpBody::Create { node, kind, fields } => {
+            OpBody::Create { node, fields } => {
                 let entry = self.nodes.entry(*node).or_insert_with(Node::placeholder);
-                entry.kind = *kind;
                 let mut group = None;
                 for field in Reader::new(fields).map_while(Result::ok) {
                     if field.no == field::GROUP {
@@ -155,7 +165,7 @@ impl Doc {
         loop {
             let named: BTreeSet<NodeId> = self.nodes.values().filter_map(|n| n.group).collect();
             let before = self.nodes.len();
-            self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || matches!(n.kind(), Kind::Unknown(0))));
+            self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || !n.has_type()));
             if self.nodes.len() == before {
                 break;
             }
@@ -179,7 +189,7 @@ fn set_reg(node: &mut Node, no: u32, stamp: Stamp, enc: Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{encode_field, ActorId, DocId};
+    use crate::store::model::{ActorId, DocId};
     use crate::store::testutil::{shown, XorShift};
 
     fn id(actor: u64, counter: u64) -> NodeId {
@@ -192,7 +202,33 @@ mod tests {
     }
 
     fn create(node: NodeId, kind: Kind, group: Option<NodeId>) -> OpBody {
-        OpBody::Create { node, kind, fields: encode_field(field::GROUP, &FieldValue::Id(group)) }
+        OpBody::create(node, kind, encode_field(field::GROUP, &FieldValue::Id(group)))
+    }
+
+    #[test]
+    fn a_create_carries_its_type_and_a_set_before_it_shows_once_it_arrives() {
+        let t = id(1, 0);
+        let mut doc = Doc::new(DocId([0; 16]));
+        doc.apply(&op(1, 1, 2, name(t, "x")));
+        assert!(!doc.nodes[&t].is_live(), "named by an op, not created");
+        doc.apply(&op(1, 0, 1, create(t, Kind::Tab, None)));
+        assert_eq!(doc.nodes[&t].kind(), Kind::Tab);
+        assert!(doc.nodes[&t].is_live());
+    }
+
+    #[test]
+    fn prune_drops_a_typeless_placeholder_but_keeps_a_type_this_build_does_not_know() {
+        let (ghost, future) = (id(1, 0), id(1, 1));
+        let mut doc = Doc::new(DocId([0; 16]));
+        doc.apply(&op(1, 2, 1, name(ghost, "g")));
+        let mut fields = encode_field(field::TYPE, &FieldValue::Str("application/x-from-the-future".into()));
+        fields.extend(encode_field(field::GROUP, &FieldValue::Id(None)));
+        doc.apply(&op(1, 3, 1, OpBody::Create { node: future, fields }));
+        doc.forget_moves();
+        doc.prune();
+        assert!(!doc.nodes.contains_key(&ghost));
+        assert!(doc.nodes.contains_key(&future));
+        assert_eq!(doc.nodes[&future].kind(), Kind::Unknown);
     }
 
     fn name(node: NodeId, text: &str) -> OpBody {

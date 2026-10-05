@@ -667,7 +667,7 @@ fn a_read_only_store_saves_nothing() {
     let path = temp_dir("sync-readonly").join("session.mnf");
     drop(Journal::open(&path, ActorId(1)).unwrap());
     let mut bytes = std::fs::read(&path).unwrap();
-    bytes[4] = 2; // a newer format version, as in `journal`'s own test
+    bytes[4] = 3; // a newer format version, as in `journal`'s own test
     let crc = crate::store::crc32c::crc32c(&bytes[..21]);
     bytes[21..25].copy_from_slice(&crc.to_le_bytes());
     std::fs::write(&path, &bytes).unwrap();
@@ -918,7 +918,7 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
         .iter()
         .flat_map(|(no, value)| encode_field(*no, value))
         .collect();
-        old.begin().unwrap().commit(vec![OpBody::Create { node, kind: Kind::Download, fields }]).unwrap();
+        old.begin().unwrap().commit(vec![OpBody::create(node, Kind::Download, fields)]).unwrap();
     }
     let mut app = app_on(&path, 1);
     assert!(app.restore_session());
@@ -951,7 +951,7 @@ fn a_group_export_imports_as_fresh_nodes() {
     app.nodes.get_mut(&n).unwrap().group = Some(g.clone());
     let json = app.export_group_json(&g).unwrap();
     assert_eq!(json.nodes.len(), 2);
-    assert_eq!(json.nodes[0].kind, "group");
+    assert_eq!(json.nodes[0].kind(), Some(Kind::Group));
     app.import_group_json(&json);
     assert_eq!(app.shared_nodes().len(), 4, "the import added a second group and note");
 }
@@ -1255,9 +1255,10 @@ fn fail_spawns(app: &mut App) {
     }
 }
 
-fn json_node(id: &str, kind: &str, fields: serde_json::Value) -> crate::store::json::JsonNode {
-    let serde_json::Value::Object(fields) = fields else { panic!("fields are an object") };
-    crate::store::json::JsonNode { id: id.into(), kind: kind.into(), fields }
+fn json_node(id: &str, kind: Kind, fields: serde_json::Value) -> crate::store::json::JsonNode {
+    let serde_json::Value::Object(mut fields) = fields else { panic!("fields are an object") };
+    fields.insert("type".into(), kind.type_str().expect("a known kind").into());
+    crate::store::json::JsonNode { id: id.into(), fields }
 }
 
 #[test]
@@ -1393,11 +1394,11 @@ fn deleting_a_jar_clears_the_tabs_and_groups_that_named_it() {
 /// A file with a jar "Work" (label j), a group defaulting to it and a tab in the group using it.
 fn file_with_a_work_jar() -> JsonDoc {
     let json = serde_json::json!({ "nodes": [
-        json_node("g", "group", serde_json::json!({ "name": "G", "default_jar": "j" })),
-        json_node("j", "jar", serde_json::json!({ "name": "Work" })),
+        json_node("g", Kind::Group, serde_json::json!({ "name": "G", "default_jar": "j" })),
+        json_node("j", Kind::Jar, serde_json::json!({ "name": "Work" })),
         json_node(
             "t",
-            "tab",
+            Kind::Tab,
             serde_json::json!({ "url": "https://a.com/", "group": "g", "jar": "j", "jar_set": true }),
         ),
     ]});
@@ -1492,8 +1493,8 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
     app.current_group = Some(level.clone());
     let json = JsonDoc {
         nodes: vec![
-            json_node("a", "group", serde_json::json!({ "name": "G" })),
-            json_node("b", "note", serde_json::json!({ "text": "t", "group": elsewhere })),
+            json_node("a", Kind::Group, serde_json::json!({ "name": "G" })),
+            json_node("b", Kind::Note, serde_json::json!({ "text": "t", "group": elsewhere })),
         ],
         local: None,
     };
@@ -1507,7 +1508,7 @@ fn an_imported_member_whose_group_is_outside_the_file_joins_the_roots_level() {
 #[test]
 fn an_empty_session_keeps_recently_closed_across_a_launch() {
     let path = temp_dir("empty-closed").join("session.mnf");
-    let entry = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+    let entry = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
     {
         let journal = Journal::open(&path, ActorId(1)).unwrap();
         let state = LocalState { closed: vec![entry.clone()], ..LocalState::default() };
@@ -1535,7 +1536,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
         app.close_store();
         note
     };
-    let old = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+    let old = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
     let entry = LocalNode { pos: [7.0, 8.0], ..LocalNode::default() };
     let side = crate::store::local::path_for(&path);
     {
@@ -1558,7 +1559,8 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     assert!(app.restore_session());
     assert!(app.local_unread.is_some(), "the read failed");
     assert!(app.closed.is_empty());
-    let since = JsonDoc { nodes: vec![json_node("y", "note", serde_json::json!({ "text": "since" }))], local: None };
+    let since =
+        JsonDoc { nodes: vec![json_node("y", Kind::Note, serde_json::json!({ "text": "since" }))], local: None };
     app.closed.push(ClosedEntry { doc: since.clone() });
     // Due writes, a retry while the lock is still busy, and even exit's
     // forced write leave the file alone.
@@ -1622,14 +1624,14 @@ fn opening_a_session_while_unread_takes_only_recently_closed_on_retry() {
     let mut app = app_on(&path, 1);
     add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
     assert!(app.save_session());
-    let old = JsonDoc { nodes: vec![json_node("x", "note", serde_json::json!({ "text": "gone" }))], local: None };
+    let old = JsonDoc { nodes: vec![json_node("x", Kind::Note, serde_json::json!({ "text": "gone" }))], local: None };
     mark_unread_with(
         &mut app,
         &path,
         &LocalState { view_item: true, closed: vec![old.clone()], ..LocalState::default() },
     );
     let json =
-        JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
+        JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
     assert!(app.local_unread.is_some_and(|u| u.fresh), "the open makes the retry a fresh start");
     app.poll_store();
@@ -1693,7 +1695,7 @@ fn tabs_still_spawning_at_quit_are_saved() {
     add(&mut app, NodePayload::Note(NotePayload { text: "old".into(), editing: false, url: None }));
     assert!(app.save_session());
     let json =
-        JsonDoc { nodes: vec![json_node("t", "tab", serde_json::json!({ "url": "https://new/" }))], local: None };
+        JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Foreign);
     assert_eq!(app.test_spawns.len(), 1, "the tab is still spawning");
     app.save_session();
@@ -1713,9 +1715,9 @@ fn open_session_restores_asleep_and_wakes_only_the_focused_tab() {
     let mut app = app_on(&temp_dir("open-session-lazy").join("session.mnf"), 1);
     let json = JsonDoc {
         nodes: vec![
-            json_node("t1", "tab", serde_json::json!({ "url": "https://a/" })),
-            json_node("t2", "tab", serde_json::json!({ "url": "https://b/" })),
-            json_node("t3", "tab", serde_json::json!({ "url": "https://c/" })),
+            json_node("t1", Kind::Tab, serde_json::json!({ "url": "https://a/" })),
+            json_node("t2", Kind::Tab, serde_json::json!({ "url": "https://b/" })),
+            json_node("t3", Kind::Tab, serde_json::json!({ "url": "https://c/" })),
         ],
         local: None,
     };

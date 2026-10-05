@@ -2,7 +2,7 @@
 //! through serde, with no history. Session and group export, probes'
 //! `EXPORTSESSION`, and `--import-json` all use this one shape:
 //!
-//! `{"nodes": [{"id": "…", "kind": "tab", "url": "…", "pos": [x, y]}, …],
+//! `{"nodes": [{"id": "…", "type": "application/vnd.manifold.tab", "url": "…", "pos": [x, y]}, …],
 //!   "local": {…}}`
 //!
 //! Importing gives every node a fresh id, so a file can be imported twice.
@@ -29,10 +29,16 @@ pub struct JsonDoc {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonNode {
     pub id: String,
-    pub kind: String,
-    /// Fields by name; defaults are left out.
+    /// Fields by name, `type` included; defaults are left out.
     #[serde(flatten)]
     pub fields: Map<String, Value>,
+}
+
+impl JsonNode {
+    /// The kind its `type` names; `None` when it has none, or one this build doesn't know.
+    pub fn kind(&self) -> Option<Kind> {
+        self.fields.get("type").and_then(Value::as_str).map(Kind::from_type).filter(|k| *k != Kind::Unknown)
+    }
 }
 
 fn value_to_json(value: &FieldValue) -> Option<Value> {
@@ -53,9 +59,10 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
     })
 }
 
-/// A node as JSON from its field values, `group` given separately: what
-/// `doc_to_json` writes for a document node, for callers holding values
-/// rather than a `Node` (Recently Closed, `session_sync`).
+/// A node as JSON from its field values, `group` given separately and
+/// `type` from `kind`: what `doc_to_json` writes for a document node, for
+/// callers holding values rather than a `Node` (Recently Closed,
+/// `session_sync`).
 pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group: Option<NodeId>) -> JsonNode {
     let mut out = Map::new();
     let mut put = |no: u32, value: &FieldValue| {
@@ -64,17 +71,23 @@ pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group
         }
     };
     for (&no, value) in fields {
-        if no != field::GROUP {
+        if no != field::GROUP && no != field::TYPE {
             put(no, value);
         }
     }
     put(field::GROUP, &FieldValue::Id(group));
-    JsonNode { id: id.to_owned(), kind: kind.name().expect("a known kind").to_owned(), fields: out }
+    out.insert("type".into(), Value::String(kind.type_str().expect("a known kind").into()));
+    JsonNode { id: id.to_owned(), fields: out }
 }
 
 /// `node` as JSON, its group given separately (the effective one).
 fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
-    let fields = node.fields.keys().filter(|&&no| field_def(no).is_some()).map(|&no| (no, node.get(no))).collect();
+    let fields = node
+        .fields
+        .keys()
+        .filter(|&&no| no != field::TYPE && field_def(no).is_some())
+        .map(|&no| (no, node.get(no)))
+        .collect();
     node_json(&id.to_string(), node.kind(), &fields, group)
 }
 
@@ -139,10 +152,11 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
     }
     let mut out = Vec::new();
     for node in &json.nodes {
-        let kind = Kind::from_name(&node.kind).ok_or_else(|| format!("unknown kind {:?}", node.kind))?;
+        let kind = node.kind().ok_or_else(|| format!("node {:?}: missing or unknown type", node.id))?;
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
-            let Some(def) = field_by_name(name) else { continue };
+            // The kind is carried separately; `creates` writes its type.
+            let Some(def) = field_by_name(name).filter(|def| def.no != field::TYPE) else { continue };
             if trust == Trust::Foreign {
                 if def.no == field::PATH && kind == Kind::Download {
                     continue;
@@ -187,7 +201,7 @@ pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
         .iter()
         .map(|node| {
             let fields = node.fields.iter().flat_map(|(no, value)| encode_field(*no, value)).collect();
-            OpBody::Create { node: node.id, kind: node.kind, fields }
+            OpBody::create(node.id, node.kind, fields)
         })
         .collect()
 }
@@ -195,7 +209,7 @@ pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{ActorId, DocId, Hlc};
+    use crate::store::model::{ActorId, DocId, Hlc, TYPE_GROUP};
     use crate::store::ops::Op;
 
     fn ids(actor: u64) -> impl FnMut() -> NodeId {
@@ -217,10 +231,10 @@ mod tests {
     }
 
     const HAND_WRITTEN: &str = r##"{"nodes": [
-        {"id": "g", "kind": "group", "name": "Reading", "color": "#000000"},
-        {"id": "t1", "kind": "tab", "group": "g", "url": "https://a.example/", "pos": [10.5, -3], "engine": "cef", "pinned": true},
-        {"id": "t2", "kind": "tab", "group": "g", "parent": "t1", "url": "https://b.example/", "future_field": 7},
-        {"id": "n", "kind": "note", "text": "hi"}
+        {"id": "g", "type": "application/vnd.manifold.group", "name": "Reading", "color": "#000000"},
+        {"id": "t1", "type": "application/vnd.manifold.tab", "group": "g", "url": "https://a.example/", "pos": [10.5, -3], "engine": "cef", "pinned": true},
+        {"id": "t2", "type": "application/vnd.manifold.tab", "group": "g", "parent": "t1", "url": "https://b.example/", "future_field": 7},
+        {"id": "n", "type": "text/markdown", "text": "hi"}
     ]}"##;
 
     #[test]
@@ -266,7 +280,7 @@ mod tests {
                             f.insert(key.into(), Value::from(label[id]));
                         }
                     }
-                    format!("{} {} {}", label[&n.id], n.kind, Value::Object(f))
+                    format!("{} {}", label[&n.id], Value::Object(f)) // `f` holds the type
                 })
                 .collect();
             out.sort();
@@ -281,17 +295,57 @@ mod tests {
         let doc = doc_from(HAND_WRITTEN, 1);
         let (group, _) = doc.live().find(|(_, n)| n.kind() == Kind::Group).unwrap();
         let export = subtree_to_json(&doc, group);
-        assert_eq!(export.nodes.iter().map(|n| n.kind.as_str()).collect::<Vec<_>>(), ["group", "tab", "tab"]);
+        assert_eq!(
+            export.nodes.iter().map(JsonNode::kind).collect::<Vec<_>>(),
+            [Some(Kind::Group), Some(Kind::Tab), Some(Kind::Tab)]
+        );
         assert!(!export.nodes[0].fields.contains_key("group"));
     }
 
     #[test]
     fn bad_input_is_an_error() {
         let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
-        bad(r#"{"nodes": [{"id": "a", "kind": "spaceship"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "kind": "tab", "engine": "gecko"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "kind": "tab", "color": "red"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "kind": "tab"}, {"id": "a", "kind": "tab"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/x-spaceship"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "engine": "gecko"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "color": "red"}]}"#);
+        bad(
+            r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab"}, {"id": "a", "type": "application/vnd.manifold.tab"}]}"#,
+        );
+    }
+
+    #[test]
+    fn export_writes_type_as_a_field_and_import_reads_it_back() {
+        let doc = doc_from(HAND_WRITTEN, 1);
+        let (group, _) = doc.live().find(|(_, n)| n.kind() == Kind::Group).unwrap();
+        let export = subtree_to_json(&doc, group);
+        assert_eq!(export.nodes[0].kind(), Some(Kind::Group));
+        assert_eq!(export.nodes[1].kind(), Some(Kind::Tab));
+
+        let text = serde_json::to_value(&export).unwrap();
+        for node in text["nodes"].as_array().unwrap() {
+            assert!(node["type"].is_string(), "{node}");
+            assert!(node.get("kind").is_none(), "{node}");
+        }
+        assert_eq!(text["nodes"][0]["type"], "application/vnd.manifold.group");
+
+        let imported = import(&export, ids(2), Trust::Own).unwrap();
+        assert_eq!(imported.iter().map(|n| n.kind).collect::<Vec<_>>(), [Kind::Group, Kind::Tab, Kind::Tab]);
+        assert!(imported.iter().all(|n| !n.fields.contains_key(&field::TYPE)), "the kind is carried separately");
+        let mut again = Doc::new(DocId([0; 16]));
+        let mut op_ids = ids(3);
+        for (i, body) in creates(&imported).into_iter().enumerate() {
+            again.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
+        }
+        let kinds: Vec<Kind> = imported.iter().map(|n| again.nodes[&n.id].kind()).collect();
+        assert_eq!(kinds, [Kind::Group, Kind::Tab, Kind::Tab], "creates() writes the type back");
+        assert_eq!(again.nodes[&imported[0].id].get(field::TYPE), FieldValue::Str(TYPE_GROUP.into()));
+    }
+
+    #[test]
+    fn import_rejects_a_missing_or_unknown_type() {
+        let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
+        bad(r#"{"nodes": [{"id": "a"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/x-spaceship"}]}"#);
     }
 
     #[test]
@@ -301,7 +355,7 @@ mod tests {
         fields.insert(field::PINNED, FieldValue::Bool(true));
         fields.insert(field::COLOR, FieldValue::Color(None));
         let json = node_json("n1", Kind::Tab, &fields, None);
-        assert_eq!(json.kind, "tab");
+        assert_eq!(json.kind(), Some(Kind::Tab));
         assert_eq!(json.fields.get("url"), Some(&Value::String("https://a.example/".into())));
         assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
         assert!(!json.fields.contains_key("color"), "defaults are left out");
@@ -311,7 +365,8 @@ mod tests {
     #[test]
     fn import_keeps_file_order() {
         let json: JsonDoc =
-            serde_json::from_str(r#"{"nodes":[{"id":"b","kind":"note"},{"id":"a","kind":"note"}]}"#).unwrap();
+            serde_json::from_str(r#"{"nodes":[{"id":"b","type":"text/markdown"},{"id":"a","type":"text/markdown"}]}"#)
+                .unwrap();
         let mut next = ids(7);
         let first = next();
         let imported = import(&json, ids(7), Trust::Own).unwrap();
@@ -327,11 +382,11 @@ mod tests {
         let outside = NodeId { actor: ActorId(9), counter: 9 }.to_string();
         // `JsonNode` flattens its fields into the node object.
         let json = doc(serde_json::json!([
-            { "id": "j", "kind": "jar" },
-            { "id": "d", "kind": "download", "path": "C:\\Windows\\x.exe" },
-            { "id": "t", "kind": "tab", "url": "https://a", "jar": "j" },
-            { "id": "u", "kind": "tab", "url": "https://b", "jar": outside },
-            { "id": "g", "kind": "group", "default_jar": outside },
+            { "id": "j", "type": "application/vnd.manifold.jar" },
+            { "id": "d", "type": "application/octet-stream", "path": "C:\\Windows\\x.exe" },
+            { "id": "t", "type": "application/vnd.manifold.tab", "url": "https://a", "jar": "j" },
+            { "id": "u", "type": "application/vnd.manifold.tab", "url": "https://b", "jar": outside },
+            { "id": "g", "type": "application/vnd.manifold.group", "default_jar": outside },
         ]));
         let foreign = import(&json, ids(1), Trust::Foreign).unwrap();
         assert!(!foreign[1].fields.contains_key(&field::PATH));

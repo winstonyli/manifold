@@ -95,7 +95,7 @@ mod tests {
         let input = dir.join("seed.json");
         std::fs::write(
             &input,
-            r#"{"nodes":[{"id":"g","kind":"group","name":"G"},{"id":"n","kind":"note","text":"hi","group":"g"}]}"#,
+            r#"{"nodes":[{"id":"g","type":"application/vnd.manifold.group","name":"G"},{"id":"n","type":"text/markdown","text":"hi","group":"g"}]}"#,
         )
         .unwrap();
         let out = dir.join("session.mnf");

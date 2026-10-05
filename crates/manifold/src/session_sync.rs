@@ -57,7 +57,7 @@ pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
         Kind::Download => &[POS, COLOR, PARENT, URL, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Jar => &[COLOR, NAME, EPHEMERAL],
-        Kind::Unknown(_) => &[],
+        Kind::Unknown => &[],
     }
 }
 
@@ -162,7 +162,7 @@ pub(crate) fn diff(
             *parent = valid(*parent);
         }
         let fields = all.iter().flat_map(|(&no, value)| encode_field(no, value)).collect();
-        ops.push(OpBody::Create { node: id, kind: node.kind, fields });
+        ops.push(OpBody::create(id, node.kind, fields));
         created.insert(id);
     }
 
@@ -748,7 +748,7 @@ impl App {
                 };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Download(payload));
             }
-            Kind::Jar | Kind::Unknown(_) => return,
+            Kind::Jar | Kind::Unknown => return,
         }
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;

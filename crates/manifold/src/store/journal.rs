@@ -13,13 +13,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::crc32c::{crc32c, crc32c_append};
 use super::local;
-use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Kind, Node, NodeId, Reg, Stamp};
+use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Node, NodeId, Reg, Stamp};
 use super::ops::{Op, OpBody};
 use super::tlv::{Reader, TlvError, Writer};
 use super::varint;
 
 pub const MAGIC: [u8; 4] = *b"MNF\0";
-pub const FORMAT_VERSION: u64 = 1;
+/// 2: a node's kind is its `type` register (field 19); 1 held a numeric
+/// kind, and a version-1 file is refused (no migration).
+pub const FORMAT_VERSION: u64 = 2;
 
 /// Frame types. 0 is invalid, so a zeroed region never parses.
 pub mod frame {
@@ -420,8 +422,9 @@ fn doc_actors(doc: &Doc) -> Actors {
 }
 
 /// Snapshot: `{1: doc id, 2: node*, 3: version*, 4: reserved for a
-/// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 2:
-/// kind, 3: deleted, 4: group, 5: register*}` and a register `{1: field,
+/// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 3:
+/// deleted, 4: group, 5: register*}` (2, the numeric kind, is retired: the
+/// kind is the `type` register since format 2) and a register `{1: field,
 /// 2: stamp, 3: value encoding}`. The actor table is sorted, and nodes and
 /// registers are in id and field order, so equal documents encode to
 /// equal bytes.
@@ -433,9 +436,6 @@ fn snapshot_message(doc: &Doc) -> Vec<u8> {
     for (id, node) in &doc.nodes {
         let mut n = Writer::new();
         n.message(1, &id_message(*id, actors));
-        if node.kind().code() != 0 {
-            n.varint(2, node.kind().code());
-        }
         if node.deleted {
             n.varint(3, 1);
         }
@@ -490,7 +490,6 @@ fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
                     let f = f?;
                     match f.no {
                         1 => id = Some(decode_id(f.value.bytes()?, actors)?),
-                        2 => node.kind = Kind::from_code(f.value.u64()?),
                         3 => node.deleted = f.value.bool()?,
                         4 => node.group = Some(decode_id(f.value.bytes()?, actors)?),
                         5 => {
@@ -565,7 +564,7 @@ const OP_DELETE: u32 = 7;
 
 /// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
 /// previous op in the frame), 3: logical, then one body field: 4 Create
-/// {1: node, 2: kind, 3: fields}, 5 Set {1: node, 2: field, 3: value
+/// {1: node, 3: fields} (2, the numeric kind, is retired), 5 Set {1: node, 2: field, 3: value
 /// encoding}, 6 Move {1: node, 2: group}, 7 Delete {1: node}}`.
 fn ops_message(ops: &[Op]) -> Vec<u8> {
     let author = ops[0].id.actor;
@@ -593,9 +592,8 @@ fn ops_message(ops: &[Op]) -> Vec<u8> {
         (counter, ms) = (op.id.counter, op.hlc.ms);
         let mut b = Writer::new();
         let field = match &op.body {
-            OpBody::Create { node, kind, fields } => {
+            OpBody::Create { node, fields } => {
                 b.message(1, &id_message(*node, actors));
-                b.varint(2, kind.code());
                 if !fields.is_empty() {
                     b.bytes(3, fields);
                 }
@@ -665,7 +663,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
             let f = f?;
             match (kind, f.no) {
                 (_, 1) => node = Some(decode_id(f.value.bytes()?, actors)?),
-                (OP_CREATE | OP_SET, 2) => num = f.value.u64()?,
+                (OP_SET, 2) => num = f.value.u64()?,
                 (OP_MOVE, 2) => group = Some(decode_id(f.value.bytes()?, actors)?),
                 (OP_CREATE | OP_SET, 3) => blob = f.value.bytes()?.to_vec(),
                 _ => {}
@@ -673,7 +671,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
         }
         let node = node.ok_or_else(|| JournalError::Corrupt("op without a node".into()))?;
         let body = match kind {
-            OP_CREATE => OpBody::Create { node, kind: Kind::from_code(num), fields: blob },
+            OP_CREATE => OpBody::Create { node, fields: blob },
             OP_SET => OpBody::Set {
                 node,
                 field: u32::try_from(num).map_err(|_| JournalError::Corrupt("field number".into()))?,
@@ -908,6 +906,11 @@ impl Journal {
     /// damage. Fails only on a header it can't read.
     fn load(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
         let header = read_header(bytes)?;
+        if header.version < FORMAT_VERSION {
+            // Version 1 held a numeric kind and no `type`: read as this
+            // format, every node would be typeless and compact away.
+            return Err(JournalError::NotAJournal);
+        }
         self.generation = header.generation;
         self.read_only = header.version > FORMAT_VERSION;
         self.keep_unknown = self.read_only;
@@ -1481,13 +1484,13 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{encode_field, field, FieldValue, Node, FIELDS};
+    use crate::store::model::{encode_field, field, FieldValue, Kind, Node, FIELDS};
     use crate::store::testutil::{shown, temp_dir, XorShift};
 
     fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
         let node = txn.next_id();
         let fields = encode_field(field::URL, &FieldValue::Str(url.into()));
-        (node, OpBody::Create { node, kind: Kind::Tab, fields })
+        (node, OpBody::create(node, Kind::Tab, fields))
     }
 
     fn url(doc: &Doc, id: NodeId) -> FieldValue {
@@ -1636,7 +1639,7 @@ mod tests {
 
         let mut txn = a.begin().unwrap();
         let group = txn.next_id();
-        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
+        txn.commit(vec![OpBody::create(group, Kind::Group, Vec::new())]).unwrap();
         let mut txn = b.begin().unwrap();
         assert!(txn.remote.contains(&group));
         let (tab, create) = create_tab(&mut txn, "https://c.example/");
@@ -1743,6 +1746,63 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let header = read_header(&bytes).unwrap();
         assert!(scan(&bytes[header.len..], header.len).frames.iter().any(|f| f.ty == 50));
+    }
+
+    #[test]
+    fn a_type_this_build_does_not_know_survives_snapshots_and_compaction() {
+        let dir = temp_dir("future-type");
+        let path = dir.join("session.mnf");
+        let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+        let mut txn = journal.begin().unwrap();
+        let node = txn.next_id();
+        let ty = encode_field(field::TYPE, &FieldValue::Str("application/x-from-the-future".into()));
+        let mut fields = ty.clone();
+        fields.extend(encode_field(field::URL, &FieldValue::Str("https://f.example/".into())));
+        txn.commit(vec![OpBody::Create { node, fields }]).unwrap();
+        let doc = journal.doc().clone();
+        let mut bytes = header_bytes(1, 0);
+        bytes.extend(snapshot_bytes(&doc));
+        assert_eq!(Journal::read(&bytes).unwrap().nodes, doc.nodes, "a snapshot reads back equal");
+        journal.close().unwrap(); // compacts
+
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(doc.nodes[&node].fields[&field::TYPE].enc, ty, "the raw `type` register is kept");
+        assert_eq!(doc.nodes[&node].kind(), Kind::Unknown);
+        assert!(!doc.nodes[&node].is_live());
+    }
+
+    #[test]
+    fn a_create_op_carries_its_type_in_its_fields_and_no_kind_slot() {
+        let node = NodeId { actor: ActorId(1), counter: 3 };
+        let fields = encode_field(field::URL, &FieldValue::Str("https://c.example/".into()));
+        let op = Op {
+            id: NodeId { actor: ActorId(1), counter: 4 },
+            hlc: Hlc { ms: 10, logical: 0 },
+            body: OpBody::create(node, Kind::Tab, fields),
+        };
+        let message = ops_message(std::slice::from_ref(&op));
+        assert_eq!(decode_ops(&message).unwrap(), vec![op]);
+        let op_bytes = Reader::new(&message).map(Result::unwrap).find(|f| f.no == 2).unwrap().value.bytes().unwrap();
+        let body =
+            Reader::new(op_bytes).map(Result::unwrap).find(|f| f.no == OP_CREATE).unwrap().value.bytes().unwrap();
+        let slots: Vec<u32> = Reader::new(body).map(|f| f.unwrap().no).collect();
+        assert_eq!(slots, [1, 3], "node and fields only");
+    }
+
+    #[test]
+    fn a_version_one_file_is_refused_and_left_alone() {
+        let dir = temp_dir("version-one");
+        let path = dir.join("session.mnf");
+        drop(Journal::open(&path, ActorId(1)).unwrap());
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[4] = 1; // format_version 1: a numeric kind, no `type`
+        let crc = crc32c(&bytes[..21]);
+        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(!read_header(&bytes).unwrap().damaged);
+        assert!(matches!(Journal::read(&bytes), Err(JournalError::NotAJournal)));
+        assert!(matches!(Journal::open(&path, ActorId(2)), Err(JournalError::NotAJournal)));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
@@ -1854,13 +1914,9 @@ mod tests {
         note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
         let set = |node, no, value| OpBody::Set { node, field: no, enc: encode_field(no, &value) };
         let bodies = vec![
-            OpBody::Create {
-                node: group,
-                kind: Kind::Group,
-                fields: encode_field(field::NAME, &FieldValue::Str("g".into())),
-            },
+            OpBody::create(group, Kind::Group, encode_field(field::NAME, &FieldValue::Str("g".into()))),
             create,
-            OpBody::Create { node: note, kind: Kind::Note, fields: note_fields },
+            OpBody::create(note, Kind::Note, note_fields),
             set(tab, field::ENGINE, FieldValue::Engine(2)),
             set(tab, field::PINNED, FieldValue::Bool(true)),
             OpBody::Move { node: tab, group: Some(group) },
@@ -1875,7 +1931,7 @@ mod tests {
         leaf_fields.extend(encode_field(field::KEY, &FieldValue::Str("k".into())));
         leaf_fields.extend(encode_field(field::VALUE, &FieldValue::Str("v".into())));
         let bodies = vec![
-            OpBody::Create { node: leaf, kind: Kind::JsonLeaf, fields: leaf_fields },
+            OpBody::create(leaf, Kind::JsonLeaf, leaf_fields),
             OpBody::Delete { node: group },
             OpBody::Move { node: note, group: None },
             set(note, field::COLOR, FieldValue::Color(None)),
@@ -2022,7 +2078,7 @@ mod tests {
         let path = dir.join("session.mnf");
         drop(Journal::open(&path, ActorId(1)).unwrap());
         let mut bytes = std::fs::read(&path).unwrap();
-        bytes[4] = 2; // format_version 2
+        bytes[4] = 3; // format_version 3
         let crc = crc32c(&bytes[..21]);
         bytes[21..25].copy_from_slice(&crc.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
@@ -2150,7 +2206,7 @@ mod tests {
         let mut b = Journal::open(&path, ActorId(2)).unwrap();
         let mut txn = a.begin().unwrap();
         let group = txn.next_id();
-        txn.commit(vec![OpBody::Create { node: group, kind: Kind::Group, fields: Vec::new() }]).unwrap();
+        txn.commit(vec![OpBody::create(group, Kind::Group, Vec::new())]).unwrap();
         let mut txn = b.begin().unwrap();
         let (tab, create) = create_tab(&mut txn, "https://f.example/");
         txn.commit(vec![create, OpBody::Move { node: tab, group: Some(group) }]).unwrap();
@@ -2762,7 +2818,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, &node)| {
                     let fields = encode_field(field::NAME, &FieldValue::Str(format!("Group {i}")));
-                    OpBody::Create { node, kind: Kind::Group, fields }
+                    OpBody::create(node, Kind::Group, fields)
                 })
                 .collect();
             let mut ids = Vec::new();
@@ -2774,7 +2830,7 @@ mod tests {
                 fields.extend(encode_field(field::POS, &FieldValue::Pos(i as f32 * 3.5, i as f32 * -2.25)));
                 fields.extend(encode_field(field::ENGINE, &FieldValue::Engine(1 + (i % 4) as u64)));
                 fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(groups[i % groups.len()]))));
-                bodies.push(OpBody::Create { node, kind: Kind::Tab, fields });
+                bodies.push(OpBody::create(node, Kind::Tab, fields));
                 ids.push(node);
             }
             txn.commit(bodies).unwrap();

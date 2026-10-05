@@ -75,17 +75,17 @@ impl Registry {
 /// What today's `worth_reopening` decided per kind: only a completed download, a jar, a blank note and an unknown kind
 /// are not recorded when closed.
 pub(crate) fn builtin_rows() -> Vec<Row> {
-    use super::bridge::{GROUP, JSON_LEAF, TAB, TEXT_MARKDOWN};
+    use crate::store::model::{TYPE_GROUP, TYPE_JSON_LEAF, TYPE_NOTE, TYPE_TAB};
     vec![
         Row::new("*/*").restorable(false),
-        Row::new(TAB).restorable(true),
-        Row::new(GROUP).restorable(true),
+        Row::new(TYPE_TAB).restorable(true),
+        Row::new(TYPE_GROUP).restorable(true),
         Row::new("image/*").restorable(true),
         Row::new("application/pdf").restorable(true),
         Row::new("application/json").restorable(true),
-        Row::new(JSON_LEAF).restorable(true),
-        Row::new(TEXT_MARKDOWN).restorable(true),
-        Row::new(TEXT_MARKDOWN).requires(&[Tag::Blank]).restorable(false),
+        Row::new(TYPE_JSON_LEAF).restorable(true),
+        Row::new(TYPE_NOTE).restorable(true),
+        Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
     ]
 }
 

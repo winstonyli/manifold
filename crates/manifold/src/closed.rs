@@ -288,7 +288,7 @@ mod tests {
             [outer.as_str(), note0.as_str(), inner.as_str(), img0.as_str(), json0.as_str()],
             "a blank note and a completed download are both skipped"
         );
-        assert_eq!(entry.doc.nodes[0].kind, "group");
+        assert_eq!(entry.doc.nodes[0].kind(), Some(store::model::Kind::Group));
         assert!(entry.doc.nodes[0].fields.get("group").is_none(), "the root's group isn't recorded");
         assert_eq!(entry.doc.nodes[3].fields.get("group").and_then(|v| v.as_str()), Some(inner.as_str()));
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn an_unknown_kind_is_not_worth_reopening() {
-        assert!(!worth_reopening(store::model::Kind::Unknown(99), &Default::default()));
+        assert!(!worth_reopening(store::model::Kind::Unknown, &Default::default()));
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
             (Kind::JsonLeaf, &none, true),
             (Kind::Download, &none, false),
             (Kind::Jar, &none, false),
-            (Kind::Unknown(99), &none, false),
+            (Kind::Unknown, &none, false),
             (Kind::Note, &text("hi"), true),
             (Kind::Note, &text("  \n"), false),
             (Kind::Note, &none, false),
