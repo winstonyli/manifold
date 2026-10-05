@@ -863,6 +863,44 @@ fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     assert_eq!(restored.nodes[&download].parent.as_deref(), Some(tab.as_str()));
 }
 
+/// Image, PDF and JSON cards keep their "opened from" link across a restart, and so does a tab opened from a
+/// content node (Open as Tab).
+#[test]
+fn an_opened_from_link_survives_a_restart_on_file_cards_and_a_tab_opened_from_one() {
+    let dir = temp_dir("parent-files");
+    let path = dir.join("session.mnf");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png_path = dir.join("a.png");
+    std::fs::write(&png_path, png.into_inner()).unwrap();
+    let json_path = dir.join("a.json");
+    std::fs::write(&json_path, b"[1]").unwrap();
+    let file = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    let mut app = app_on(&path, 1);
+    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    let (image, pdf, json) = (app.alloc_node_id(), app.alloc_node_id(), app.alloc_node_id());
+    app.insert_image_node_with_id(image.clone(), file(&png_path), egui::Vec2::ZERO, None).unwrap();
+    app.insert_pdf_node_with_id(pdf.clone(), file(&dir.join("a.pdf")), egui::Vec2::ZERO, None);
+    app.insert_json_node_with_id(json.clone(), file(&json_path), egui::Vec2::ZERO, None).unwrap();
+    for id in [&image, &pdf, &json] {
+        app.nodes.get_mut(id).unwrap().parent = Some(opener.clone());
+    }
+    let tab = add(&mut app, sleeping_tab("https://x.test/a.png", "From image"));
+    app.nodes.get_mut(&tab).unwrap().parent = Some(image.clone());
+    assert!(app.save_session());
+    app.close_store();
+
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    for id in [&image, &pdf, &json] {
+        assert_eq!(restored.nodes[id].parent.as_deref(), Some(opener.as_str()), "{id}");
+    }
+    assert!(restored.nodes[&image].as_image().is_some() && restored.nodes[&json].as_json().is_some());
+    assert!(restored.nodes[&pdf].as_pdf().is_some());
+    assert_eq!(restored.nodes[&tab].parent.as_deref(), Some(image.as_str()), "a tab opened from an image card");
+}
+
 /// A session saved by a build that wrote no `parent` for a download loads unchanged: no link, nothing lost.
 #[test]
 fn an_older_sessions_download_without_a_parent_loads_unchanged() {
