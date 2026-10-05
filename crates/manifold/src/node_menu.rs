@@ -1079,6 +1079,21 @@ mod tests {
         assert_eq!(NodeAction::Delete.key_hint(ItemNodeKind::Tab), Some("Del"));
     }
 
+    /// The focused card's "Del <verb>" hint names the same action as the menu row hinted Del.
+    #[test]
+    fn card_del_hint_matches_the_menu_row_hinted_del() {
+        for kind in GRAPH_DRAW_ORDER {
+            let config = node_menu_config(&view_of(kind), false);
+            let label = config.items.iter().find_map(|item| match item {
+                NodeMenuItem::Button(label, action) if action.key_hint(kind).is_some() => Some(*label),
+                _ => None,
+            });
+            let first = label.and_then(|l| l.split(' ').next()).map(str::to_lowercase);
+            assert_eq!(first.as_deref(), Some(del_verb(kind)), "{kind:?}");
+        }
+        assert_eq!(del_verb(ItemNodeKind::Group), "dissolve");
+    }
+
     #[test]
     fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
         let mut app = App::default();

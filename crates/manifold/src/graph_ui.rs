@@ -714,7 +714,8 @@ impl App {
             ItemNodeKind::Note => &[("Enter", "edit")],
             _ => &[],
         };
-        let hints = [("Tab", "next")].iter().chain(extra).chain(&[("Del", "close"), ("Shift+F10", "menu")]);
+        let tail = [("Del", del_verb(kind)), ("Shift+F10", "menu")];
+        let hints = [("Tab", "next")].iter().chain(extra).chain(&tail);
         let below = rect.bottom() + 40.0 < screen.bottom();
         let (anchor_y, pivot) = if below {
             (rect.bottom() + 8.0, egui::Align2::CENTER_TOP)

@@ -516,6 +516,17 @@ impl CardControl {
     }
 }
 
+/// What Del (the card's Close) does to a `kind` of card, for the focused card's key hint: the first word of the
+/// node menu's row hinted Del.
+pub(crate) fn del_verb(kind: ItemNodeKind) -> &'static str {
+    match kind {
+        ItemNodeKind::Group => "dissolve",
+        ItemNodeKind::Tab | ItemNodeKind::Unloaded => "close",
+        ItemNodeKind::Download => "remove",
+        ItemNodeKind::Note | ItemNodeKind::Image | ItemNodeKind::Pdf | ItemNodeKind::Json => "delete",
+    }
+}
+
 /// The buttons `view`'s card shows, in registration order (see
 /// `CardControl`): the swatch on every card, a tab's (live or unloaded)
 /// pin, and a live tab's audio indicator while playing or muted, eject on
