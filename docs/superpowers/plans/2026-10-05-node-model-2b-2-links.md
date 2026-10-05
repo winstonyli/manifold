@@ -603,3 +603,4 @@ Done on `dev`: 5e82da0, dc1d1e6, 4741dab, 566b0c3, 9fa6631, 952fe1c, 808fc0e. 78
 - `destroy_group` with a respawning member leaves that tab one level up; a respawning tab keeps its old jar snapshot after a local dissolve or merge (`refollow` skips it).
 - The mirror can show the grandparent while the document still names a remotely deleted parent (same as live nodes).
 - `seed_landing` has no direct test of its own beyond the respawn tests; `insert_content` uses `edit_group` where it could seed.
+- Minors left after the cycle fix (10372ac, reviewed 2026-10-05): destroying a group cycle while `current_group` is inside it can leave `current_group` on a removed group (transient cycle window only); no test covers the post-commit readback together with a parked `remote_in_flight` group, or a target that is not live.
