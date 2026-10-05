@@ -332,9 +332,9 @@ drag() {
 # A two-tab group from a file, entered by double-clicking its card.
 cat >"$out_dir/pair.group.json" <<'EOF'
 {"nodes": [
- {"id": "g", "kind": "group", "name": "Pair"},
- {"id": "a", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
- {"id": "b", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
+ {"id": "g", "type": "application/vnd.manifold.group", "name": "Pair"},
+ {"id": "a", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 EOF
 before=$(query group_out 'groups')
 send "IMPORTGROUP $out_dir_win\pair.group.json"
@@ -390,8 +390,8 @@ check_query ejected "ejecting a selected tab also drops it from the selection" \
 send "CLICK 22 17"
 python - "$out_dir/nine.group.json" <<'EOF'
 import json, sys
-tab = lambda i: {"id": f"t{i}", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "group": "g"}
-json.dump({"nodes": [{"id": "g", "kind": "group", "name": "Nine"}] + [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
+tab = lambda i: {"id": f"t{i}", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "group": "g"}
+json.dump({"nodes": [{"id": "g", "type": "application/vnd.manifold.group", "name": "Nine"}] + [tab(i) for i in range(9)]}, open(sys.argv[1], "w"))
 EOF
 settle top
 before_nine=$(query top 'groups')
@@ -564,8 +564,9 @@ converted() {
     python - "$out_dir/$1.json" "$2" "$3" <<'EOF'
 import json, sys
 nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
+KINDS = {"json": "application/json", "pdf": "application/pdf"}
 at = lambda n: n.get("url", "").startswith("file://") and n.get("url", "").endswith("/" + sys.argv[2])
-sys.exit(0 if any(n["kind"] == sys.argv[3] and at(n) for n in nodes) and not any(n["kind"] == "tab" and at(n) for n in nodes) else 1)
+sys.exit(0 if any(n["type"] == KINDS[sys.argv[3]] and at(n) for n in nodes) and not any(n["type"] == "application/vnd.manifold.tab" and at(n) for n in nodes) else 1)
 EOF
 }
 # NEWTAB doesn't focus the tab it opens, and a conversion drops to Graph

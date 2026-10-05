@@ -63,10 +63,10 @@ echo '[{"title": "Example Domain", "url": "https://example.com/", "folder": null
 echo '[{"title": "Example Domain", "url": "https://example.com/"}, {"title": "Wikipedia", "url": "https://en.wikipedia.org/"}, {"title": "Hacker News", "url": "https://news.ycombinator.com/"}]' >"$profile/manifold/history.json"
 cat >"$work/seed.json" <<'EOF'
 {"nodes": [
- {"id": "t1", "kind": "tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
- {"id": "g", "kind": "group", "name": "Research", "pos": [300.0, 0.0]},
- {"id": "t2", "kind": "tab", "url": "about:blank", "engine": "webview2", "group": "g", "pos": [0.0, 0.0]},
- {"id": "n1", "kind": "note", "text": "a note", "pos": [-300.0, 0.0]}
+ {"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
+ {"id": "g", "type": "application/vnd.manifold.group", "name": "Research", "pos": [300.0, 0.0]},
+ {"id": "t2", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "group": "g", "pos": [0.0, 0.0]},
+ {"id": "n1", "type": "text/markdown", "text": "a note", "pos": [-300.0, 0.0]}
 ]}
 EOF
 "$exe" --import-json "$(w "$work/seed.json")" --out "$(w "$profile/manifold/session.mnf")" >/dev/null
@@ -544,8 +544,8 @@ if has engine-states-picker || has engine-states-settings || has engine-install-
         eng_data="$profile/manifold/manifold/data/engine-hosts"; mkdir -p "$eng_data"
         cat >"$work/seed-eng.json" <<SEED
 {"nodes": [
- {"id": "t1", "kind": "tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
- {"id": "t3", "kind": "tab", "url": "https://example.com/", "engine": "cef", "pos": [300.0, 0.0]}
+ {"id": "t1", "type": "application/vnd.manifold.tab", "url": "about:blank", "engine": "webview2", "pos": [0.0, 0.0]},
+ {"id": "t3", "type": "application/vnd.manifold.tab", "url": "https://example.com/", "engine": "cef", "pos": [300.0, 0.0]}
 ]}
 SEED
         "$eng/manifold.exe" --import-json "$(w "$work/seed-eng.json")" --out "$(w "$profile/manifold/session.mnf")" >/dev/null

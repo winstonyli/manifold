@@ -137,15 +137,15 @@ wait_agree() { # $1=label $2=a_export_path $3=b_export_path
 echo "=== scenario 1: import + note ==="
 cat >"$out/pair.json" <<'EOF'
 {"nodes": [
- {"id": "g", "kind": "group", "name": "Pair"},
- {"id": "a", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
- {"id": "b", "kind": "tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
+ {"id": "g", "type": "application/vnd.manifold.group", "name": "Pair"},
+ {"id": "a", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [-150.0, 0.0], "group": "g"},
+ {"id": "b", "type": "application/vnd.manifold.tab", "url": "manifold://welcome", "engine": "webview2", "pos": [150.0, 0.0], "group": "g"}]}
 EOF
 sa "IMPORTGROUP $(win "$out/pair.json")"
 sa WAITTABS
 sb NEWNOTE
 wait_agree "scenario 1" "$out/a1.json" "$out/b1.json"
-assert_py has_kinds "$out/a1.json" "note:1" "tab:2"
+assert_py has_kinds "$out/a1.json" "text/markdown:1" "application/vnd.manifold.tab:2"
 echo "scenario 1: ok"
 
 echo "=== scenario 2: compaction mid-run ==="
@@ -154,9 +154,9 @@ echo "=== scenario 2: compaction mid-run ==="
 big="$out/big.json"
 text="$(printf 'x%.0s' $(seq 1 500))"
 {
-    printf '{"nodes": [{"id": "biggroup", "kind": "group", "name": "Big"}'
+    printf '{"nodes": [{"id": "biggroup", "type": "application/vnd.manifold.group", "name": "Big"}'
     for i in $(seq 1 200); do
-        printf ',{"id": "note%d", "kind": "note", "text": "%s", "group": "biggroup"}' "$i" "$text"
+        printf ',{"id": "note%d", "type": "text/markdown", "text": "%s", "group": "biggroup"}' "$i" "$text"
     done
     printf ']}'
 } >"$big"
@@ -170,7 +170,7 @@ wait_agree "scenario 2" "$out/a2.json" "$out/b2.json"
 # >=201: the 200 imported notes plus B's own from this scenario (B's note
 # from scenario 1 is a separate node again already counted at the group
 # level, not as "note" text necessarily, so this is a floor, not exact).
-assert_py has_kinds "$out/a2.json" "note:201"
+assert_py has_kinds "$out/a2.json" "text/markdown:201"
 echo "scenario 2: ok"
 
 echo "=== scenario 3: a url that changes on every load ==="
@@ -292,7 +292,7 @@ echo '{"converted": true}' >"$out/c5.json"
 c5_url="file:///$(cygpath -m "$out/c5.json" | sed 's/ /%20/g')"
 sa "EXPORTSESSION $(win "$out/a5-before.json")"
 wait_file "$out/a5-before.json"
-json_before="$(assert_py count_kind "$out/a5-before.json" json | tr -d '\r')"
+json_before="$(assert_py count_kind "$out/a5-before.json" application/json | tr -d '\r')"
 sa "ADDRESSBAR $c5_url"
 sa "SLEEP 1"
 sa ENTER
@@ -301,13 +301,13 @@ for _ in $(seq 75); do
     tick sa
     sa "EXPORTSESSION $(win "$out/a5.json")"
     wait_file "$out/a5.json"
-    [ "$(assert_py count_kind "$out/a5.json" json | tr -d '\r')" -gt "$json_before" ] && break
+    [ "$(assert_py count_kind "$out/a5.json" application/json | tr -d '\r')" -gt "$json_before" ] && break
     sleep 0.2
 done
 # Time for B to follow the url, load it and convert too, if it's going to.
 sleep 8
 wait_agree "scenario 5" "$out/a5.json" "$out/b5.json"
-json_after="$(assert_py count_kind "$out/a5.json" json | tr -d '\r')"
+json_after="$(assert_py count_kind "$out/a5.json" application/json | tr -d '\r')"
 [ "$json_after" -eq $((json_before + 1)) ] || {
     echo "FAIL: scenario 5: Json nodes went $json_before -> $json_after, want exactly one more"
     exit 1

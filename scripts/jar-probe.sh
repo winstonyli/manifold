@@ -232,7 +232,7 @@ def user(path):
     users = [v[len("PROBE-SESSION-"):] or "default" for v in sids if v.startswith("PROBE-SESSION")]
     return ",".join(users) if users else ("none" if not sids else "other")
 nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
-ids = {n.get("name"): n["id"] for n in nodes if n["kind"] == "jar"}
+ids = {n.get("name"): n["id"] for n in nodes if n["type"] == "application/vnd.manifold.jar"}
 jars = sys.argv[2]
 a = user(os.path.join(jars, ids["Alice"] + ".json")) if "Alice" in ids else "no-jar-node"
 b = user(os.path.join(jars, ids["Bob"] + ".json")) if "Bob" in ids else "no-jar-node"
@@ -280,9 +280,9 @@ if [ "$perjar_ok" = 1 ]; then
   cat >"$out/jarswitch.py" <<'PY'
 import json, sys
 nodes = json.load(open(sys.argv[1], encoding="utf-8"))["nodes"]
-ids = {n.get("name"): n["id"] for n in nodes if n["kind"] == "jar"}
+ids = {n.get("name"): n["id"] for n in nodes if n["type"] == "application/vnd.manifold.jar"}
 name = {v: k for k, v in ids.items()}
-tabs = [n for n in nodes if n["kind"] == "tab"]
+tabs = [n for n in nodes if n["type"] == "application/vnd.manifold.tab"]
 alice = [n for n in tabs if "u=bob" not in n.get("url", "")]
 bob = [n for n in tabs if "u=bob" in n.get("url", "")]
 print(f"alice-tab jar={','.join(name.get(n.get('jar'), 'Default') for n in alice) or 'no-tab'}"

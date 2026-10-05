@@ -2132,12 +2132,10 @@ impl App {
         }
     }
 
-    /// Opens `session.mnf` under a fresh actor. A file that isn't a session
-    /// file this build reads (not one at all, or an older format) is set aside (`Journal::open_or_set_aside`) and a new one
-    /// started, toasting where the old one went; that launch then counts as
-    /// recovered (`store_recovered`), so nothing is pruned against the new,
-    /// empty session. Any other failure is toasted
-    /// and leaves the app running without a store.
+    /// Opens `session.mnf` under a fresh actor. A file that isn't a session file this build reads (not one at all,
+    /// or an older format) is set aside (`Journal::open_or_set_aside`) and a new one started, toasting where the
+    /// old one went; that launch then counts as recovered (`store_recovered`), so nothing is pruned against the
+    /// new, empty session. Any other failure is toasted and leaves the app running without a store.
     fn open_store(&mut self) {
         if let Some(path) = session::store_path() {
             self.open_store_at(&path);
@@ -2157,8 +2155,8 @@ impl App {
                     // against it this launch would delete what the set-aside file still needs.
                     self.store_recovered = true;
                     self.queue_toast(format!(
-                        "The session file wasn't readable; it was kept (with its .prev/.local) as {} and a new one \
-                         started",
+                        "The session file wasn't readable (damaged, or from an older version of manifold); it was kept \
+                         (with its .prev/.local) as {} and a new one started",
                         aside.display()
                     ));
                 }

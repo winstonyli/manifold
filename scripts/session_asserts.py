@@ -26,10 +26,10 @@ def load_nodes(path):
 
 def cmd_has_kinds(args):
     path, specs = args[0], args[1:]
-    counts = Counter(n["kind"] for n in load_nodes(path))
+    counts = Counter(n["type"] for n in load_nodes(path))
     ok = True
     for spec in specs:
-        kind, want = spec.split(":")
+        kind, want = spec.rsplit(":", 1)
         want = int(want)
         got = counts.get(kind, 0)
         if got < want:
@@ -61,7 +61,7 @@ def cmd_has_id(args):
 
 def cmd_count_kind(args):
     path, kind = args
-    print(sum(1 for n in load_nodes(path) if n["kind"] == kind))
+    print(sum(1 for n in load_nodes(path) if n["type"] == kind))
 
 
 COMMANDS = {"has_kinds": cmd_has_kinds, "new_id": cmd_new_id, "has_id": cmd_has_id, "count_kind": cmd_count_kind}

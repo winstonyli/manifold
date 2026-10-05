@@ -168,7 +168,9 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
 
 1. **One spelling of a node's type.** The `type` MIME string replaces the numeric kind code (`KINDS`, `from_code`,
    `name`, `from_name`, `Kind::Unknown(code)`) in the journal, and the JSON export spells it the same way. If size
-   matters, intern it in a per-file type table like the actor table.
+   matters, intern it in a per-file type table like the actor table. Done in plan 2a: `type` is field 19 and the
+   numeric table is gone; Image is stored as `image/png` and Download as `application/octet-stream` until 2c;
+   `FORMAT_VERSION` 2 refuses version-1 files (set aside, not migrated).
 2. **Field lists are row data.** `kind_fields` (`session_sync.rs`) gives nine kinds near-identical lists. The row `fields`
    list appends by layer: `*/*` carries the common fields, file-backed rows add `url` and `path`, `text/markdown` adds
    `text`, and so on. `diff`, `fields_of` and `imported_fields` read the merged list.
@@ -195,7 +197,8 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
 9. **`Create` drops its `kind` slot.** `type` is an ordinary field written at create, so `Create{node, fields}` is
    uniform. "Not yet created" (today `Kind::Unknown(0)`, `Node::placeholder`, and its compaction special case at
    `ops.rs:158`) becomes "has no `type`". Behavior change: unknown types are no longer hidden (`is_live` today rejects
-   `Kind::Unknown`); they show as the generic `*/*` card and keep their raw fields.
+   `Kind::Unknown`); they show as the generic `*/*` card and keep their raw fields. The create-without-kind half is
+   done (2a); showing unknown types is 2c.
 10. **Sync by ops, not by diff (decision for the plan).** Today the app mutates live state and `diff` (with the
     `explicit` set and `keep`) derives ops after the fact. That conflicts with history: an undo transaction needs the
     ops a verb produced, with the verb's label, and a diff has lost both. Two ways to reconcile:
@@ -242,10 +245,21 @@ leaves the app working:
 
 Plan 1 done: 7396c8f (capability table), 0ebad52 (edge table). Plans 2 and 3 are written after it.
 
+Plan 2a done: 8454d59 (type string), 9f82dc5 (version-1 files set aside).
+
+Known consequences of 2a:
+
+- A version-1 session file is set aside as `.unreadable-<secs>` and the next session starts fresh. On a later launch
+  the fresh session names none of that file's fetched content or jars, so `prune_unnamed` / `prune_orphans` may delete
+  them, including the cookie stores of jars the old session named.
+- A named session saved as version 1 makes `read_intact` return None, which turns off content pruning while it exists
+  (safe, but disk use grows).
+- `Node::kind()` re-parses the type register per call (39 non-test callers via `is_live` / `doc.live()`). Cache only
+  if a per-frame path shows it.
+- A `Set` of `type` with empty enc would leave a hidden node that prune keeps. Nothing writes it today; revisit in 2b.
+
 Carry-overs for plan 2:
 
-- Move the MIME constants (`TAB`, `GROUP`, `JSON_LEAF`, `TEXT_MARKDOWN`) out of `caps/bridge.rs` (to `caps.rs` or
-  `caps/types.rs`) so deleting the bridge is clean.
 - Sites still hard-coding the container rule, to move onto the edge table: `card.rs` `card_view` members collection
   (~929), `graph_ui.rs` EnterGroup on activate (~1646) and the "Enter" hint (~713), `main.rs` `destroy_node` Group arm
   (~2620), `session_sync.rs` groups-before-members load order (~796, ~1105, ~1543-1549), `del_verb` (`card.rs` ~521).

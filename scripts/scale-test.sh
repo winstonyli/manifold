@@ -61,7 +61,7 @@ for n in "$@"; do
         printf '{"nodes": ['
         for i in $(seq 1 "$n"); do
             [ "$i" -gt 1 ] && printf ','
-            printf '{"id": "t%d", "kind": "tab", "url": "http://127.0.0.1:%s/p?i=%d", "engine": "%s", "pos": [%d.0, %d.0]}' \
+            printf '{"id": "t%d", "type": "application/vnd.manifold.tab", "url": "http://127.0.0.1:%s/p?i=%d", "engine": "%s", "pos": [%d.0, %d.0]}' \
                 "$i" "$port" "$i" "$engine" $((i % 10 * 300)) $((i / 10 * 200))
         done
         printf ']}'
