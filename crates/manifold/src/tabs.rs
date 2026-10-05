@@ -65,6 +65,32 @@ pub(crate) fn crashes_too_often(times: &mut Vec<std::time::Instant>, now: std::t
     times.len() >= CRASH_LIMIT
 }
 
+/// What to do about a tab whose engine reported `Crashed { reason }` at `now`.
+#[derive(Debug, PartialEq)]
+pub(crate) enum AfterCrash<'a> {
+    Restart,
+    /// Leave a failed card: the host speaks another protocol version, or keeps crashing (`crashes_too_often`).
+    GiveUp,
+    /// Leave a failed card naming why: the host could not start at all (its reason began with
+    /// `ipc_protocol::HOST_FATAL`), so a respawn would fail the same way.
+    CannotStart(&'a str),
+}
+
+/// Decides for `Crashed { reason }` at `now`; `times` is the tab's recent crashes, recorded only when it counts.
+pub(crate) fn after_crash<'a>(
+    reason: &'a str,
+    times: &mut Vec<std::time::Instant>,
+    now: std::time::Instant,
+) -> AfterCrash<'a> {
+    if let Some(why) = reason.strip_prefix(ipc_protocol::HOST_FATAL) {
+        return AfterCrash::CannotStart(why.trim());
+    }
+    if reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH) || crashes_too_often(times, now) {
+        return AfterCrash::GiveUp;
+    }
+    AfterCrash::Restart
+}
+
 /// `tab` as an unloaded card in `state`, keeping what a reopen needs.
 fn unloaded_from(tab: &TabPayload, state: UnloadedState) -> UnloadedTabPayload {
     UnloadedTabPayload {
@@ -823,10 +849,11 @@ impl App {
     /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
     /// another protocol version, becomes a failed card: the reason is its
     /// tooltip, and opening it tries again. Respawning would only loop.
-    pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str) {
+    /// `cannot_start`: the host could not start at all (`AfterCrash::CannotStart`), and the toast says why.
+    pub(crate) fn leave_crashed_card(&mut self, id: &str, reason: &str, cannot_start: bool) {
         let Some(node) = self.nodes.get_mut(id) else { return };
         let NodePayload::Tab(tab) = &node.payload else { return };
-        let url = tab.url.clone();
+        let (url, kind) = (tab.url.clone(), tab.tab.kind);
         // Replacing the payload drops the `EngineTab`, which reaps the dead host.
         node.payload = NodePayload::Unloaded(unloaded_from(tab, UnloadedState::Failed(reason.to_string())));
         if let Some(gpu) = &mut self.gpu {
@@ -843,7 +870,11 @@ impl App {
             self.close_split();
         }
         self.tab_crashes.remove(id);
-        self.queue_toast(format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url)));
+        self.queue_toast(if cannot_start {
+            format!("Couldn't start {} for {}: {reason}", engine_label(kind), Self::toast_url(&url))
+        } else {
+            format!("Tab keeps crashing, left closed: {}", Self::toast_url(&url))
+        });
         self.save_session();
     }
 
@@ -1162,6 +1193,23 @@ mod crash_tests {
         assert!(!crashes_too_often(&mut times, t0));
         assert!(!crashes_too_often(&mut times, t0 + Duration::from_secs(1)));
         assert!(crashes_too_often(&mut times, t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_host_that_cannot_start_is_not_restarted_and_says_why() {
+        let t0 = Instant::now();
+        let mut times = Vec::new();
+        let why = "WebView2 couldn't create its environment (0x80070005: Access is denied.)";
+        let fatal = format!("{}{why}", ipc_protocol::HOST_FATAL);
+        assert_eq!(after_crash(&fatal, &mut times, t0), AfterCrash::CannotStart(why));
+        assert!(times.is_empty(), "not counted as a crash");
+        let mismatch = format!("{}: host 2, engine 3", ipc_protocol::PROTOCOL_MISMATCH);
+        assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::GiveUp);
+        // A plain crash still restarts, up to the cap.
+        let lost = "engine-host connection lost";
+        assert_eq!(after_crash(lost, &mut times, t0), AfterCrash::Restart);
+        assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(1)), AfterCrash::Restart);
+        assert_eq!(after_crash(lost, &mut times, t0 + Duration::from_secs(2)), AfterCrash::GiveUp);
     }
 
     #[test]

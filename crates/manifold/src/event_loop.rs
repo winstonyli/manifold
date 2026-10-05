@@ -3,7 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
-use crate::tabs::Held;
+use crate::tabs::{AfterCrash, Held};
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -1265,15 +1265,23 @@ impl App {
                 }) else {
                     return false;
                 };
-                // A stale engine binary (protocol mismatch) would fail the same
-                // way again, and a page or install that crashes on every start
-                // would loop forever; either is left as a failed card instead.
-                let mismatch = reason.starts_with(ipc_protocol::PROTOCOL_MISMATCH);
+                // A stale engine binary (protocol mismatch) or a host that cannot
+                // start would fail the same way again, and a page or install that
+                // crashes on every start would loop forever; each is left as a
+                // failed card instead.
                 let times = self.tab_crashes.entry(tab_id.to_string()).or_default();
-                if mismatch || crate::tabs::crashes_too_often(times, std::time::Instant::now()) {
-                    eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
-                    self.leave_crashed_card(tab_id, &reason);
-                    return false;
+                match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
+                    AfterCrash::Restart => {}
+                    AfterCrash::GiveUp => {
+                        eprintln!("engine-host for {tab_id} crashed ({reason}); not restarting");
+                        self.leave_crashed_card(tab_id, &reason, false);
+                        return false;
+                    }
+                    AfterCrash::CannotStart(why) => {
+                        eprintln!("engine-host for {tab_id} could not start ({why}); not restarting");
+                        self.leave_crashed_card(tab_id, why, true);
+                        return false;
+                    }
                 }
                 let url = &spawn.url;
                 // The origin only (`redacted_url`): a path or query can carry a token.
