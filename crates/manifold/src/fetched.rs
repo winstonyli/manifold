@@ -379,12 +379,13 @@ impl App {
     }
 
     /// A tab at the node's source URL beside it, which stays a tab on its
-    /// first load (`skip_convert`), e.g. to read a PDF past page 1.
+    /// first load (`skip_convert`), e.g. to read a PDF past page 1. The tab
+    /// is opened from the node (`parent`), so the two stay linked.
     pub(crate) fn open_as_tab(&mut self, id: &str) {
         let Some(node) = self.nodes.get(id) else { return };
         let Some(url) = node.source_url().map(str::to_string) else { return };
         let (pos, group) = (node.pos + egui::vec2(40.0, 40.0), node.group.clone());
-        let tab = self.spawn_tab_at(&url, pos, group);
+        let tab = self.spawn_tab_at(&url, pos, group, Some(id.to_string()));
         self.skip_convert.insert(tab, false);
     }
 
@@ -427,7 +428,7 @@ impl App {
                         return Ok(());
                     }
                     K::Page => {
-                        self.spawn_tab_at(&content::path_file_url(&path), pos, group);
+                        self.spawn_tab_at(&content::path_file_url(&path), pos, group, None);
                         return Ok(());
                     }
                     K::Other => {
@@ -524,14 +525,19 @@ impl App {
     /// Converts a tab whose page is content the table maps to a node (see
     /// `ipc_protocol::EngineToHost::RedirectableContent`): `body` is what
     /// `redirect_fetch` saved, inserted through `insert_content` at the
-    /// tab's place. Only once that succeeds does the tab go, through
-    /// `remove_tab` (a close that isn't remembered, clearing every
-    /// reference to it). A failed insert is toasted and the tab stays.
+    /// tab's place, opened from where the tab was (its `parent`). Only once
+    /// that succeeds does the tab go, through `remove_tab` (a close that
+    /// isn't remembered, clearing every reference to it). A failed insert
+    /// is toasted and the tab stays.
     pub(crate) fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
-        let Some((group, pos)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos)) else {
+        let Some((group, pos, parent)) = self.nodes.get(tab_id).map(|n| (n.group.clone(), n.pos, n.parent.clone()))
+        else {
             return;
         };
-        if self.insert_content(ContentSource::Web { url, body }, node_id, pos, group).is_ok() {
+        if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.parent = parent;
+            }
             self.remove_tab(tab_id);
             self.save_session();
         }
@@ -1119,7 +1125,23 @@ mod tests {
         assert_eq!(app.test_spawns.len(), 1);
         let tab_id = app.test_spawns[0].0.id.clone();
         assert_eq!(app.test_spawns[0].0.url, "https://x.test/a.png");
+        assert_eq!(app.test_spawns[0].0.parent.as_deref(), Some("n"), "opened from the node");
         assert_eq!(app.skip_convert.get(&tab_id), Some(&false));
+    }
+
+    /// Closing a node another node was opened from links that one to the closed node's own parent, as closing a
+    /// tab does for its children.
+    #[test]
+    fn closing_a_content_node_moves_what_it_opened_up() {
+        use crate::session_sync::tests::{add, sleeping_tab};
+        let mut app = App::default();
+        let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+        let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
+        app.nodes.get_mut(&note).unwrap().parent = Some(opener.clone());
+        let tab = add(&mut app, sleeping_tab("https://x.test/from-note", "T"));
+        app.nodes.get_mut(&tab).unwrap().parent = Some(note.clone());
+        app.close_node(&note);
+        assert_eq!(app.nodes[&tab].parent.as_deref(), Some(opener.as_str()));
     }
 
     /// The engine message arms need a live engine, so the entry's
@@ -1159,9 +1181,11 @@ mod tests {
 
         let dir = crate::store::testutil::temp_dir("redirect_convert");
         let mut app = App::default();
+        let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
         let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
         app.nodes.get_mut(&tab).unwrap().pos = egui::vec2(5.0, 6.0);
         app.nodes.get_mut(&tab).unwrap().group = Some("g".into());
+        app.nodes.get_mut(&tab).unwrap().parent = Some(opener.clone());
         let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
         app.nodes.get_mut(&child).unwrap().parent = Some(tab.clone());
 
@@ -1172,6 +1196,7 @@ mod tests {
         let node = &app.nodes["n"];
         assert_eq!((node.pos, node.group.as_deref()), (egui::vec2(5.0, 6.0), Some("g")));
         assert_eq!(node.source_url(), Some("https://x.test/a.json"));
+        assert_eq!(node.parent.as_deref(), Some(opener.as_str()), "still opened from where the tab was");
         assert!(app.nodes.values().all(|n| n.parent.as_deref() != Some(tab.as_str())), "children moved up");
     }
 

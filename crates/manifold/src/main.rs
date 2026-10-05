@@ -2177,8 +2177,15 @@ impl App {
     /// deleted it, or its group was closed) leaves to that node's group,
     /// as `dissolve_group` does for a group: `current_group` must never
     /// name a node that's gone, or `insertion_group` would orphan new nodes.
+    ///
+    /// What it opened (a tab from Open as Tab) is then opened from its own
+    /// `parent`, as `remove_tab` does for a tab's children.
     fn remove_node(&mut self, id: &str) {
         let removed = self.nodes.remove(id);
+        let parent = removed.as_ref().and_then(|n| n.parent.clone());
+        for node in self.nodes.values_mut().filter(|n| n.parent.as_deref() == Some(id)) {
+            node.parent = parent.clone();
+        }
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
             self.pdf_renderer.cancel(id);
         }

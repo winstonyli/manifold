@@ -827,6 +827,72 @@ fn a_download_without_a_url_restores_without_one() {
     assert_eq!(restored.nodes[&id].as_download().map(|d| d.url.clone()), Some(None));
 }
 
+/// A download's "opened from" link (the tab it came from) and a content node's (the tab it was) survive a
+/// restart, like a tab's.
+#[test]
+fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
+    let path = temp_dir("parent-kinds").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
+    let download = DownloadPayload {
+        path: "f.bin".into(),
+        url: None,
+        bytes_received: 0,
+        total_bytes: None,
+        completed: true,
+        failed: false,
+    };
+    let download = add(&mut app, NodePayload::Download(download));
+    let note = add(&mut app, NodePayload::Note(NotePayload { text: "hi".into(), editing: false, url: None }));
+    let tab = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
+    for id in [&download, &note, &tab] {
+        app.nodes.get_mut(id).unwrap().parent = Some(opener.clone());
+    }
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &download, field::PARENT), FieldValue::Id(Some(opener.parse().unwrap())));
+    app.close_store();
+    let mut restored = app_on(&path, 2);
+    assert!(restored.restore_session());
+    for id in [&download, &note, &tab] {
+        assert_eq!(restored.nodes[id].parent.as_deref(), Some(opener.as_str()), "{id}");
+    }
+    // Another replica relinking a download applies here too.
+    let mut other = Journal::open(&path, ActorId(3)).unwrap();
+    remote_set(&mut other, &download, field::PARENT, FieldValue::Id(Some(tab.parse().unwrap())));
+    assert!(restored.save_session());
+    assert_eq!(restored.nodes[&download].parent.as_deref(), Some(tab.as_str()));
+}
+
+/// A session saved by a build that wrote no `parent` for a download loads unchanged: no link, nothing lost.
+#[test]
+fn an_older_sessions_download_without_a_parent_loads_unchanged() {
+    let path = temp_dir("parent-old").join("session.mnf");
+    let node = NodeId { actor: ActorId(2), counter: 1 };
+    {
+        let mut old = Journal::open(&path, ActorId(2)).unwrap();
+        let fields = [
+            (field::GROUP, FieldValue::Id(None)),
+            (field::POS, FieldValue::Pos(1.0, 2.0)),
+            (field::COLOR, FieldValue::Color(None)),
+            (field::URL, FieldValue::Str("https://x.test/f.bin".into())),
+            (field::PATH, FieldValue::Str("f.bin".into())),
+        ]
+        .iter()
+        .flat_map(|(no, value)| encode_field(*no, value))
+        .collect();
+        old.begin().unwrap().commit(vec![OpBody::Create { node, kind: Kind::Download, fields }]).unwrap();
+    }
+    let mut app = app_on(&path, 1);
+    assert!(app.restore_session());
+    let restored = &app.nodes[&node.to_string()];
+    assert_eq!(restored.parent, None);
+    assert_eq!(restored.as_download().and_then(|d| d.url.as_deref()), Some("https://x.test/f.bin"));
+    assert_eq!(restored.pos, egui::vec2(1.0, 2.0));
+    // No link encodes as the absent register, so a save has nothing to write back.
+    let ops = diff(app.journal.as_ref().unwrap().doc(), &app.shared_nodes(), &BTreeSet::new(), &BTreeSet::new());
+    assert!(ops.is_empty(), "{ops:?}");
+}
+
 #[test]
 fn path_is_explicit() {
     assert!(crate::store::model::field_def(field::PATH).unwrap().explicit);

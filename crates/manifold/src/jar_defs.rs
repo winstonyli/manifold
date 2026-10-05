@@ -829,7 +829,7 @@ mod tests {
         app.duplicate_tab(&opener);
         let (spawn, _) = app.test_spawns.last().unwrap();
         assert_eq!(spawn.carry.jar, JarChoice { jar: Some(home), set: true }, "a duplicate copies too");
-        app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()));
+        app.spawn_tab_at("https://dropped/", egui::Vec2::ZERO, Some(g.clone()), None);
         let (spawn, _) = app.test_spawns.last().unwrap();
         assert_eq!(spawn.carry.jar, JarChoice { jar: Some(work), set: false }, "a dropped page inherits");
     }

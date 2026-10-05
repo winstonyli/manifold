@@ -1134,8 +1134,14 @@ impl App {
         self.spawn_tab_async(spawn);
     }
 
-    /// A new tab at `url`, placed at `pos` in `group`. Returns its id.
-    pub(crate) fn spawn_tab_at(&mut self, url: &str, pos: egui::Vec2, group: Option<String>) -> String {
+    /// A new tab at `url`, placed at `pos` in `group`, opened from `parent` (if any). Returns its id.
+    pub(crate) fn spawn_tab_at(
+        &mut self,
+        url: &str,
+        pos: egui::Vec2,
+        group: Option<String>,
+        parent: Option<String>,
+    ) -> String {
         let id = self.alloc_node_id();
         let (kind, zoom) = (self.settings.default_starting_engine, self.settings.zoom_factor);
         // Cleared at the start of this spawn attempt too -- see
@@ -1143,7 +1149,7 @@ impl App {
         self.tab_spawn_error = None;
         let mut spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, SpawnPurpose::New, zoom);
         spawn.carry.jar = self.new_tab_jar(group.as_deref());
-        self.spawn_tab_async(TabSpawn { group, ..spawn });
+        self.spawn_tab_async(TabSpawn { group, parent, ..spawn });
         id
     }
 

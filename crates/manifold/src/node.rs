@@ -456,9 +456,12 @@ pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState
 /// migration this is a step of.
 pub(crate) struct GraphNode {
     /// The "opened from" edge for a tab (which tab spawned it, making the
-    /// tab collection a forest for Graph view), or, for a download, the tab
-    /// it was downloaded from. `None` for a root node, and always `None`
-    /// for a group (never "opened from").
+    /// tab collection a forest for Graph view); for a download, the tab
+    /// it was downloaded from; for content a tab became, that tab's own
+    /// parent; for a tab opened with Open as Tab, the node it came from.
+    /// Saved for tabs, downloads and content (`session_sync::kind_fields`).
+    /// `None` for a root node, and always `None` for a group (never
+    /// "opened from").
     pub(crate) parent: Option<String>,
     /// Which group's subgraph this node is shown in -- `None` at the top
     /// level. Groups nest, so a group node has one too; see

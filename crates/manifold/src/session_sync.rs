@@ -43,16 +43,18 @@ pub(crate) struct LocalUnread {
 /// A node's shared fields by number: every field of its kind but `group`.
 pub(crate) type Fields = BTreeMap<u32, FieldValue>;
 
-/// The fields each kind carries, `group` aside (spec, "The shared document").
+/// The fields each kind carries, `group` aside (spec, "The shared document"). `parent` ("opened from") is on
+/// every kind a page can make: a tab, a download, and content a tab became. Older builds don't write it for the
+/// non-tab kinds, but keep it (`Node` holds every register, and `diff` only writes the fields listed here).
 pub(crate) fn kind_fields(kind: Kind) -> &'static [u32] {
     use field::*;
     match kind {
         Kind::Tab => &[POS, COLOR, PARENT, URL, ENGINE, PINNED, JAR, JAR_SET],
         Kind::Group => &[POS, COLOR, NAME, FROM_JSON, DEFAULT_JAR],
-        Kind::Note => &[POS, COLOR, URL, TEXT],
-        Kind::Image | Kind::Pdf => &[POS, COLOR, URL, PATH],
-        Kind::Json => &[POS, COLOR, URL, PATH, VIEW],
-        Kind::Download => &[POS, COLOR, URL, PATH],
+        Kind::Note => &[POS, COLOR, PARENT, URL, TEXT],
+        Kind::Image | Kind::Pdf => &[POS, COLOR, PARENT, URL, PATH],
+        Kind::Json => &[POS, COLOR, PARENT, URL, PATH, VIEW],
+        Kind::Download => &[POS, COLOR, PARENT, URL, PATH],
         Kind::JsonLeaf => &[POS, COLOR, PATH, KEY, VALUE],
         Kind::Jar => &[COLOR, NAME, EPHEMERAL],
         Kind::Unknown(_) => &[],
@@ -415,6 +417,9 @@ impl App {
                     }
                 }
             };
+            if kind_fields(kind).contains(&field::PARENT) {
+                fields.insert(field::PARENT, FieldValue::Id(parse_id(&node.parent)));
+            }
             debug_assert_eq!(fields.keys().copied().collect::<Vec<_>>(), {
                 let mut want = kind_fields(kind).to_vec();
                 want.sort();
@@ -479,7 +484,7 @@ impl App {
         let color = fields.get(&field::COLOR).and_then(color_of);
         let now = Shared { kind, group: group.as_deref().and_then(|g| g.parse().ok()), fields: fields.clone() };
         let seen = self.last_shared.insert(id.clone(), now.clone());
-        if self.update_live_node(&id, kind, fields, group.clone(), pos, color, &seen, &now) {
+        if self.update_live_node(&id, fields, group.clone(), pos, color, &seen, &now) {
             return;
         }
         self.insert_materialized(id, kind, fields, group, local);
@@ -491,7 +496,6 @@ impl App {
     fn update_live_node(
         &mut self,
         id: &str,
-        kind: Kind,
         fields: &Fields,
         group: Option<String>,
         pos: egui::Vec2,
@@ -513,7 +517,7 @@ impl App {
             node.pos = pos;
             node.vel = egui::Vec2::ZERO;
         }
-        if kind == Kind::Tab && changed(field::PARENT) {
+        if changed(field::PARENT) {
             node.parent = id_of(fields, field::PARENT);
         }
         let mut swap = None;
@@ -657,17 +661,13 @@ impl App {
                 let shared = str_of(fields, field::URL);
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
-                let (kind, pinned, parent) =
-                    (engine_field(fields), bool_of(fields, field::PINNED), id_of(fields, field::PARENT));
+                let (kind, pinned) = (engine_field(fields), bool_of(fields, field::PINNED));
                 // Title, mute and zoom come from personal state (`apply_local`).
                 let zoom_factor = self.settings.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
                 let jar = jar_choice_of(fields);
                 let payload = UnloadedTabPayload { url, title, kind, pinned, muted, zoom_factor, state, jar };
                 self.insert_placeholder_node(id.clone(), pos, NodePayload::Unloaded(payload));
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.parent = parent;
-                }
             }
             Kind::Group => {
                 let payload = GroupPayload {
@@ -753,6 +753,7 @@ impl App {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.group = group;
             node.color = color;
+            node.parent = id_of(fields, field::PARENT);
             if let Some(url) = node.source_url_mut() {
                 *url = url_of(fields);
             }
