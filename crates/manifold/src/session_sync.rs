@@ -829,7 +829,7 @@ impl App {
         let parent = self.mirror.parent(id).map(str::to_owned);
         let children: Vec<String> = self.children_of(id).map(str::to_owned).collect();
         for child in children {
-            self.edit_parent(&child, parent.clone());
+            self.follow_remote_parent(&child, parent.clone());
         }
         if is_group {
             // A change waiting for a spawn may name this group too.
@@ -1012,6 +1012,27 @@ impl App {
         let group = self.mirror.group(id).map(str::to_owned);
         let up = group.as_deref().and_then(|g| self.mirror.group(g)).map(str::to_owned);
         self.edit_group(id, up);
+    }
+
+    /// A remote removal's cascade: the document already shows `id`'s new parent (a node only this replica has
+    /// carries it in its own `Create`), so only the mirror changes; queuing it would revert a concurrent remote
+    /// re-parent. A local edit still pending for the link is rewritten instead, so it keeps winning.
+    pub(crate) fn follow_remote_parent(&mut self, id: &str, parent: Option<String>) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.pending.contains_key(&(node, field::PARENT))) {
+            self.edit_parent(id, parent);
+        } else {
+            self.mirror.set_parent(id, parent);
+        }
+    }
+
+    /// `follow_remote_parent` for the group: a remote group delete's members move up in the mirror only, so a
+    /// concurrent remote merge or move of them stands.
+    pub(crate) fn follow_remote_group(&mut self, id: &str, group: Option<String>) {
+        if id.parse::<NodeId>().is_ok_and(|node| self.pending_moves.contains_key(&node)) {
+            self.edit_group(id, group);
+        } else {
+            self.mirror.set_group(id, group);
+        }
     }
 
     /// Every node whose mirror parent is `id`.

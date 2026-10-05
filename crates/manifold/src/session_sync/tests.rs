@@ -2587,8 +2587,81 @@ fn dissolving_a_group_moves_members_up_and_saves() {
     app.edit_group(&inner, Some(outer.clone()));
     app.edit_group(&t, Some(inner.clone()));
     assert!(app.save_session());
-    app.dissolve_group_quietly(&inner);
+    app.dissolve_group(&inner);
     assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
     assert!(app.save_session());
     assert_eq!(app.journal.as_ref().unwrap().doc().effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+}
+
+/// Another replica merges G into T (`merge_groups`: `Delete G` and `Move(M, T)`). Applying G's delete first must not
+/// queue a move of M that reverts the merge: the remote cascade only updates the mirror.
+#[test]
+fn a_remote_merge_is_not_reverted_by_the_dissolve_it_triggers() {
+    let path = temp_dir("group-remote-merge").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let t = add(&mut app, NodePayload::Group(GroupPayload::named("T")));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    assert!(g.parse::<NodeId>().unwrap() < m.parse::<NodeId>().unwrap(), "G's delete is applied before M's move");
+    app.edit_group(&m, Some(g.clone()));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let merge = vec![
+        OpBody::Delete { node: g.parse().unwrap() },
+        OpBody::Move { node: m.parse().unwrap(), group: Some(t.parse().unwrap()) },
+    ];
+    other.begin().unwrap().commit(merge).unwrap();
+    for _ in 0..2 {
+        assert!(app.save_session());
+        assert_eq!(app.mirror.group(&m), Some(t.as_str()));
+        let doc = app.journal.as_ref().unwrap().doc();
+        assert_eq!(doc.effective_group(m.parse().unwrap()), Some(t.parse().unwrap()));
+    }
+}
+
+/// Another replica deletes P and re-parents P's child C to A. Applying P's delete first must not queue a parent edit
+/// of C that reverts the re-parent.
+#[test]
+fn a_remote_reparent_is_not_reverted_by_the_removal_it_races() {
+    let path = temp_dir("parent-remote-race").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let a = add(&mut app, sleeping_tab("https://a/", ""));
+    let p = add(&mut app, sleeping_tab("https://p/", ""));
+    let c = add(&mut app, sleeping_tab("https://c/", ""));
+    app.edit_parent(&c, Some(p.clone()));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let ops = vec![
+        OpBody::Delete { node: p.parse().unwrap() },
+        OpBody::Set {
+            node: c.parse().unwrap(),
+            field: field::PARENT,
+            enc: encode_field(field::PARENT, &FieldValue::Id(Some(a.parse().unwrap()))),
+        },
+    ];
+    other.begin().unwrap().commit(ops).unwrap();
+    for _ in 0..2 {
+        assert!(app.save_session());
+        assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+        assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+    }
+}
+
+/// A local move into a group another replica then deletes still commits, to the deleted group's own group.
+#[test]
+fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
+    let path = temp_dir("group-pending-remote-delete").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    app.edit_group(&g, Some(outer.clone()));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
+    app.edit_group(&m, Some(g.clone()));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&m), Some(outer.as_str()));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(m.parse().unwrap()), Some(outer.parse().unwrap()));
 }

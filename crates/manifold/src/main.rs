@@ -2345,18 +2345,28 @@ impl App {
     ///
     /// A local dissolve: unset tabs among the members re-snapshot their jar from the new level (deviation 12).
     fn dissolve_group(&mut self, id: &str) {
-        for member in self.dissolve_group_quietly(id) {
+        for member in self.dissolve_members(id, false) {
             self.refollow(&member);
         }
     }
 
     /// `dissolve_group` without the jar re-snapshot, for a remote delete: the remote device's own refollow arrives as
-    /// ordinary tab edits (spec "Inheritance"). Returns the members moved.
-    fn dissolve_group_quietly(&mut self, id: &str) -> Vec<String> {
+    /// ordinary tab edits (spec "Inheritance"). The members move up in the mirror only (`follow_remote_group`).
+    fn dissolve_group_quietly(&mut self, id: &str) {
+        self.dissolve_members(id, true);
+    }
+
+    /// Moves group `id`'s members to its own group and removes it; `remote` for another replica's delete. Returns
+    /// the members moved.
+    fn dissolve_members(&mut self, id: &str, remote: bool) -> Vec<String> {
         let parent = self.mirror.group(id).filter(|_| self.nodes.contains_key(id)).map(str::to_owned);
         let members: Vec<String> = self.members_of(id).map(str::to_owned).collect();
         for member in &members {
-            self.edit_group(member, parent.clone());
+            if remote {
+                self.follow_remote_group(member, parent.clone());
+            } else {
+                self.edit_group(member, parent.clone());
+            }
         }
         self.nodes.remove(id);
         self.node_order.retain(|g| g != id);
