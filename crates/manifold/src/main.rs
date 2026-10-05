@@ -84,6 +84,7 @@ use ipc_protocol::{
 };
 use json_level::{JsonEdit, JsonLevel};
 use level::{EdgeCurve, LevelItem, LevelItemKind};
+use mirror::Carried;
 use node::*;
 use popups::*;
 use process_manager::{EngineKind, EngineTab};
@@ -795,15 +796,8 @@ impl TabSpawn {
     }
 
     /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
-    /// the graph and its `TabCarry` (`color` and `pinned` are the mirror's). `None` if `node` isn't a tab.
-    fn respawn(
-        id: &str,
-        node: &GraphNode,
-        color: Option<egui::Color32>,
-        pinned: bool,
-        kind: EngineKind,
-        url: String,
-    ) -> Option<Self> {
+    /// the graph and its `TabCarry` (`carried` is the mirror's). `None` if `node` isn't a tab.
+    fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: EngineKind, url: String) -> Option<Self> {
         let tab = node.as_tab()?;
         Some(TabSpawn {
             id: id.to_string(),
@@ -815,8 +809,8 @@ impl TabSpawn {
             vel: node.vel,
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
-                pinned,
-                color,
+                pinned: carried.pinned,
+                color: carried.color,
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,
@@ -2441,7 +2435,7 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let (color, pinned) = (self.mirror.color(id), self.mirror.pinned(id));
+        let Carried { color, pinned } = self.mirror.carried(id);
         let Some(node) = self.nodes.get_mut(id) else { return };
         let (parent, group, pos) = (node.parent.clone(), node.group.clone(), node.pos);
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };

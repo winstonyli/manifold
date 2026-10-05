@@ -369,15 +369,10 @@ impl App {
         // this one function.
         let (parent, group, pos, color, pinned, muted, carry_jar) = if self.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
-                Some((card, tab)) => (
-                    card.parent.clone(),
-                    card.group.clone(),
-                    card.pos,
-                    self.mirror.color(&id),
-                    self.mirror.pinned(&id),
-                    tab.muted,
-                    tab.jar,
-                ),
+                Some((card, tab)) => {
+                    let Carried { color, pinned } = self.mirror.carried(&id);
+                    (card.parent.clone(), card.group.clone(), card.pos, color, pinned, tab.muted, tab.jar)
+                }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
                 // actually deletes it -- without this, a save taken while
@@ -445,10 +440,7 @@ impl App {
                         }),
                     },
                 );
-                self.mirror.init(
-                    &id,
-                    [(field::COLOR, session_sync::color_value(color)), (field::PINNED, FieldValue::Bool(pinned))],
-                );
+                self.mirror.seed(&id, &Carried { color, pinned });
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
                 }
@@ -564,10 +556,7 @@ impl App {
                     let failed = UnloadedTabPayload { url, title, kind, muted, zoom_factor, state, jar: carry_jar };
                     let payload = NodePayload::Unloaded(failed);
                     self.nodes.insert(id.clone(), GraphNode { parent, group, pos, vel, payload });
-                    self.mirror.init(
-                        &id,
-                        [(field::COLOR, session_sync::color_value(color)), (field::PINNED, FieldValue::Bool(pinned))],
-                    );
+                    self.mirror.seed(&id, &Carried { color, pinned });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }

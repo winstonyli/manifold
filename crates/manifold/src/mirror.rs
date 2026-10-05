@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::session_sync::{color_of, Fields};
+use crate::session_sync::{color_of, color_value, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes.
@@ -56,12 +56,36 @@ impl Mirror {
     pub(crate) fn pinned(&self, id: &str) -> bool {
         matches!(self.get(id, field::PINNED), FieldValue::Bool(true))
     }
+
+    pub(crate) fn carried(&self, id: &str) -> Carried {
+        Carried { color: self.color(id), pinned: self.pinned(id) }
+    }
+
+    /// `init` for everything a tab carries.
+    pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
+        self.init(id, [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))]);
+    }
+}
+
+/// What a tab carries across a respawn or lands with: the mirror's values for it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Carried {
+    pub color: Option<egui::Color32>,
+    pub pinned: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_sync::color_value;
+
+    #[test]
+    fn seed_then_carried_round_trips_and_never_overwrites() {
+        let mut mirror = Mirror::default();
+        mirror.seed("7", &Carried { color: Some(egui::Color32::RED), pinned: true });
+        assert_eq!(mirror.carried("7"), Carried { color: Some(egui::Color32::RED), pinned: true });
+        mirror.seed("7", &Carried { color: None, pinned: false });
+        assert_eq!(mirror.carried("7"), Carried { color: Some(egui::Color32::RED), pinned: true });
+    }
 
     #[test]
     fn an_unknown_node_reads_as_absent() {
