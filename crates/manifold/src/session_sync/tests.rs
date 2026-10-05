@@ -4,7 +4,7 @@ use crate::store::journal::Journal;
 use crate::store::model::{ActorId, DocId, Hlc};
 use crate::store::ops::Op;
 use crate::store::testutil::{temp_dir, XorShift};
-use crate::SpawnPurpose;
+use crate::{NodeAction, SpawnPurpose};
 
 const A: ActorId = ActorId(0xA);
 
@@ -2025,6 +2025,55 @@ fn a_pending_local_color_edit_wins_over_a_remote_edit_of_the_same_field() {
     assert!(app.save_session());
     assert_eq!(app.mirror.color(&note), Some(egui::Color32::BLUE));
     assert_eq!(stored(&app, &note, field::COLOR), blue());
+}
+
+/// The node menu's colour actions (regression guards: they go through `edit_field`).
+#[test]
+fn the_set_color_action_edits_the_mirror_and_the_next_save_stores_it() {
+    let path = temp_dir("menu-set-color").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let ctx = egui::Context::default();
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    app.apply_node_action(&ctx, &note, NodeAction::SetColor(Some(egui::Color32::RED)));
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "the mirror shows it at once");
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), red());
+    app.apply_node_action(&ctx, &note, NodeAction::SetColor(None));
+    assert_eq!(app.mirror.color(&note), None);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
+}
+
+#[test]
+fn the_cycle_color_action_steps_through_the_tag_colors() {
+    use crate::theme::next_tag_color;
+    let path = temp_dir("menu-cycle-color").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let ctx = egui::Context::default();
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    let first = next_tag_color(None);
+    assert!(first.is_some());
+    app.apply_node_action(&ctx, &note, NodeAction::CycleColor);
+    assert_eq!(app.mirror.color(&note), first);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), color_value(first));
+    let second = next_tag_color(first);
+    app.apply_node_action(&ctx, &note, NodeAction::CycleColor);
+    assert_eq!(app.mirror.color(&note), second);
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::COLOR), color_value(second));
+}
+
+#[test]
+fn a_color_action_on_an_unknown_node_changes_nothing() {
+    let mut app = App::default();
+    let ctx = egui::Context::default();
+    app.apply_node_action(&ctx, "ghost", NodeAction::SetColor(Some(egui::Color32::RED)));
+    app.apply_node_action(&ctx, "ghost", NodeAction::CycleColor);
+    assert_eq!(app.mirror.color("ghost"), None);
+    assert!(app.pending.is_empty());
 }
 
 /// A saved node edited, then deleted, before the same save: the delete stands.
