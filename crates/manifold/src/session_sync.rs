@@ -83,7 +83,7 @@ pub(crate) struct Shared {
 
 /// A document node's fields for its kind, shaped like `Shared::fields`.
 pub(crate) fn fields_of(node: &Node) -> Fields {
-    kind_fields(node.kind).iter().map(|&no| (no, node.get(no))).collect()
+    kind_fields(node.kind()).iter().map(|&no| (no, node.get(no))).collect()
 }
 
 pub(crate) fn color_value(color: Option<egui::Color32>) -> FieldValue {
@@ -775,7 +775,7 @@ impl App {
             .iter()
             .map(|&id| {
                 let live = doc.nodes.get(&id).filter(|n| n.is_live());
-                (id, live.map(|n| (n.kind, fields_of(n), doc.effective_group(id))))
+                (id, live.map(|n| (n.kind(), fields_of(n), doc.effective_group(id))))
             })
             .collect()
     }
@@ -1045,7 +1045,7 @@ impl App {
                         for &id in ids {
                             let Some(node) = doc.nodes.get(&id).filter(|n| n.is_live()) else { continue };
                             let seen =
-                                Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+                                Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
                             self.last_shared.insert(id.to_string(), seen);
                         }
                     }
@@ -1077,7 +1077,7 @@ impl App {
         let Some(journal) = self.journal.as_ref() else { return false };
         let doc = journal.doc();
         let mut nodes: Vec<(NodeId, Kind, Fields, Option<NodeId>)> =
-            doc.live().map(|(id, n)| (id, n.kind, fields_of(n), doc.effective_group(id))).collect();
+            doc.live().map(|(id, n)| (id, n.kind(), fields_of(n), doc.effective_group(id))).collect();
         self.take_store_recovery();
         // Contract: `None` (no file, another document's, or a newer format
         // version) or a damaged file is a fresh start, same as a session

@@ -403,9 +403,14 @@ impl Node {
         Node { kind: Kind::Unknown(0), fields: BTreeMap::new(), group: None, deleted: false }
     }
 
+    /// What kind of node this is.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
     /// Shown in the graph: created, not deleted, and of a kind this build knows.
     pub fn is_live(&self) -> bool {
-        !self.deleted && !matches!(self.kind, Kind::Unknown(_))
+        !self.deleted && !matches!(self.kind(), Kind::Unknown(_))
     }
 
     /// Field `no`'s value; its default when unset or undecodable.

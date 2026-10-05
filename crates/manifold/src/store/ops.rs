@@ -155,7 +155,7 @@ impl Doc {
         loop {
             let named: BTreeSet<NodeId> = self.nodes.values().filter_map(|n| n.group).collect();
             let before = self.nodes.len();
-            self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || matches!(n.kind, Kind::Unknown(0))));
+            self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || matches!(n.kind(), Kind::Unknown(0))));
             if self.nodes.len() == before {
                 break;
             }

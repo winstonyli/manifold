@@ -433,8 +433,8 @@ fn snapshot_message(doc: &Doc) -> Vec<u8> {
     for (id, node) in &doc.nodes {
         let mut n = Writer::new();
         n.message(1, &id_message(*id, actors));
-        if node.kind.code() != 0 {
-            n.varint(2, node.kind.code());
+        if node.kind().code() != 0 {
+            n.varint(2, node.kind().code());
         }
         if node.deleted {
             n.varint(3, 1);

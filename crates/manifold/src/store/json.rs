@@ -75,7 +75,7 @@ pub fn node_json(id: &str, kind: Kind, fields: &BTreeMap<u32, FieldValue>, group
 /// `node` as JSON, its group given separately (the effective one).
 fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
     let fields = node.fields.keys().filter(|&&no| field_def(no).is_some()).map(|&no| (no, node.get(no))).collect();
-    node_json(&id.to_string(), node.kind, &fields, group)
+    node_json(&id.to_string(), node.kind(), &fields, group)
 }
 
 /// Every live node, in id order, each under its effective group.
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn black_is_a_color_not_the_absence_of_one() {
         let doc = doc_from(HAND_WRITTEN, 1);
-        let (_, group) = doc.live().find(|(_, n)| n.kind == Kind::Group).unwrap();
+        let (_, group) = doc.live().find(|(_, n)| n.kind() == Kind::Group).unwrap();
         assert_eq!(group.get(field::COLOR), FieldValue::Color(Some(0)));
         let json = serde_json::to_value(doc_to_json(&doc)).unwrap();
         assert!(json["nodes"].as_array().unwrap().iter().any(|n| n["color"] == "#000000"));
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn a_group_export_lists_the_group_first_then_its_subtree() {
         let doc = doc_from(HAND_WRITTEN, 1);
-        let (group, _) = doc.live().find(|(_, n)| n.kind == Kind::Group).unwrap();
+        let (group, _) = doc.live().find(|(_, n)| n.kind() == Kind::Group).unwrap();
         let export = subtree_to_json(&doc, group);
         assert_eq!(export.nodes.iter().map(|n| n.kind.as_str()).collect::<Vec<_>>(), ["group", "tab", "tab"]);
         assert!(!export.nodes[0].fields.contains_key("group"));

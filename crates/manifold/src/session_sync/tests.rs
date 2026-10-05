@@ -89,7 +89,7 @@ fn group(name: &str) -> Shared {
 /// What `doc` shows, shaped like `live`.
 fn shown(doc: &Doc) -> BTreeMap<NodeId, Shared> {
     doc.live()
-        .map(|(id, node)| (id, Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) }))
+        .map(|(id, node)| (id, Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) }))
         .collect()
 }
 
@@ -1269,7 +1269,7 @@ fn a_jar_def_is_saved_as_a_jar_node_and_survives_later_saves() {
     app.save_session();
     let doc = app.journal.as_ref().unwrap().doc();
     let node = doc.nodes.get(&jar).filter(|n| n.is_live()).expect("jar node created");
-    assert_eq!(node.kind, Kind::Jar);
+    assert_eq!(node.kind(), Kind::Jar);
     assert_eq!(fields_of(node).get(&field::NAME), Some(&FieldValue::Str("Work".into())));
     app.save_session();
     assert!(app.journal.as_ref().unwrap().doc().nodes[&jar].is_live(), "a second save must not delete it");
@@ -1700,7 +1700,7 @@ fn tabs_still_spawning_at_quit_are_saved() {
     app.close_store();
     drop(app);
     let journal = Journal::open(&path, ActorId(3)).unwrap();
-    let live: Vec<(Kind, FieldValue)> = journal.doc().live().map(|(_, n)| (n.kind, n.get(field::URL))).collect();
+    let live: Vec<(Kind, FieldValue)> = journal.doc().live().map(|(_, n)| (n.kind(), n.get(field::URL))).collect();
     assert_eq!(live, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
 }
 
@@ -1842,7 +1842,7 @@ fn last_shared_matches_the_store_after_every_save() {
     fn check(app: &App, step: &str) {
         let doc = app.journal.as_ref().unwrap().doc();
         for (id, node) in doc.live() {
-            let want = Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+            let want = Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
             assert_eq!(app.last_shared.get(&id.to_string()), Some(&want), "{step}: node {id}");
         }
     }
@@ -1941,7 +1941,7 @@ fn app_save_costs() {
             timed(N, || {
                 for &id in live.keys() {
                     let node = &doc.nodes[&id];
-                    let seen = Shared { kind: node.kind, group: doc.effective_group(id), fields: fields_of(node) };
+                    let seen = Shared { kind: node.kind(), group: doc.effective_group(id), fields: fields_of(node) };
                     std::hint::black_box(seen);
                 }
             }),

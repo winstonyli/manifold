@@ -464,7 +464,7 @@ impl App {
         if !self.may_prune_content() || journal.read_only() || doc.live().next().is_none() {
             return;
         }
-        let in_doc = doc.live().filter(|(_, n)| n.kind == Kind::Jar).map(|(id, _)| id);
+        let in_doc = doc.live().filter(|(_, n)| n.kind() == Kind::Jar).map(|(id, _)| id);
         let keep: BTreeSet<NodeId> = self.jar_defs.keys().copied().chain(in_doc).collect();
         crate::jar::prune_orphans(&dir, &keep);
     }
