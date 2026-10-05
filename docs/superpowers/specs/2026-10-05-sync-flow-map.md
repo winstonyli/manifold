@@ -37,6 +37,12 @@ Node creation funnels: `place_node` (fetched.rs ~65; groups, notes, content, dow
 
 ## After 2b-2
 
-- Links (`group`, `parent`) are written only by `edit_group` and `edit_parent`.
-- Commit order is `diff`, pending `Move`s, pending `Set`s, with targets resolved against the document and this commit.
-- `mirror_remote` takes the effective group and skips a link with a pending edit.
+- Links (`group`, `parent`) live in the mirror. Only `edit_group` and `edit_parent` queue ops for them (`App::pending_moves`, `App::pending`); every local link edit, including local cascades (dissolve, merge, `remove_node`, `remove_tab`), goes through them.
+- The other mirror link writers change the mirror only:
+  - `mirror_remote` (from `materialize`): another replica's effective group and parent, skipping a link with a pending edit.
+  - `follow_remote_group` / `follow_remote_parent`: a remote removal's cascade (`remove_remotely_deleted`, `dissolve_group_quietly`). Mirror only, so a concurrent remote merge, move or re-parent stands; a local edit still pending for the link is rewritten instead, so it keeps winning.
+  - `Mirror::seed`: a landing tab (`seed_landing`) or a new node (`place_node`), only for an id with no entry.
+  - `seed_landing`'s safety net: a new spawn whose group was removed while it was in flight lands in the document's group (nearest one still here), through `follow_remote_group`, never as a queued `Move`.
+  - `save_session`'s post-commit alignment: a pending link whose target the commit wrote as none (Ruling 5) is none in the mirror too.
+- Cascades (`members_of`, `children_of`) also reach a tab mid-respawn: it is out of `nodes` but keeps its mirror entry. A new spawn has no entry until it lands.
+- Commit order is `diff`, pending `Move`s, pending `Set`s, with targets resolved against the document and this commit; `diff` writes a created node's group or parent as none when the same commit deletes the target.
