@@ -580,3 +580,25 @@ collected first, then `edit_group(member, Some(target))`.
   fields and Task 2 Step 3 must update them. `resolve` is defined in Task 2 Step 4 and reused in Task 3 Step 4.
 - **Risks:** ~210 read sites are mechanical but wide; Task 3 is the largest and may deserve two review rounds. Borrowing
   `self.mirror` inside loops over `self.nodes` works because the fields are disjoint, but not through `&self` methods.
+
+---
+
+## Outcome (2026-10-05)
+
+Done on `dev`: 5e82da0, dc1d1e6, 4741dab, 566b0c3, 9fa6631, 952fe1c, 808fc0e. 783 tests pass; fmt and clippy clean. The two-instance GUI check was not run; four two-replica tests cover local-wins and remote sync of group moves.
+
+### Rulings I made
+
+- T2's deleted-parent test stays: it documents the commit rule, and the mirror/doc gap is unreachable through app cascades (costs a stale mirror link only in a hand-made state).
+- T2 minors 1-5 were fixed in Task 3 (parent and group share the code paths); minor 6 stayed deferred.
+- The final-review fix covered the Important (tab mid-respawn missed by cascades), minor 3 (a Create keeping a target the same commit deletes), minor 5 (sync-map wording) and the missing tests. Minors 1, 2, 4, 6 were parked (rare, pre-existing or cheap).
+
+### Parked (not fixed)
+
+- After a commit the mirror takes the resolved target, so a Move the store refuses as a cycle leaves the mirror wrong; `merge_groups`' ancestor walk (`graph_nav.rs`) has no loop guard; `would_create_cycle` can hang on a parent cycle made by two concurrent reparents (pre-2b-2).
+- A pending `Set PARENT` is written even when it equals the document's value.
+- A large remote delete costs O(deleted x nodes) through `children_of`.
+- A local cascade does not patch a parked `remote_in_flight` entry for a respawning tab, so landing can show a deleted group (display only).
+- `destroy_group` with a respawning member leaves that tab one level up; a respawning tab keeps its old jar snapshot after a local dissolve or merge (`refollow` skips it).
+- The mirror can show the grandparent while the document still names a remotely deleted parent (same as live nodes).
+- `seed_landing` has no direct test of its own beyond the respawn tests; `insert_content` uses `edit_group` where it could seed.
