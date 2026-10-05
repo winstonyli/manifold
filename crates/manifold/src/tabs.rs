@@ -1046,13 +1046,33 @@ impl App {
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
-    /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none). A group dissolved while the
-    /// spawn was in flight would leave the tab in a group nothing can navigate into: it lands at the top level.
+    /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none). A tab mid-respawn keeps its entry
+    /// and the link cascades reach it (`App::linked_ids`), but a new spawn has none until here: one whose group was
+    /// removed while it was in flight would land in a group nothing can navigate into. It lands where the document
+    /// shows it instead, in the mirror only (`follow_remote_group`): the removal was a cascade, not a move of this
+    /// tab, and a queued move would override another replica's placement of it (final review I1).
     fn seed_landing(&mut self, id: &str, carried: Carried) {
         self.mirror.seed(id, &carried);
         if self.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(g)) {
-            self.edit_group(id, None);
+            let group = self.shown_group(id);
+            self.follow_remote_group(id, group);
         }
+    }
+
+    /// The nearest group above `id` in the document that is here: `Doc::effective_group`, except that a group this
+    /// replica removed and hasn't saved yet is passed over too, as the save that deletes it will. `None` (the top
+    /// level) for a node the document doesn't hold yet.
+    fn shown_group(&self, id: &str) -> Option<String> {
+        let doc = self.journal.as_ref()?.doc();
+        let mut group = doc.nodes.get(&id.parse::<crate::store::model::NodeId>().ok()?)?.group;
+        for _ in 0..=doc.nodes.len() {
+            let at = group?;
+            if self.nodes.contains_key(&at.to_string()) {
+                return Some(at.to_string());
+            }
+            group = doc.nodes.get(&at)?.group;
+        }
+        None
     }
 
     /// "Sleep Tabs" on a group: `request_sleep` for each of its live tabs.

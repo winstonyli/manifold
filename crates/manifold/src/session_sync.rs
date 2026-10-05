@@ -127,7 +127,8 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 ///   it (a tab whose spawn is in flight).
 ///
 /// A group or parent naming a node that is neither live in the document
-/// nor created here is written as none (contract "Missing means deleted").
+/// nor created here, or that is deleted here, is written as none (contract
+/// "Missing means deleted"; Ruling 5).
 pub(crate) fn diff(
     doc: &Doc,
     live: &BTreeMap<NodeId, Shared>,
@@ -136,7 +137,9 @@ pub(crate) fn diff(
 ) -> Vec<OpBody> {
     let in_doc = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
     let new: BTreeSet<NodeId> = live.keys().filter(|id| !doc.nodes.contains_key(id)).copied().collect();
-    let valid = |id: Option<NodeId>| id.filter(|id| in_doc(id) || new.contains(id));
+    let deleted: BTreeSet<NodeId> =
+        doc.live().map(|(id, _)| id).filter(|id| !live.contains_key(id) && !keep.contains(id)).collect();
+    let valid = |id: Option<NodeId>| id.filter(|id| (in_doc(id) && !deleted.contains(id)) || new.contains(id));
     let mut ops = Vec::new();
 
     // Creates, each group's chain of new ancestors first.
@@ -194,11 +197,7 @@ pub(crate) fn diff(
         }
     }
 
-    for (id, _) in doc.live() {
-        if !live.contains_key(&id) && !keep.contains(&id) {
-            ops.push(OpBody::Delete { node: id });
-        }
-    }
+    ops.extend(deleted.into_iter().map(|node| OpBody::Delete { node }));
     ops
 }
 
@@ -997,9 +996,18 @@ impl App {
         self.mirror.group(id) == self.current_group.as_deref()
     }
 
-    /// Every live node whose mirror group is `group`.
+    /// Every node whose mirror group is `group` (`linked_ids`).
     pub(crate) fn members_of<'a>(&'a self, group: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.nodes.keys().map(String::as_str).filter(move |id| self.mirror.group(id) == Some(group))
+        self.linked_ids().filter(move |id| self.mirror.group(id) == Some(group))
+    }
+
+    /// The ids a link cascade (a dissolve, merge or removal) must reach: every live node, and every tab mid-respawn.
+    /// A respawn takes the tab out of `nodes` until it lands but keeps its mirror entry, which the landing keeps
+    /// (`Mirror::seed`), so a cascade that skipped it would leave it naming a removed node. A new spawn has no mirror
+    /// entry yet, so no link of its matches; it lands from its `TabSpawn` (`seed_landing`).
+    fn linked_ids(&self) -> impl Iterator<Item = &str> {
+        let respawning = self.spawning.keys().filter(|id| !self.nodes.contains_key(*id));
+        self.nodes.keys().chain(respawning).map(String::as_str)
     }
 
     /// "Remove from Group" (the tab card's eject button, dragging a card out through the way back, and the tab and
@@ -1035,9 +1043,9 @@ impl App {
         }
     }
 
-    /// Every node whose mirror parent is `id`.
+    /// Every node whose mirror parent is `id` (`linked_ids`).
     pub(crate) fn children_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.nodes.keys().map(String::as_str).filter(move |child| self.mirror.parent(child) == Some(id))
+        self.linked_ids().filter(move |child| self.mirror.parent(child) == Some(id))
     }
 
     /// Shows another replica's values of the mirrored fields in `fields` and its effective `group`, except where

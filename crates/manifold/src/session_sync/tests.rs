@@ -174,6 +174,24 @@ fn a_parent_naming_a_missing_node_is_written_as_none() {
     assert_eq!(doc2.nodes[&id(0)].get(field::PARENT), FieldValue::Id(None));
 }
 
+/// A created node's parent or group that the same commit deletes is written as none, not as the dead id (Ruling 5;
+/// final review minor 3).
+#[test]
+fn a_create_naming_a_node_deleted_by_the_same_diff_writes_none() {
+    let mut doc = Doc::new(DocId([1; 16]));
+    let start = BTreeMap::from([(id(0), shared(Kind::Tab, None, &[])), (id(1), group("G"))]);
+    let ops = diff(&doc, &start, &all_explicit(&start), &BTreeSet::new());
+    apply(&mut doc, ops);
+    // Both are gone from the live graph; a new tab still names them (a spawn started before they went).
+    let tab = shared(Kind::Tab, Some(id(1)), &[(field::PARENT, FieldValue::Id(Some(id(0))))]);
+    let live = BTreeMap::from([(id(2), tab)]);
+    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
+    apply(&mut doc, ops);
+    assert!(!doc.nodes[&id(0)].is_live() && !doc.nodes[&id(1)].is_live());
+    assert_eq!(doc.nodes[&id(2)].get(field::PARENT), FieldValue::Id(None));
+    assert_eq!(doc.nodes[&id(2)].group, None);
+}
+
 #[test]
 fn random_edits_converge_in_one_diff() {
     let mut rng = XorShift(0x5E55);
@@ -2664,4 +2682,183 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
     assert_eq!(app.mirror.group(&m), Some(outer.as_str()));
     let doc = app.journal.as_ref().unwrap().doc();
     assert_eq!(doc.effective_group(m.parse().unwrap()), Some(outer.parse().unwrap()));
+}
+
+/// A local move the store refuses as a cycle (another replica nested the target into the moved group first) leaves
+/// the document acyclic, and the save still succeeds. The mirror is not checked: it keeps showing the refused target
+/// until final review minor 1 (post-commit alignment from the document) is fixed.
+#[test]
+fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
+    let path = temp_dir("group-cycle").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let a = add(&mut app, NodePayload::Group(GroupPayload::named("A")));
+    let b = add(&mut app, NodePayload::Group(GroupPayload::named("B")));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let nest = vec![OpBody::Move { node: b.parse().unwrap(), group: Some(a.parse().unwrap()) }];
+    other.begin().unwrap().commit(nest).unwrap();
+    app.edit_group(&a, Some(b.clone()));
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(b.parse().unwrap()), Some(a.parse().unwrap()), "the remote move stands");
+    assert_eq!(doc.effective_group(a.parse().unwrap()), None, "the local move was refused");
+}
+
+/// What the crash path and `finish_swap` do: carry from the mirror, take the node out of `nodes`, respawn.
+fn start_respawn(app: &mut App, tab: &str) {
+    let node = app.nodes.remove(tab).unwrap();
+    let carried = app.mirror.carried(tab);
+    let mut spawn = crate::TabSpawn::new(
+        tab.to_owned(),
+        "https://t/".into(),
+        EngineKind::Servo,
+        node.pos,
+        SpawnPurpose::Respawn,
+        1.0,
+    );
+    (spawn.parent, spawn.group) = (carried.parent, carried.group);
+    (spawn.carry.color, spawn.carry.pinned) = (carried.color, carried.pinned);
+    app.respawn_tab(spawn);
+    assert!(app.spawning.contains_key(tab) && !app.nodes.contains_key(tab), "respawning");
+}
+
+/// O holds G, G holds T, saved.
+fn nested_tab(app: &mut App) -> (String, String, String) {
+    let outer = add(app, NodePayload::Group(GroupPayload::named("O")));
+    let g = add(app, NodePayload::Group(GroupPayload::named("G")));
+    let t = add(app, sleeping_tab("https://t/", ""));
+    app.edit_group(&g, Some(outer.clone()));
+    app.edit_group(&t, Some(g.clone()));
+    assert!(app.save_session());
+    (outer, g, t)
+}
+
+/// Final review I1, remote: another replica deletes G while T respawns here. The cascade reaches T in the mirror
+/// only, and its landing commits no move: T is in O on every replica, as the store shows it.
+#[test]
+fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_move() {
+    let path = temp_dir("respawn-remote-dissolve").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (outer, g, t) = nested_tab(&mut app);
+    start_respawn(&mut app, &t);
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: g.parse().unwrap() }]).unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()), "the cascade reached the respawning tab");
+    assert!(app.pending_moves.is_empty(), "a remote cascade queues nothing");
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+    assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
+}
+
+/// Final review I1, local dissolve: a member mid-respawn moves up to the dissolved group's group.
+#[test]
+fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
+    let path = temp_dir("respawn-local-dissolve").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (outer, g, t) = nested_tab(&mut app);
+    start_respawn(&mut app, &t);
+    app.dissolve_group(&g);
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+}
+
+/// Final review I1, local merge: a member of the merged group mid-respawn lands in the target.
+#[test]
+fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
+    let path = temp_dir("respawn-local-merge").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let source = add(&mut app, NodePayload::Group(GroupPayload::named("S")));
+    let target = add(&mut app, NodePayload::Group(GroupPayload::named("T")));
+    let m = add(&mut app, sleeping_tab("https://m/", ""));
+    app.edit_group(&m, Some(source.clone()));
+    assert!(app.save_session());
+    start_respawn(&mut app, &m);
+    app.merge_groups(&source, &target);
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.group(&m), Some(target.as_str()));
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(m.parse().unwrap()), Some(target.parse().unwrap()));
+}
+
+/// A opened P, P opened C, saved.
+fn parent_chain(app: &mut App) -> (String, String, String) {
+    let a = add(app, sleeping_tab("https://a/", ""));
+    let p = add(app, sleeping_tab("https://p/", ""));
+    let c = add(app, sleeping_tab("https://c/", ""));
+    app.edit_parent(&p, Some(a.clone()));
+    app.edit_parent(&c, Some(p.clone()));
+    assert!(app.save_session());
+    (a, p, c)
+}
+
+/// Final review I1, parent: removing P locally while its child C respawns passes C up to P's parent, and commits it.
+#[test]
+fn a_local_removal_during_a_respawn_reparents_the_tab() {
+    let path = temp_dir("respawn-local-parent").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, p, c) = parent_chain(&mut app);
+    start_respawn(&mut app, &c);
+    app.remove_tab(&p);
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+    assert_eq!(stored(&app, &c, field::PARENT), FieldValue::Id(Some(a.parse().unwrap())));
+}
+
+/// Final review I1, parent: another replica deleting P while C respawns here passes C up in the mirror only.
+#[test]
+fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
+    let path = temp_dir("respawn-remote-parent").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, p, c) = parent_chain(&mut app);
+    start_respawn(&mut app, &c);
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::Delete { node: p.parse().unwrap() }]).unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()), "the cascade reached the respawning tab");
+    assert!(app.pending.is_empty(), "a remote cascade queues nothing");
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.parent(&c), Some(a.as_str()));
+}
+
+/// The landing safety net (`seed_landing`): a new spawn has no mirror entry for the cascades to reach, so a group
+/// dissolved while it was in flight is caught at landing. It lands where the document will show it once the
+/// dissolve is saved (G's group), in the mirror only: no move is committed.
+#[test]
+fn a_new_spawn_into_a_group_dissolved_in_flight_lands_where_the_document_shows_it() {
+    let path = temp_dir("spawn-dissolved").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let outer = add(&mut app, NodePayload::Group(GroupPayload::named("O")));
+    let g = add(&mut app, NodePayload::Group(GroupPayload::named("G")));
+    app.edit_group(&g, Some(outer.clone()));
+    assert!(app.save_session());
+    let t = app.alloc_node_id();
+    let mut spawn = crate::TabSpawn::new(
+        t.clone(),
+        "https://t/".into(),
+        EngineKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Restore,
+        1.0,
+    );
+    spawn.group = Some(g.clone());
+    app.spawn_tab_async(spawn);
+    assert!(app.save_session(), "creates the spawning tab in G");
+    app.dissolve_group(&g); // not saved before the landing
+    fail_spawns(&mut app);
+    assert_eq!(app.mirror.group(&t), Some(outer.as_str()));
+    assert!(app.pending_moves.is_empty());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert_eq!(doc.effective_group(t.parse().unwrap()), Some(outer.parse().unwrap()));
+    assert_eq!(doc.nodes[&t.parse().unwrap()].group, Some(g.parse().unwrap()), "no move was committed");
 }
