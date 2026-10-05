@@ -29,10 +29,10 @@ pub(crate) const MAX_CLOSED: usize = 20;
 
 /// Whether `kind`/`fields` (as `App::shared_nodes` sees a live node) is
 /// worth keeping in a `ClosedEntry`. `false` for a completed download (it
-/// has no closed state -- starting it over isn't "reopening") and a blank
-/// note (nothing to restore); everything else -- tabs, groups, images,
-/// PDFs, JSON files and leaves -- is. The capability rows in
-/// `caps/rows.rs` decide.
+/// has no closed state -- starting it over isn't "reopening"), a jar, a
+/// blank note (nothing to restore) and an unknown kind; everything else --
+/// tabs, groups, images, PDFs, JSON files and leaves -- is. The capability
+/// rows in `caps/rows.rs` decide.
 pub(crate) fn worth_reopening(kind: store::model::Kind, fields: &session_sync::Fields) -> bool {
     let (mime, tags) = crate::caps::bridge::store_node(kind, fields);
     crate::caps::registry().caps(mime, tags).restorable

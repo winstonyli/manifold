@@ -60,12 +60,13 @@ Rows are plain data registered through `register(row)` (compiled-in now, so plug
   specific pattern. One shared
   `matches(pattern, type)` matcher serves capability and edge rows.
 - **Layering**: all matching rows apply in rank order; a higher row overrides a lower row per field. List fields (such
-  as `views`) append. Equal rank: the later registration wins; registering the same exact pattern and tags twice is an
+  as `views`) append. Equal rank: the later registration wins; registering an identical pattern and tags twice is an
   error. Edge rows (section 3) are not layered: each is found by its edge-type id and uses `matches` only to check the
   endpoints.
 - **Tags** (`Tag`, a closed plain enum in a bitset): backing `inline | file | web`; state
   `failed | loaded | engine-missing`; `file-missing`; content `blank` (a note with no text). Tags are runtime facts, not stored.
-- **`caps(node)`** is read at use time, never cached on the node. No per-(type, tags) merged-row cache is built until profiling shows a need (about nine rows, so merging per call is cheap); amend this section then.
+- **`caps(node)`** is read at use time, never cached on the node. No per-(type, tags) merged-row cache is built until
+  profiling shows a need (about nine rows, so merging per call is cheap); amend this section then.
 - **Flags after dedup**: `renamable`, `pinnable`, `portable` (duplicate and export), `restorable` (close is
   undoable; independent of `portable`), `activate` (default open action), `presentation` (icon, card style, `draw_layer` (replaces `GRAPH_DRAW_ORDER`), and a `runtime` field naming the
   runtime payload family), and `fields` (a list field: the extra stored fields this type carries beyond the common
@@ -233,6 +234,22 @@ leaves the app working:
    `closed.rs`'s snapshots and `LocalState.closed`.
 
 Plan 1 done: 7396c8f (capability table), 0ebad52 (edge table). Plans 2 and 3 are written after it.
+
+Carry-overs for plan 2:
+
+- Move the MIME constants (`TAB`, `GROUP`, `JSON_LEAF`, `TEXT_MARKDOWN`) out of `caps/bridge.rs` (to `caps.rs` or
+  `caps/types.rs`) so deleting the bridge is clean.
+- Sites still hard-coding the container rule, to move onto the edge table: `card.rs` `card_view` members collection
+  (~929), `graph_ui.rs` EnterGroup on activate (~1646) and the "Enter" hint (~713), `main.rs` `destroy_node` Group arm
+  (~2620), `session_sync.rs` groups-before-members load order (~796, ~1105, ~1543-1549), `del_verb` (`card.rs` ~521).
+- `Tag::Loaded` is attached by `bridge::item_node` but no row reads it yet; fine until plan 3 reads it, otherwise drop
+  it.
+- The `contains` source list names `application/octet-stream` exactly; with sniffed file types (`video/mp4`,
+  `text/plain`) it must widen to `*/*` minus jar and link.
+- `Pattern::parse` accepts nonsense (`*/json`, `*/*+`) and `matches` is false for a slash-less mime against any
+  non-`*/*` pattern; add validation when plugin rows (D2) can register.
+- The spec says duplicate registration of "the same exact pattern and tags" is an error; reword to "identical pattern
+  and tags" (the code rejects any identical pattern).
 
 Gaps found while planning, ruled here: a `draw_layer` in `presentation` (today's `GRAPH_DRAW_ORDER`); a `blank` tag
 (a note with no text is not restorable today); until plan 3, `Kind::Download` maps to `application/octet-stream` and
