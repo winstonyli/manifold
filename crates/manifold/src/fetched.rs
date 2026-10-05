@@ -60,8 +60,10 @@ impl App {
     }
 
     /// Inserts a node (colourless: colour is the mirror's, by id) showing `payload` at `at` under `id`
-    /// (allocated when `None`) and appends it to `node_order`. `at.group` seeds the mirror only for an id with no
-    /// entry yet (`Mirror::seed`): a node shown again (a placeholder for a stored node, a reload) keeps its group.
+    /// (allocated when `None`) and appends it to `node_order`. Its card is drawn at `at.pos` (`App::layout`).
+    /// `at.group` and `at.pos` seed the mirror only for an id with no entry yet (`Mirror::seed`): a new node's
+    /// document pos is its placement, which its `Create` carries (2b-4 Ruling 3), while a node shown again (a
+    /// placeholder for a stored node, a reload) keeps its group and document pos.
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<String>, payload: NodePayload, at: Placement) -> String {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
@@ -70,9 +72,10 @@ impl App {
         // A live tab's engine is the one it runs; an unloaded card has none of its own (`Mirror::engine`).
         let url = payload.saved_tab().map(str::to_owned).unwrap_or_default();
         let engine = payload.as_tab().map_or(0, |t| crate::session_sync::engine_code(t.tab.kind));
-        let node = GraphNode { pos: at.pos, vel: egui::Vec2::ZERO, payload };
-        self.nodes.insert(id.clone(), node);
-        self.mirror.seed(&id, &crate::mirror::Carried { group: at.group, url, engine, ..Default::default() });
+        self.nodes.insert(id.clone(), GraphNode { payload });
+        self.snap_layout(&id, at.pos);
+        let (pos, group) = (Some(at.pos), at.group);
+        self.mirror.seed(&id, &crate::mirror::Carried { pos, group, url, engine, ..Default::default() });
         self.node_order.push(id.clone());
         id
     }
@@ -92,9 +95,10 @@ impl App {
         url: Option<String>,
     ) {
         let node_group = self.mirror.group(&tab_id).map(str::to_owned);
-        let Some(node_pos) = self.nodes.get(&tab_id).map(|n| n.pos) else {
+        if !self.nodes.contains_key(&tab_id) {
             return;
-        };
+        }
+        let node_pos = self.layout_pos(&tab_id);
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(&id);
         let payload = NodePayload::Download(DownloadPayload {
@@ -231,7 +235,7 @@ impl App {
             _ => return,
         };
         let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
-        let pos = node.pos;
+        let pos = self.layout_pos(id);
         let in_order = self.node_order.iter().any(|n| n == id);
         let result = if is_image {
             self.insert_image_node_with_id(id.to_string(), path, pos, group)
@@ -289,7 +293,7 @@ impl App {
         let (kind, path) = (*kind, path.clone());
         let new_path = path.clone();
         let (group, parent) = (self.mirror.group(id).map(str::to_owned), self.mirror.parent(id).map(str::to_owned));
-        let pos = node.pos;
+        let pos = self.layout_pos(id);
         let Some(url) = node.source_url().map(str::to_string) else { return };
         // A PNG turned JPEG keeps its id stem, so `prune` never frees it.
         let old_path = match &node.payload {
@@ -390,7 +394,7 @@ impl App {
     pub(crate) fn open_as_tab(&mut self, id: &str) {
         let Some(node) = self.nodes.get(id) else { return };
         let Some(url) = node.source_url().map(str::to_string) else { return };
-        let (pos, group) = (node.pos + egui::vec2(40.0, 40.0), self.mirror.group(id).map(str::to_owned));
+        let (pos, group) = (self.layout_pos(id) + egui::vec2(40.0, 40.0), self.mirror.group(id).map(str::to_owned));
         let tab = self.spawn_tab_at(&url, pos, group, Some(id.to_string()));
         self.skip_convert.insert(tab, false);
     }
@@ -537,9 +541,10 @@ impl App {
     /// is toasted and the tab stays.
     pub(crate) fn redirect_tab_to_content(&mut self, tab_id: &str, node_id: String, url: String, body: WebBody) {
         let group = self.mirror.group(tab_id).map(str::to_owned);
-        let Some(pos) = self.nodes.get(tab_id).map(|n| n.pos) else {
+        if !self.nodes.contains_key(tab_id) {
             return;
-        };
+        }
+        let pos = self.layout_pos(tab_id);
         let parent = self.mirror.parent(tab_id).map(str::to_owned);
         if self.insert_content(ContentSource::Web { url, body }, node_id.clone(), pos, group).is_ok() {
             self.edit_parent(&node_id, parent);
@@ -653,9 +658,9 @@ impl App {
         self.drop_batch += 1;
         let beside_focused = self
             .showing_tab_view()
-            .then(|| self.focused.as_ref().and_then(|id| self.nodes.get(id)))
+            .then(|| self.focused.as_deref().filter(|id| self.nodes.contains_key(*id)))
             .flatten()
-            .map(|node| (node.pos + egui::vec2(240.0, 0.0), self.group_of(&self.focused)));
+            .map(|id| (self.layout_pos(id) + egui::vec2(240.0, 0.0), self.group_of(&self.focused)));
         match beside_focused {
             Some((pos, group)) => {
                 let id = self.alloc_node_id();
@@ -737,7 +742,7 @@ mod tests {
             app.drop_file(dir.join(name), egui::pos2(300.0, 300.0));
             ids.extend(app.nodes.keys().filter(|k| !before.contains(*k)).cloned());
         }
-        let (a, b) = (app.nodes[&ids[0]].pos, app.nodes[&ids[1]].pos);
+        let (a, b) = (app.layout_pos(&ids[0]), app.layout_pos(&ids[1]));
         assert_eq!(b - a, egui::vec2(24.0, 24.0));
     }
 
@@ -755,10 +760,7 @@ mod tests {
         // own comment).
         use crate::session_sync::tests::{add, sleeping_tab};
         let focused = add(&mut app, sleeping_tab("https://x.test/", "Focused"));
-        {
-            let node = app.nodes.get_mut(&focused).unwrap();
-            node.pos = egui::vec2(100.0, 50.0);
-        }
+        app.snap_layout(&focused, egui::vec2(100.0, 50.0));
         app.edit_group(&focused, Some("g".into()));
         app.focused = Some(focused.clone());
         // Deliberately not "g": proves the drop uses the focused tab's own
@@ -775,8 +777,8 @@ mod tests {
         }
 
         let beside = egui::vec2(100.0, 50.0) + egui::vec2(240.0, 0.0);
-        assert_eq!(app.nodes[&ids[0]].pos, beside);
-        assert_eq!(app.nodes[&ids[1]].pos, beside + egui::vec2(24.0, 24.0));
+        assert_eq!(app.layout_pos(&ids[0]), beside);
+        assert_eq!(app.layout_pos(&ids[1]), beside + egui::vec2(24.0, 24.0));
         assert_eq!(app.mirror.group(&ids[0]), Some("g"));
         assert_eq!(app.mirror.group(&ids[1]), Some("g"));
     }
@@ -1080,8 +1082,8 @@ mod tests {
         let node = &app.nodes["r"];
         assert_eq!(*node.as_json().unwrap().value, serde_json::json!([2]));
         assert_eq!(
-            (node.pos, app.mirror.color("r"), node.source_url()),
-            (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("https://x.test/j"))
+            (app.layout_pos("r"), app.mirror.pos("r"), app.mirror.color("r"), node.source_url()),
+            (egui::vec2(1.0, 2.0), Some(egui::vec2(1.0, 2.0)), Some(egui::Color32::RED), Some("https://x.test/j"))
         );
         assert_eq!(app.node_order, order);
     }
@@ -1110,7 +1112,7 @@ mod tests {
         let node = &app.nodes["r"];
         assert!(node.as_json().unwrap().error.is_some());
         assert_eq!(
-            (node.pos, app.mirror.color("r"), app.mirror.group("r"), node.source_url()),
+            (app.layout_pos("r"), app.mirror.color("r"), app.mirror.group("r"), node.source_url()),
             (egui::vec2(1.0, 2.0), Some(egui::Color32::RED), Some("g"), Some("https://x.test/j"))
         );
         assert_eq!(app.node_order, order);
@@ -1193,7 +1195,7 @@ mod tests {
         let mut app = App::default();
         let opener = add(&mut app, sleeping_tab("https://x.test/", "Opener"));
         let tab = add(&mut app, sleeping_tab("https://x.test/a.json", "A"));
-        app.nodes.get_mut(&tab).unwrap().pos = egui::vec2(5.0, 6.0);
+        app.snap_layout(&tab, egui::vec2(5.0, 6.0));
         app.edit_group(&tab, Some("g".into()));
         app.edit_parent(&tab, Some(opener.clone()));
         let child = add(&mut app, sleeping_tab("https://x.test/child", "Child"));
@@ -1204,7 +1206,7 @@ mod tests {
 
         assert!(!app.nodes.contains_key(&tab));
         let node = &app.nodes["n"];
-        assert_eq!((node.pos, app.mirror.group("n")), (egui::vec2(5.0, 6.0), Some("g")));
+        assert_eq!((app.layout_pos("n"), app.mirror.group("n")), (egui::vec2(5.0, 6.0), Some("g")));
         assert_eq!(node.source_url(), Some("https://x.test/a.json"));
         assert_eq!(app.mirror.parent("n"), Some(opener.as_str()), "still opened from where the tab was");
         assert!(app.children_of(&tab).next().is_none(), "children moved up");

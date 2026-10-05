@@ -854,9 +854,9 @@ pub(crate) fn node_card_size(payload: &NodePayload) -> egui::Vec2 {
     }
 }
 
-/// `node`'s card in world space: `node_card_size` centered on its position.
-pub(crate) fn node_card_rect(node: &GraphNode) -> egui::Rect {
-    egui::Rect::from_center_size(egui::Pos2::new(node.pos.x, node.pos.y), node_card_size(&node.payload))
+/// A card in world space: `node_card_size` centered on `pos`, its layout position (`App::card_rect`).
+pub(crate) fn node_card_rect(pos: egui::Vec2, payload: &NodePayload) -> egui::Rect {
+    egui::Rect::from_center_size(pos.to_pos2(), node_card_size(payload))
 }
 
 /// What the Graph filter box matches a card against: a tab's title and
@@ -951,7 +951,7 @@ impl App {
     /// returned response.
     pub(crate) fn draw_graph_card(&mut self, ui: &mut egui::Ui, pass: &mut CardPass, id: &str) -> Option<CardOutput> {
         let inv_zoom = pass.inv_zoom;
-        let rect = node_card_rect(self.nodes.get(id)?);
+        let rect = self.card_rect(id)?;
         // Viewport culling: skip every bit of interact/paint
         // work below for a node that isn't actually visible --
         // the single highest-leverage fix for a graph with many
@@ -1140,28 +1140,15 @@ impl App {
             let delta = response.drag_delta();
             let moved: Vec<String> =
                 if view.selected { self.selected_tabs.iter().cloned().collect() } else { vec![id.to_string()] };
+            // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in &moved {
-                if let Some(node) = self.nodes.get_mut(moved_id) {
-                    node.pos += delta;
+                if self.nodes.contains_key(moved_id) {
+                    self.layout.entry(moved_id.clone()).or_default().pos += delta;
                 }
             }
             self.drag_moved = moved;
         } else if self.dragging.as_deref() == Some(id) {
-            self.dragging = None;
-            // Marked once, here at release, not every dragged frame above:
-            // `explicit` is drained by any successful `save_session()`, and
-            // saves fire independently of this gesture mid-drag (e.g.
-            // `poll_store`, or a url change batched through
-            // `drain_tab_events`), so marking every frame could commit an
-            // intermediate position as its own op, repeatedly, before the
-            // drag even ends.
-            // A card removed mid-drag (closed, crashed, swapped) leaves its
-            // id here; skip it rather than clearing at every removal site.
-            for moved_id in std::mem::take(&mut self.drag_moved) {
-                if self.nodes.contains_key(&moved_id) {
-                    self.mark(&moved_id, field::POS);
-                }
-            }
+            self.release_drag();
             // `drop_preview` was computed this frame for this card, and
             // nothing moved it since (no drag delta on a release frame).
             pass.actions.push(GraphAction::Drop { id: id.to_string(), target: pass.drop_preview.clone() });

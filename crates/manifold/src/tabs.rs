@@ -124,13 +124,15 @@ impl App {
     /// arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         self.tab_spawns_in_flight += 1;
-        // Shared at the url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a new
-        // tab has no entry yet and shares the ones it starts with.
+        // Shared at the pos, url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a
+        // new tab has no entry yet and shares the ones it starts with.
         let shared_url = Some(self.mirror.url(&spawn.id)).filter(|url| !url.is_empty());
         let has = self.mirror.has(&spawn.id);
+        let pos = if has { self.mirror.pos(&spawn.id) } else { Some(spawn.pos) };
         let choice = if has { self.mirror.jar_choice(&spawn.id) } else { spawn.jar };
         let engine = if has { self.mirror.engine_code(&spawn.id) } else { session_sync::engine_code(spawn.kind) };
-        let shared = session_sync::spawn_shared(&spawn, shared_url.as_deref().unwrap_or(&spawn.url), engine, choice);
+        let url = shared_url.as_deref().unwrap_or(&spawn.url);
+        let shared = session_sync::spawn_shared(&spawn, pos, url, engine, choice);
         self.spawning.insert(spawn.id.clone(), shared);
         let generation = self.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
@@ -341,7 +343,7 @@ impl App {
     /// same moment the old inline code decided it, just later in wall time.
     pub(crate) fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome {
-            spawn: TabSpawn { id, url, kind, parent, group, jar: spawn_jar, pos, vel, purpose, carry, fallback_kind },
+            spawn: TabSpawn { id, url, kind, parent, group, jar: spawn_jar, pos, purpose, carry, fallback_kind },
             generation,
             result,
             seeded,
@@ -373,11 +375,11 @@ impl App {
         // same guard `reopen_closed`'s relinking applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, pos, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
-            match self.nodes.get(&id).and_then(|n| n.as_unloaded().map(|tab| (n, tab))) {
-                Some((card, tab)) => {
+        let (parent, group, color, pinned, muted) = if self.wakes_in_flight.remove(&id) {
+            match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
+                Some(tab) => {
                     let Carried { color, pinned, parent, group, .. } = self.mirror.carried(&id);
-                    (parent, group, card.pos, color, pinned, tab.muted)
+                    (parent, group, color, pinned, tab.muted)
                 }
                 // Closed while waking (see `wakes_in_flight`): `spawning`
                 // no longer holds this id (removed above), so the save
@@ -390,7 +392,7 @@ impl App {
                 }
             }
         } else {
-            (parent, group, pos, color, pinned, muted)
+            (parent, group, color, pinned, muted)
         };
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
             && self.pending_respawn_focus.as_deref() == Some(id.as_str())
@@ -426,8 +428,6 @@ impl App {
                 self.nodes.insert(
                     id.clone(),
                     GraphNode {
-                        pos,
-                        vel,
                         payload: NodePayload::Tab(TabPayload {
                             tab,
                             url: url.clone(),
@@ -443,9 +443,10 @@ impl App {
                     },
                 );
                 let engine = session_sync::engine_code(kind);
+                let pos = Some(pos);
                 self.seed_landing(
                     &id,
-                    Carried { color, pinned, parent, group, url: url.clone(), engine, jar: spawn_jar },
+                    Carried { pos, color, pinned, parent, group, url: url.clone(), engine, jar: spawn_jar },
                 );
                 if !self.node_order.iter().any(|t| t == &id) {
                     self.node_order.push(id.clone());
@@ -536,7 +537,6 @@ impl App {
                         group,
                         jar: spawn_jar,
                         pos,
-                        vel,
                         purpose,
                         carry,
                         fallback_kind: None,
@@ -564,11 +564,12 @@ impl App {
                     let state = UnloadedState::Failed(err.to_string());
                     let failed = UnloadedTabPayload { url: url.clone(), title, muted, zoom_factor, state };
                     let payload = NodePayload::Unloaded(failed);
-                    self.nodes.insert(id.clone(), GraphNode { pos, vel, payload });
+                    self.nodes.insert(id.clone(), GraphNode { payload });
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_engine`); a new one lands on it here.
                     let engine = session_sync::engine_code(kind);
-                    self.seed_landing(&id, Carried { color, pinned, parent, group, url, engine, jar: spawn_jar });
+                    let (pos, jar) = (Some(pos), spawn_jar);
+                    self.seed_landing(&id, Carried { pos, color, pinned, parent, group, url, engine, jar });
                     if !self.node_order.iter().any(|t| t == &id) {
                         self.node_order.push(id.clone());
                     }
@@ -668,11 +669,9 @@ impl App {
         let in_group = |id: &str| self.mirror.group(id) == group.as_deref();
         let parent_pos = parent
             .as_deref()
-            .filter(|p| in_group(p))
-            .and_then(|p| self.nodes.get(p))
-            .map(|n| n.pos)
-            .or_else(|| self.nodes.iter().find(|(id, _)| in_group(id)).map(|(_, n)| n.pos))
-            .unwrap_or(egui::Vec2::ZERO);
+            .filter(|p| in_group(p) && self.nodes.contains_key(*p))
+            .or_else(|| self.nodes.keys().map(String::as_str).find(|id| in_group(id)))
+            .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
         let pos = parent_pos + graph_layout::spawn_jitter(&id);
         self.tab_spawn_error = None;
         let spawn = TabSpawn::new(id.clone(), url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
@@ -1061,7 +1060,11 @@ impl App {
             || self.nodes.get(id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }
 
-    /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none). A tab mid-respawn keeps its entry
+    /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none) and its layout entry, both at
+    /// `carried.pos` (a new tab's spawn position, 2b-4 Ruling 3). A tab mid-respawn or waking keeps both: its layout
+    /// entry is keyed by id, so the respawn's remove-and-reinsert leaves it where it was drawn (Ruling 1).
+    ///
+    /// A tab mid-respawn keeps its mirror entry
     /// and the link cascades reach it (`App::linked_ids`), but a new spawn has none until here: one whose group was
     /// removed while it was in flight would land in a group nothing can navigate into. It lands where the document
     /// shows it instead, in the mirror only (`follow_remote_group`): the removal was a cascade, not a move of this
@@ -1071,6 +1074,7 @@ impl App {
     /// tab lands on the default jar, as the delete would have put it, and the document is told so whether its
     /// `Create` already named the jar or resolved it to none (2b-3 final review Minor 1).
     fn seed_landing(&mut self, id: &str, carried: Carried) {
+        self.layout.entry(id.to_owned()).or_insert(Layout::at(carried.pos.unwrap_or_default()));
         let new = !self.mirror.has(id);
         self.mirror.seed(id, &carried);
         if new && self.mirror.jar_choice(id).jar.is_some_and(|jar| !self.jar_defs.contains_key(&jar)) {
@@ -1178,8 +1182,8 @@ impl App {
     }
 
     /// Shared by swap-finish and crash recovery: starts `spawn` (from
-    /// `TabSpawn::respawn`, so the tab keeps its place in the graph and its
-    /// `TabCarry`) and, if it's the focused tab, shows a spinner until it's
+    /// `TabSpawn::respawn`, so the tab keeps its `TabCarry`; its place in the
+    /// graph is its `App::layout` entry) and, if it's the focused tab, shows a spinner until it's
     /// back (only the focused tab is ever visible).
     pub(crate) fn respawn_tab(&mut self, spawn: TabSpawn) {
         if self.focused.as_deref() == Some(spawn.id.as_str()) {

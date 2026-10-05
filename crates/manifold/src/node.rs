@@ -327,8 +327,8 @@ pub(crate) enum UnloadedState {
     Failed(String),
 }
 
-/// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`/
-/// `pos`/`vel` moved to the now-shared `GraphNode`; `color` and `pinned` live in the `Mirror`). See
+/// A tab's own data -- was `TabNode`'s non-shared fields (`parent`/`group`, `color`, `pinned` and the
+/// document pos live in the `Mirror`; where its card is drawn is `App::layout`). See
 /// `NodePayload`'s own doc comment.
 pub(crate) struct TabPayload {
     pub(crate) tab: EngineTab,
@@ -410,15 +410,29 @@ pub(crate) struct DownloadPayload {
 /// own comment on it) -- this is a hasher swap, not a new dependency.
 pub(crate) type NodeMap = HashMap<String, GraphNode, foldhash::fast::RandomState>;
 
-/// One node in the graph view -- fields every kind shares (position) live
-/// here; `color`, `pinned`, `parent` (the "opened from" edge) and `group`
-/// (the level it is shown in) are not fields: see `Mirror`. `payload` holds
-/// whatever's specific to the node's actual kind. See `NodePayload`'s own
-/// doc comment for the migration this is a step of.
+/// One node in the graph view. Its document fields (`pos`, `color`, `pinned`, `parent`, the "opened from" edge,
+/// and `group`, the level it is shown in) are not fields here: see `Mirror`; where its card is drawn is
+/// `App::layout`. `payload` holds whatever's specific to the node's actual kind. See `NodePayload`'s own doc comment
+/// for the migration this is a step of.
 pub(crate) struct GraphNode {
+    pub(crate) payload: NodePayload,
+}
+
+/// Where a node's card is drawn and how fast physics is moving it (`App::layout`, 2b-4 Ruling 1): runtime state,
+/// personal to this replica. The force-directed settle and drags move it; it starts at the node's placement, a
+/// remote pos snaps it, and personal state (`LocalNode::pos`) restores it. The document never reads it: only a drag
+/// release (`App::edit_pos`) writes the document pos.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Layout {
     pub(crate) pos: egui::Vec2,
     pub(crate) vel: egui::Vec2,
-    pub(crate) payload: NodePayload,
+}
+
+impl Layout {
+    /// At rest at `pos`.
+    pub(crate) fn at(pos: egui::Vec2) -> Self {
+        Layout { pos, vel: egui::Vec2::ZERO }
+    }
 }
 
 impl GraphNode {
@@ -480,7 +494,7 @@ impl GraphNode {
 }
 
 /// A tab group's own data -- was `GroupNode`'s non-shared field (`name`;
-/// `pos`/`vel` moved to `GraphNode`, shared with every kind; `color` lives in the `Mirror`). A
+/// the document pos and `color` live in the `Mirror`, the drawn position in `App::layout`). A
 /// group is a container node shown at whichever level of Graph view it
 /// itself belongs to that, double-clicked, drills into its own subgraph of
 /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
@@ -613,7 +627,7 @@ second"
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_name() {
-        let node = |payload| GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+        let node = |payload| GraphNode { payload };
         let pdf = |url: Option<&str>| {
             node(NodePayload::Pdf(PdfPayload {
                 path: r"C:\docs\report.pdf".into(),

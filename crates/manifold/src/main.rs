@@ -716,7 +716,7 @@ struct TabSpawnOutcome {
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
 /// insert its graph node: `TabSpawn::new` for a new tab (no parent or
-/// group, at rest, nothing carried), `TabSpawn::respawn` for one that
+/// group, nothing carried), `TabSpawn::respawn` for one that
 /// already has a node.
 struct TabSpawn {
     id: String,
@@ -727,8 +727,9 @@ struct TabSpawn {
     /// The jar a new tab starts with, which it lands with (`Carried::jar`). A tab the mirror already holds (a
     /// respawn or wake) uses the mirror's instead, which a cascade may change while it is in flight.
     jar: jar::JarChoice,
+    /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
+    /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
     pos: egui::Vec2,
-    vel: egui::Vec2,
     purpose: SpawnPurpose,
     carry: TabCarry,
     /// The engine to respawn with if this spawn fails: a swap's old
@@ -771,15 +772,14 @@ impl TabSpawn {
             group: None,
             jar: Default::default(),
             pos,
-            vel: egui::Vec2::ZERO,
             purpose,
             carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
             fallback_kind: None,
         }
     }
 
-    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its place in
-    /// the graph and its `TabCarry` (`carried` is the mirror's). `None` if `node` isn't a tab.
+    /// Tab `node` (`id`) respawned as `kind` at `url`, keeping its `TabCarry` (`carried` is the mirror's); its place
+    /// in the graph is its `App::layout` entry, which the respawn leaves alone. `None` if `node` isn't a tab.
     fn respawn(id: &str, node: &GraphNode, carried: Carried, kind: EngineKind, url: String) -> Option<Self> {
         let tab = node.as_tab()?;
         Some(TabSpawn {
@@ -789,8 +789,7 @@ impl TabSpawn {
             parent: carried.parent.clone(),
             group: carried.group.clone(),
             jar: carried.jar,
-            pos: node.pos,
-            vel: node.vel,
+            pos: carried.pos.unwrap_or_default(),
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
                 pinned: carried.pinned,
@@ -828,6 +827,11 @@ struct App {
     /// node click/drag targeting flaky if used directly).
     nodes: NodeMap,
     node_order: Vec<String>,
+    /// Where each node's card is drawn, by id (`Layout`, 2b-4 Ruling 1): runtime and personal, never the document's
+    /// pos (`Mirror::pos`). Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
+    /// its place; pruned with the mirror at a save. Read through `layout_pos`: a node without an entry (a hand-built
+    /// test node) is at the origin.
+    layout: HashMap<String, Layout>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
     /// the plain centered name+count layout an empty group already uses,
@@ -998,8 +1002,8 @@ struct App {
     /// Tabs `navigate_tab` just moved on, with the url each left, when, and
     /// whether the engine has reported loading since (`App::reported_url`).
     navigated_from: HashMap<String, (String, std::time::Instant, bool)>,
-    /// Explicit fields (`pos`) marked at user actions, for the next
-    /// save to write (spec "Local edits become ops").
+    /// Explicit fields marked at user actions, for the next save to write (spec "Local edits become ops"). Nothing
+    /// marks any since `pos` moved to the mirror (2b-4 Ruling 11); 2b-5 deletes it.
     explicit: std::collections::BTreeSet<(store::model::NodeId, u32)>,
     /// The decoded copy of the document's mirrored fields (`mirror::Mirror`).
     mirror: mirror::Mirror,
@@ -1473,6 +1477,7 @@ impl Default for App {
             gpu: None,
             nodes: NodeMap::default(),
             node_order: Vec::new(),
+            layout: HashMap::new(),
             groups_collapsed: false,
             current_group: None,
             json_level: None,
@@ -2430,9 +2435,9 @@ impl App {
     /// the live tab under the same id, or a failed card with the new
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: &str, kind: EngineKind) {
-        let Carried { color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
+        let Carried { pos, color, pinned, parent, group, jar, .. } = self.mirror.carried(id);
+        let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(id) else { return };
-        let pos = node.pos;
         let NodePayload::Unloaded(tab) = &mut node.payload else { return };
         if tab.state == UnloadedState::Waking {
             return;
@@ -2444,9 +2449,8 @@ impl App {
         self.wakes_in_flight.insert(id.to_string());
         // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
         self.edit_engine(id, kind);
-        let vel = egui::Vec2::ZERO;
         let (id, purpose, fallback_kind) = (id.to_string(), SpawnPurpose::Wake, None);
-        self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, vel, purpose, carry, fallback_kind });
+        self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, purpose, carry, fallback_kind });
     }
 
     /// `Ctrl+Shift+W` / headless `CLOSEALLLEVEL` — closes every tab
@@ -3429,7 +3433,7 @@ mod tests {
             ("deep", Some("inner"), note()),
             ("shallow", Some("outer"), note()),
         ] {
-            app.nodes.insert(id.into(), GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload });
+            app.nodes.insert(id.into(), GraphNode { payload });
             app.edit_group(id, group.map(String::from));
         }
 
@@ -3447,7 +3451,7 @@ mod tests {
         let mut app = App::default();
         for id in ["a", "b", "s"] {
             let payload = NodePayload::Group(GroupPayload::named(id));
-            app.nodes.insert(id.into(), GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload });
+            app.nodes.insert(id.into(), GraphNode { payload });
             app.node_order.push(id.into());
         }
         app.edit_group("a", Some("b".into()));
@@ -3495,7 +3499,7 @@ mod tests {
         let mut app = App::default();
         let add = |app: &mut App, name: &str| {
             let payload = NodePayload::Group(GroupPayload::named(name));
-            let node = GraphNode { pos: egui::Vec2::ZERO, vel: egui::Vec2::ZERO, payload };
+            let node = GraphNode { payload };
             let id = app.alloc_node_id();
             app.nodes.insert(id, node);
         };

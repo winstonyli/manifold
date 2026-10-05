@@ -10,15 +10,16 @@ use std::collections::HashMap;
 
 use crate::jar::JarChoice;
 use crate::process_manager::EngineKind;
-use crate::session_sync::{color_of, color_value, engine_of, Fields};
+use crate::session_sync::{color_of, color_value, engine_of, pos_value, Fields};
 use crate::store::model::{field, field_def, FieldValue};
 
 /// The fields the mirror holds. `diff` leaves them to `App::pending` on existing nodes. `URL` is mirrored for every
 /// kind that has it, but only tabs seed and read it; content kinds read their payload's until 2b-5 (2b-3 Ruling 2).
 /// `JAR` and `JAR_SET` are a tab's jar choice (`jar_choice`), written together by `App::edit_jar`. `ENGINE` is a tab's
-/// engine as its stored code (`engine`), written by `App::edit_engine`.
+/// engine as its stored code (`engine`), written by `App::edit_engine`. `POS` is the document pos (`pos`), written by
+/// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1).
 pub(crate) const MIRRORED: &[u32] =
-    &[field::COLOR, field::PINNED, field::URL, field::ENGINE, field::JAR, field::JAR_SET];
+    &[field::POS, field::COLOR, field::PINNED, field::URL, field::ENGINE, field::JAR, field::JAR_SET];
 
 #[derive(Default)]
 pub(crate) struct Mirror {
@@ -82,6 +83,16 @@ impl Mirror {
         self.links.retain(|id, _| keep(id));
     }
 
+    /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
+    /// it. `None` when it has none. Pos (0,0) is the field's absent value in the encoding, so a node at the exact
+    /// origin reads as `None` too (2b-4 Ruling 5). Where the card is drawn is `App::layout`.
+    pub(crate) fn pos(&self, id: &str) -> Option<egui::Vec2> {
+        match self.nodes.get(id)?.get(&field::POS)? {
+            FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some(egui::vec2(*x, *y)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn color(&self, id: &str) -> Option<egui::Color32> {
         color_of(&self.get(id, field::COLOR))
     }
@@ -134,6 +145,7 @@ impl Mirror {
 
     pub(crate) fn carried(&self, id: &str) -> Carried {
         Carried {
+            pos: self.pos(id),
             color: self.color(id),
             pinned: self.pinned(id),
             parent: self.parent(id).map(str::to_owned),
@@ -144,15 +156,16 @@ impl Mirror {
         }
     }
 
-    /// `init` for everything a tab carries. An empty `url`, engine code 0 and the default, unset jar (any node but a
-    /// tab) are the fields' absent values, so they are left out.
+    /// `init` for everything a node carries. No pos, an empty `url`, engine code 0 and the default, unset jar (any
+    /// node but a tab) are the fields' absent values, so they are left out.
     pub(crate) fn seed(&mut self, id: &str, carried: &Carried) {
+        let pos = carried.pos.map(|pos| (field::POS, pos_value(pos)));
         let url = (!carried.url.is_empty()).then(|| (field::URL, FieldValue::Str(carried.url.clone())));
         let engine = (carried.engine != 0).then_some((field::ENGINE, FieldValue::Engine(carried.engine)));
         let jar = carried.jar.jar.is_some().then_some((field::JAR, FieldValue::Id(carried.jar.jar)));
         let jar_set = carried.jar.set.then_some((field::JAR_SET, FieldValue::Bool(true)));
         let fields = [(field::COLOR, color_value(carried.color)), (field::PINNED, FieldValue::Bool(carried.pinned))];
-        self.init(id, fields.into_iter().chain(url).chain(engine).chain(jar).chain(jar_set));
+        self.init(id, fields.into_iter().chain(pos).chain(url).chain(engine).chain(jar).chain(jar_set));
         if !self.links.contains_key(id) {
             let links = Links { parent: carried.parent.clone(), group: carried.group.clone() };
             self.links.insert(id.to_owned(), links);
@@ -161,9 +174,11 @@ impl Mirror {
 }
 
 /// What a tab carries across a respawn or lands with: the mirror's values for it. `place_node` seeds a new node's
-/// links with it too.
+/// links and pos with it too.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
+    /// The document pos (`Mirror::pos`): a new node's placement, which its `Create` carries (2b-4 Ruling 3).
+    pub pos: Option<egui::Vec2>,
     pub color: Option<egui::Color32>,
     pub pinned: bool,
     pub parent: Option<String>,
@@ -185,6 +200,7 @@ mod tests {
     fn seed_then_carried_round_trips_and_never_overwrites() {
         let mut mirror = Mirror::default();
         let first = Carried {
+            pos: Some(egui::vec2(3.0, -4.0)),
             color: Some(egui::Color32::RED),
             pinned: true,
             parent: Some("p".into()),
@@ -200,6 +216,8 @@ mod tests {
         assert_eq!(mirror.carried("7"), first);
         mirror.seed("7", &Carried { url: "https://b/".into(), ..Carried::default() });
         assert_eq!(mirror.carried("7"), first);
+        mirror.seed("8", &Carried { pos: Some(egui::Vec2::ZERO), ..Carried::default() });
+        assert_eq!(mirror.pos("8"), None, "pos (0,0) is the absent value (Ruling 5)");
     }
 
     #[test]

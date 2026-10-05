@@ -89,12 +89,16 @@ pub(crate) fn tab_title(app: &App, id: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.clone())
 }
 
-/// `fields` (`id`'s, from `shared_nodes`) with a tab's `url` replaced by its live one: Recently Closed reopens the
-/// page that was closed, not the shared url the mirror holds (2b-3 Ruling 1).
-fn live_url_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
+/// `fields` (`id`'s, from `shared_nodes`) as the user saw the node: a tab's `url` replaced by its live one, and `pos`
+/// by where its card was drawn (`App::layout`). Recently Closed reopens the page that was closed, not the shared url
+/// the mirror holds (2b-3 Ruling 1), where it was shown, not at its document pos (2b-4 Ruling 10).
+fn live_fields(app: &App, id: &str, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
     if let Some(url) = app.nodes.get(id).and_then(|n| n.payload.saved_tab()) {
         fields.insert(field::URL, store::model::FieldValue::Str(url.to_owned()));
+    }
+    if app.layout.contains_key(id) && fields.contains_key(&field::POS) {
+        fields.insert(field::POS, session_sync::pos_value(app.layout_pos(id)));
     }
     fields
 }
@@ -108,7 +112,7 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     let shared = app.shared_nodes();
     let root_id: store::model::NodeId = id.parse().ok()?;
     let root = shared.get(&root_id)?;
-    let root_fields = live_url_fields(app, id, &root.fields);
+    let root_fields = live_fields(app, id, &root.fields);
     if root.kind == store::model::Kind::JsonLeaf || !worth_reopening(root.kind, &root_fields) {
         return None;
     }
@@ -134,7 +138,7 @@ pub(crate) fn closed_entry(app: &App, id: &str) -> Option<ClosedEntry> {
     for member_id in members {
         let Some(member) = shared.get(&member_id) else { continue };
         let label = member_id.to_string();
-        let fields = live_url_fields(app, &label, &member.fields);
+        let fields = live_fields(app, &label, &member.fields);
         if worth_reopening(member.kind, &fields) {
             nodes.push(store::json::node_json(&label, member.kind, &fields, member.group));
             record(&label);
@@ -349,6 +353,28 @@ mod tests {
         app.reopen_closed(entry);
         let reopened = app.nodes.values().filter_map(|n| n.as_unloaded()).find(|t| t.title == "T").unwrap();
         assert_eq!(reopened.url, "https://live/");
+    }
+
+    /// Recently Closed records where the card was shown (its layout position), not its document pos, and reopens it
+    /// there (2b-4 Ruling 10).
+    #[test]
+    fn a_closed_node_reopens_where_it_was_shown() {
+        use crate::session_sync::tests::app_on;
+        let path = store::testutil::temp_dir("closed-layout-pos").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note = NodePayload::Note(crate::node::NotePayload { text: "n".into(), editing: false, url: None });
+        let note = app.place_node(None, note, crate::fetched::Placement { group: None, pos: egui::vec2(10.0, 20.0) });
+        assert!(app.save_session());
+        app.snap_layout(&note, egui::vec2(70.0, 80.0));
+        let entry = closed_entry(&app, &note).unwrap();
+        assert_eq!(entry.doc.nodes[0].fields.get("pos"), Some(&serde_json::json!([70.0, 80.0])));
+
+        app.close_node(&note);
+        let entry = app.closed.pop().unwrap();
+        app.reopen_closed(entry);
+        let reopened = app.nodes.keys().find(|id| **id != note).unwrap().clone();
+        assert_eq!(app.layout_pos(&reopened), egui::vec2(70.0, 80.0));
+        assert_eq!(app.mirror.pos(&reopened), Some(egui::vec2(70.0, 80.0)));
     }
 
     #[test]

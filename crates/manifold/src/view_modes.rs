@@ -204,12 +204,12 @@ impl App {
             egui::pos2(0.0, CHROME_HEIGHT_POINTS),
             egui::vec2(screen.x, (screen.y - CHROME_HEIGHT_POINTS).max(0.0)),
         );
-        let Some(node) = self.nodes.get(&transition.node_id) else {
+        if !self.nodes.contains_key(&transition.node_id) {
             let rect = transition_eased_rect(transition, full_content_rect, full_content_rect);
             return (rect, rect);
-        };
+        }
         // Same rect `paint_tab_body` blits the thumbnail at, so the transition starts and ends on it.
-        let world = egui::Rect::from_center_size(egui::pos2(node.pos.x, node.pos.y), GRAPH_NODE_SIZE);
+        let world = egui::Rect::from_center_size(self.layout_pos(&transition.node_id).to_pos2(), GRAPH_NODE_SIZE);
         let zoom = self.graph_world_rect_to_screen(world).width() / GRAPH_NODE_SIZE.x;
         let clip_end = self.graph_world_rect_to_screen(tab_thumb_rect(world, 1.0 / zoom));
         let viewport_end = match self.gpu.as_ref().and_then(|g| g.thumbnail_size(&transition.node_id)) {
@@ -237,7 +237,7 @@ impl App {
         let tex_id = self.gpu.as_ref()?.image_id(&transition.node_id)?;
         let size = image_pixel_size(image);
         let card = self.graph_world_rect_to_screen(egui::Rect::from_center_size(
-            egui::pos2(node.pos.x, node.pos.y),
+            self.layout_pos(&transition.node_id).to_pos2(),
             image_node_card_size(image.width, image.height),
         ));
         let body = self.item_body_rect();

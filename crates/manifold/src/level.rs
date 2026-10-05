@@ -64,7 +64,7 @@ impl App {
                 let node = self.nodes.get(id)?;
                 Some(LevelItem {
                     kind: LevelItemKind::Node(item_node_kind(&node.payload)),
-                    rect: node_card_rect(node),
+                    rect: node_card_rect(self.layout_pos(id), &node.payload),
                     id: id.clone(),
                 })
             })
@@ -97,12 +97,12 @@ impl App {
         self.nodes
             .iter()
             .filter(|(id, _)| self.in_level(id))
-            .filter_map(|(id, node)| {
+            .filter_map(|(id, _)| {
                 let parent_id = self.mirror.parent(id)?;
-                let parent = self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
+                self.nodes.get(parent_id).filter(|_| self.in_level(parent_id))?;
                 Some(LevelEdge {
-                    from: parent.pos.to_pos2(),
-                    to: node.pos.to_pos2(),
+                    from: self.layout_pos(parent_id).to_pos2(),
+                    to: self.layout_pos(id).to_pos2(),
                     curve: EdgeCurve::Bow,
                     highlight: false,
                 })
@@ -171,7 +171,7 @@ mod tests {
                 ("g".to_string(), LevelItemKind::Node(ItemNodeKind::Group)),
             ]
         );
-        assert_eq!(app.level_items()[0].rect, node_card_rect(&app.nodes["d"]));
+        assert_eq!(app.level_items()[0].rect, node_card_rect(app.layout_pos("d"), &app.nodes["d"].payload));
 
         app.current_group = Some("g".into());
         let inside: Vec<String> = app.level_items().into_iter().map(|i| i.id).collect();

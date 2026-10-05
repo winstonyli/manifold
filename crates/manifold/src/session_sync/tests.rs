@@ -124,10 +124,18 @@ fn explicit_fields_change_only_when_marked() {
     let mut live = BTreeMap::from([(id(0), note("a", None))]);
     let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
     apply(&mut doc, ops);
+    // `pos` is mirrored (2b-4): `App::pending` writes it, `diff` never does, marked or not.
     live.get_mut(&id(0)).unwrap().fields.insert(field::POS, FieldValue::Pos(5.0, 6.0));
-    assert_eq!(diff(&doc, &live, &BTreeSet::new(), &BTreeSet::new()), vec![], "physics motion is not an edit");
-    let marked = BTreeSet::from([(id(0), field::POS)]);
-    assert!(matches!(&diff(&doc, &live, &marked, &BTreeSet::new())[..], [OpBody::Set { field: field::POS, .. }]));
+    assert_eq!(diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()), vec![]);
+    // `path` is the explicit field left (2b-5 deletes the machinery).
+    let image = shared(Kind::Image, None, &[(field::PATH, FieldValue::Str("a.png".into()))]);
+    live.insert(id(1), image);
+    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
+    apply(&mut doc, ops);
+    live.get_mut(&id(1)).unwrap().fields.insert(field::PATH, FieldValue::Str("b.png".into()));
+    assert_eq!(diff(&doc, &live, &BTreeSet::new(), &BTreeSet::new()), vec![], "unmarked");
+    let marked = BTreeSet::from([(id(1), field::PATH)]);
+    assert!(matches!(&diff(&doc, &live, &marked, &BTreeSet::new())[..], [OpBody::Set { field: field::PATH, .. }]));
 }
 
 #[test]
@@ -625,52 +633,213 @@ fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
     assert!(app.navigated_from.is_empty());
 }
 
-#[test]
-fn a_failed_commit_keeps_the_explicit_marks() {
-    let path = temp_dir("sync-fail").join("session.mnf");
-    let mut app = app_on(&path, 1);
-    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
-    assert!(app.save_session());
-    app.nodes.get_mut(&note).unwrap().pos = egui::vec2(5.0, 6.0);
-    let mark = (note.parse().unwrap(), field::POS);
-    app.explicit.insert(mark);
-    let set_readonly = |readonly: bool| {
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        // Toggles the Windows read-only attribute, which is what makes
-        // the append fail; on Unix this would make the file writable
-        // by everyone, but it's a temp file this test owns.
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(readonly);
-        std::fs::set_permissions(&path, perms).unwrap();
-    };
-    set_readonly(true);
-    let saved = app.save_session();
-    set_readonly(false);
-    assert!(!saved);
-    assert!(app.explicit.contains(&mark), "kept for the next save");
-    // Nothing else happens, so only the retry saves it.
-    app.poll_store();
-    assert!(app.explicit.contains(&mark), "not retried before SAVE_RETRY");
-    app.save_retry_at = Some(std::time::Instant::now());
-    app.poll_store();
-    assert!(app.save_retry_at.is_none());
-    assert!(app.explicit.is_empty());
-    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(5.0, 6.0));
+// ---- 2b-4: the document pos in the mirror, the layout a side-table ----------
+
+/// A note placed at `pos` (top level), as `place_node` places every new node.
+fn a_note_at(app: &mut App, pos: egui::Vec2) -> String {
+    let note = NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None });
+    app.place_node(None, note, crate::fetched::Placement { group: None, pos })
 }
 
+/// What a drag does to the layout every frame (`card.rs`), then its release.
+fn drag(app: &mut App, ids: &[&str], delta: egui::Vec2) {
+    app.dragging = Some(ids[0].to_owned());
+    app.drag_moved = ids.iter().map(|&id| id.to_owned()).collect();
+    for &id in ids {
+        app.layout.entry(id.to_owned()).or_default().pos += delta;
+    }
+}
+
+/// Ruling 2: a drag release writes the document pos; physics (a settle) moves only the layout.
 #[test]
-fn a_marked_pos_is_saved_and_an_unmarked_one_is_not() {
-    let path = temp_dir("marks").join("session.mnf");
+fn a_drag_release_saves_the_dropped_position() {
+    let path = temp_dir("pos-drag").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let note = add(&mut app, NodePayload::Note(NotePayload { text: "n".into(), editing: false, url: None }));
-    app.nodes.get_mut(&note).unwrap().pos = egui::vec2(1.0, 1.0);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    let other = a_note_at(&mut app, egui::vec2(52.0, 10.0));
     assert!(app.save_session());
-    app.nodes.get_mut(&note).unwrap().pos = egui::vec2(50.0, 50.0);
+    drag(&mut app, &[&note], egui::vec2(40.0, 0.0));
     assert!(app.save_session());
-    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(1.0, 1.0), "physics motion stays local");
-    app.mark(&note, field::POS);
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 10.0), "a drag in progress is not saved");
+    app.release_drag();
+    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)), "shown at once");
     assert!(app.save_session());
-    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 50.0));
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 10.0));
+
+    app.settle_current_level();
+    assert_ne!(app.layout_pos(&note), egui::vec2(50.0, 10.0), "the overlapping cards were pushed apart");
+    assert_ne!(app.layout_pos(&other), egui::vec2(52.0, 10.0));
+    assert!(app.save_session());
+    assert!(app.pending.is_empty());
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(50.0, 10.0), "physics never writes the document");
+    assert_eq!(stored(&app, &other, field::POS), FieldValue::Pos(52.0, 10.0));
+    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(50.0, 10.0)));
+}
+
+/// Ruling 3: a new node's `Create` carries where it was placed, not where a settle moved it before the first save.
+#[test]
+fn a_node_is_created_at_its_placement_not_its_settled_position() {
+    let path = temp_dir("pos-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+    let other = a_note_at(&mut app, egui::vec2(11.0, 20.0));
+    assert_eq!(app.layout_pos(&note), egui::vec2(10.0, 20.0), "the layout starts at the placement too");
+    app.settle_current_level();
+    assert_ne!(app.layout_pos(&note), egui::vec2(10.0, 20.0));
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
+    assert_eq!(stored(&app, &other, field::POS), FieldValue::Pos(11.0, 20.0));
+}
+
+/// Ruling 4: an unsaved local pos beats another replica's; their other fields still arrive, and the layout is not
+/// snapped to theirs.
+#[test]
+fn a_local_pos_edit_wins_over_a_remote_one() {
+    let path = temp_dir("pos-local-wins").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    drag(&mut app, &[&note], egui::vec2(80.0, 0.0));
+    app.release_drag();
+    remote_set(&mut other, &note, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, &note, field::COLOR, red());
+    // The remote round applies, then the next round commits.
+    assert!(app.save_session());
+    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(90.0, 20.0)));
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(90.0, 20.0));
+    assert_eq!(app.layout_pos(&note), egui::vec2(90.0, 20.0), "not snapped to theirs");
+    assert_eq!(app.mirror.color(&note), Some(egui::Color32::RED), "their other field arrives");
+}
+
+/// Ruling 4: another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
+#[test]
+fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
+    let path = temp_dir("pos-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+    assert!(app.save_session());
+    app.layout.insert(note.clone(), crate::Layout { pos: egui::vec2(12.0, 22.0), vel: egui::vec2(3.0, 4.0) });
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, &note, field::POS, FieldValue::Pos(5.0, 6.0));
+    let pos_stamp = |doc: &Doc| doc.nodes[&note.parse().unwrap()].fields[&field::POS].stamp;
+    let theirs = pos_stamp(other.doc());
+    assert!(app.save_session());
+    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(5.0, 6.0)));
+    assert_eq!(app.layout[&note], crate::Layout { pos: egui::vec2(5.0, 6.0), vel: egui::Vec2::ZERO });
+    assert!(app.save_session());
+    assert_eq!(pos_stamp(app.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
+}
+
+/// Ruling 4: a card the user is dragging is not snapped by a remote pos; its release then wins.
+#[test]
+fn a_remote_pos_does_not_snap_a_node_being_dragged() {
+    let path = temp_dir("pos-remote-drag").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b) = (a_note_at(&mut app, egui::vec2(10.0, 20.0)), a_note_at(&mut app, egui::vec2(300.0, 20.0)));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    // `a` is dragged, `b` moves with it as part of the selection.
+    drag(&mut app, &[&a, &b], egui::vec2(0.0, 50.0));
+    remote_set(&mut other, &a, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, &b, field::POS, FieldValue::Pos(7.0, 8.0));
+    assert!(app.save_session());
+    assert_eq!(app.mirror.pos(&a), Some(egui::vec2(5.0, 6.0)), "the document pos is theirs until the release");
+    assert_eq!(app.layout_pos(&a), egui::vec2(10.0, 70.0), "the dragged card stays under the pointer");
+    assert_eq!(app.layout_pos(&b), egui::vec2(300.0, 70.0), "and so does the rest of the selection");
+    app.release_drag();
+    assert!(app.save_session());
+    assert_eq!(stored(&app, &a, field::POS), FieldValue::Pos(10.0, 70.0), "the release wins");
+    assert_eq!(stored(&app, &b, field::POS), FieldValue::Pos(300.0, 70.0));
+}
+
+/// Ruling 1: the layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no
+/// position for it (this respawn starts at the origin), and a save mid-respawn keeps the entry.
+#[test]
+fn a_respawn_keeps_the_layout_position() {
+    let path = temp_dir("pos-respawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, sleeping_tab("https://t/", ""));
+    app.snap_layout(&tab, egui::vec2(30.0, 40.0));
+    assert!(app.save_session());
+    start_respawn(&mut app, &tab);
+    assert!(app.save_session());
+    fail_spawns(&mut app);
+    assert!(app.nodes.contains_key(&tab), "landed as a failed card");
+    assert_eq!(app.layout_pos(&tab), egui::vec2(30.0, 40.0));
+}
+
+/// A new tab has no layout entry or mirror entry until it lands: it lands at its spawn position, which is its
+/// document pos too (Ruling 3).
+#[test]
+fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
+    let path = temp_dir("pos-new-spawn").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let t = app.alloc_node_id();
+    let at = egui::vec2(30.0, 40.0);
+    app.spawn_tab_async(crate::TabSpawn::new(
+        t.clone(),
+        "https://t/".into(),
+        EngineKind::Servo,
+        at,
+        SpawnPurpose::Restore,
+        1.0,
+    ));
+    assert!(app.save_session(), "creates the spawning tab");
+    assert_eq!(stored(&app, &t, field::POS), FieldValue::Pos(30.0, 40.0));
+    fail_spawns(&mut app);
+    assert_eq!(app.layout_pos(&t), at);
+    assert_eq!(app.mirror.pos(&t), Some(at));
+}
+
+/// Ruling 4, restore: the mirror holds the document pos and the layout the personal one, and the next save writes
+/// nothing for it.
+#[test]
+fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_document_one() {
+    let path = temp_dir("pos-restore").join("session.mnf");
+    let note = {
+        let mut app = app_on(&path, 1);
+        let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+        assert!(app.save_session());
+        app.snap_layout(&note, egui::vec2(70.0, 80.0)); // a settle: personal
+        app.close_store();
+        note
+    };
+    let mut app = app_on(&path, 2);
+    assert!(app.restore_session());
+    assert_eq!(app.layout_pos(&note), egui::vec2(70.0, 80.0));
+    assert_eq!(app.mirror.pos(&note), Some(egui::vec2(10.0, 20.0)));
+    assert!(app.save_session());
+    assert!(app.pending.is_empty());
+    assert_eq!(stored(&app, &note, field::POS), FieldValue::Pos(10.0, 20.0));
+}
+
+/// Ruling 11: `explicit` stays as dead machinery until 2b-5, with nothing filling it: no source calls `mark`, and
+/// only `mark` itself inserts into `explicit`.
+#[test]
+fn explicit_is_never_populated() {
+    fn scan(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") && !path.ends_with("session_sync/tests.rs") {
+                out.push((path.display().to_string(), std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    let mut sources = Vec::new();
+    scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
+    let count = |needle: &str| sources.iter().map(|(_, text)| text.matches(needle).count()).sum::<usize>();
+    let callers: Vec<&str> = sources
+        .iter()
+        .filter(|(_, text)| text.contains(".mark(") || text.contains("::mark("))
+        .map(|(p, _)| p.as_str())
+        .collect();
+    assert_eq!(callers, Vec::<&str>::new(), "nothing marks a field");
+    assert_eq!(count("explicit.insert("), 1, "only `mark` writes `explicit`");
+    let app = App::default();
+    assert!(app.explicit.is_empty());
 }
 
 #[test]
@@ -750,7 +919,7 @@ fn an_idle_open_and_close_writes_nothing() {
     {
         let mut app = app_on(&path, 1);
         let id = add(&mut app, NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None }));
-        app.nodes.get_mut(&id).unwrap().pos = egui::vec2(3.0, 4.0);
+        app.snap_layout(&id, egui::vec2(3.0, 4.0));
         app.close_store();
     }
     let before = (std::fs::read(&path).unwrap(), std::fs::read(crate::store::local::path_for(&path)).unwrap());
@@ -924,7 +1093,8 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
     let restored = &app.nodes[&node.to_string()];
     assert_eq!(app.mirror.parent(&node.to_string()), None);
     assert_eq!(restored.as_download().and_then(|d| d.url.as_deref()), Some("https://x.test/f.bin"));
-    assert_eq!(restored.pos, egui::vec2(1.0, 2.0));
+    assert_eq!(app.layout_pos(&node.to_string()), egui::vec2(1.0, 2.0));
+    assert_eq!(app.mirror.pos(&node.to_string()), Some(egui::vec2(1.0, 2.0)));
     // No link encodes as the absent register, so a save has nothing to write back.
     let ops = diff(app.journal.as_ref().unwrap().doc(), &app.shared_nodes(), &BTreeSet::new(), &BTreeSet::new());
     assert!(ops.is_empty(), "{ops:?}");
@@ -1570,7 +1740,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     app.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
     assert!(app.local_unread.is_none());
-    assert_eq!(app.nodes[&note].pos, egui::vec2(7.0, 8.0));
+    assert_eq!(app.layout_pos(&note), egui::vec2(7.0, 8.0));
     let closed: Vec<&JsonDoc> = app.closed.iter().map(|e| &e.doc).collect();
     assert_eq!(closed, [&old, &since], "read entries first, then what closed since");
     app.close_store();
@@ -1919,8 +2089,9 @@ fn app_save_costs() {
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
             let id = add(&mut app, failed_tab(&url, 1.0));
             app.edit_group(&id, Some(groups[i % groups.len()].clone()));
-            let node = app.nodes.get_mut(&id).unwrap();
-            node.pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
+            let pos = egui::vec2(i as f32 * 3.5, i as f32 * -2.25);
+            app.snap_layout(&id, pos);
+            app.edit_pos(&id, Some(pos));
             ids.push(id);
         }
         assert!(app.save_session());
@@ -1962,7 +2133,7 @@ fn app_save_costs() {
         report(
             "maybe_write_local, changed (build + write)",
             timed(N, || {
-                app.nodes.get_mut(&ids[k % tabs]).unwrap().pos.x += 1.0;
+                app.layout.get_mut(&ids[k % tabs]).unwrap().pos.x += 1.0;
                 k += 1;
                 app.maybe_write_local(true);
             }),
@@ -2250,9 +2421,15 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     app.edit_field(&tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
     // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
-    let node = app.nodes.remove(&tab).unwrap();
-    let mut spawn =
-        crate::TabSpawn::new(tab.clone(), "https://a/".into(), EngineKind::Servo, node.pos, SpawnPurpose::Respawn, 1.0);
+    app.nodes.remove(&tab).unwrap();
+    let mut spawn = crate::TabSpawn::new(
+        tab.clone(),
+        "https://a/".into(),
+        EngineKind::Servo,
+        egui::Vec2::ZERO,
+        SpawnPurpose::Respawn,
+        1.0,
+    );
     (spawn.carry.color, spawn.carry.pinned) = (app.mirror.color(&tab), app.mirror.pinned(&tab));
     app.respawn_tab(spawn);
     assert!(app.save_session());
@@ -2275,7 +2452,8 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     app.edit_field(&note, field::COLOR, red());
     let set_readonly = |readonly: bool| {
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        // As in `a_failed_commit_keeps_the_explicit_marks`: the Windows read-only attribute makes the append fail.
+        // The Windows read-only attribute makes the append fail; on Unix this would make the file writable by
+        // everyone, but it's a temp file this test owns.
         #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(readonly);
         std::fs::set_permissions(&path, perms).unwrap();
@@ -2713,15 +2891,16 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     }
 }
 
-/// What the crash path and `finish_swap` do: carry from the mirror, take the node out of `nodes`, respawn.
+/// What the crash path and `finish_swap` do: carry from the mirror, take the node out of `nodes`, respawn. The
+/// spawn carries no position: the tab keeps its `App::layout` entry.
 fn start_respawn(app: &mut App, tab: &str) {
-    let node = app.nodes.remove(tab).unwrap();
+    app.nodes.remove(tab).unwrap();
     let carried = app.mirror.carried(tab);
     let mut spawn = crate::TabSpawn::new(
         tab.to_owned(),
         "https://t/".into(),
         EngineKind::Servo,
-        node.pos,
+        egui::Vec2::ZERO,
         SpawnPurpose::Respawn,
         1.0,
     );

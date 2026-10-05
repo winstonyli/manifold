@@ -551,11 +551,11 @@ mod tests {
         let note = || NodePayload::Note(NotePayload { text: String::new(), editing: false, url: None });
         let at = Placement { group: Some(OUTER.into()), pos: egui::vec2(1.0, 2.0) };
         let id = app.place_node(None, note(), at);
-        let node = &app.nodes[&id];
         assert_eq!(
-            (app.mirror.group(&id), node.pos, app.mirror.parent(&id).is_none()),
+            (app.mirror.group(&id), app.layout_pos(&id), app.mirror.parent(&id).is_none()),
             (Some(OUTER), egui::vec2(1.0, 2.0), true)
         );
+        assert_eq!(app.mirror.pos(&id), Some(egui::vec2(1.0, 2.0)), "the document pos is the placement too");
         assert_eq!(app.node_order.last(), Some(&id));
         let at = Placement { group: None, pos: egui::Vec2::ZERO };
         assert_eq!(app.place_node(Some("fixed".into()), note(), at), "fixed", "a given id is kept");

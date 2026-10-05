@@ -58,12 +58,13 @@ impl App {
         if leave_button.zip(pointer).is_some_and(|(button, pointer)| button.contains(pointer)) {
             return drop_action(dragged, DropTarget::BackButton, inside_group).map(|effect| (effect, None));
         }
-        let center = egui::Pos2::new(node.pos.x, node.pos.y);
+        let center = self.layout_pos(id).to_pos2();
         [ItemNodeKind::Group, ItemNodeKind::Tab, ItemNodeKind::Unloaded].into_iter().find_map(|kind| {
             let effect = drop_action(dragged, DropTarget::Card(kind), inside_group)?;
-            let target = self.nodes_at_current_level(kind).into_iter().find(|other| {
-                other != id && self.nodes.get(other).is_some_and(|n| node_card_rect(n).contains(center))
-            })?;
+            let target = self
+                .nodes_at_current_level(kind)
+                .into_iter()
+                .find(|other| other != id && self.card_rect(other).is_some_and(|rect| rect.contains(center)))?;
             Some((effect, Some(target)))
         })
     }
@@ -90,6 +91,20 @@ impl App {
         }
     }
 
+    /// A drag ends: each card it moved (`drag_moved`) is saved where it was dropped (`edit_pos`, 2b-4 Ruling 2).
+    /// Written once, here, not every dragged frame: saves fire independently of the gesture (`poll_store`, a url
+    /// change batched through `drain_tab_events`), so writing every frame would commit intermediate positions. A
+    /// card removed mid-drag (closed, crashed, swapped) leaves its id in `drag_moved`; it is skipped here rather than
+    /// cleared at every removal site.
+    pub(crate) fn release_drag(&mut self) {
+        self.dragging = None;
+        for moved_id in std::mem::take(&mut self.drag_moved) {
+            if self.nodes.contains_key(&moved_id) {
+                self.edit_pos(&moved_id, Some(self.layout_pos(&moved_id)));
+            }
+        }
+    }
+
     /// A card released after a drag (`GraphAction::Drop`), with where it
     /// landed, if anywhere. Saves the session on every release, since the
     /// drag itself moved the card.
@@ -106,7 +121,7 @@ impl App {
             }
             Some((DropEffect::GroupWith, Some(other))) => {
                 let group = self.alloc_node_id();
-                let pos = self.nodes.get(&other).map_or(egui::Vec2::ZERO, |n| n.pos);
+                let pos = self.layout_pos(&other);
                 self.insert_group_at(group.clone(), Some(pos));
                 let unit = self.take_drag_unit(id);
                 for member in std::iter::once(other).chain(unit) {
@@ -232,7 +247,7 @@ impl App {
     /// per-frame `*_at_level` locals are already in hand) reuse this
     /// without redoing the level scans a second time per frame.
     pub(crate) fn bounds_for_level<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> egui::Rect {
-        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.nodes.get(id)).map(node_card_rect))
+        self.bounds_for_rects(ids.into_iter().filter_map(|id| self.card_rect(id)))
     }
 
     /// `root_id` plus every descendant reachable through `parent` links,
@@ -298,8 +313,7 @@ impl App {
     pub(crate) fn nearest_tab_in_direction(&self, from: egui::Vec2, dir: egui::Vec2) -> Option<String> {
         let mut best: Option<(String, f32)> = None;
         for id in self.tabs_at_current_level() {
-            let Some(node) = self.nodes.get(&id) else { continue };
-            let delta = node.pos - from;
+            let delta = self.layout_pos(&id) - from;
             let along = delta.dot(dir);
             if along <= 0.5 {
                 continue;
@@ -323,8 +337,11 @@ impl App {
     /// code -- see `debug_control`'s own doc comment -- so headless mode
     /// calls this directly instead).
     pub(crate) fn move_graph_focus(&mut self, dir: egui::Vec2) {
-        let from_at_level =
-            self.focused.as_ref().filter(|id| self.in_level(id)).and_then(|id| self.nodes.get(id)).map(|n| n.pos);
+        let from_at_level = self
+            .focused
+            .as_deref()
+            .filter(|id| self.in_level(id) && self.nodes.contains_key(*id))
+            .map(|id| self.layout_pos(id));
         match from_at_level {
             Some(from) => {
                 if let Some(next) = self.nearest_tab_in_direction(from, dir) {
@@ -402,10 +419,11 @@ impl App {
         // one-time burst triggered only when the visible node set actually
         // changes), so this bug affected every settle animation, not a
         // background steady-state cost.
-        let mut positions: HashMap<String, egui::Vec2> =
-            self.nodes.iter().filter(|(id, _)| self.in_level(id)).map(|(id, n)| (id.clone(), n.pos)).collect();
-        let mut velocities: HashMap<String, egui::Vec2> =
-            self.nodes.iter().filter(|(id, _)| self.in_level(id)).map(|(id, n)| (id.clone(), n.vel)).collect();
+        // The layout only (`App::layout`): physics never writes the document pos (2b-4 Ruling 2).
+        let at_level = || self.nodes.keys().filter(|id| self.in_level(id));
+        let layout = |id: &String| self.layout.get(id).copied().unwrap_or_default();
+        let mut positions: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).pos)).collect();
+        let mut velocities: HashMap<String, egui::Vec2> = at_level().map(|id| (id.clone(), layout(id).vel)).collect();
         let edges: Vec<(String, String)> = self
             .nodes
             .iter()
@@ -439,13 +457,30 @@ impl App {
             );
         }
 
-        for (id, node) in self.nodes.iter_mut() {
-            if let Some(p) = positions.get(id) {
-                node.pos = *p;
-            }
-            if let Some(v) = velocities.get(id) {
-                node.vel = *v;
-            }
+        for (id, pos) in positions {
+            let vel = velocities.get(&id).copied().unwrap_or_default();
+            self.layout.insert(id, Layout { pos, vel });
         }
+    }
+
+    /// Where `id`'s card is drawn (`App::layout`); the origin for a node with no entry (a hand-built test node).
+    pub(crate) fn layout_pos(&self, id: &str) -> egui::Vec2 {
+        self.layout.get(id).map_or(egui::Vec2::ZERO, |layout| layout.pos)
+    }
+
+    /// Moves `id`'s card to `pos`, at rest: a placement, a remote pos, a restored personal one.
+    pub(crate) fn snap_layout(&mut self, id: &str, pos: egui::Vec2) {
+        self.layout.insert(id.to_owned(), Layout::at(pos));
+    }
+
+    /// `id`'s card in world space (`node_card_rect` at its layout position); `None` when there is no such node.
+    pub(crate) fn card_rect(&self, id: &str) -> Option<egui::Rect> {
+        Some(node_card_rect(self.layout_pos(id), &self.nodes.get(id)?.payload))
+    }
+
+    /// Whether the user is dragging `id` right now: the card under the pointer, or one moving with it as part of
+    /// the selection (`drag_moved`).
+    pub(crate) fn is_being_dragged(&self, id: &str) -> bool {
+        self.dragging.as_deref().is_some_and(|dragged| dragged == id || self.drag_moved.iter().any(|m| m == id))
     }
 }

@@ -119,10 +119,11 @@ pub(crate) fn engine_of(code: u64) -> EngineKind {
 ///   nodes inside it. A live id the document holds as a tombstone is
 ///   never recreated (ids are never reused).
 /// - An existing node's group and parent are left to `App::pending_moves`
-///   and `App::pending` (Ruling 8), as its mirrored fields (`url`,
+///   and `App::pending` (Ruling 8), as its mirrored fields (`pos`, `url`,
 ///   `engine`, `jar` and `jar_set` among them) are, except a jar's.
-/// - A diffed field that differs is `Set`. An explicit field (`pos`) is
-///   `Set` only when `explicit` names it.
+/// - A diffed field that differs is `Set`. An explicit field (`path`, the
+///   last one) is `Set` only when `explicit` names it, which nothing does
+///   (2b-5 deletes the machinery).
 /// - A document node missing from `live` is deleted, unless `keep` names
 ///   it (a tab whose spawn is in flight).
 ///
@@ -277,7 +278,7 @@ fn engine_field(fields: &Fields) -> EngineKind {
 }
 
 /// `pos` as the store keeps it: never non-finite (contract "Fields").
-fn pos_value(pos: egui::Vec2) -> FieldValue {
+pub(crate) fn pos_value(pos: egui::Vec2) -> FieldValue {
     if pos.x.is_finite() && pos.y.is_finite() {
         FieldValue::Pos(pos.x, pos.y)
     } else {
@@ -303,12 +304,19 @@ fn link_id(id: Option<&str>) -> Option<NodeId> {
 }
 
 /// The tab `spawn` starts, as `Shared`: what `save_session` writes for a
-/// tab whose spawn hasn't landed yet (`App::spawning`). `url`, `engine` (a
+/// tab whose spawn hasn't landed yet (`App::spawning`). `pos`, `url`, `engine` (a
 /// stored code) and `jar` are its shared ones (`App::spawn_tab_async`): the
 /// mirror's for a tab that has an entry, which a respawn's live `spawn.url`
 /// may not be.
-pub(crate) fn spawn_shared(spawn: &TabSpawn, url: &str, engine: u64, jar: crate::jar::JarChoice) -> Shared {
-    let mut fields = Fields::from([(field::POS, pos_value(spawn.pos)), (field::COLOR, color_value(spawn.carry.color))]);
+pub(crate) fn spawn_shared(
+    spawn: &TabSpawn,
+    pos: Option<egui::Vec2>,
+    url: &str,
+    engine: u64,
+    jar: crate::jar::JarChoice,
+) -> Shared {
+    let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
+    let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
     let (pinned, parent) = (spawn.carry.pinned, parse_id(&spawn.parent));
     let (url, engine) = (FieldValue::Str(url.to_owned()), FieldValue::Engine(engine));
     let kind = tab_fields(&mut fields, url, engine, pinned, parent, jar);
@@ -385,8 +393,10 @@ impl App {
         let mut out = BTreeMap::new();
         for (key, node) in &self.nodes {
             let Ok(id) = key.parse::<NodeId>() else { continue };
-            let mut fields =
-                Fields::from([(field::POS, pos_value(node.pos)), (field::COLOR, self.mirror.get(key, field::COLOR))]);
+            let mut fields = Fields::from([
+                (field::POS, self.mirror.get(key, field::POS)),
+                (field::COLOR, self.mirror.get(key, field::COLOR)),
+            ]);
             let kind = match &node.payload {
                 // A tab's url is the shared one, not the live one its payload holds (Ruling 1); its engine is the
                 // mirror's, which a swap in progress already shows as its target (`start_swap_to`), and so is its
@@ -482,12 +492,12 @@ impl App {
     /// loaded is kept, showing its error, so the next diff doesn't delete
     /// it from the store.
     ///
-    /// `local`, personal state's entry for a new node, places it at its
-    /// settled position instead of `fields`'s stored `pos`, and reopens a
-    /// tab at its live url (`LocalNode::live_url`); `last_shared` still
-    /// records the real stored fields, so a later save doesn't diff the
-    /// overrides back into the store. Every caller but `restore_session`
-    /// passes `None`.
+    /// `local`, personal state's entry for a new node, lays it out at its
+    /// settled position instead of `fields`'s stored `pos` (which the mirror
+    /// holds), and reopens a tab at its live url (`LocalNode::live_url`);
+    /// `last_shared` still records the real stored fields, so a later save
+    /// doesn't diff the overrides back into the store. Every caller but
+    /// `restore_session` passes `None`.
     pub(crate) fn materialize(
         &mut self,
         id: String,
@@ -519,7 +529,9 @@ impl App {
 
     /// Applies `fields` to the live node `id` where they differ from what this replica last saw (`seen`), except
     /// the mirrored fields `mirror_remote` held at a local edit (`held`): their live effects follow the mirror's
-    /// verdict (2b-3 Ruling 3), so a tab whose url edit is pending is not navigated away from it.
+    /// verdict (2b-3 Ruling 3), so a tab whose url edit is pending is not navigated away from it, and a card whose
+    /// pos edit is pending is not moved. A new pos snaps the layout to `pos`, at rest, except for a card being
+    /// dragged: the drag keeps it under the pointer, and its release then wins (2b-4 Ruling 4).
     /// False when there is no such node.
     fn update_live_node(
         &mut self,
@@ -531,15 +543,17 @@ impl App {
         held: &[u32],
     ) -> bool {
         let in_flight = self.swap_in_flight(id);
+        let changed =
+            |no: u32| !held.contains(&no) && seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        if changed(field::POS) && !self.is_being_dragged(id) {
+            self.snap_layout(id, pos);
+        }
         let Some(node) = self.nodes.get_mut(id) else {
             return false;
         };
-        let changed =
-            |no: u32| !held.contains(&no) && seen.as_ref().is_none_or(|s| s.fields.get(&no) != now.fields.get(&no));
-        if changed(field::POS) {
-            node.pos = pos;
-            node.vel = egui::Vec2::ZERO;
-        }
         let (mut swap, mut reassert) = (None, None);
         let mut store_load = false;
         match &mut node.payload {
@@ -940,9 +954,12 @@ impl App {
         true
     }
 
-    /// Marks explicit field `field` (`pos`) of `id` for the next save (spec
+    /// Marks explicit field `field` of `id` for the next save (spec
     /// "Local edits become ops"). New nodes need no mark: their `Create`
     /// carries every field.
+    // No caller since `pos` moved to the mirror (2b-4 Ruling 11): kept as dead machinery until 2b-5 deletes it with
+    // `explicit` and `FieldDef::explicit`.
+    #[allow(dead_code)]
     pub(crate) fn mark(&mut self, id: &str, field: u32) {
         if let Ok(id) = id.parse() {
             self.explicit.insert((id, field));
@@ -969,6 +986,13 @@ impl App {
     /// unlabelled redirect report after a link click is shared.
     pub(crate) fn edit_url(&mut self, id: &str, url: &str) {
         self.edit_field(id, field::URL, FieldValue::Str(url.to_owned()));
+    }
+
+    /// The one writer of a node's document pos (2b-4 Ruling 2): a drag release, with where the card was dropped
+    /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
+    /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
+    pub(crate) fn edit_pos(&mut self, id: &str, pos: Option<egui::Vec2>) {
+        self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value));
     }
 
     /// The one writer of a tab's jar choice (2b-3 Ruling 7): `JAR` and `JAR_SET` go through `edit_field`, so only the
@@ -1326,10 +1350,11 @@ impl App {
                     }
                     self.pending.clear();
                     self.pending_moves.clear();
-                    // A tab still spawning keeps its entry: a respawn has removed it from `nodes` until it
-                    // lands, and `Mirror::init` then leaves an existing entry alone.
+                    // A tab still spawning keeps its entry, and its layout: a respawn has removed it from `nodes`
+                    // until it lands, and `Mirror::init` then leaves an existing entry alone.
                     let (nodes, spawning) = (&self.nodes, &self.spawning);
                     self.mirror.retain(|id| nodes.contains_key(id) || spawning.contains_key(id));
+                    self.layout.retain(|id, _| nodes.contains_key(id) || spawning.contains_key(id));
                     self.store_notices.clear();
                     self.last_session_save = Some(std::time::Instant::now());
                     self.save_retry_at = None;
@@ -1488,7 +1513,8 @@ impl App {
             .iter()
             .filter(|(id, _)| id.parse::<NodeId>().is_ok())
             .map(|(id, node)| {
-                let mut local = LocalNode { pos: [node.pos.x, node.pos.y], ..LocalNode::default() };
+                let pos = self.layout_pos(id);
+                let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
                 // Against what the store held at this replica's last save
                 // or load: a url this replica shares is edited (`edit_url`) and saved.
                 let live_url = |url: &str| {
@@ -1580,6 +1606,7 @@ impl App {
         for (id, node) in state.nodes {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
+                self.snap_layout(&id, egui::vec2(node.pos[0], node.pos[1]));
             } else if self.spawning.contains_key(&id) {
                 pending.insert(id, node);
             }
@@ -1609,11 +1636,9 @@ impl App {
         self.closed = closed;
     }
 
-    /// One node's share of `apply_local`: settled position, and whatever
-    /// its payload kind keeps (a tab's title/muted/zoom, a note's editing).
+    /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
+    /// payload kind keeps (a tab's title/muted/zoom, a note's editing).
     fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
-        live.pos = egui::vec2(node.pos[0], node.pos[1]);
-        live.vel = egui::Vec2::ZERO;
         match &mut live.payload {
             NodePayload::Tab(tab) => {
                 tab.title = node.title.clone();
@@ -1645,15 +1670,10 @@ impl App {
             self.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(id) {
-            match &live.payload {
-                NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Note(_) => {
-                    Self::apply_local_node(live, &node)
-                }
-                _ => {
-                    live.pos = egui::vec2(node.pos[0], node.pos[1]);
-                    live.vel = egui::Vec2::ZERO;
-                }
+            if let NodePayload::Tab(_) | NodePayload::Unloaded(_) | NodePayload::Note(_) = &live.payload {
+                Self::apply_local_node(live, &node)
             }
+            self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
         }
     }
 
@@ -1935,6 +1955,7 @@ impl App {
         }
         self.nodes.clear();
         self.node_order.clear();
+        self.layout.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;

@@ -318,8 +318,8 @@ impl App {
                 let sum = self
                     .selected_tabs
                     .iter()
-                    .filter_map(|id| self.nodes.get(id))
-                    .fold(egui::Vec2::ZERO, |acc, node| acc + node.pos);
+                    .filter(|id| self.nodes.contains_key(*id))
+                    .fold(egui::Vec2::ZERO, |acc, id| acc + self.layout_pos(id));
                 let pos = sum / count;
                 let name = self.default_group_name();
                 let at = self.placement(&id, Some(pos));
@@ -472,7 +472,7 @@ impl App {
         // Pan (drag empty background) + zoom (scroll wheel, centered on the
         // cursor) via egui's built-in `Scene` container — everything drawn
         // inside `add_contents` below is in the same world-space coordinates
-        // `node.pos` already uses; egui's transform layer handles converting
+        // `App::layout` positions use; egui's transform layer handles converting
         // to/from screen space (including for nested widgets' own
         // hover/click/drag responses, e.g. a node's own drag below), so none
         // of that logic needs to know pan/zoom exists at all. `scene_rect`
@@ -1272,13 +1272,10 @@ impl App {
                         .tabs_at_current_level()
                         .into_iter()
                         .filter(|id| {
-                            self.nodes.get(id).is_some_and(|node| {
-                                let card = egui::Rect::from_center_size(
-                                    egui::Pos2::new(node.pos.x, node.pos.y),
-                                    GRAPH_NODE_SIZE,
-                                );
+                            self.nodes.contains_key(id) && {
+                                let card = egui::Rect::from_center_size(self.layout_pos(id).to_pos2(), GRAPH_NODE_SIZE);
                                 world_rect.intersects(card)
-                            })
+                            }
                         })
                         .collect();
                 }
@@ -1680,8 +1677,8 @@ impl App {
         });
         if let (true, Some(target)) = (tab, target) {
             ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
-            if let Some(node) = self.nodes.get(&order[target]) {
-                self.pan_to_card(node_card_rect(node));
+            if let Some(rect) = self.card_rect(&order[target]) {
+                self.pan_to_card(rect);
             }
         }
     }
@@ -1720,8 +1717,8 @@ impl App {
         ui.data_mut(|d| d.remove_temp::<(String, f64)>(key));
         if let Some(id) = number.checked_sub(1).and_then(|n| order.get(n)) {
             ui.memory_mut(|m| m.request_focus(egui::Id::new(("graph_card", id.as_str()))));
-            if let Some(node) = self.nodes.get(id) {
-                self.pan_to_card(node_card_rect(node));
+            if let Some(rect) = self.card_rect(id) {
+                self.pan_to_card(rect);
             }
         }
     }
@@ -1874,7 +1871,7 @@ impl App {
         let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
-                let node_pos = self.nodes.get(&hovered_id).map(|n| n.pos);
+                let node_pos = self.nodes.contains_key(&hovered_id).then(|| self.layout_pos(&hovered_id));
                 let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(&hovered_id));
                 if let (Some(node_pos), Some(tex_id)) = (node_pos, thumb_id) {
                     let rect = egui::Rect::from_min_size(
