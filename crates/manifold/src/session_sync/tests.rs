@@ -2052,6 +2052,7 @@ fn a_pending_local_color_edit_wins_over_a_remote_edit_of_the_same_field() {
     assert_eq!(stored(&app, &note, field::COLOR), blue());
 }
 
+/// A saved node edited, then deleted, before the same save: the delete stands.
 #[test]
 fn an_edit_to_a_node_the_store_dropped_is_not_written_back() {
     let path = temp_dir("edit-dropped").join("session.mnf");
@@ -2063,6 +2064,47 @@ fn an_edit_to_a_node_the_store_dropped_is_not_written_back() {
     assert!(app.save_session());
     let doc = app.journal.as_ref().unwrap().doc();
     assert!(!doc.nodes[&note.parse().unwrap()].is_live(), "the delete stands; no placeholder or recreate");
+}
+
+/// The save that deletes a node writes only the `Delete`, not the node's pending edit after it.
+#[test]
+fn a_save_that_deletes_a_node_writes_no_set_for_it() {
+    let path = temp_dir("edit-delete-ops").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    let ops_before = app.journal.as_ref().unwrap().doc().version[&ActorId(1)];
+    app.edit_field(&note, field::COLOR, red());
+    app.remove_node(&note);
+    assert!(app.save_session());
+    assert_eq!(app.journal.as_ref().unwrap().doc().version[&ActorId(1)], ops_before + 1, "one op: the Delete");
+    assert_eq!(stored(&app, &note, field::COLOR), FieldValue::Color(None));
+}
+
+/// A node never saved, edited and removed before the first save: no `Set` reaches the store, so no placeholder.
+#[test]
+fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
+    let path = temp_dir("edit-unsaved-removed").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    app.edit_field(&note, field::COLOR, red());
+    app.remove_node(&note);
+    assert!(app.save_session());
+    let doc = app.journal.as_ref().unwrap().doc();
+    assert!(!doc.nodes.contains_key(&note.parse().unwrap()), "no entry at all for the id");
+}
+
+#[test]
+fn diff_still_writes_a_changed_jar_color() {
+    let mut doc = Doc::new(DocId([1; 16]));
+    let mut live = BTreeMap::from([(id(0), shared(Kind::Jar, None, &[(field::NAME, FieldValue::Str("j".into()))]))]);
+    let ops = diff(&doc, &live, &all_explicit(&live), &BTreeSet::new());
+    apply(&mut doc, ops);
+    live.get_mut(&id(0)).unwrap().fields.insert(field::COLOR, red());
+    assert_eq!(
+        diff(&doc, &live, &all_explicit(&live), &BTreeSet::new()),
+        vec![OpBody::Set { node: id(0), field: field::COLOR, enc: encode_field(field::COLOR, &red()) }]
+    );
 }
 
 #[test]

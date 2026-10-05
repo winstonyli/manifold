@@ -180,8 +180,9 @@ pub(crate) fn diff(
             if field_def(no).is_some_and(|def| def.explicit) && !explicit.contains(&(id, no)) {
                 continue;
             }
-            // A mirrored field is written by `App::pending`, not compared.
-            if MIRRORED.contains(&no) {
+            // A mirrored field is written by `App::pending`, not compared. Jars still read `def.color` from
+            // `jar_defs` (not the mirror) until sub-project C, so theirs is still diffed.
+            if MIRRORED.contains(&no) && node.kind != Kind::Jar {
                 continue;
             }
             match value {
@@ -1038,12 +1039,13 @@ impl App {
                 }
             }
             let mut ops = diff(txn.doc(), &live, &self.explicit, &keep);
-            // Edits to mirrored fields. A node this commit creates carries its value in the `Create`; one the
-            // document doesn't show live would get a placeholder from a `Set`, so its edit is dropped.
-            let created: BTreeSet<NodeId> = ops
+            // Edits to mirrored fields. A node this commit creates carries its value in the `Create`, and one it
+            // deletes needs none; one the document doesn't show live would get a placeholder from a `Set`. Those
+            // edits are dropped.
+            let skip: BTreeSet<NodeId> = ops
                 .iter()
                 .filter_map(|op| match op {
-                    OpBody::Create { node, .. } => Some(*node),
+                    OpBody::Create { node, .. } | OpBody::Delete { node } => Some(*node),
                     _ => None,
                 })
                 .collect();
@@ -1051,7 +1053,7 @@ impl App {
             ops.extend(
                 self.pending
                     .iter()
-                    .filter(|((node, _), _)| !created.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live))
+                    .filter(|((node, _), _)| !skip.contains(node) && doc.nodes.get(node).is_some_and(Node::is_live))
                     .map(|(&(node, no), enc)| OpBody::Set { node, field: no, enc: enc.clone() }),
             );
             // The nodes whose stored state this commit changes. A delete can
