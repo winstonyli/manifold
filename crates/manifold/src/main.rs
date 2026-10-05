@@ -2133,7 +2133,7 @@ impl App {
     }
 
     /// Opens `session.mnf` under a fresh actor. A file that isn't a session
-    /// file at all is set aside (`Journal::open_or_set_aside`) and a new one
+    /// file this build reads (not one at all, or an older format) is set aside (`Journal::open_or_set_aside`) and a new one
     /// started, toasting where the old one went; that launch then counts as
     /// recovered (`store_recovered`), so nothing is pruned against the new,
     /// empty session. Any other failure is toasted

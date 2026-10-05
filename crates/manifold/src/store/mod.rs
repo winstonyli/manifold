@@ -76,6 +76,18 @@ pub(crate) mod testutil {
         doc.live().map(|(id, node)| (id, node.fields.clone(), doc.effective_group(id))).collect()
     }
 
+    /// Writes an empty journal at `path` whose header says format version 1
+    /// (a numeric kind, no `type`), with a valid CRC. Returns its bytes.
+    pub fn version_one_file(path: &Path) -> Vec<u8> {
+        drop(super::journal::Journal::open(path, super::model::ActorId(1)).unwrap());
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes[4] = 1;
+        let crc = super::crc32c::crc32c(&bytes[..21]);
+        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
     mod tests {
         use super::*;
 

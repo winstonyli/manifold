@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::local_state::LocalState;
-use crate::store::journal::{inspect, Journal};
+use crate::store::journal::{inspect, read_readable_header, Journal};
 use crate::store::json::{self, JsonDoc};
 use crate::store::model::ActorId;
 
@@ -49,10 +49,12 @@ fn dump(path: &Path) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Exit status 0 when clean, 1 when damaged or torn.
+/// Exit status 0 when clean, 1 when damaged or torn; an error (2) for a
+/// file this build won't read, an older format version included.
 fn check(path: &Path) -> Result<i32, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let info = inspect(&bytes).map_err(|e| e.to_string())?;
+    read_readable_header(&bytes).map_err(|e| format!("{e} (format version {})", info.version))?;
     if info.header_damaged {
         println!("header damaged");
     }
@@ -110,5 +112,14 @@ mod tests {
             "never overwrites"
         );
         assert_eq!(run(&args(&["--headless"])), None);
+    }
+
+    #[test]
+    fn check_does_not_call_a_version_one_file_clean() {
+        let dir = crate::store::testutil::temp_dir("cli-v1");
+        let path = dir.join("session.mnf");
+        crate::store::testutil::version_one_file(&path);
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_ne!(run(&args(&["--check", path.to_str().unwrap()])), Some(0));
     }
 }

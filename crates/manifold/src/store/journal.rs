@@ -246,6 +246,19 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
     Ok(Header { version, generation, prev_generation, damaged, len: at + 20 })
 }
 
+/// `read_header`, refusing as `NotAJournal` a file older than
+/// `FORMAT_VERSION`: version 1 held a numeric kind and no `type`, so read
+/// as this format every node would be typeless and compact away (no
+/// migration). The one rule for what this build reads: `load`, the
+/// set-aside check and `--check` all use it.
+pub fn read_readable_header(buf: &[u8]) -> Result<Header, JournalError> {
+    let header = read_header(buf)?;
+    if header.version < FORMAT_VERSION {
+        return Err(JournalError::NotAJournal);
+    }
+    Ok(header)
+}
+
 /// The most a header can take: magic (4), a varint version (at most 9,
 /// `varint`'s longest), two u64 generations and a CRC (4).
 const HEADER_MAX: u64 = 4 + 9 + 16 + 4;
@@ -801,7 +814,8 @@ impl Journal {
         Ok(journal)
     }
 
-    /// `open`, but a file that isn't a journal at all is renamed to
+    /// `open`, but a file that isn't a journal this build reads (not one at
+    /// all, or an older format: `read_readable_header`) is renamed to
     /// `<path>.unreadable-<secs>[-<n>]`, with its `.prev` and `.local`
     /// beside it (`set_aside_unless_journal`), and a fresh journal is
     /// created in its place. Refusing used to leave the app without a
@@ -905,12 +919,7 @@ impl Journal {
     /// Replaces this replica's state with `bytes`, a whole file, read past
     /// damage. Fails only on a header it can't read.
     fn load(&mut self, bytes: &[u8]) -> Result<(), JournalError> {
-        let header = read_header(bytes)?;
-        if header.version < FORMAT_VERSION {
-            // Version 1 held a numeric kind and no `type`: read as this
-            // format, every node would be typeless and compact away.
-            return Err(JournalError::NotAJournal);
-        }
+        let header = read_readable_header(bytes)?;
         self.generation = header.generation;
         self.read_only = header.version > FORMAT_VERSION;
         self.keep_unknown = self.read_only;
@@ -1341,7 +1350,7 @@ fn set_aside_unless_journal(path: &Path) -> Result<Option<PathBuf>, JournalError
     const COMPANIONS: [&str; 2] = [".prev", ".local"];
     let _lock = lock_file(path)?;
     match std::fs::read(path) {
-        Ok(bytes) if matches!(read_header(&bytes), Err(JournalError::NotAJournal)) => {}
+        Ok(bytes) if matches!(read_readable_header(&bytes), Err(JournalError::NotAJournal)) => {}
         _ => return Ok(None),
     }
     let secs = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -1485,7 +1494,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, JournalError> {
 mod tests {
     use super::*;
     use crate::store::model::{encode_field, field, FieldValue, Kind, Node, FIELDS};
-    use crate::store::testutil::{shown, temp_dir, XorShift};
+    use crate::store::testutil::{shown, temp_dir, version_one_file, XorShift};
 
     fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
         let node = txn.next_id();
@@ -1793,16 +1802,28 @@ mod tests {
     fn a_version_one_file_is_refused_and_left_alone() {
         let dir = temp_dir("version-one");
         let path = dir.join("session.mnf");
-        drop(Journal::open(&path, ActorId(1)).unwrap());
-        let mut bytes = std::fs::read(&path).unwrap();
-        bytes[4] = 1; // format_version 1: a numeric kind, no `type`
-        let crc = crc32c(&bytes[..21]);
-        bytes[21..25].copy_from_slice(&crc.to_le_bytes());
-        std::fs::write(&path, &bytes).unwrap();
+        let bytes = version_one_file(&path);
         assert!(!read_header(&bytes).unwrap().damaged);
         assert!(matches!(Journal::read(&bytes), Err(JournalError::NotAJournal)));
         assert!(matches!(Journal::open(&path, ActorId(2)), Err(JournalError::NotAJournal)));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_version_one_file_is_set_aside_and_a_fresh_session_starts() {
+        let dir = temp_dir("version-one-aside");
+        let path = dir.join("session.mnf");
+        let bytes = version_one_file(&path);
+        let (mut journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
+        let aside = aside.expect("moved aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), bytes, "kept as it was");
+        assert!(aside.file_name().unwrap().to_string_lossy().starts_with("session.mnf.unreadable-"));
+        let mut txn = journal.begin().unwrap();
+        let (tab, create) = create_tab(&mut txn, "https://v.example/");
+        txn.commit(vec![create]).unwrap();
+        drop(journal);
+        let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(doc.nodes[&tab].is_live(), "the fresh session saves");
     }
 
     #[test]
