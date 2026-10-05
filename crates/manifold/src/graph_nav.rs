@@ -402,7 +402,7 @@ impl App {
         // `edges`: a plain `Vec`, so every spring edge was fed into
         // `graph_layout::step` *twice* -- doubling the effective spring
         // strength for every one of this function's 90 warmup iterations.
-        // `settle_current_level` is `graph_layout::step`'s only call site
+        // `settle_current_level` is `graph_layout::step_sized`'s only call site
         // in this whole app (the layout doesn't run continuously every
         // frame -- see this function's own doc comment on why: it's a
         // one-time burst triggered only when the visible node set actually
@@ -434,8 +434,23 @@ impl App {
             .map(|(id, _)| id.clone())
             .collect();
 
+        let sizes: HashMap<String, egui::Vec2> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.group == self.current_group)
+            .map(|(id, n)| (id.clone(), crate::card::node_card_size(&n.payload)))
+            .collect();
+
         for _ in 0..SETTLE_ITERATIONS {
-            graph_layout::step(&mut positions, &mut velocities, &edges, &pinned, GRAPH_WORLD_CENTER, SETTLE_DT);
+            graph_layout::step_sized(
+                &mut positions,
+                &mut velocities,
+                &edges,
+                &pinned,
+                &sizes,
+                GRAPH_WORLD_CENTER,
+                SETTLE_DT,
+            );
         }
 
         for (id, node) in self.nodes.iter_mut() {
